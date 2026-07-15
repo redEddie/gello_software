@@ -44,6 +44,30 @@ class DynamixelRobotConfig:
 
 
 PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
+    # Franka GELLO (FR3 build), calibrated 2026-07-15 in pose (0, 0, 0, -pi/2, 0, pi/2, 0)
+    "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBIN516-if00-port0": DynamixelRobotConfig(
+        joint_ids=(1, 2, 3, 4, 5, 6, 7),
+        joint_offsets=(
+            -2 * np.pi / 2,
+            2 * np.pi / 2,
+            4 * np.pi / 2,
+            1 * np.pi / 2,
+            2 * np.pi / 2,
+            1 * np.pi / 2,
+            # measured grid value is 2*pi/2. The +pi/4 deliberately zeroes
+            # joint 7 at the square-handle grip (user decision) instead of the
+            # real hand's -45deg mount orientation; the -pi selects the
+            # right-handed grip (user-verified: left-handed grip is 180deg
+            # from it, via --grip left in experiments/sim_teleop.py).
+            # NOTE: recalibration scripts output the pure pi/2 grid — re-apply
+            # this expression manually after any recalibration.
+            2 * np.pi / 2 + np.pi / 4 - np.pi,
+        ),
+        joint_signs=(1, 1, 1, -1, 1, 1, 1),
+        # trigger rest position drifts (173.8-185.4 deg observed); using the
+        # least-open reading so a released trigger always maps to fully open
+        gripper_config=(8, 174.0, 143.8),
+    ),
     # xArm
     "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT3M9NVB-if00-port0": DynamixelRobotConfig(
         joint_ids=(1, 2, 3, 4, 5, 6, 7),
