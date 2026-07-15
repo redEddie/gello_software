@@ -1,7 +1,7 @@
 import pickle
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 import mujoco
 import mujoco.viewer
@@ -51,7 +51,11 @@ def attach_hand_to_arm(
     attachment_site.attach(hand_mjcf)
 
 
-def build_scene(robot_xml_path: str, gripper_xml_path: Optional[str] = None):
+def build_scene(
+    robot_xml_path: str,
+    gripper_xml_path: Optional[str] = None,
+    gripper_quat: Optional[Sequence[float]] = None,
+):
     # assert robot_xml_path.endswith(".xml")
 
     arena = mjcf.RootElement()
@@ -61,6 +65,13 @@ def build_scene(robot_xml_path: str, gripper_xml_path: Optional[str] = None):
     if gripper_xml_path is not None:
         # attach gripper to the robot at "attachment_site"
         gripper_simulate = mjcf.from_path(gripper_xml_path)
+        if gripper_quat is not None:
+            # some arm models define attachment_site as the bare flange frame;
+            # this rotates it so the attached gripper matches the real mounting
+            site = arm_simulate.find("site", "attachment_site")
+            if site is None:
+                raise ValueError("No attachment site found in the arm model.")
+            site.quat = gripper_quat
         attach_hand_to_arm(arm_simulate, gripper_simulate)
 
     arena.worldbody.attach(arm_simulate)
@@ -138,9 +149,10 @@ class MujocoRobotServer:
         host: str = "127.0.0.1",
         port: int = 5556,
         print_joints: bool = False,
+        gripper_quat: Optional[Sequence[float]] = None,
     ):
         self._has_gripper = gripper_xml_path is not None
-        arena = build_scene(xml_path, gripper_xml_path)
+        arena = build_scene(xml_path, gripper_xml_path, gripper_quat)
 
         assets: Dict[str, str] = {}
         for asset in arena.asset.all_children():

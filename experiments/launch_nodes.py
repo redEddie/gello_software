@@ -40,6 +40,25 @@ def launch_robot_server(args: Args):
             xml_path=xml, gripper_xml_path=None, port=port, host=args.hostname
         )
         server.serve()
+    elif args.robot == "sim_fr3":
+        from gello.robots.sim_robot import MujocoRobotServer
+
+        MENAGERIE_ROOT: Path = (
+            Path(__file__).parent.parent / "third_party" / "mujoco_menagerie"
+        )
+        xml = MENAGERIE_ROOT / "franka_fr3" / "fr3.xml"
+        gripper_xml = MENAGERIE_ROOT / "franka_emika_panda" / "hand.xml"
+        # fr3.xml's attachment_site is the bare flange frame; rotate it by +135deg
+        # so the attached hand lands at the real robot's -45deg mount, identical
+        # to the integrated franka_emika_panda/panda.xml
+        server = MujocoRobotServer(
+            xml_path=xml,
+            gripper_xml_path=gripper_xml,
+            gripper_quat=(0.3826834, 0, 0, 0.9238795),
+            port=port,
+            host=args.hostname,
+        )
+        server.serve()
     elif args.robot == "sim_panda":
         from gello.robots.sim_robot import MujocoRobotServer
 
