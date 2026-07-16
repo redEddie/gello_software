@@ -163,7 +163,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
         ids: Sequence[int],
         servo_types: Optional[Sequence[str]] = None,
         port: str = "/dev/ttyUSB0",
-        baudrate: int = 57600,
+        baudrate: int = 1000000,
         max_retries: int = 3,
         use_fake_fallback: bool = True,
     ):
