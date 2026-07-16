@@ -1,4 +1,5 @@
 import glob
+import os
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -7,6 +8,7 @@ import numpy as np
 import tyro
 
 from gello.env import RobotEnv
+from gello.robots.franka_fr3 import DEFAULT_RESET_POSE, FR3_RESET_POSES
 from gello.robots.robot import PrintRobot
 from gello.utils.launch_utils import instantiate_from_dict
 from gello.zmq_core.robot_node import ZMQClientRobot
@@ -32,6 +34,10 @@ class Args:
     start_joints: Optional[Tuple[float, ...]] = None
 
     gello_port: Optional[str] = None
+    reset_pose: Optional[str] = None
+    """FR3 reset (home) pose to drive to before teleop, e.g. panda / fr3_ready /
+    libero / robosuite.  Overrides GELLO_FR3_RESET_POSE; unset falls back to the
+    env var, then to the default.  Ignored when --start-joints is given."""
     mock: bool = False
     use_save_interface: bool = False
     data_dir: str = "~/bc_data"
@@ -139,13 +145,36 @@ def main(args):
                 "start_joints": args.start_joints,
             }
             if args.start_joints is None:
-                reset_joints = np.deg2rad(
-                    [0, -90, 90, -90, -90, 0, 0]
-                )  # Change this to your own reset joints
+                # The UR-inherited default was [0, -90, 90, -90, -90, 0, 0] deg,
+                # whose J6=0 sits outside the FR3's J6 range and trips the
+                # speed-limit reflex.  --reset-pose wins over the env var; see
+                # configs/fr3_teleop.env.
+                if args.reset_pose is not None:
+                    pose_name, src = args.reset_pose, "--reset-pose"
+                elif os.environ.get("GELLO_FR3_RESET_POSE"):
+                    pose_name, src = (
+                        os.environ["GELLO_FR3_RESET_POSE"],
+                        "GELLO_FR3_RESET_POSE",
+                    )
+                else:
+                    pose_name, src = DEFAULT_RESET_POSE, "default"
+                if pose_name not in FR3_RESET_POSES:
+                    raise ValueError(
+                        f"reset pose {pose_name!r} (from {src}) is not known; "
+                        f"choose one of {sorted(FR3_RESET_POSES)}"
+                    )
+                reset_joints = FR3_RESET_POSES[pose_name]
+                print(f"Reset pose: {pose_name} (from {src})")
             else:
                 reset_joints = np.array(args.start_joints)
 
             curr_joints = env.get_obs()["joint_positions"]
+            # The robot's obs carries a gripper dof the arm pose does not.  The
+            # old guard was plain shape equality, so homing was silently skipped
+            # for every robot with a gripper -- pad instead, holding the gripper
+            # where it already is.
+            if len(reset_joints) == len(curr_joints) - 1:
+                reset_joints = np.append(reset_joints, curr_joints[-1])
             if reset_joints.shape == curr_joints.shape:
                 max_delta = (np.abs(curr_joints - reset_joints)).max()
                 steps = min(int(max_delta / 0.01), 100)
@@ -153,6 +182,18 @@ def main(args):
                 for jnt in np.linspace(curr_joints, reset_joints, steps):
                     env.step(jnt)
                     time.sleep(0.001)
+
+                # `steps` is capped at 100, so for a large delta the command
+                # stream outruns the robot's own velocity clamp and ends before
+                # the arm arrives.  The start gate below compares against the
+                # measured pose, so hold the target until it converges.
+                for _ in range(int(5.0 * args.hz)):
+                    if (
+                        np.abs(env.get_obs()["joint_positions"] - reset_joints).max()
+                        < 0.02
+                    ):
+                        break
+                    env.step(reset_joints)
         elif args.agent == "quest":
             agent_cfg = {
                 "_target_": "gello.agents.quest_agent.SingleArmQuestAgent",

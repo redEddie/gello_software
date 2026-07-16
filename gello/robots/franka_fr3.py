@@ -70,6 +70,29 @@ MAX_GRIPPER_WIDTH = 0.08
 # Conservative default joint impedance (N*m/rad), same order as libfranka docs.
 DEFAULT_JOINT_IMPEDANCE = [3000.0, 3000.0, 3000.0, 2500.0, 2500.0, 2000.0, 2000.0]
 
+# Named reset (home) poses, mirroring dsfranka's configs/teleop.yaml
+# ``home.presets``.  dsfranka still spells these ``franka_ready`` / ``dsfranka``;
+# the names here are the ones both repos are converging on.  All four are inside
+# the FR3's joint limits.
+FR3_RESET_POSES = {
+    # Franka's built-in "ready" pose -- what the arm boots to, and where Desk's
+    # "move to start" parks it.  q4 = -3pi/4.
+    "fr3_ready": np.array([0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, 0.785398]),
+    # menagerie fr3_hand / panda "home" keyframe -- matches the sim model.
+    # q4 = -pi/2.
+    "panda": np.array([0.0, 0.0, 0.0, -1.570796, 0.0, 1.570796, 0.785398]),
+    # LIBERO's init_qpos.  The benchmark OVERRIDES the robosuite default below
+    # (libero/envs/robots/mounted_panda.py); the two are ~41 deg apart at J6, so
+    # do not substitute one for the other.
+    "libero": np.array(
+        [0.0, -0.161037389, 0.0, -2.44459747, 0.0, 2.2267522, 0.785398]
+    ),
+    # robosuite's default Panda init_qpos -- NOT what LIBERO uses; kept for
+    # reference so the two are not confused again.
+    "robosuite": np.array([0.0, 0.196350, 0.0, -2.617994, 0.0, 2.941593, 0.785398]),
+}
+DEFAULT_RESET_POSE = "panda"
+
 
 class FrankaFR3Robot(Robot):
     """Franka FR3 backend driven by ``pylibfranka``.
