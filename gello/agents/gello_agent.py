@@ -46,6 +46,7 @@ class DynamixelRobotConfig:
             port=port,
             gripper_config=self.gripper_config,
             start_joints=start_joints,
+            joint_limits=self.joint_limits,
         )
 
 
@@ -156,6 +157,10 @@ class GelloAgent(Agent):
             assert os.path.exists(port), port
             assert port in PORT_CONFIG_MAP, f"Port {port} not in config map"
             config = PORT_CONFIG_MAP[port]
+        # make_robot receives config.joint_limits: when set, get_joint_state
+        # fixes any phantom full turn in the leader reading (see
+        # wrap_into_limits), before smoothing, so a joint whose calibrated value
+        # lands 2*pi out of range does not fail the start gate every power-up.
         self._robot = config.make_robot(port=port, start_joints=start_joints)
 
         # Optional joint-limit wall on the leader.  Only when the config carries

@@ -18,6 +18,7 @@ class DynamixelRobot(Robot):
         baudrate: int = 1000000,
         gripper_config: Optional[Tuple[int, float, float]] = None,
         start_joints: Optional[np.ndarray] = None,
+        joint_limits: Optional[Tuple[np.ndarray, np.ndarray]] = None,
     ):
         from gello.dynamixel.driver import (
             DynamixelDriver,
@@ -77,6 +78,10 @@ class DynamixelRobot(Robot):
         self._torque_on = False
         self._last_pos = None
         self._alpha = 0.99
+        # (lower, upper) follower limits, arm joints only.  When set,
+        # get_joint_state removes any phantom full turn from the reading (a
+        # GELLO joint can read 2*pi out of range); None leaves readings as-is.
+        self._joint_limits = joint_limits
 
         if start_joints is not None:
             # loop through all joints and add +- 2pi to the joint offsets to get the closest to start joints
@@ -106,6 +111,16 @@ class DynamixelRobot(Robot):
     def get_joint_state(self) -> np.ndarray:
         pos = (self._driver.get_joints() - self._joint_offsets) * self._joint_signs
         assert len(pos) == self.num_dofs()
+
+        # Remove any phantom full turn before smoothing, so a joint sitting on
+        # its encoder wrap (e.g. FR3 J3 at q~=0) stays continuous instead of
+        # feeding a 2*pi jump into the EWMA.  Arm joints only.
+        if self._joint_limits is not None:
+            from gello.robots.joint_limit_wall import wrap_into_limits
+
+            n_arm = len(pos) - (1 if self.gripper_open_close is not None else 0)
+            lower, upper = self._joint_limits
+            pos[:n_arm] = wrap_into_limits(pos[:n_arm], lower, upper)
 
         if self.gripper_open_close is not None:
             # map pos to [0, 1]

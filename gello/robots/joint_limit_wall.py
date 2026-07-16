@@ -36,6 +36,28 @@ ADDR_INPUT_VOLTAGE = 144  # Present Input Voltage (2 B, units of 0.1 V)
 ADDR_TEMPERATURE = 146    # Present Temperature (1 B, deg C)
 
 
+def wrap_into_limits(q: np.ndarray, lower, upper) -> np.ndarray:
+    """Add whole turns (2*pi*k, k integer) to each joint so it lands nearest its
+    range center.
+
+    A GELLO joint reads a full turn off when the encoder's absolute reading (one
+    revolution only) plus the fixed calibration offset lands outside its range:
+    e.g. a joint physically at +0.293 reads +6.576 (= +0.293 + 2*pi).  Removing
+    that phantom turn does not move the leader -- 2*pi is one revolution, the
+    same physical angle -- it only makes the number match the pose (and the
+    follower).  Because every follower joint's span is < 2*pi, the nearest turn
+    to the range center is the one inside the range, uniquely.
+
+    Does NOT clamp: a value legitimately just outside the range rounds to k=0 and
+    stays there, so a real out-of-range pose is not masked (the wall/start gate
+    still see it).
+    """
+    q = np.asarray(q, dtype=float)
+    center = (np.asarray(lower, dtype=float) + np.asarray(upper, dtype=float)) / 2.0
+    k = np.round((center - q) / (2 * np.pi))
+    return q + 2 * np.pi * k
+
+
 class JointLimitWall:
     """One-sided spring-damper on the leader at the follower's joint limits.
 
@@ -81,8 +103,10 @@ class JointLimitWall:
         self._n_ids = len(driver._ids)
         self._offsets = np.asarray(offsets, dtype=float)[: self._n_arm]
         self._signs = np.asarray(signs, dtype=float)[: self._n_arm]
-        self._lo = np.asarray(lower, dtype=float) + margin
-        self._hi = np.asarray(upper, dtype=float) - margin
+        self._lower = np.asarray(lower, dtype=float)  # true limits, for wrapping
+        self._upper = np.asarray(upper, dtype=float)
+        self._lo = self._lower + margin  # margined, for the spring
+        self._hi = self._upper - margin
         self._kp = max_current / wall_depth
         self._kd = kd
         self._max_current = max_current
@@ -161,6 +185,9 @@ class JointLimitWall:
                 # whose EWMA on _last_pos would be corrupted by a second reader).
                 raw_q, raw_dq = self._driver.get_positions_and_velocities()
                 q = (raw_q[: self._n_arm] - self._offsets) * self._signs
+                # Undo any phantom full turn so the wall pushes at the real limit,
+                # not 2*pi away from it (same correction the agent applies).
+                q = wrap_into_limits(q, self._lower, self._upper)
                 dq = raw_dq[: self._n_arm] * self._signs
 
                 # Arm torque only near a limit: current-control-at-zero drags
