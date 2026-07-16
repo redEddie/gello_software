@@ -43,7 +43,9 @@ Safety
 ------
 * ``read_only=True`` (the default is *False*) connects and streams state but
   never starts motion -- use it to validate the pipeline first.
-* Collision thresholds and joint impedance are set conservatively on connect.
+* Collision-reflex thresholds are set to the joint torque limits (reflex
+  effectively off, so the gripper can touch the ground); joint impedance is set
+  on connect.  The robot's hard torque limit stays the safety floor.
 * ``max_joint_velocity`` / ``max_joint_acceleration`` default low.  Raise them
   only after the arm tracks GELLO smoothly.  ``max_joint_jerk`` is a limit, not
   a tuning knob -- keep it under ``franka::kMaxJointJerk`` (5000) with margin.
@@ -71,6 +73,13 @@ MAX_GRIPPER_WIDTH = 0.08
 
 # Conservative default joint impedance (N*m/rad), same order as libfranka docs.
 DEFAULT_JOINT_IMPEDANCE = [3000.0, 3000.0, 3000.0, 2500.0, 2500.0, 2000.0, 2000.0]
+
+# FR3 joint torque limits (N*m), datasheet.  Used as the collision-reflex
+# thresholds: at these values the reflex never fires before the robot's own hard
+# torque limit does, i.e. the (tunable) collision detection is effectively off,
+# leaving only that hard limit.  Chosen deliberately so the gripper can touch
+# the ground during teleop without tripping cartesian_reflex.
+FR3_MAX_JOINT_TORQUE = [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
 
 # FR3 joint position limits (rad), same values as dsfranka's
 # cpp/bridge/robot_limits.hpp.  Note J4 is never positive and J6 never reaches
@@ -138,8 +147,8 @@ class FrankaFR3Robot(Robot):
         max_joint_jerk: float = 3000.0,
         filter_wn: float = 8.0,
         home_gripper: bool = False,
-        collision_torque: float = 20.0,
-        collision_force: float = 20.0,
+        collision_torque: Optional[list] = None,  # None -> FR3_MAX_JOINT_TORQUE
+        collision_force: float = 100.0,
     ):
         import pylibfranka as pf
 
@@ -158,10 +167,15 @@ class FrankaFR3Robot(Robot):
         print(f"[FR3] connecting to {robot_ip} (realtime={'enforce' if enforce_rt else 'ignore'})")
         self.robot = pf.Robot(robot_ip, rt)
 
-        # Conservative safety limits before any motion.
+        # Collision-reflex thresholds.  Set to the joint torque limits / a high
+        # force so the reflex effectively does not fire (see FR3_MAX_JOINT_TORQUE):
+        # the gripper must be able to touch the ground during teleop.  The robot's
+        # own hard torque limit remains the safety floor.  lower==upper (contact
+        # report == reflex); we only care about the reflex level here.
+        torque_thresh = list(collision_torque or FR3_MAX_JOINT_TORQUE)
         self.robot.set_collision_behavior(
-            [collision_torque] * 7,
-            [collision_torque] * 7,
+            torque_thresh,
+            torque_thresh,
             [collision_force] * 6,
             [collision_force] * 6,
         )
