@@ -72,6 +72,18 @@ MAX_GRIPPER_WIDTH = 0.08
 # Conservative default joint impedance (N*m/rad), same order as libfranka docs.
 DEFAULT_JOINT_IMPEDANCE = [3000.0, 3000.0, 3000.0, 2500.0, 2500.0, 2000.0, 2000.0]
 
+# FR3 joint position limits (rad), same values as dsfranka's
+# cpp/bridge/robot_limits.hpp.  Note J4 is never positive and J6 never reaches
+# 0: the GELLO leader turns through both regions freely, so a leader pose does
+# not imply a reachable FR3 pose.
+#
+# These are data, not enforcement.  The follower deliberately does NOT clamp
+# commands to them -- silently overriding the leader decouples the two arms and
+# leaves the operator with a dead zone.  They exist so the *leader* can be given
+# a physical wall at the same place (scripts/gello_joint_limit_wall.py).
+FR3_Q_LOWER = np.array([-2.7437, -1.7837, -2.9007, -3.0421, -2.8065, 0.5445, -3.0159])
+FR3_Q_UPPER = np.array([2.7437, 1.7837, 2.9007, -0.1518, 2.8065, 4.5169, 3.0159])
+
 # Named reset (home) poses, mirroring dsfranka's configs/teleop.yaml
 # ``home.presets``.  dsfranka still spells these ``franka_ready`` / ``dsfranka``;
 # the names here are the ones both repos are converging on.  All four are inside

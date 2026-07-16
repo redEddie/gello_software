@@ -35,15 +35,29 @@ CURRENT_CONTROL_MODE = 0
 POSITION_CONTROL_MODE = 3
 
 # Servo-specific mappings and limits
+#
+# NOTE on XL330_M288_T: the two pre-existing entries do not share a convention
+# (XM430's `1000 / 2.69` is a plain amps->units conversion using that servo's
+# 2.69 mA/unit, i.e. it assumes a torque constant of 1; XC330's 1158.73 implies
+# 0.863 Nm/A, which its datasheet does not give).  Rather than copy either, the
+# XL330 value below is derived from its datasheet and shown as such.  Prefer
+# set_current() over set_torque() where the exact torque scale matters.
 TORQUE_TO_CURRENT_MAPPING = {
     "XC330_T288_T": 1158.73,
     "XM430_W210_T": 1000 / 2.69,
+    # XL330-M288-T: stall 0.52 Nm @ 1.5 A -> Kt = 0.347 Nm/A; unit is 1.0 mA.
+    # units per Nm = 1000 mA/A / 0.347 Nm/A
+    "XL330_M288_T": 1000 / (0.52 / 1.5),
 }
 
 # Servo specifications for current limits (in mA)
 SERVO_CURRENT_LIMITS = {
     "XC330_T288_T": 1193,
     "XM430_W210_T": 1263,
+    # Read from the Current Limit register (addr 38) of the Franka GELLO's
+    # servos, not from a datasheet.  Note 1750 mA is *above* the 1.5 A stall
+    # current: saturating there drives the (plastic-geared) servo past stall.
+    "XL330_M288_T": 1750,
 }
 
 
