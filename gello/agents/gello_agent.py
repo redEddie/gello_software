@@ -6,6 +6,7 @@ import numpy as np
 
 from gello.agents.agent import Agent
 from gello.robots.dynamixel import DynamixelRobot
+from gello.robots.franka_fr3 import FR3_Q_LOWER, FR3_Q_UPPER
 
 
 @dataclass
@@ -24,6 +25,11 @@ class DynamixelRobotConfig:
 
     gripper_config: Tuple[int, int, int]
     """The gripper config of GELLO. This is a tuple of (gripper_joint_id, degrees in open_position, degrees in closed_position)."""
+
+    joint_limits: Optional[Tuple[np.ndarray, np.ndarray]] = None
+    """The follower's (lower, upper) joint limits (rad), arm joints only.  When
+    set, GelloAgent puts a physical wall on the leader here (see JointLimitWall);
+    None means no wall (the default for arms without published limits)."""
 
     def __post_init__(self):
         assert len(self.joint_ids) == len(self.joint_offsets)
@@ -67,6 +73,7 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
         # trigger rest position drifts (173.8-185.4 deg observed); using the
         # least-open reading so a released trigger always maps to fully open
         gripper_config=(8, 174.0, 143.8),
+        joint_limits=(FR3_Q_LOWER, FR3_Q_UPPER),
     ),
     # xArm
     "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT3M9NVB-if00-port0": DynamixelRobotConfig(
@@ -138,20 +145,51 @@ class GelloAgent(Agent):
         port: str,
         dynamixel_config: Optional[DynamixelRobotConfig] = None,
         start_joints: Optional[np.ndarray] = None,
+        enable_wall: bool = True,
     ):
         # Ensure start_joints is a numpy array if provided
         if start_joints is not None and not isinstance(start_joints, np.ndarray):
             start_joints = np.array(start_joints)
         if dynamixel_config is not None:
-            self._robot = dynamixel_config.make_robot(
-                port=port, start_joints=start_joints
-            )
+            config = dynamixel_config
         else:
             assert os.path.exists(port), port
             assert port in PORT_CONFIG_MAP, f"Port {port} not in config map"
-
             config = PORT_CONFIG_MAP[port]
-            self._robot = config.make_robot(port=port, start_joints=start_joints)
+        self._robot = config.make_robot(port=port, start_joints=start_joints)
+
+        # Optional joint-limit wall on the leader.  Only when the config carries
+        # the follower's limits (e.g. the FR3 GELLO); other arms keep their
+        # current behaviour untouched.  Shares the robot's driver -- the port is
+        # exclusive, so a separate wall process is impossible.
+        self._wall = None
+        if enable_wall and config.joint_limits is not None:
+            from gello.robots.joint_limit_wall import JointLimitWall
+
+            lower, upper = config.joint_limits
+            n_arm = len(config.joint_ids)
+            # Use the robot's *resolved* offsets/signs: start_joints can shift
+            # the offsets in DynamixelRobot.__init__, and the wall must land
+            # where the follower's limit actually is.
+            self._wall = JointLimitWall(
+                self._robot._driver,
+                lower,
+                upper,
+                offsets=self._robot._joint_offsets,
+                signs=self._robot._joint_signs,
+                n_arm=n_arm,
+            )
+            self._wall.start()
+        elif enable_wall:
+            print("[wall] no joint_limits for this port; leader wall disabled")
 
     def act(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
+        if self._wall is not None:
+            self._wall.poll()  # re-raises if the wall thread died -> teleop dies
         return self._robot.get_joint_state()
+
+    def close(self) -> None:
+        """Clean shutdown of the leader wall (no-op if there is none)."""
+        if self._wall is not None:
+            self._wall.stop()
+            self._wall = None

@@ -38,6 +38,10 @@ class Args:
     """FR3 reset (home) pose to drive to before teleop, e.g. panda / fr3_ready /
     libero / robosuite.  Overrides GELLO_FR3_RESET_POSE; unset falls back to the
     env var, then to the default.  Ignored when --start-joints is given."""
+    wall: bool = True
+    """Put a physical joint-limit wall on the GELLO leader (FR3 build only).
+    Pushes back near the follower's limits so they are felt, not crossed.  A
+    wall fault stops teleop; pass --no-wall to run without it."""
     mock: bool = False
     use_save_interface: bool = False
     data_dir: str = "~/bc_data"
@@ -143,6 +147,7 @@ def main(args):
                 "_target_": "gello.agents.gello_agent.GelloAgent",
                 "port": gello_port,
                 "start_joints": args.start_joints,
+                "enable_wall": args.wall,
             }
             if args.start_joints is None:
                 # The UR-inherited default was [0, -90, 90, -90, -90, 0, 0] deg,
@@ -283,7 +288,13 @@ def main(args):
             data_dir=args.data_dir, agent_name=args.agent, expand_user=True
         )
 
-    run_control_loop(env, agent, save_interface, use_colors=True)
+    try:
+        run_control_loop(env, agent, save_interface, use_colors=True)
+    finally:
+        # Clean up the leader wall on any exit (Ctrl+C included): zero current,
+        # drop torque, restore position mode.  No-op for agents without one.
+        if hasattr(agent, "close"):
+            agent.close()
 
 
 if __name__ == "__main__":
