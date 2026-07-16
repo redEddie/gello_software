@@ -35,7 +35,9 @@ hand exposes an *active control* interface that has to be serviced at 1 kHz
   between +/-a_max on adjacent ticks -- a jerk of 2*a_max/dt = 8000 rad/s^3
   against a ``kMaxJointJerk`` of 5000, which aborts with
   ``joint_motion_generator_acceleration_discontinuity``.
-* A second thread services the (blocking) gripper API with a dead-band.
+* A second thread services the (blocking) gripper API as a binary
+  grasp/release state machine with hysteresis (see ``_gripper_loop`` for why
+  ``move()`` alone cannot hold objects).
 
 Safety
 ------
@@ -361,13 +363,38 @@ class FrankaFR3Robot(Robot):
             print(f"[FR3] CONTROL LOOP ABORTED: {e}")
 
     def _gripper_loop(self) -> None:
-        """Service the blocking gripper API with a dead-band."""
-        deadband = 0.04  # normalized units; avoid chattering the slow gripper
-        # Latch to the current target: the gripper already sits at this width, so
-        # a first-pass move() would only stall the control loop as it comes up.
+        """Drive the Franka Hand as a binary grasp/release state machine.
+
+        ``move(width, speed)`` must not be used to close on objects: when the
+        fingers hit an object short of the target width, the command aborts
+        *without holding force* and the fingers unload and back off a little --
+        the "touches the object, then reopens" failure.  The only call that
+        holds force is ``grasp(width, speed, force, eps_in, eps_out)``, and it
+        self-releases after ~1 s if the final width lands outside
+        ``[width - eps_in, width + eps_out]``, so the window must span the
+        whole stroke.  (franka_ros#130, libfranka#93.)
+
+        The hand cannot servo width continuously anyway (~0.8 s per stroke), so
+        the leader trigger (0=open .. 1=closed) is discretized with a
+        hysteresis: closing edge at >= ``close_at`` issues
+        ``grasp(0.0, ..., eps=0.08)`` -- success at any object width, held at
+        ``grasp_force`` -- and the opening edge at <= ``open_at`` issues
+        ``move`` back to full open.  Do NOT narrow the epsilons (see above).
+
+        Commands are issued on state edges only and block this thread for up to
+        a stroke.  That is fine: the GIL-release patch keeps the 1 kHz control
+        thread running, and a pending edge is acted on as soon as the in-flight
+        command returns.  On an exception the state is left unchanged, so the
+        edge is retried while the trigger still demands it.
+        """
+        close_at = 0.8     # trigger crossing that closes the hand ...
+        open_at = 0.2      # ... and the one that reopens it (hysteresis)
+        speed = 0.1        # m/s, Franka Hand max
+        grasp_force = 40.0  # N holding force
+        eps = 0.08         # m; success window must span the full stroke
+
         with self._lock:
-            last_cmd = self._gripper_target
-        speed = 0.1
+            closed = self._gripper_target > 0.5  # match the hand's startup state
         while not self._stop.is_set():
             with self._lock:
                 target = self._gripper_target
@@ -377,13 +404,22 @@ class FrankaFR3Robot(Robot):
                     self._gripper_state_width = float(gs.width)
             except Exception:  # noqa: BLE001
                 pass
-            if last_cmd is None or abs(target - last_cmd) > deadband:
-                width = float(np.clip(1.0 - target, 0.0, 1.0)) * MAX_GRIPPER_WIDTH
-                try:
-                    self._gripper.move(width, speed)
-                    last_cmd = target
-                except Exception as e:  # noqa: BLE001
-                    print(f"[FR3] gripper move failed: {e}")
+            try:
+                if not closed and target >= close_at:
+                    ok = self._gripper.grasp(
+                        0.0, speed, grasp_force,
+                        epsilon_inner=eps, epsilon_outer=eps,
+                    )
+                    closed = True
+                    if not ok:
+                        # Unreachable with a full-stroke window; if it fires,
+                        # the epsilons no longer cover the stroke.
+                        print("[FR3] gripper grasp reported failure")
+                elif closed and target <= open_at:
+                    self._gripper.move(MAX_GRIPPER_WIDTH, speed)
+                    closed = False
+            except Exception as e:  # noqa: BLE001
+                print(f"[FR3] gripper {'grasp' if not closed else 'move'} failed: {e}")
             time.sleep(0.05)
 
     # ------------------------------------------------------------------ misc
