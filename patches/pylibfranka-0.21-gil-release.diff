@@ -1,0 +1,142 @@
+diff --git a/pylibfranka/src/gripper.cpp b/pylibfranka/src/gripper.cpp
+index 69fad08..87cb38c 100644
+--- a/pylibfranka/src/gripper.cpp
++++ b/pylibfranka/src/gripper.cpp
+@@ -32,6 +32,9 @@ void bind_gripper(py::module& m) {
+         @param franka_address IP address or hostname of the robot
+         :raises NetworkException: if the connection cannot be established
+     )pbdoc")
++      // Every gripper call below blocks until the gripper finishes; move() can
++      // hold for ~1s. Without releasing the GIL that stalls the 1 kHz control
++      // thread and the robot aborts with communication_constraints_violation.
+       .def("homing", &franka::Gripper::homing, R"pbdoc(
+         Perform homing to find maximum width.
+ 
+@@ -41,7 +44,8 @@ void bind_gripper(py::module& m) {
+         @return True if successful
+         :raises CommandException: if the command fails
+         :raises NetworkException: if the connection is lost
+-    )pbdoc")
++    )pbdoc",
++           py::call_guard<py::gil_scoped_release>())
+       .def("grasp", &franka::Gripper::grasp, py::arg("width"), py::arg("speed"), py::arg("force"),
+            py::arg("epsilon_inner") = 0.005, py::arg("epsilon_outer") = 0.005, R"pbdoc(
+         Grasp an object.
+@@ -58,7 +62,8 @@ void bind_gripper(py::module& m) {
+         @return True if grasp successful
+         :raises CommandException: if the command fails
+         :raises NetworkException: if the connection is lost
+-    )pbdoc")
++    )pbdoc",
++           py::call_guard<py::gil_scoped_release>())
+       .def("read_once", &franka::Gripper::readOnce, R"pbdoc(
+         Read current gripper state once.
+ 
+@@ -67,7 +72,8 @@ void bind_gripper(py::module& m) {
+ 
+         @return Current gripper state
+         :raises NetworkException: if the connection is lost
+-    )pbdoc")
++    )pbdoc",
++           py::call_guard<py::gil_scoped_release>())
+       .def("stop", &franka::Gripper::stop, R"pbdoc(
+         Stop current gripper motion.
+ 
+@@ -76,7 +82,8 @@ void bind_gripper(py::module& m) {
+         @return True if successful
+         :raises CommandException: if the command fails
+         :raises NetworkException: if the connection is lost
+-    )pbdoc")
++    )pbdoc",
++           py::call_guard<py::gil_scoped_release>())
+       .def("move", &franka::Gripper::move, R"pbdoc(
+         Move gripper fingers to a specific width.
+ 
+@@ -88,7 +95,8 @@ void bind_gripper(py::module& m) {
+         @return True if successful
+         :raises CommandException: if the command fails
+         :raises NetworkException: if the connection is lost
+-    )pbdoc")
++    )pbdoc",
++           py::call_guard<py::gil_scoped_release>())
+       .def("server_version", &franka::Gripper::serverVersion, R"pbdoc(
+         Get gripper server version.
+ 
+diff --git a/pylibfranka/src/pylibfranka.cpp b/pylibfranka/src/pylibfranka.cpp
+index 610056d..3cfbf3d 100644
+--- a/pylibfranka/src/pylibfranka.cpp
++++ b/pylibfranka/src/pylibfranka.cpp
+@@ -390,7 +390,15 @@ PYBIND11_MODULE(_pylibfranka, m) {
+       .def(
+           "readOnce",
+           [](franka::ActiveControlBase& self) {
+-            auto result = self.readOnce();
++            // NOTE: this is a lambda, so py::call_guard would release the GIL
++            // across the whole body -- including make_tuple, which builds
++            // Python objects and would segfault. Release only around the
++            // blocking read.
++            std::pair<franka::RobotState, franka::Duration> result;
++            {
++              py::gil_scoped_release release;
++              result = self.readOnce();
++            }
+             return py::make_tuple(result.first, result.second);
+           },
+           R"pbdoc(
+@@ -404,28 +412,32 @@ PYBIND11_MODULE(_pylibfranka, m) {
+         Write torque command.
+ 
+         @param command Torque command
+-    )pbdoc")
++    )pbdoc",
++           py::call_guard<py::gil_scoped_release>())
+       .def("writeOnce",
+            py::overload_cast<const franka::JointPositions&>(&franka::ActiveControlBase::writeOnce),
+            R"pbdoc(
+         Write joint position command.
+ 
+         @param command Joint position command
+-    )pbdoc")
++    )pbdoc",
++           py::call_guard<py::gil_scoped_release>())
+       .def("writeOnce",
+            py::overload_cast<const franka::JointVelocities&>(&franka::ActiveControlBase::writeOnce),
+            R"pbdoc(
+         Write joint velocity command.
+ 
+         @param command Joint velocity command
+-    )pbdoc")
++    )pbdoc",
++           py::call_guard<py::gil_scoped_release>())
+       .def("writeOnce",
+            py::overload_cast<const franka::CartesianPose&>(&franka::ActiveControlBase::writeOnce),
+            R"pbdoc(
+         Write Cartesian pose command.
+ 
+         @param command Cartesian pose command
+-    )pbdoc")
++    )pbdoc",
++           py::call_guard<py::gil_scoped_release>())
+       .def("writeOnce",
+            py::overload_cast<const franka::CartesianVelocities&>(
+                &franka::ActiveControlBase::writeOnce),
+@@ -433,7 +445,8 @@ PYBIND11_MODULE(_pylibfranka, m) {
+         Write Cartesian velocity command.
+ 
+         @param command Cartesian velocity command
+-    )pbdoc");
++    )pbdoc",
++           py::call_guard<py::gil_scoped_release>());
+ 
+   // Bind control types
+   py::class_<franka::Torques>(m, "Torques", R"pbdoc(
+@@ -609,7 +622,8 @@ PYBIND11_MODULE(_pylibfranka, m) {
+         Read current robot state once.
+ 
+         @return Current robot state
+-    )pbdoc")
++    )pbdoc",
++           py::call_guard<py::gil_scoped_release>())
+       .def("load_model", py::overload_cast<>(&franka::Robot::loadModel), R"pbdoc(
+         Load robot dynamics model.
+ 

@@ -1,10 +1,18 @@
 # Patches required by the FR3 backend
 
 `gello/robots/franka_fr3.py` does **not** work against a stock `pylibfranka`
-build. Apply `pylibfranka-gil-release.diff` and rebuild before using
-`--robot=fr3`, or the robot aborts within a second of connecting.
+build. Apply the GIL-release patch matching your libfranka tree and rebuild
+before using `--robot=fr3`, or the robot aborts within a second of connecting.
 
-## pylibfranka-gil-release.diff
+| patch | libfranka tree | robot system image |
+|---|---|---|
+| `pylibfranka-0.21-gil-release.diff` | `~/libfranka-0.21.2` (current) | >= 5.9.0 (ours: 5.10.0) |
+| `pylibfranka-gil-release.diff` | `~/libfranka-0.17.0` (historical) | >= 5.7.2, < 5.9.0 |
+
+The official PyPI wheels (checked up to 0.21.2) still contain zero
+`gil_scoped_release`, so a source build with this patch remains mandatory.
+
+## pylibfranka GIL release (both diffs)
 
 **Symptom without it**
 
@@ -33,7 +41,8 @@ whole story.
 
 Adds `py::call_guard<py::gil_scoped_release>()` to the blocking bindings:
 `Gripper::{homing,grasp,read_once,stop,move}`, `Robot::read_once`, and the five
-`ActiveControlBase::writeOnce` overloads.
+`ActiveControlBase::writeOnce` overloads. (In 0.21.x the gripper bindings live
+in `pylibfranka/src/gripper.cpp`; the rest is unchanged in spirit.)
 
 `ActiveControlBase::readOnce` is a **lambda** and gets an inner
 `py::gil_scoped_release` scoped around only the blocking read instead.
@@ -42,13 +51,15 @@ the `py::make_tuple` that builds the return value — touching Python objects
 without the GIL, which segfaults.
 
 Constructors are deliberately left unguarded: they run once, before any thread
-exists, so there is nothing for them to starve.
+exists, so there is nothing for them to starve. The async-control bindings added
+in 0.20 (`async_control.cpp`) are also left unguarded — the FR3 backend does not
+use them; guard them first if that ever changes.
 
 **Applying**
 
 ```bash
-cd ~/libfranka-0.17.0                 # the tree pylibfranka was built from
-git apply /path/to/gello_software/patches/pylibfranka-gil-release.diff
+cd ~/libfranka-0.21.2                 # tree cloned with --recurse-submodules
+git apply /path/to/gello_software/patches/pylibfranka-0.21-gil-release.diff
 
 source /opt/ros/humble/setup.bash     # CMake needs pinocchio from ROS
 source ~/pylibfranka-venv/bin/activate
@@ -57,8 +68,7 @@ pip install .
 
 **Verifying**
 
-`pylibfranka.__version__` is hardcoded in `__init__.py` and disagrees with
-`pyproject.toml`, so it does not change when you rebuild — check the `.so` hash
-instead, then confirm the GIL is actually released: call `Gripper.read_once()`
-on a worker thread while another thread counts in a `while` loop. Pre-patch the
-counter freezes; post-patch it runs at full speed.
+Check `pylibfranka.__version__` (0.21.x generates `_version.py` from
+CMakeLists at build time), then confirm the GIL is actually released: call
+`Gripper.read_once()` on a worker thread while another thread counts in a
+`while` loop. Pre-patch the counter freezes; post-patch it runs at full speed.

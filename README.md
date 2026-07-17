@@ -13,7 +13,7 @@ For additional resources:
 
 ## Supported Robots
 - **I2RT YAM**
-- **Franka FR3** (ROS 2 implementation, please refer to the separate documenation in [`ros2/README.md`](ros2/README.md))
+- **Franka FR3** — this fork drives the FR3 directly through `pylibfranka` (`gello/robots/franka_fr3.py`), updated for **robot system 5.10.0** with libfranka/pylibfranka **0.21.2** (source build with the GIL-release patch, see [`patches/README.md`](patches/README.md)). An upstream ROS 2 implementation also exists ([`ros2/README.md`](ros2/README.md))
 - **Franka FER (Panda)**
 - **UR**
 - **xArm**
