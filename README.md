@@ -1,3 +1,15 @@
+----
+
+## Fork notes (`fr3-real-teleop`)
+
+이 포크는 FR3를 ROS 2가 아니라 `pylibfranka`로 직접 구동한다(`gello/robots/franka_fr3.py`).
+
+- **2026-07-17: Franka robot system 5.10.0 대응 완료.** 클라이언트를 libfranka/pylibfranka **0.21.2** 소스 빌드로 마이그레이션(FCI 프로토콜 v10 — libfranka 0.17 클라이언트는 더 이상 호환되지 않음). GIL-release 패치를 0.21.2 소스에 리베이스: `patches/pylibfranka-0.21-gil-release.diff`, 배경과 절차는 [`patches/README.md`](patches/README.md). 공식 PyPI 휠(0.21.2까지)은 여전히 GIL을 놓지 않으므로 패치 소스 빌드가 필수. 실기 검증 완료(그리퍼 `read_once` 중앙값 ~60ms → 6.9ms).
+
+아래부터는 원본(upstream) README.
+
+----
+
 # GELLO: General, Low-Cost, and Intuitive Teleoperation Framework
 
 <p align="center">
@@ -13,7 +25,7 @@ For additional resources:
 
 ## Supported Robots
 - **I2RT YAM**
-- **Franka FR3** — this fork drives the FR3 directly through `pylibfranka` (`gello/robots/franka_fr3.py`), updated for **robot system 5.10.0** with libfranka/pylibfranka **0.21.2** (source build with the GIL-release patch, see [`patches/README.md`](patches/README.md)). An upstream ROS 2 implementation also exists ([`ros2/README.md`](ros2/README.md))
+- **Franka FR3** (ROS 2 implementation, please refer to the separate documenation in [`ros2/README.md`](ros2/README.md))
 - **Franka FER (Panda)**
 - **UR**
 - **xArm**
