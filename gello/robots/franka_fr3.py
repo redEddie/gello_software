@@ -366,13 +366,29 @@ class FrankaFR3Robot(Robot):
             ctrl = self.robot.start_joint_position_control(
                 pf.ControllerMode.JointImpedance
             )
-            # First tick: latch the command to the measured position (no jump).
+            # First tick: latch the command to the robot's own desired q_d, not
+            # the measured q.  The robot-side motion generator differentiates
+            # the incoming command stream starting from q_d, so any q-vs-q_d
+            # gap becomes a phantom velocity step: 0.011 rad (observed after
+            # hand-guiding on system 5.10.0, where q_d resyncs lazily) reads as
+            # 11 rad/s in one tick and aborts with joint_motion_generator_
+            # velocity/acceleration_discontinuity before teleop even starts.
+            # Same convention as libfranka's own examples (q_d start pose).
             state, _ = ctrl.readOnce()
             with self._lock:
                 self._q = np.asarray(state.q, dtype=float)
-                self._q_cmd = self._q.copy()
+                q_d = np.asarray(state.q_d, dtype=float)
+                gap = float(np.abs(q_d - self._q).max())
+                if gap > 0.05:
+                    # Impedance (3000 N*m/rad) would yank the arm toward a
+                    # stale q_d.  Refuse instead; recovery/brake cycle resyncs.
+                    raise RuntimeError(
+                        f"stale desired pose: max|q - q_d| = {gap:.3f} rad; "
+                        "run error recovery or re-open the brakes, then relaunch"
+                    )
+                self._q_cmd = q_d.copy()
                 self._qd_cmd = np.zeros(7)
-                self._desired_q = self._q.copy()
+                self._desired_q = q_d.copy()
                 q_cmd = self._q_cmd.copy()
                 qd_cmd = self._qd_cmd.copy()
             cmd = pf.JointPositions(list(q_cmd))
