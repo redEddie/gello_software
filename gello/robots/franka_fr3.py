@@ -43,9 +43,11 @@ Safety
 ------
 * ``read_only=True`` (the default is *False*) connects and streams state but
   never starts motion -- use it to validate the pipeline first.
-* Collision-reflex thresholds are set to the joint torque limits (reflex
-  effectively off, so the gripper can touch the ground); joint impedance is set
-  on connect.  The robot's hard torque limit stays the safety floor.
+* Collision-reflex thresholds are 100 N*m (shoulders) / 40 N*m (wrists) and
+  100 N cartesian: legitimate teleop contact never fires them (the datasheet
+  joint torque limits are NOT a valid choice here -- see FR3_COLLISION_TORQUE),
+  while abnormal wrist loads and violent impacts still do.  Joint impedance is
+  set on connect.  The robot's hard limits stay the safety floor.
 * ``max_joint_velocity`` / ``max_joint_acceleration`` default low.  Raise them
   only after the arm tracks GELLO smoothly.  ``max_joint_jerk`` is a limit, not
   a tuning knob -- keep it under ``franka::kMaxJointJerk`` (5000) with margin.
@@ -80,12 +82,30 @@ GRIPPER_CLOSE_AT = 0.6
 # Conservative default joint impedance (N*m/rad), same order as libfranka docs.
 DEFAULT_JOINT_IMPEDANCE = [3000.0, 3000.0, 3000.0, 2500.0, 2500.0, 2000.0, 2000.0]
 
-# FR3 joint torque limits (N*m), datasheet.  Used as the collision-reflex
-# thresholds: at these values the reflex never fires before the robot's own hard
-# torque limit does, i.e. the (tunable) collision detection is effectively off,
-# leaving only that hard limit.  Chosen deliberately so the gripper can touch
-# the ground during teleop without tripping cartesian_reflex.
+# FR3 joint torque limits (N*m), datasheet.  These are the *actuation* limits,
+# and they are NOT a way to disable the collision reflex: the reflex compares
+# the estimated *external* torque (tau_ext_hat_filtered), which a braced
+# contact pushes far beyond what the motor itself can output.  Poking a desk
+# puts ~12 N*m on a wrist joint at only ~80 N of contact force (0.15 m lever),
+# tripping joint_reflex before the 100 N cartesian threshold -- observed live
+# on 2026-07-17.  Kept for reference; do not use as collision thresholds.
 FR3_MAX_JOINT_TORQUE = [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
+
+# Collision-reflex torque thresholds (N*m) actually used.  Sized from the
+# 100 N cartesian force reflex, which fires first in any sustained tool
+# contact and so caps the joint torques legitimate contact can produce:
+# * J1-J4: 100.  Full-reach contact at the 100 N force cap puts up to
+#   ~0.9 m x 100 N = 90 N*m on the shoulder -- the 87 N*m datasheet value
+#   would nuisance-trip exactly at the force cap, so sit just above it.
+# * J5-J7: 40.  The same 100 N at the hand acts on <= ~0.25 m of wrist
+#   lever, i.e. <= ~25 N*m during any legitimate contact, so 40 never fires
+#   in teleop -- but it still catches abnormal loads (snags, prying with a
+#   long tool, the arm bracing its own wrist against an edge) at ~3x the
+#   wrist's 12 N*m actuation limit, instead of giving the wrist structure
+#   no watchdog at all as a flat 100 would.
+# The non-tunable safety layers (Watchman limits, torque-sensor range
+# faults, the hard joint limits) remain active regardless of these values.
+FR3_COLLISION_TORQUE = [100.0, 100.0, 100.0, 100.0, 40.0, 40.0, 40.0]
 
 # FR3 joint position limits (rad), same values as dsfranka's
 # cpp/bridge/robot_limits.hpp.  Note J4 is never positive and J6 never reaches
@@ -153,7 +173,7 @@ class FrankaFR3Robot(Robot):
         max_joint_jerk: float = 3000.0,
         filter_wn: float = 8.0,
         home_gripper: bool = False,
-        collision_torque: Optional[list] = None,  # None -> FR3_MAX_JOINT_TORQUE
+        collision_torque: Optional[list] = None,  # None -> FR3_COLLISION_TORQUE
         collision_force: float = 100.0,
     ):
         import pylibfranka as pf
@@ -173,12 +193,22 @@ class FrankaFR3Robot(Robot):
         print(f"[FR3] connecting to {robot_ip} (realtime={'enforce' if enforce_rt else 'ignore'})")
         self.robot = pf.Robot(robot_ip, rt)
 
-        # Collision-reflex thresholds.  Set to the joint torque limits / a high
-        # force so the reflex effectively does not fire (see FR3_MAX_JOINT_TORQUE):
-        # the gripper must be able to touch the ground during teleop.  The robot's
-        # own hard torque limit remains the safety floor.  lower==upper (contact
-        # report == reflex); we only care about the reflex level here.
-        torque_thresh = list(collision_torque or FR3_MAX_JOINT_TORQUE)
+        # Clear a leftover reflex/error state (e.g. joint_reflex from the last
+        # run) so a plain restart works without touching Desk.  Harmless when
+        # the robot is already Idle; fails (and only prints) when e.g. the
+        # user stop is pressed -- read-only streaming still works then.
+        try:
+            self.robot.automatic_error_recovery()
+        except Exception as e:  # noqa: BLE001
+            print(f"[FR3] automatic error recovery failed: {e}")
+
+        # Collision-reflex thresholds.  NOT the datasheet joint torque limits,
+        # whose 12 N*m wrist values trip joint_reflex on mere desk contact (the
+        # reflex watches estimated *external* torque; see FR3_COLLISION_TORQUE
+        # for how these values are sized against the 100 N force reflex).  The
+        # gripper must be able to touch the ground during teleop.  lower==upper
+        # (contact report == reflex); we only care about the reflex level here.
+        torque_thresh = list(collision_torque or FR3_COLLISION_TORQUE)
         self.robot.set_collision_behavior(
             torque_thresh,
             torque_thresh,
