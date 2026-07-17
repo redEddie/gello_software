@@ -102,6 +102,14 @@ class DynamixelDriverProtocol(Protocol):
         """
         ...
 
+    def set_torque_ids(self, ids: Sequence[int], enable: bool):
+        """Enable/disable torque on a subset of servos, leaving the rest as-is.
+
+        Lets one servo (e.g. the trigger) stay torqued while the arm servos are
+        torque-off for a free feel.
+        """
+        ...
+
     def get_joints(self) -> np.ndarray:
         """Get the current joint angles in radians.
 
@@ -124,21 +132,21 @@ class FakeDynamixelDriver(DynamixelDriverProtocol):
         self._joint_angles = np.zeros(len(ids), dtype=float)
         self._velocities = np.zeros(len(ids), dtype=float)
         self._currents = np.zeros(len(ids), dtype=float)
-        self._torque_enabled = False
+        self._torque_ids: set = set()
 
     def set_joints(self, joint_angles: Sequence[float]):
         if len(joint_angles) != len(self._ids):
             raise ValueError(
                 "The length of joint_angles must match the number of servos"
             )
-        if not self._torque_enabled:
+        if not self.torque_enabled():
             raise RuntimeError("Torque must be enabled to set joint angles")
         self._joint_angles = np.array(joint_angles, dtype=float)
 
     def set_current(self, currents: Sequence[float]):
         if len(currents) != len(self._ids):
             raise ValueError("The length of currents must match the number of servos")
-        if not self._torque_enabled:
+        if not self._torque_ids:
             raise RuntimeError("Torque must be enabled to set currents")
         self._currents = np.array(currents, dtype=float)
 
@@ -153,10 +161,16 @@ class FakeDynamixelDriver(DynamixelDriverProtocol):
         pass
 
     def torque_enabled(self) -> bool:
-        return self._torque_enabled
+        return len(self._torque_ids) == len(self._ids) and len(self._ids) > 0
 
     def set_torque_mode(self, enable: bool):
-        self._torque_enabled = enable
+        self.set_torque_ids(self._ids, enable)
+
+    def set_torque_ids(self, ids: Sequence[int], enable: bool):
+        if enable:
+            self._torque_ids |= set(ids)
+        else:
+            self._torque_ids -= set(ids)
 
     def get_joints(self) -> np.ndarray:
         return self._joint_angles.copy()
@@ -200,7 +214,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
         self._max_retries = max_retries
         self._use_fake_fallback = use_fake_fallback
         self._is_fake = False
-        self._torque_enabled = False
+        self._torque_ids: set = set()  # servo ids with torque currently enabled
         self._stop_thread = Event()
 
         # Optional torque-current mapping
@@ -300,7 +314,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
 
         # Disable torque for each Dynamixel servo
         try:
-            self.set_torque_mode(self._torque_enabled)
+            self.set_torque_mode(self.torque_enabled())
         except Exception as e:
             print(f"port: {self._port}, {e}")
 
@@ -318,7 +332,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
             raise ValueError(
                 "The length of joint_angles must match the number of servos"
             )
-        if not self._torque_enabled:
+        if not self.torque_enabled():
             raise RuntimeError("Torque must be enabled to set joint angles")
 
         if self._is_fake:
@@ -360,14 +374,17 @@ class DynamixelDriver(DynamixelDriverProtocol):
                 raise ValueError(
                     "The length of currents must match the number of servos"
                 )
-            if not self._torque_enabled:
+            if not self._torque_ids:
                 raise RuntimeError("Torque must be enabled to set currents")
             self._fake_currents = np.array(currents, dtype=float)
             return
 
         if len(currents) != len(self._ids):
             raise ValueError("The length of currents must match the number of servos")
-        if not self._torque_enabled:
+        # Goal Current is a plain RAM write, harmless on a torque-off servo, so
+        # only require that *some* servo is torqued (a mixed armed state is
+        # normal: trigger on, arm servos off).
+        if not self._torque_ids:
             raise RuntimeError("Torque must be enabled to set currents")
 
         # Clip currents to servo-specific limits if available
@@ -403,16 +420,22 @@ class DynamixelDriver(DynamixelDriverProtocol):
         self.set_current(currents)
 
     def torque_enabled(self) -> bool:
-        return self._torque_enabled
+        return len(self._torque_ids) == len(self._ids) and len(self._ids) > 0
 
     def set_torque_mode(self, enable: bool):
+        self.set_torque_ids(self._ids, enable)
+
+    def set_torque_ids(self, ids: Sequence[int], enable: bool):
         if self._is_fake:
-            self._torque_enabled = enable
+            if enable:
+                self._torque_ids |= set(ids)
+            else:
+                self._torque_ids -= set(ids)
             return
 
         torque_value = TORQUE_ENABLE if enable else TORQUE_DISABLE
         with self._lock:
-            for dxl_id in self._ids:
+            for dxl_id in ids:
                 dxl_comm_result, dxl_error = self._packetHandler.write1ByteTxRx(
                     self._portHandler, dxl_id, ADDR_TORQUE_ENABLE, torque_value
                 )
@@ -422,8 +445,12 @@ class DynamixelDriver(DynamixelDriverProtocol):
                     raise RuntimeError(
                         f"Failed to set torque mode for Dynamixel with ID {dxl_id}"
                     )
-
-        self._torque_enabled = enable
+                # Track per-id inside the loop so a mid-loop failure leaves the
+                # set matching what actually reached the bus.
+                if enable:
+                    self._torque_ids.add(dxl_id)
+                else:
+                    self._torque_ids.discard(dxl_id)
 
     def set_operating_mode(self, mode: int):
         if self._is_fake:

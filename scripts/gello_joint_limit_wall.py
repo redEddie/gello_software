@@ -21,6 +21,7 @@ import tyro
 
 from gello.agents.gello_agent import PORT_CONFIG_MAP
 from gello.dynamixel.driver import DynamixelDriver
+from gello.robots.franka_fr3 import GRIPPER_CLOSE_AT
 from gello.robots.joint_limit_wall import JointLimitWall
 
 
@@ -46,6 +47,23 @@ class Args:
     health_every: float = 0.5
     min_voltage: float = 4.5
     print_every: float = 0.1
+    trigger: bool = True
+    """Also run the trigger spring (auto-open return + exponential squeeze wall)."""
+    trigger_squeeze_current: float = 30.0
+    """Trigger resistance while squeezing/holding (mA); lower = softer squeeze.
+    If a released trigger sticks mid-stroke instead of springing back, this is
+    too low for the gear friction -- raise it."""
+    trigger_return_current: float = 50.0
+    """Return push once the trigger swings open (mA); sets the snap-back speed."""
+    trigger_return_ramp: float = 0.5
+    """Opening speed (full strokes/s) at which the return push reaches full
+    strength; lower = the boost kicks in on slighter motion."""
+    trigger_max_current: float = 300.0
+    """Extra current at a fully squeezed trigger (mA), on top of the base."""
+    trigger_curve: float = 3.0
+    """Exponential shape of the squeeze wall; higher = softer early, steeper late."""
+    trigger_kd: float = 5.0
+    """Trigger damping (mA per stroke/s); raise if the trigger buzzes."""
 
 
 def main(args: Args) -> None:
@@ -66,6 +84,13 @@ def main(args: Args) -> None:
     ids = list(config.joint_ids) + [config.gripper_config[0]]
     driver = DynamixelDriver(ids, port=port)
 
+    gripper_open_close = None
+    if args.trigger:
+        gripper_open_close = (
+            config.gripper_config[1] * np.pi / 180,
+            config.gripper_config[2] * np.pi / 180,
+        )
+
     wall = JointLimitWall(
         driver,
         lower,
@@ -83,6 +108,14 @@ def main(args: Args) -> None:
         hz=args.hz,
         health_every=args.health_every,
         min_voltage=args.min_voltage,
+        gripper_open_close=gripper_open_close,
+        trigger_start=GRIPPER_CLOSE_AT,
+        trigger_squeeze_current=args.trigger_squeeze_current,
+        trigger_return_current=args.trigger_return_current,
+        trigger_return_ramp=args.trigger_return_ramp,
+        trigger_max_current=args.trigger_max_current,
+        trigger_curve=args.trigger_curve,
+        trigger_kd=args.trigger_kd,
     )
 
     wall.start()
@@ -90,6 +123,11 @@ def main(args: Args) -> None:
           f"{args.arm_margin} rad of one")
     print(f"kp={args.max_current / args.wall_depth:.0f} mA/rad  "
           f"kd={args.kd:.0f} mA/(rad/s)  max={args.max_current:.0f} mA")
+    if args.trigger:
+        print(f"trigger: {args.trigger_squeeze_current:.0f} mA while squeezing, "
+              f"{args.trigger_return_current:.0f} mA once swinging open, "
+              f"squeeze wall from {GRIPPER_CLOSE_AT:.0%} up to "
+              f"+{args.trigger_max_current:.0f} mA (exp k={args.trigger_curve:g})")
     print("move a joint past its limit to feel the wall; Ctrl+C to stop\n")
 
     n_lines = 0
@@ -117,6 +155,13 @@ def main(args: Args) -> None:
                     lines.append(
                         f"  J{i + 1}  q {q[i]:+7.3f}  "
                         f"[{lo[i]:+6.3f},{hi[i]:+6.3f}]  {bar}"
+                    )
+                trig = st.get("trigger")
+                if trig is not None and trig["g"] is not None:
+                    lines.append(
+                        f"  TRIG g {trig['g']:+5.2f}  "
+                        f"(closes at {GRIPPER_CLOSE_AT:.2f})  "
+                        f"cur {trig['cur']:+7.1f} mA"
                     )
                 out_s = "\n".join("\x1b[K" + ln for ln in lines)
                 print(f"\x1b[{n_lines}F{out_s}" if n_lines else out_s)

@@ -71,6 +71,12 @@ from gello.robots.robot import Robot
 # FR3 gripper stroke (m).  Franka Hand opens to ~0.08 m.
 MAX_GRIPPER_WIDTH = 0.08
 
+# Normalized leader-trigger value (0=open .. 1=closed) at which the binary
+# gripper closes.  The GELLO leader's trigger spring (JointLimitWall) starts its
+# exponential squeeze resistance at this same value, so the moment resistance is
+# felt under the finger is the moment the hand grasps.
+GRIPPER_CLOSE_AT = 0.6
+
 # Conservative default joint impedance (N*m/rad), same order as libfranka docs.
 DEFAULT_JOINT_IMPEDANCE = [3000.0, 3000.0, 3000.0, 2500.0, 2500.0, 2000.0, 2000.0]
 
@@ -413,7 +419,7 @@ class FrankaFR3Robot(Robot):
         command returns.  On an exception the state is left unchanged, so the
         edge is retried while the trigger still demands it.
         """
-        close_at = 0.8     # trigger crossing that closes the hand ...
+        close_at = GRIPPER_CLOSE_AT  # trigger crossing that closes the hand ...
         open_at = 0.2      # ... and the one that reopens it (hysteresis)
         speed = 0.1        # m/s, Franka Hand max
         grasp_force = 40.0  # N holding force

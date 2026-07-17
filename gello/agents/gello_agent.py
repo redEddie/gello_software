@@ -6,7 +6,7 @@ import numpy as np
 
 from gello.agents.agent import Agent
 from gello.robots.dynamixel import DynamixelRobot
-from gello.robots.franka_fr3 import FR3_Q_LOWER, FR3_Q_UPPER
+from gello.robots.franka_fr3 import FR3_Q_LOWER, FR3_Q_UPPER, GRIPPER_CLOSE_AT
 
 
 @dataclass
@@ -183,6 +183,11 @@ class GelloAgent(Agent):
                 offsets=self._robot._joint_offsets,
                 signs=self._robot._joint_signs,
                 n_arm=n_arm,
+                # Trigger spring: auto-open return plus an exponential squeeze
+                # wall starting exactly where the follower's binary gripper
+                # closes, so resistance onset == grasp.
+                gripper_open_close=self._robot.gripper_open_close,
+                trigger_start=GRIPPER_CLOSE_AT,
             )
             self._wall.start()
         elif enable_wall:

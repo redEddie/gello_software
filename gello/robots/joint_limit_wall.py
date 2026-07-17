@@ -6,6 +6,17 @@ FR3 that trips the speed-limit reflex.  Rather than clamp the follower's command
 (which decouples the two arms and leaves the operator pushing through a dead
 zone), push back on the *leader* so the limit is felt and never crossed.
 
+The same loop optionally drives the *trigger* servo as a spring (see
+``gripper_open_close``): a light constant current toward open while the trigger
+is squeezed or held, swapping to a stronger return push once the trigger swings
+open -- so the squeeze can be soft under the finger without slowing the
+snap-back -- plus an exponentially rising squeeze resistance from the
+follower's binary close threshold up to full close.  The exponential shape is
+deliberate: felt intensity is roughly logarithmic in the stimulus
+(Weber-Fechner), so an exponential current reads as a linearly increasing
+"gripping harder" cue.  It lives in this thread because ``set_current``
+sync-writes the *whole* servo vector -- a second writer would stomp this one.
+
 The wall runs its own high-rate thread: the position->current loop needs a few
 hundred Hz to stay stiff without buzzing, far above the ~100 Hz teleop loop.  It
 *shares* a ``DynamixelDriver`` -- and that driver's bus lock -- with whoever else
@@ -20,7 +31,7 @@ path (normal shutdown) and does zero the current and drop torque.
 
 import threading
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -68,6 +79,18 @@ class JointLimitWall:
         offsets, signs: the *robot's resolved* offsets/signs mapping raw servo
             radians to follower joint space (arm joints; gripper slice ignored).
         n_arm: number of arm joints (excludes the gripper servo).
+        gripper_open_close: raw trigger-servo radians at (open, closed) -- the
+            same pair ``DynamixelRobot.gripper_open_close`` uses to normalize
+            the trigger to 0..1.  When given, the trigger servo is driven as a
+            spring toward open (fading just past open so it parks there instead
+            of stalling on the stop): ``trigger_squeeze_current`` while the
+            trigger is squeezed or held, blending up to
+            ``trigger_return_current`` as the opening speed approaches
+            ``trigger_return_ramp`` (strokes/s) -- squeeze feel and return
+            speed are separate knobs -- plus up to ``trigger_max_current`` more
+            rising exponentially (shape ``trigger_curve``) between
+            ``trigger_start`` and full close.  None leaves the trigger servo
+            untouched (old behavior).
 
     Keyword tuning args mirror the standalone script's defaults, which were
     tuned by hand on the real leader (500 mA per servo, 2800 mA supply budget).
@@ -92,6 +115,14 @@ class JointLimitWall:
         hz: float = 300.0,
         health_every: float = 0.5,
         min_voltage: float = 4.5,
+        gripper_open_close: Optional[Tuple[float, float]] = None,
+        trigger_start: float = 0.6,
+        trigger_squeeze_current: float = 30.0,
+        trigger_return_current: float = 50.0,
+        trigger_return_ramp: float = 0.5,
+        trigger_max_current: float = 300.0,
+        trigger_curve: float = 3.0,
+        trigger_kd: float = 5.0,
     ):
         if arm_margin <= wall_depth:
             raise ValueError(
@@ -101,6 +132,37 @@ class JointLimitWall:
         self._driver = driver
         self._n_arm = int(n_arm)
         self._n_ids = len(driver._ids)
+
+        self._trigger = gripper_open_close is not None
+        if self._trigger:
+            if self._n_ids <= self._n_arm:
+                raise ValueError(
+                    "gripper_open_close given but the driver has no gripper servo"
+                )
+            if not 0.0 < trigger_start < 1.0:
+                raise ValueError(f"trigger_start ({trigger_start}) must be in (0, 1)")
+            if trigger_return_ramp <= 0.0:
+                raise ValueError(
+                    f"trigger_return_ramp ({trigger_return_ramp}) must be > 0"
+                )
+            open_r, closed_r = float(gripper_open_close[0]), float(gripper_open_close[1])
+            if open_r == closed_r:
+                raise ValueError("gripper open and closed positions are equal")
+            self._trig_open = open_r
+            self._trig_span = closed_r - open_r  # signed; divides raw -> 0..1
+            # Raw-current sign that pushes the trigger toward open.
+            self._trig_open_dir = -float(np.sign(self._trig_span))
+            self._trig_start = trigger_start
+            self._trig_squeeze = trigger_squeeze_current
+            self._trig_return = trigger_return_current
+            self._trig_ramp = trigger_return_ramp
+            self._trig_max = trigger_max_current
+            self._trig_curve = trigger_curve
+            self._trig_kd = trigger_kd
+            self._trig_cap = (
+                max(trigger_squeeze_current, trigger_return_current)
+                + trigger_max_current
+            )
         self._offsets = np.asarray(offsets, dtype=float)[: self._n_arm]
         self._signs = np.asarray(signs, dtype=float)[: self._n_arm]
         self._lower = np.asarray(lower, dtype=float)  # true limits, for wrapping
@@ -130,6 +192,10 @@ class JointLimitWall:
         self._driver.set_torque_mode(False)
         self._driver.set_operating_mode(CURRENT_CONTROL_MODE)
         self._driver.verify_operating_mode(CURRENT_CONTROL_MODE)
+        if self._trigger:
+            # The trigger spring is always on; only the arm servos arm/disarm
+            # with the limit logic below.
+            self._driver.set_torque_ids([self._driver._ids[self._n_arm]], True)
         self._stop_evt.clear()
         self._thread = threading.Thread(
             target=self._run, name="joint-limit-wall", daemon=True
@@ -193,6 +259,7 @@ class JointLimitWall:
                 # Arm torque only near a limit: current-control-at-zero drags
                 # more than torque-off, so the rest of the workspace is left
                 # torque-off and feels exactly as it does without the wall.
+                # Arm servos only -- the trigger spring stays on throughout.
                 slack = float(np.minimum(self._hi - q, q - self._lo).min())
                 want = slack < (
                     self._arm_margin + self._arm_hyst if self._armed
@@ -201,7 +268,9 @@ class JointLimitWall:
                 if want != self._armed:
                     if not want:
                         self._driver.set_current([0.0] * self._n_ids)
-                    self._driver.set_torque_mode(want)
+                    self._driver.set_torque_ids(
+                        self._driver._ids[: self._n_arm], want
+                    )
                     self._armed = want
 
                 # One-sided spring-damper: exactly zero inside the limits.
@@ -211,18 +280,48 @@ class JointLimitWall:
                 cur += (-self._kp * (q - self._lo) - self._kd * dq) * over_lo
                 cur = np.clip(cur, -self._max_current, self._max_current)
 
+                # Trigger spring (toward-open positive).  The base current is
+                # squeeze_current while squeezing or holding, blending up to
+                # return_current with opening speed -- soft under the finger,
+                # full push once the trigger is actually swinging back.  It
+                # fades to zero just past the open position so the trigger
+                # parks there; past trigger_start an exponential wall rises to
+                # trigger_max at full close.  If a released trigger sticks
+                # mid-stroke (never reaches opening speed, so never gets the
+                # boost), squeeze_current is too low for the gear friction.
+                i_trig, g = 0.0, None
+                if self._trigger:
+                    g = (raw_q[self._n_arm] - self._trig_open) / self._trig_span
+                    gdot = raw_dq[self._n_arm] / self._trig_span  # >0 = closing
+                    base = self._trig_squeeze + (
+                        self._trig_return - self._trig_squeeze
+                    ) * float(np.clip(-gdot / self._trig_ramp, 0.0, 1.0))
+                    i_trig = base * float(np.clip((g + 0.1) / 0.1, 0.0, 1.0))
+                    if g > self._trig_start:
+                        s = min((g - self._trig_start) / (1.0 - self._trig_start), 1.5)
+                        i_trig += self._trig_max * (
+                            np.exp(self._trig_curve * s) - 1.0
+                        ) / (np.exp(self._trig_curve) - 1.0)
+                    i_trig += self._trig_kd * gdot
+                    i_trig = float(np.clip(i_trig, -self._trig_cap, self._trig_cap))
+
                 # Supply budget: one joint keeps full force; several at once
                 # scale down together so the 5 V / 4 A supply is not overdrawn.
-                total = float(np.abs(cur).sum())
+                total = float(np.abs(cur).sum()) + abs(i_trig)
                 if total > self._budget:
-                    cur *= self._budget / total
+                    scale = self._budget / total
+                    cur *= scale
+                    i_trig *= scale
 
-                if self._armed:
-                    # Back to raw servo space; the gripper is never driven.
-                    self._driver.set_current(
-                        (cur * self._signs).tolist()
-                        + [0.0] * (self._n_ids - self._n_arm)
-                    )
+                if self._armed or self._trigger:
+                    # Back to raw servo space.  Disarmed arm servos are
+                    # torque-off, so their zeros are inert register writes.
+                    out = np.zeros(self._n_ids)
+                    if self._armed:
+                        out[: self._n_arm] = cur * self._signs
+                    if self._trigger:
+                        out[self._n_arm] = i_trig * self._trig_open_dir
+                    self._driver.set_current(out.tolist())
 
                 rate_n += 1
                 if t0 - rate_t0 >= 1.0:
@@ -246,6 +345,7 @@ class JointLimitWall:
                     "lo": self._lo,
                     "hi": self._hi,
                     "health": health,
+                    "trigger": {"g": g, "cur": i_trig} if self._trigger else None,
                 }
 
                 rest = self._dt - (time.time() - t0)
