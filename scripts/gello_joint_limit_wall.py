@@ -28,6 +28,10 @@ from gello.robots.joint_limit_wall import JointLimitWall
 @dataclass
 class Args:
     gello_port: Optional[str] = None
+    grip: str = "right"
+    """Which hand holds the GELLO handle ("right" or "left").  "left" shifts
+    the handle-roll (last) joint zero by 180deg so its wall lands where the
+    follower's limit actually is; pass the same --grip you teleop with."""
     margin: float = 0.02
     """Start the wall this far inside the follower's limit (rad)."""
     max_current: float = 500.0
@@ -76,6 +80,7 @@ def main(args: Args) -> None:
     config = PORT_CONFIG_MAP.get(port)
     if config is None:
         raise RuntimeError(f"Port {port} not in PORT_CONFIG_MAP")
+    config = config.with_grip(args.grip)
     if config.joint_limits is None:
         raise RuntimeError(f"Port {port} has no joint_limits; nothing to wall")
 

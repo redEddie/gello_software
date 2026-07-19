@@ -13,7 +13,7 @@ Usage:
 
 import glob
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -57,14 +57,8 @@ def main(args: Args) -> None:
     config = PORT_CONFIG_MAP.get(gello_port)
     if config is None:
         raise RuntimeError(f"Port {gello_port} not in PORT_CONFIG_MAP")
-    if args.grip == "left":
-        offsets = list(config.joint_offsets)
-        offsets[6] += np.pi
-        config = replace(config, joint_offsets=tuple(offsets))
-    elif args.grip != "right":
-        raise ValueError(f"grip must be 'right' or 'left', got {args.grip!r}")
 
-    agent = GelloAgent(port=gello_port, dynamixel_config=config)
+    agent = GelloAgent(port=gello_port, dynamixel_config=config, grip=args.grip)
     driver = getattr(agent._robot, "_driver", None)
     if getattr(driver, "_is_fake", False):
         raise RuntimeError(

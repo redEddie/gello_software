@@ -42,6 +42,10 @@ class Args:
     """Put a physical joint-limit wall on the GELLO leader (FR3 build only).
     Pushes back near the follower's limits so they are felt, not crossed.  A
     wall fault stops teleop; pass --no-wall to run without it."""
+    grip: str = "right"
+    """Which hand holds the GELLO handle. The port calibration is for the
+    right-handed grip; "left" flips the handle-roll (last) joint zero by 180deg
+    to the mirrored grip. The follower's reset pose is unchanged either way."""
     mock: bool = False
     use_save_interface: bool = False
     data_dir: str = "~/bc_data"
@@ -148,6 +152,7 @@ def main(args):
                 "port": gello_port,
                 "start_joints": args.start_joints,
                 "enable_wall": args.wall,
+                "grip": args.grip,
             }
             if args.start_joints is None:
                 # The UR-inherited default was [0, -90, 90, -90, -90, 0, 0] deg,

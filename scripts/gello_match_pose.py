@@ -37,6 +37,10 @@ class Args:
     hz: float = 10.0
     threshold: float = 0.5
     """Per-joint pass mark in radians; keep equal to max_joint_delta in run_env.py."""
+    grip: str = "right"
+    """Which hand holds the GELLO handle ("right" or "left").  Pass the same
+    --grip you will give run_env.py, or the handle-roll joint shown here will
+    be 180deg off from what its start gate sees."""
 
 
 def main(args: Args) -> None:
@@ -48,9 +52,11 @@ def main(args: Args) -> None:
         gello_port = usb_ports[0]
         print(f"using GELLO port {gello_port}")
 
-    # Same construction as run_env.py (PORT_CONFIG_MAP, no start_joints), so
-    # the deltas shown here are exactly what its start gate will see.
-    agent = GelloAgent(port=gello_port)
+    # Same construction as run_env.py (PORT_CONFIG_MAP, no start_joints, same
+    # --grip), so the deltas shown here are exactly what its start gate will
+    # see.
+    print(f"grip: {args.grip}")
+    agent = GelloAgent(port=gello_port, grip=args.grip)
     driver = getattr(agent._robot, "_driver", None)
     if getattr(driver, "_is_fake", False):
         raise RuntimeError(

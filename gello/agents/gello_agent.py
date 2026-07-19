@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
@@ -35,6 +35,23 @@ class DynamixelRobotConfig:
         assert len(self.joint_ids) == len(self.joint_offsets)
         assert len(self.joint_ids) == len(self.joint_signs)
 
+    def with_grip(self, grip: str) -> "DynamixelRobotConfig":
+        """Return this config adjusted for which hand holds the handle.
+
+        The stored calibration is for the right-handed grip; holding the handle
+        left-handed turns it 180deg about the handle-roll (last) joint, so
+        "left" shifts that joint's zero by pi to cancel it.  The leader then
+        reads the same values in either grip -- the follower's reset pose and
+        run_env.py's start gate need no left-handed variants.
+        """
+        if grip == "right":
+            return self
+        if grip != "left":
+            raise ValueError(f"grip must be 'right' or 'left', got {grip!r}")
+        offsets = list(self.joint_offsets)
+        offsets[-1] -= np.pi
+        return replace(self, joint_offsets=tuple(offsets))
+
     def make_robot(
         self, port: str = "/dev/ttyUSB0", start_joints: Optional[np.ndarray] = None
     ) -> DynamixelRobot:
@@ -63,12 +80,14 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
             1 * np.pi / 2,
             # measured grid value is 2*pi/2. The +pi/4 deliberately zeroes
             # joint 7 at the square-handle grip (user decision) instead of the
-            # real hand's -45deg mount orientation; the -pi selects the
-            # right-handed grip (user-verified: left-handed grip is 180deg
-            # from it, via --grip left in experiments/sim_teleop.py).
+            # real hand's -45deg mount orientation.  This selects the
+            # right-handed grip; the left-handed grip is 180deg from it, via
+            # GelloAgent(grip="left") / --grip left.  (The grips were once
+            # labelled the other way around -- an earlier "- np.pi" here was
+            # in fact the left-handed grip.)
             # NOTE: recalibration scripts output the pure pi/2 grid — re-apply
             # this expression manually after any recalibration.
-            2 * np.pi / 2 + np.pi / 4 - np.pi,
+            2 * np.pi / 2 + np.pi / 4,
         ),
         joint_signs=(1, 1, 1, -1, 1, 1, 1),
         # trigger rest position drifts (173.8-185.4 deg observed); using the
@@ -147,6 +166,7 @@ class GelloAgent(Agent):
         dynamixel_config: Optional[DynamixelRobotConfig] = None,
         start_joints: Optional[np.ndarray] = None,
         enable_wall: bool = True,
+        grip: str = "right",
     ):
         # Ensure start_joints is a numpy array if provided
         if start_joints is not None and not isinstance(start_joints, np.ndarray):
@@ -157,6 +177,7 @@ class GelloAgent(Agent):
             assert os.path.exists(port), port
             assert port in PORT_CONFIG_MAP, f"Port {port} not in config map"
             config = PORT_CONFIG_MAP[port]
+        config = config.with_grip(grip)
         # make_robot receives config.joint_limits: when set, get_joint_state
         # fixes any phantom full turn in the leader reading (see
         # wrap_into_limits), before smoothing, so a joint whose calibrated value
