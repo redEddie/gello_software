@@ -82,15 +82,51 @@ class FR3ZMQRobot(Robot):
             cam.is_connected for cam in self.cameras.values()
         )
 
-    def connect(self, calibrate: bool = True) -> None:
+    def _connect_node(self) -> None:
+        import zmq
+
         from gello.zmq_core.robot_node import ZMQClientRobot
 
-        self._client = ZMQClientRobot(port=self.config.port, host=self.config.host)
-        n = self._client.num_dofs()  # also serves as a liveness check
+        if self._client is not None:
+            try:
+                self._client._socket.close(linger=0)
+                self._client._context.term()
+            except Exception:
+                pass
+            self._client = None
+        client = ZMQClientRobot(port=self.config.port, host=self.config.host)
+        # Fail fast instead of blocking forever when the robot node dies
+        # mid-session (e.g. killed after a reflex): a REQ socket with no
+        # timeout would hang every later call, including cleanup.  A timed-out
+        # REQ socket is also unusable afterwards, so recovery goes through
+        # reconnect_node(), which rebuilds it.
+        client._socket.setsockopt(zmq.RCVTIMEO, 2000)
+        client._socket.setsockopt(zmq.SNDTIMEO, 2000)
+        client._socket.setsockopt(zmq.LINGER, 0)
+        try:
+            n = client.num_dofs()  # also serves as a liveness check
+        except Exception:
+            client._socket.close(linger=0)
+            client._context.term()
+            raise
         if n != 8:
             raise RuntimeError(f"robot node reports {n} dofs, expected 8 (arm+gripper)")
-        for cam in self.cameras.values():
-            cam.connect()
+        self._client = client
+
+    def connect(self, calibrate: bool = True) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        self._connect_node()
+        if self.cameras:
+            with ThreadPoolExecutor(len(self.cameras)) as pool:
+                list(pool.map(lambda cam: cam.connect(), self.cameras.values()))
+
+    def reconnect_node(self) -> None:
+        """Rebuild the ZMQ client after a robot-node restart; cameras stay up.
+
+        Raises if the node is still down -- call again to retry.
+        """
+        self._connect_node()
 
     @property
     def is_calibrated(self) -> bool:
@@ -126,6 +162,7 @@ class FR3ZMQRobot(Robot):
 class GelloFR3TeleopConfig(TeleoperatorConfig):
     port: str = ""  # empty -> auto-detect the FTDI serial port
     enable_wall: bool = True
+    grip: str = "right"  # "right" | "left" -- same semantics as run_env --grip
     close_at: float = GRIPPER_CLOSE_AT  # trigger crossing that closes the hand
     open_at: float = 0.2  # ... and the one that reopens it (hysteresis)
 
@@ -156,7 +193,9 @@ class GelloFR3Teleop(Teleoperator):
         from gello.agents.gello_agent import GelloAgent
 
         port = self.config.port or _find_gello_port()
-        self._agent = GelloAgent(port=port, enable_wall=self.config.enable_wall)
+        self._agent = GelloAgent(
+            port=port, enable_wall=self.config.enable_wall, grip=self.config.grip
+        )
         self._closed = False
 
     @property
