@@ -147,14 +147,6 @@ FR3_RESET_POSES = {
 }
 DEFAULT_RESET_POSE = "panda"
 
-#--[modified_gb]--
-# ---------- Joint 7 Limit ----------
-J7_HOME = FR3_RESET_POSES[DEFAULT_RESET_POSE][6]
-J7_RANGE = np.deg2rad(90.0)
-
-J7_LOWER = J7_HOME - J7_RANGE
-J7_UPPER = J7_HOME + J7_RANGE
-
 
 class FrankaFR3Robot(Robot):
     """Franka FR3 backend driven by ``pylibfranka``.
@@ -309,27 +301,9 @@ class FrankaFR3Robot(Robot):
             return np.append(q, gripper_norm)
         return q
     
-    #--[modified_gb]--
-    # def command_joint_state(self, joint_state: np.ndarray) -> None:
-    #     joint_state = np.asarray(joint_state, dtype=float)
-    #     q_des = joint_state[:7]
-
-    #     with self._lock:
-    #         self._desired_q = q_des.copy()
-    #         if self._use_gripper and len(joint_state) >= 8:
-    #             self._gripper_target = float(np.clip(joint_state[7], 0.0, 1.0))
-
     def command_joint_state(self, joint_state: np.ndarray) -> None:
         joint_state = np.asarray(joint_state, dtype=float)
-        q_des = joint_state[:7].copy()
-
-        q_des[6] = np.clip(q_des[6], J7_LOWER, J7_UPPER)
-
-        # print(
-        #     f"[J7] input={joint_state[6]:.3f}, "
-        #     f"clipped={q_des[6]:.3f}, "
-        #     f"range=[{J7_LOWER:.3f}, {J7_UPPER:.3f}]"
-        # )
+        q_des = joint_state[:7]
 
         with self._lock:
             self._desired_q = q_des.copy()
@@ -455,14 +429,6 @@ class FrankaFR3Robot(Robot):
                 state, _ = ctrl.readOnce()
                 with self._lock:
                     target = self._desired_q.copy()
-
-                    #--[modified_gb]--
-                    target[6] = np.clip(
-                            target[6],
-                            J7_LOWER,
-                            J7_UPPER,
-                        )
-
                     self._q = np.asarray(state.q, dtype=float)
                     self._dq = np.asarray(state.dq, dtype=float)
                     self._ee_pose = np.asarray(state.O_T_EE, dtype=float)
@@ -490,28 +456,6 @@ class FrankaFR3Robot(Robot):
                 acc_prev = (qd_new - qd_cmd) / dt
                 qd_cmd = qd_new
                 q_cmd = q_cmd + qd_cmd * dt
-
-                #--[modified_gb]--
-                # Hard backstop for J7: the `target[6]` clip above does the
-                # real limiting -- it gives the filter room to decelerate
-                # smoothly as q_cmd approaches the boundary, so this should
-                # rarely have to do anything in normal teleop. When it does
-                # engage, also zero the J7 velocity component (not just
-                # clip position): leaving qd_cmd[6] nonzero after pinning
-                # q_cmd[6] means next tick tries to push past the limit
-                # again, gets clipped again, forever -- position frozen
-                # while the filter's own velocity state keeps saying
-                # "still moving toward the wall". libfranka differentiates
-                # the outgoing command stream, so that freeze/retry pattern
-                # reads as a velocity/acceleration discontinuity -- this
-                # was the reflex-trip root cause, and sub-threshold it's
-                # visible as stutter any time J7 is near the limit.
-                if q_cmd[6] > J7_UPPER:
-                    q_cmd[6] = J7_UPPER
-                    qd_cmd[6] = min(qd_cmd[6], 0.0)
-                elif q_cmd[6] < J7_LOWER:
-                    q_cmd[6] = J7_LOWER
-                    qd_cmd[6] = max(qd_cmd[6], 0.0)
 
                 cmd = pf.JointPositions(list(q_cmd))
                 if self._stop.is_set():
