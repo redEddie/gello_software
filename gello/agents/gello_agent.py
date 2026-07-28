@@ -220,7 +220,10 @@ class GelloAgent(Agent):
         return self._robot.get_joint_state()
 
     def close(self) -> None:
-        """Clean shutdown of the leader wall (no-op if there is none)."""
+        """Clean shutdown: stops the leader wall (no-op if there is none)
+        and releases the underlying Dynamixel serial port, so a later
+        reconnect in this same process doesn't find the port still open."""
         if self._wall is not None:
             self._wall.stop()
             self._wall = None
+        self._robot.close()

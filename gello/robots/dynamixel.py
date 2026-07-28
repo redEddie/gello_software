@@ -150,3 +150,13 @@ class DynamixelRobot(Robot):
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         return {"joint_state": self.get_joint_state()}
+
+    def close(self) -> None:
+        """Releases the serial port and stops the driver's reading thread.
+
+        Without this, a process that connects/disconnects more than once
+        (e.g. a GUI session that reconnects) leaves the old DynamixelDriver's
+        port open, so the next connect finds it "busy" and its recovery
+        logic tries to kill whatever holds it -- which is this same process.
+        """
+        self._driver.close()

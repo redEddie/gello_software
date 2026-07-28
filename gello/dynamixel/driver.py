@@ -1,4 +1,5 @@
 import os
+import signal
 import subprocess
 import time
 from threading import Event, Lock, Thread
@@ -581,16 +582,31 @@ class DynamixelDriver(DynamixelDriverProtocol):
             return False
 
     def _kill_processes_using_port(self) -> bool:
-        """Kill processes that are using the port."""
+        """Kill OTHER processes using the port -- never this one.
+
+        ``fuser -k`` kills every holder indiscriminately, including our own
+        PID if a previous connection in this same process leaked the port
+        (e.g. before DynamixelRobot.close() existed): that self-kill is how
+        a GUI reconnect used to take the whole process down instead of just
+        freeing the port. So PIDs are listed first and our own is filtered
+        out before killing.
+        """
         try:
             result = subprocess.run(
-                ["fuser", "-k", self._port], capture_output=True, text=True
+                ["fuser", self._port], capture_output=True, text=True
             )
-            if result.returncode == 0:
-                print(f"Killed processes using {self._port}")
-                time.sleep(1)  # Give time for processes to terminate
-                return True
-            return False
+            pids = {int(p) for p in result.stdout.split() if p.strip().isdigit()}
+            pids.discard(os.getpid())
+            if not pids:
+                return False
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            print(f"Killed processes using {self._port}: {sorted(pids)}")
+            time.sleep(1)  # Give time for processes to terminate
+            return True
         except Exception as e:
             print(f"Error killing processes: {e}")
             return False
