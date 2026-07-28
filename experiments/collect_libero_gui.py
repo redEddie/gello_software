@@ -26,7 +26,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-from PyQt6.QtCore import QProcess, Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QProcess, Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -169,6 +169,20 @@ class LiberoCollectorWindow(QMainWindow):
         self.wrist_preview_worker: CameraPreviewWorker | None = None
         self.node_process: QProcess | None = None
         self._node_restart_pending = False
+        self._current_state = "idle"
+
+        # Persistent log -- the on-screen log panel is in-memory only and
+        # disappears when the window closes or scrolls past its line cap,
+        # so a live incident (e.g. the control loop dying) leaves no record
+        # once it happens. One file per GUI launch, flushed on every line.
+        log_dir = Path.home() / "libero_gui_logs"
+        self._log_file = None
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"session_{time.strftime('%Y%m%d_%H%M%S')}.log"
+            self._log_file = open(log_path, "a", encoding="utf-8")  # noqa: SIM115
+        except OSError:
+            log_path = None
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
@@ -220,6 +234,16 @@ class LiberoCollectorWindow(QMainWindow):
         self._refresh_dataset_tree()
         self._refresh_cameras()
         self._refresh_tasks()
+
+        if log_path is not None:
+            self._log(f"[로그] 이 세션 로그 파일: {log_path}")
+        else:
+            self._log("[로그] 로그 파일 생성 실패 -- 화면에만 표시됩니다")
+
+        # App-wide (not just this window) so the shortcut works no matter
+        # which widget currently has focus -- the operator's hands are on
+        # the GELLO leader, not carefully managing GUI focus.
+        QApplication.instance().installEventFilter(self)
 
     # ------------------------------------------------------------ UI build
     def _build_node_box(self) -> QGroupBox:
@@ -522,7 +546,7 @@ class LiberoCollectorWindow(QMainWindow):
         self.connect_btn.clicked.connect(self._on_connect)
         layout.addWidget(self.connect_btn)
 
-        self.start_teleop_btn = QPushButton("텔레옵 시작")
+        self.start_teleop_btn = QPushButton("텔레옵 시작 (Space)")
         self.start_teleop_btn.clicked.connect(self._on_start_teleop)
         layout.addWidget(self.start_teleop_btn)
 
@@ -530,12 +554,12 @@ class LiberoCollectorWindow(QMainWindow):
         self.skip_reset_btn.clicked.connect(self._on_skip_reset)
         layout.addWidget(self.skip_reset_btn)
 
-        self.save_success_btn = QPushButton("저장 (성공)")
+        self.save_success_btn = QPushButton("저장 (성공) (Space)")
         self.save_success_btn.setStyleSheet("background-color: #2ecc71;")
         self.save_success_btn.clicked.connect(lambda: self._on_save(True))
         layout.addWidget(self.save_success_btn)
 
-        self.save_fail_btn = QPushButton("저장 (실패)")
+        self.save_fail_btn = QPushButton("저장 (실패) (Esc)")
         self.save_fail_btn.setStyleSheet("background-color: #f1c40f;")
         self.save_fail_btn.clicked.connect(lambda: self._on_save(False))
         layout.addWidget(self.save_fail_btn)
@@ -606,6 +630,13 @@ class LiberoCollectorWindow(QMainWindow):
     # -------------------------------------------------------------- helpers
     def _log(self, msg: str) -> None:
         self.log_view.appendPlainText(msg)
+        if self._log_file is not None:
+            ts = time.strftime("%H:%M:%S")
+            try:
+                self._log_file.write(f"[{ts}] {msg}\n")
+                self._log_file.flush()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _browse_root(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "데이터 저장 경로", self.root_edit.text())
@@ -876,6 +907,7 @@ class LiberoCollectorWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _on_state_changed(self, state: str) -> None:
+        self._current_state = state
         self.state_label.setText(STATE_LABELS_KO.get(state, state))
         recording = state == "recording"
         reset_wait = state == "reset_wait"
@@ -971,6 +1003,7 @@ class LiberoCollectorWindow(QMainWindow):
         self._log("[세션 종료]")
         self.worker = None
         self.node_ok = True
+        self._current_state = "idle"
         self.active_file_path = None  # file is no longer exclusively open; browser can read it directly
         self._set_controls_enabled(connected=False, gate_ok=False, recording=False, reset_wait=False)
         self.state_label.setText("대기")
@@ -1083,7 +1116,44 @@ class LiberoCollectorWindow(QMainWindow):
             self.worker.stop()
             self.worker.wait(5000)
         self._on_stop_node()
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except Exception:  # noqa: BLE001
+                pass
         event.accept()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt override
+        """One-handed shortcuts for solo data collection (hands stay on the
+        GELLO leader, not the mouse). Same key means different things
+        depending on state, mirroring the corresponding button:
+
+            gate       + Space -> 텔레옵 시작 (start teleop)
+            recording  + Space -> 저장 (성공)
+            recording  + Esc   -> 저장 (실패)
+
+        Installed app-wide (not just this window) so it fires regardless
+        of which widget currently has focus. Skipped while a modal dialog
+        (QMessageBox etc.) is open so Esc still closes those normally.
+        """
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and self.worker is not None
+            and QApplication.activeModalWidget() is None
+        ):
+            key = event.key()
+            if key == Qt.Key.Key_Space:
+                if self._current_state == "gate":
+                    self._on_start_teleop()
+                    return True
+                if self._current_state == "recording":
+                    self._on_save(True)
+                    return True
+            elif key == Qt.Key.Key_Escape:
+                if self._current_state == "recording":
+                    self._on_save(False)
+                    return True
+        return super().eventFilter(obj, event)
 
 
 def main() -> None:
