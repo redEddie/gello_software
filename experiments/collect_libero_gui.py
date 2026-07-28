@@ -495,7 +495,7 @@ class LiberoCollectorWindow(QMainWindow):
             np_to_pixmap(frame).scaled(
                 view.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+                Qt.TransformationMode.FastTransformation,
             )
         )
 
@@ -924,7 +924,7 @@ class LiberoCollectorWindow(QMainWindow):
                 np_to_pixmap(agent_rgb).scaled(
                     self.agent_view.size(),
                     Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
+                    Qt.TransformationMode.FastTransformation,
                 )
             )
         if wrist_rgb is not None:
@@ -932,7 +932,7 @@ class LiberoCollectorWindow(QMainWindow):
                 np_to_pixmap(wrist_rgb).scaled(
                     self.wrist_view.size(),
                     Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
+                    Qt.TransformationMode.FastTransformation,
                 )
             )
 
