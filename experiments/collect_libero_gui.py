@@ -19,11 +19,28 @@ driven by GUI buttons instead of a second terminal + Ctrl-C handoff.
 
 from __future__ import annotations
 
+import os
+
+# Must run before numpy/cv2/h5py/torch(via lerobot) are imported below --
+# these each read the env var once at their own C-level init and spin up a
+# BLAS/parallel-executor thread pool sized to the CPU core count (measured:
+# 39 extra OS threads on this 20-core machine, for a GUI that does no heavy
+# matrix math or bulk image processing at all). Setting these first keeps
+# that pool at 1 with zero measured functional difference for this script's
+# actual workload (light resize/color-convert calls). Don't copy this into
+# scripts/convert_libero_to_lerobot.py -- that one genuinely benefits from
+# parallel video encoding.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
 import json
 import sys
 import time
 from pathlib import Path
 
+import cv2
 import h5py
 import numpy as np
 from PyQt6.QtCore import QEvent, QProcess, Qt, QThread, pyqtSignal, pyqtSlot
@@ -53,6 +70,11 @@ from PyQt6.QtWidgets import (
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
 from gello.robots.franka_fr3 import FR3_RESET_POSES  # noqa: E402
+
+# The OMP/OPENBLAS/MKL env vars above only cap numpy's BLAS backend --
+# OpenCV's own parallel_for_ executor is a separate thread pool controlled
+# only by this runtime call, not an env var.
+cv2.setNumThreads(1)
 
 # launch_nodes.py needs pylibfranka, which only exists in this separate venv
 # (this GUI itself runs in lerobot-venv -- see module docstring). Spawned as
