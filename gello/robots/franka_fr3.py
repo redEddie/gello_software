@@ -48,13 +48,15 @@ Safety
   joint torque limits are NOT a valid choice here -- see FR3_COLLISION_TORQUE),
   while abnormal wrist loads and violent impacts still do.  Joint impedance is
   set on connect.  The robot's hard limits stay the safety floor.
-* ``max_joint_velocity``/``max_joint_acceleration`` (1.5 rad/s, 6.0 rad/s^2)
+* ``max_joint_velocity``/``max_joint_acceleration`` (1.0 rad/s, 4.0 rad/s^2)
   keep real margin below libfranka's actual per-joint hard limits (2.62,
-  10.0 -- see ``rate_limiting.h``/``fr3.urdf``), since FR3's true velocity
-  limit shrinks near each joint's position limits and this filter applies a
-  flat cap everywhere. Raise further only after confirming on hardware that
-  tracking still feels smooth with no reflex trips near those position
-  limits specifically. ``max_joint_jerk`` is a limit, not a tuning knob --
+  10.0 -- see ``rate_limiting.h``/``fr3.urdf``). Raising these amplifies how
+  much a control-loop dt that runs long (this loop's dt is a hardcoded
+  constant, not measured actual elapsed time) diverges from what was
+  actually sent -- a live joint_motion_generator_acceleration_discontinuity
+  abort at 1.5/6.0 is why these are back at the original values. Don't
+  raise without also fixing that dt assumption first. ``max_joint_jerk`` is
+  a limit, not a tuning knob --
   keep it under ``franka::kMaxJointJerk`` (5000) with margin.
 
 Make sure ``ros2_control_node`` is **not** running: the FCI accepts one client.
@@ -169,21 +171,23 @@ class FrankaFR3Robot(Robot):
         use_gripper: bool = True,
         read_only: bool = False,
         enforce_rt: bool = True,
-        # Raised 2026-07-28 from the original conservative defaults
-        # (1.0 / 4.0 / 8.0) once the real root causes of the reflex aborts
-        # (CPU governor on powersave, see scripts/runme.sh) were fixed --
-        # the low defaults were masking a ~0.5-0.9s step-response lag that
-        # became very noticeable ("buffering" feel) once the arm stopped
-        # crashing every few seconds. Margins below libfranka 0.21.2's
-        # actual per-joint hard limits (include/franka/rate_limiting.h,
-        # test/fr3.urdf): kMaxJointVelocity=2.62 rad/s, kMaxJointAcceleration
-        # =10.0 rad/s^2, kMaxJointJerk=5000 rad/s^3. Kept well under those
-        # (not just barely under) because FR3's real velocity limit shrinks
-        # near each joint's position limits and this filter applies a flat
-        # cap everywhere, and because dt jitter/ZMQ latency eat into margin
-        # that a pure-filter analysis doesn't account for.
-        max_joint_velocity: float = 1.5,
-        max_joint_acceleration: float = 6.0,
+        # 2026-07-28: briefly raised max_joint_velocity/acceleration to 1.5/6.0
+        # (from 1.0/4.0) to cut the step-response lag that made tracking feel
+        # "buffered". Reverted back to 1.0/4.0 after a live
+        # joint_motion_generator_acceleration_discontinuity abort: this
+        # control loop's dt is a hardcoded constant, not measured actual
+        # elapsed time (see _control_loop), so any tick that runs long --
+        # e.g. the ZMQ server thread holding the GIL at the wrong moment --
+        # makes the filter's own q_cmd/qd_cmd bookkeeping diverge from what
+        # was really sent, and that divergence scales with how large
+        # a_max/v_max are. filter_wn alone (8 -> 10) still gives a real,
+        # smaller improvement (~10-15% faster settling) without raising the
+        # saturation ceiling that amplifies timing jitter. If reflexes
+        # persist even at these original limits, the dt-jitter issue itself
+        # needs fixing (measure real elapsed time per tick instead of
+        # assuming a constant), not another bump to these numbers.
+        max_joint_velocity: float = 1.0,
+        max_joint_acceleration: float = 4.0,
         # Below franka::kMaxJointJerk (5000) with margin. The ActiveControl API
         # does NOT run libfranka's limitRate()/lowpassFilter() -- only the
         # blocking Robot::control() path does -- so this filter is the only
