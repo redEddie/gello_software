@@ -221,11 +221,23 @@ class CollectionWorker(QThread):
             time.sleep(0.05)
         return "quit"
 
-    def _approach_ramp(self) -> str:
-        """Returns "ok", "quit", or "go_home". Running out of ticks without
-        converging is lenient on purpose (unchanged from before) -- just
-        proceeds to recording rather than aborting."""
-        for _ in range(100):
+    def _approach_ramp(self, timeout: float = 3600.0) -> str:
+        """Blocks (emitting frames) until the follower actually reaches the
+        leader's pose. Returns "ok", "quit", or "go_home".
+
+        Used to give up after a fixed 100 ticks (5s) and proceed to
+        recording regardless of whether it had actually converged -- if the
+        leader had drifted since the pose gate (GATE_RAD there is a loose
+        0.5 rad) or the operator kept moving, recording could start well
+        before the follower caught up, which looked like "the robot is
+        still slowly catching up right after recording starts, so you have
+        to hold still." Waiting for a real convergence (like _pose_gate
+        already does) means recording never starts out of sync; the
+        `timeout` is just a safety backstop, not a normal exit path.
+        """
+        deadline = time.monotonic() + timeout
+        last_log = 0.0
+        while True:
             interrupt = self._drain_interrupt()
             if interrupt:
                 return interrupt
@@ -240,8 +252,14 @@ class CollectionWorker(QThread):
             step = np.clip(d, -RAMP_STEP, RAMP_STEP)
             cmd = dict(zip(JOINT_KEYS, np.append(q_rob + step, act["gripper.pos"]).tolist()))
             self._robot.send_action(cmd)
+            now = time.monotonic()
+            if now - last_log > 2.0:
+                last_log = now
+                self.log_message.emit(f"[접근] 리더에 맞추는 중 (최대 차이 {np.abs(d).max():.2f} rad)")
+            if now > deadline:
+                self.log_message.emit(f"[접근] {timeout:.0f}s 시간 초과 -- 세션 종료")
+                return "quit"
             time.sleep(0.05)
-        return "ok"
 
     # ------------------------------------------------------------------ gate
     def _pose_gate(self, timeout: float = 3600.0) -> str:
@@ -419,15 +437,27 @@ class CollectionWorker(QThread):
 
                     if outcome == "quit":
                         break
-                except zmq.ZMQError:
-                    # Robot node died mid-cycle (e.g. after a collision reflex).
-                    # Same recovery contract as record_dataset.py: discard
-                    # whatever episode was in flight, wait for launch_nodes.py
-                    # to come back, then resume from home.
+                except (zmq.ZMQError, RuntimeError):
+                    # Two distinct failures land here, both needing the same
+                    # recovery: (a) the robot node process died/dropped off
+                    # the network (zmq.ZMQError), or (b) the process is
+                    # still up but FrankaFR3Robot's 1kHz control thread died
+                    # on its own -- e.g. a reflex abort -- while the ZMQ
+                    # server kept answering requests normally. (b) used to
+                    # be invisible: get_observations() just kept returning
+                    # the last position forever, so nothing here ever
+                    # errored and the GUI looked "frozen" after some number
+                    # of steps with no explanation. franka_fr3.py now raises
+                    # once the control thread reports itself dead, which
+                    # surfaces here as a RuntimeError via ZMQClientRobot.
+                    # Same recovery contract as record_dataset.py either
+                    # way: discard whatever episode was in flight, wait for
+                    # the node to come back, then resume from home.
                     self._writer.discard_episode()
                     self.node_status.emit(False)
                     self.log_message.emit(
-                        "[NODE DOWN] robot node 무응답 -- launch_nodes를 재시작하세요"
+                        "[NODE DOWN] robot node 무응답 또는 제어 루프 다운 -- "
+                        "자동 복구 안 되면 '노드 재시작' 버튼을 누르세요"
                     )
                     if not self._wait_node_recovery():
                         break

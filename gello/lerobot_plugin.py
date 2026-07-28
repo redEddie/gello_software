@@ -104,13 +104,23 @@ class FR3ZMQRobot(Robot):
         client._socket.setsockopt(zmq.SNDTIMEO, 2000)
         client._socket.setsockopt(zmq.LINGER, 0)
         try:
-            n = client.num_dofs()  # also serves as a liveness check
+            n = client.num_dofs()
+            if n != 8:
+                raise RuntimeError(f"robot node reports {n} dofs, expected 8 (arm+gripper)")
+            # num_dofs() only proves the ZMQ server process is up -- it says
+            # nothing about whether FrankaFR3Robot's 1kHz control thread is
+            # actually running inside it. That thread can die on its own
+            # (reflex abort) while the server keeps answering requests fine,
+            # so a real liveness check has to touch something the control
+            # thread itself produces. get_observations() now raises if the
+            # control thread reported an error (see franka_fr3.py), so
+            # calling it here means "reconnected" only gets declared once
+            # the arm is genuinely back, not just once the process answers.
+            client.get_observations()
         except Exception:
             client._socket.close(linger=0)
             client._context.term()
             raise
-        if n != 8:
-            raise RuntimeError(f"robot node reports {n} dofs, expected 8 (arm+gripper)")
         self._client = client
 
     def connect(self, calibrate: bool = True) -> None:

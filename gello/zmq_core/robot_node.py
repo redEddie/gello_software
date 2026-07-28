@@ -36,24 +36,39 @@ class ZMQServerRobot:
                 message = self._socket.recv()
                 request = pickle.loads(message)
 
-                # Call the appropriate method based on the request
+                # Call the appropriate method based on the request. Errors
+                # from the robot call itself (e.g. FrankaFR3Robot reporting
+                # its control loop died) are caught here, not just
+                # zmq.Again below: REQ/REP is strict lock-step, so if an
+                # exception escaped between recv() and send() the socket
+                # would be left expecting a reply that never comes, hanging
+                # every later request -- and an uncaught exception here
+                # would kill this whole serve() loop (this process's only
+                # thread handling robot commands), not just the one
+                # request. Sending back {"error": ...} keeps the loop (and
+                # the process) alive so the client's existing error
+                # handling can react instead of everything just hanging.
                 method = request.get("method")
                 args = request.get("args", {})
                 result: Any
-                if method == "num_dofs":
-                    result = self._robot.num_dofs()
-                elif method == "get_joint_state":
-                    result = self._robot.get_joint_state()
-                elif method == "command_joint_state":
-                    result = self._robot.command_joint_state(**args)
-                elif method == "get_observations":
-                    result = self._robot.get_observations()
-                else:
-                    result = {"error": "Invalid method"}
-                    print(result)
-                    raise NotImplementedError(
-                        f"Invalid method: {method}, {args, result}"
-                    )
+                try:
+                    if method == "num_dofs":
+                        result = self._robot.num_dofs()
+                    elif method == "get_joint_state":
+                        result = self._robot.get_joint_state()
+                    elif method == "command_joint_state":
+                        result = self._robot.command_joint_state(**args)
+                    elif method == "get_observations":
+                        result = self._robot.get_observations()
+                    else:
+                        result = {"error": "Invalid method"}
+                        print(result)
+                        raise NotImplementedError(
+                            f"Invalid method: {method}, {args, result}"
+                        )
+                except Exception as e:  # noqa: BLE001
+                    result = {"error": f"{type(e).__name__}: {e}"}
+                    print(f"[ZMQServerRobot] {method} failed: {result['error']}")
 
                 self._socket.send(pickle.dumps(result))
             except zmq.Again:
@@ -113,9 +128,14 @@ class ZMQClientRobot(Robot):
             "args": {"joint_state": joint_state},
         }
         send_message = pickle.dumps(request)
-        self._socket.send(send_message)
-        result = pickle.loads(self._socket.recv())
-        return result
+        try:
+            self._socket.send(send_message)
+            result = pickle.loads(self._socket.recv())
+            if isinstance(result, dict) and "error" in result:
+                raise RuntimeError(result["error"])
+            return result
+        except zmq.Again:
+            raise RuntimeError("ZMQ timeout - robot may be disconnected")
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         """Get the current observations of the leader robot.

@@ -48,9 +48,14 @@ Safety
   joint torque limits are NOT a valid choice here -- see FR3_COLLISION_TORQUE),
   while abnormal wrist loads and violent impacts still do.  Joint impedance is
   set on connect.  The robot's hard limits stay the safety floor.
-* ``max_joint_velocity`` / ``max_joint_acceleration`` default low.  Raise them
-  only after the arm tracks GELLO smoothly.  ``max_joint_jerk`` is a limit, not
-  a tuning knob -- keep it under ``franka::kMaxJointJerk`` (5000) with margin.
+* ``max_joint_velocity``/``max_joint_acceleration`` (1.5 rad/s, 6.0 rad/s^2)
+  keep real margin below libfranka's actual per-joint hard limits (2.62,
+  10.0 -- see ``rate_limiting.h``/``fr3.urdf``), since FR3's true velocity
+  limit shrinks near each joint's position limits and this filter applies a
+  flat cap everywhere. Raise further only after confirming on hardware that
+  tracking still feels smooth with no reflex trips near those position
+  limits specifically. ``max_joint_jerk`` is a limit, not a tuning knob --
+  keep it under ``franka::kMaxJointJerk`` (5000) with margin.
 
 Make sure ``ros2_control_node`` is **not** running: the FCI accepts one client.
 
@@ -142,6 +147,14 @@ FR3_RESET_POSES = {
 }
 DEFAULT_RESET_POSE = "panda"
 
+#--[modified_gb]--
+# ---------- Joint 7 Limit ----------
+J7_HOME = FR3_RESET_POSES[DEFAULT_RESET_POSE][6]
+J7_RANGE = np.deg2rad(90.0)
+
+J7_LOWER = J7_HOME - J7_RANGE
+J7_UPPER = J7_HOME + J7_RANGE
+
 
 class FrankaFR3Robot(Robot):
     """Franka FR3 backend driven by ``pylibfranka``.
@@ -164,14 +177,27 @@ class FrankaFR3Robot(Robot):
         use_gripper: bool = True,
         read_only: bool = False,
         enforce_rt: bool = True,
-        max_joint_velocity: float = 1.0,
-        max_joint_acceleration: float = 4.0,
+        # Raised 2026-07-28 from the original conservative defaults
+        # (1.0 / 4.0 / 8.0) once the real root causes of the reflex aborts
+        # (CPU governor on powersave, see scripts/runme.sh) were fixed --
+        # the low defaults were masking a ~0.5-0.9s step-response lag that
+        # became very noticeable ("buffering" feel) once the arm stopped
+        # crashing every few seconds. Margins below libfranka 0.21.2's
+        # actual per-joint hard limits (include/franka/rate_limiting.h,
+        # test/fr3.urdf): kMaxJointVelocity=2.62 rad/s, kMaxJointAcceleration
+        # =10.0 rad/s^2, kMaxJointJerk=5000 rad/s^3. Kept well under those
+        # (not just barely under) because FR3's real velocity limit shrinks
+        # near each joint's position limits and this filter applies a flat
+        # cap everywhere, and because dt jitter/ZMQ latency eat into margin
+        # that a pure-filter analysis doesn't account for.
+        max_joint_velocity: float = 1.5,
+        max_joint_acceleration: float = 6.0,
         # Below franka::kMaxJointJerk (5000) with margin. The ActiveControl API
         # does NOT run libfranka's limitRate()/lowpassFilter() -- only the
         # blocking Robot::control() path does -- so this filter is the only
         # thing keeping the command inside the robot's reflex limits.
         max_joint_jerk: float = 3000.0,
-        filter_wn: float = 8.0,
+        filter_wn: float = 10.0,
         home_gripper: bool = False,
         collision_torque: Optional[list] = None,  # None -> FR3_COLLISION_TORQUE
         collision_force: float = 100.0,
@@ -282,16 +308,45 @@ class FrankaFR3Robot(Robot):
         if self._use_gripper:
             return np.append(q, gripper_norm)
         return q
+    
+    #--[modified_gb]--
+    # def command_joint_state(self, joint_state: np.ndarray) -> None:
+    #     joint_state = np.asarray(joint_state, dtype=float)
+    #     q_des = joint_state[:7]
+
+    #     with self._lock:
+    #         self._desired_q = q_des.copy()
+    #         if self._use_gripper and len(joint_state) >= 8:
+    #             self._gripper_target = float(np.clip(joint_state[7], 0.0, 1.0))
 
     def command_joint_state(self, joint_state: np.ndarray) -> None:
         joint_state = np.asarray(joint_state, dtype=float)
-        q_des = joint_state[:7]
+        q_des = joint_state[:7].copy()
+
+        q_des[6] = np.clip(q_des[6], J7_LOWER, J7_UPPER)
+
+        # print(
+        #     f"[J7] input={joint_state[6]:.3f}, "
+        #     f"clipped={q_des[6]:.3f}, "
+        #     f"range=[{J7_LOWER:.3f}, {J7_UPPER:.3f}]"
+        # )
+
         with self._lock:
             self._desired_q = q_des.copy()
             if self._use_gripper and len(joint_state) >= 8:
                 self._gripper_target = float(np.clip(joint_state[7], 0.0, 1.0))
 
     def get_observations(self) -> Dict[str, np.ndarray]:
+        # If the 1kHz control thread has died (e.g. a reflex abort), q/dq/
+        # pose just stop updating forever -- silently returning that frozen
+        # snapshot makes the robot look "stopped" to every caller with no
+        # error anywhere (this is how a dead control loop turned into a
+        # silent GUI freeze instead of a visible failure). Surface it
+        # instead: raise here so it becomes a request-level error over ZMQ
+        # (see zmq_core/robot_node.py), which the client already knows how
+        # to catch and react to.
+        if self._control_error is not None:
+            raise RuntimeError(f"FR3 control loop is dead: {self._control_error}")
         with self._lock:
             q = self._q.copy()
             dq = self._dq.copy()
@@ -400,6 +455,14 @@ class FrankaFR3Robot(Robot):
                 state, _ = ctrl.readOnce()
                 with self._lock:
                     target = self._desired_q.copy()
+
+                    #--[modified_gb]--
+                    target[6] = np.clip(
+                            target[6],
+                            J7_LOWER,
+                            J7_UPPER,
+                        )
+
                     self._q = np.asarray(state.q, dtype=float)
                     self._dq = np.asarray(state.dq, dtype=float)
                     self._ee_pose = np.asarray(state.O_T_EE, dtype=float)
@@ -427,6 +490,28 @@ class FrankaFR3Robot(Robot):
                 acc_prev = (qd_new - qd_cmd) / dt
                 qd_cmd = qd_new
                 q_cmd = q_cmd + qd_cmd * dt
+
+                #--[modified_gb]--
+                # Hard backstop for J7: the `target[6]` clip above does the
+                # real limiting -- it gives the filter room to decelerate
+                # smoothly as q_cmd approaches the boundary, so this should
+                # rarely have to do anything in normal teleop. When it does
+                # engage, also zero the J7 velocity component (not just
+                # clip position): leaving qd_cmd[6] nonzero after pinning
+                # q_cmd[6] means next tick tries to push past the limit
+                # again, gets clipped again, forever -- position frozen
+                # while the filter's own velocity state keeps saying
+                # "still moving toward the wall". libfranka differentiates
+                # the outgoing command stream, so that freeze/retry pattern
+                # reads as a velocity/acceleration discontinuity -- this
+                # was the reflex-trip root cause, and sub-threshold it's
+                # visible as stutter any time J7 is near the limit.
+                if q_cmd[6] > J7_UPPER:
+                    q_cmd[6] = J7_UPPER
+                    qd_cmd[6] = min(qd_cmd[6], 0.0)
+                elif q_cmd[6] < J7_LOWER:
+                    q_cmd[6] = J7_LOWER
+                    qd_cmd[6] = max(qd_cmd[6], 0.0)
 
                 cmd = pf.JointPositions(list(q_cmd))
                 if self._stop.is_set():
