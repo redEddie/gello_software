@@ -1,4 +1,5 @@
 import os
+import signal
 import subprocess
 import time
 from threading import Event, Lock, Thread
@@ -35,15 +36,29 @@ CURRENT_CONTROL_MODE = 0
 POSITION_CONTROL_MODE = 3
 
 # Servo-specific mappings and limits
+#
+# NOTE on XL330_M288_T: the two pre-existing entries do not share a convention
+# (XM430's `1000 / 2.69` is a plain amps->units conversion using that servo's
+# 2.69 mA/unit, i.e. it assumes a torque constant of 1; XC330's 1158.73 implies
+# 0.863 Nm/A, which its datasheet does not give).  Rather than copy either, the
+# XL330 value below is derived from its datasheet and shown as such.  Prefer
+# set_current() over set_torque() where the exact torque scale matters.
 TORQUE_TO_CURRENT_MAPPING = {
     "XC330_T288_T": 1158.73,
     "XM430_W210_T": 1000 / 2.69,
+    # XL330-M288-T: stall 0.52 Nm @ 1.5 A -> Kt = 0.347 Nm/A; unit is 1.0 mA.
+    # units per Nm = 1000 mA/A / 0.347 Nm/A
+    "XL330_M288_T": 1000 / (0.52 / 1.5),
 }
 
 # Servo specifications for current limits (in mA)
 SERVO_CURRENT_LIMITS = {
     "XC330_T288_T": 1193,
     "XM430_W210_T": 1263,
+    # Read from the Current Limit register (addr 38) of the Franka GELLO's
+    # servos, not from a datasheet.  Note 1750 mA is *above* the 1.5 A stall
+    # current: saturating there drives the (plastic-geared) servo past stall.
+    "XL330_M288_T": 1750,
 }
 
 
@@ -88,6 +103,14 @@ class DynamixelDriverProtocol(Protocol):
         """
         ...
 
+    def set_torque_ids(self, ids: Sequence[int], enable: bool):
+        """Enable/disable torque on a subset of servos, leaving the rest as-is.
+
+        Lets one servo (e.g. the trigger) stay torqued while the arm servos are
+        torque-off for a free feel.
+        """
+        ...
+
     def get_joints(self) -> np.ndarray:
         """Get the current joint angles in radians.
 
@@ -110,21 +133,21 @@ class FakeDynamixelDriver(DynamixelDriverProtocol):
         self._joint_angles = np.zeros(len(ids), dtype=float)
         self._velocities = np.zeros(len(ids), dtype=float)
         self._currents = np.zeros(len(ids), dtype=float)
-        self._torque_enabled = False
+        self._torque_ids: set = set()
 
     def set_joints(self, joint_angles: Sequence[float]):
         if len(joint_angles) != len(self._ids):
             raise ValueError(
                 "The length of joint_angles must match the number of servos"
             )
-        if not self._torque_enabled:
+        if not self.torque_enabled():
             raise RuntimeError("Torque must be enabled to set joint angles")
         self._joint_angles = np.array(joint_angles, dtype=float)
 
     def set_current(self, currents: Sequence[float]):
         if len(currents) != len(self._ids):
             raise ValueError("The length of currents must match the number of servos")
-        if not self._torque_enabled:
+        if not self._torque_ids:
             raise RuntimeError("Torque must be enabled to set currents")
         self._currents = np.array(currents, dtype=float)
 
@@ -139,10 +162,16 @@ class FakeDynamixelDriver(DynamixelDriverProtocol):
         pass
 
     def torque_enabled(self) -> bool:
-        return self._torque_enabled
+        return len(self._torque_ids) == len(self._ids) and len(self._ids) > 0
 
     def set_torque_mode(self, enable: bool):
-        self._torque_enabled = enable
+        self.set_torque_ids(self._ids, enable)
+
+    def set_torque_ids(self, ids: Sequence[int], enable: bool):
+        if enable:
+            self._torque_ids |= set(ids)
+        else:
+            self._torque_ids -= set(ids)
 
     def get_joints(self) -> np.ndarray:
         return self._joint_angles.copy()
@@ -163,7 +192,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
         ids: Sequence[int],
         servo_types: Optional[Sequence[str]] = None,
         port: str = "/dev/ttyUSB0",
-        baudrate: int = 57600,
+        baudrate: int = 1000000,
         max_retries: int = 3,
         use_fake_fallback: bool = True,
     ):
@@ -186,7 +215,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
         self._max_retries = max_retries
         self._use_fake_fallback = use_fake_fallback
         self._is_fake = False
-        self._torque_enabled = False
+        self._torque_ids: set = set()  # servo ids with torque currently enabled
         self._stop_thread = Event()
 
         # Optional torque-current mapping
@@ -286,7 +315,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
 
         # Disable torque for each Dynamixel servo
         try:
-            self.set_torque_mode(self._torque_enabled)
+            self.set_torque_mode(self.torque_enabled())
         except Exception as e:
             print(f"port: {self._port}, {e}")
 
@@ -304,7 +333,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
             raise ValueError(
                 "The length of joint_angles must match the number of servos"
             )
-        if not self._torque_enabled:
+        if not self.torque_enabled():
             raise RuntimeError("Torque must be enabled to set joint angles")
 
         if self._is_fake:
@@ -346,14 +375,17 @@ class DynamixelDriver(DynamixelDriverProtocol):
                 raise ValueError(
                     "The length of currents must match the number of servos"
                 )
-            if not self._torque_enabled:
+            if not self._torque_ids:
                 raise RuntimeError("Torque must be enabled to set currents")
             self._fake_currents = np.array(currents, dtype=float)
             return
 
         if len(currents) != len(self._ids):
             raise ValueError("The length of currents must match the number of servos")
-        if not self._torque_enabled:
+        # Goal Current is a plain RAM write, harmless on a torque-off servo, so
+        # only require that *some* servo is torqued (a mixed armed state is
+        # normal: trigger on, arm servos off).
+        if not self._torque_ids:
             raise RuntimeError("Torque must be enabled to set currents")
 
         # Clip currents to servo-specific limits if available
@@ -389,16 +421,22 @@ class DynamixelDriver(DynamixelDriverProtocol):
         self.set_current(currents)
 
     def torque_enabled(self) -> bool:
-        return self._torque_enabled
+        return len(self._torque_ids) == len(self._ids) and len(self._ids) > 0
 
     def set_torque_mode(self, enable: bool):
+        self.set_torque_ids(self._ids, enable)
+
+    def set_torque_ids(self, ids: Sequence[int], enable: bool):
         if self._is_fake:
-            self._torque_enabled = enable
+            if enable:
+                self._torque_ids |= set(ids)
+            else:
+                self._torque_ids -= set(ids)
             return
 
         torque_value = TORQUE_ENABLE if enable else TORQUE_DISABLE
         with self._lock:
-            for dxl_id in self._ids:
+            for dxl_id in ids:
                 dxl_comm_result, dxl_error = self._packetHandler.write1ByteTxRx(
                     self._portHandler, dxl_id, ADDR_TORQUE_ENABLE, torque_value
                 )
@@ -408,8 +446,12 @@ class DynamixelDriver(DynamixelDriverProtocol):
                     raise RuntimeError(
                         f"Failed to set torque mode for Dynamixel with ID {dxl_id}"
                     )
-
-        self._torque_enabled = enable
+                # Track per-id inside the loop so a mid-loop failure leaves the
+                # set matching what actually reached the bus.
+                if enable:
+                    self._torque_ids.add(dxl_id)
+                else:
+                    self._torque_ids.discard(dxl_id)
 
     def set_operating_mode(self, mode: int):
         if self._is_fake:
@@ -540,16 +582,31 @@ class DynamixelDriver(DynamixelDriverProtocol):
             return False
 
     def _kill_processes_using_port(self) -> bool:
-        """Kill processes that are using the port."""
+        """Kill OTHER processes using the port -- never this one.
+
+        ``fuser -k`` kills every holder indiscriminately, including our own
+        PID if a previous connection in this same process leaked the port
+        (e.g. before DynamixelRobot.close() existed): that self-kill is how
+        a GUI reconnect used to take the whole process down instead of just
+        freeing the port. So PIDs are listed first and our own is filtered
+        out before killing.
+        """
         try:
             result = subprocess.run(
-                ["fuser", "-k", self._port], capture_output=True, text=True
+                ["fuser", self._port], capture_output=True, text=True
             )
-            if result.returncode == 0:
-                print(f"Killed processes using {self._port}")
-                time.sleep(1)  # Give time for processes to terminate
-                return True
-            return False
+            pids = {int(p) for p in result.stdout.split() if p.strip().isdigit()}
+            pids.discard(os.getpid())
+            if not pids:
+                return False
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            print(f"Killed processes using {self._port}: {sorted(pids)}")
+            time.sleep(1)  # Give time for processes to terminate
+            return True
         except Exception as e:
             print(f"Error killing processes: {e}")
             return False

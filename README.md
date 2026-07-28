@@ -1,3 +1,30 @@
+# FR3 + GELLO LIBERO 데이터 수집기
+
+기존 `fr3-real-teleop` 포크(아래) 위에, FR3 + GELLO 텔레옵으로 **LIBERO 포맷** 모방학습 데이터를 수집하는 PyQt6 GUI를 추가했다. 신규 파일만 추가했고 기존 코드는 건드리지 않았다 (단, GELLO/Dynamixel 쪽에 실기 테스트로 발견한 버그 2건은 아래처럼 고쳤다).
+
+<p align="center">
+  <img src="imgs/libero_collector_gui.jpg" width="90%" />
+</p>
+
+- **`experiments/collect_libero_gui.py`** -- PyQt6 메인 GUI. 로봇 노드(`launch_nodes.py`)를 GUI 안에서 직접 시작/재시작/중지 (별도 터미널 불필요), 저장된 task 이름을 드롭다운으로 다시 선택(--resume 자동 체크), 연결 전에도 카메라 드롭다운 선택 시 실시간 미리보기, 자세 매칭 게이트(조인트별 델타 바), 세션/에피소드 제어, 데이터셋 탐색기(파일·에피소드 목록/삭제), 홈으로 이동 버튼, 세션 종료 시 요약.
+- **`gello/libero_gui_worker.py`** -- `record_dataset.py`의 홈복귀→리셋대기→자세게이트→접근램프→기록 상태 머신을 커맨드큐+Qt시그널 방식으로 이식한 백그라운드 `QThread`.
+- **`gello/libero_format.py`** -- LIBERO 표준 HDF5(`<task>_demo.hdf5`) writer. GELLO는 조인트 공간으로 텔레옵하지만, 저장되는 `actions`는 실현된 EE 궤적에서 계산한 델타 포즈(OSC_POSE 스타일, [-1,1] 정규화)로 LIBERO 관례에 맞춤.
+- **버그 수정 (기존 파일)**: `GelloAgent.close()`가 leader의 Dynamixel 시리얼 포트를 한 번도 닫지 않아, 같은 프로세스에서 재연결 시 포트가 자기 자신에 의해 점유된 것으로 잡혀 `fuser -k`가 자기 자신을 죽이는 버그를 고침 (`gello/agents/gello_agent.py`, `gello/robots/dynamixel.py`, `gello/dynamixel/driver.py`).
+
+실행: `run_libero_collector.sh` 또는 바탕화면 바로가기로 GUI만 켜면, 그 안에서 로봇 노드까지 관리 가능.
+
+---
+
+## Fork notes (`fr3-real-teleop`)
+
+이 포크는 FR3를 ROS 2가 아니라 `pylibfranka`로 직접 구동한다(`gello/robots/franka_fr3.py`).
+
+- **2026-07-17: Franka robot system 5.10.0 대응 완료.** 클라이언트를 libfranka/pylibfranka **0.21.2** 소스 빌드로 마이그레이션(FCI 프로토콜 v10 — libfranka 0.17 클라이언트는 더 이상 호환되지 않음). GIL-release 패치를 0.21.2 소스에 리베이스: `patches/pylibfranka-0.21-gil-release.diff`, 배경과 절차는 [`patches/README.md`](patches/README.md). 공식 PyPI 휠(0.21.2까지)은 여전히 GIL을 놓지 않으므로 패치 소스 빌드가 필수. 실기 검증 완료(그리퍼 `read_once` 중앙값 ~60ms → 6.9ms).
+
+아래부터는 원본(upstream) README.
+
+----
+
 # GELLO: General, Low-Cost, and Intuitive Teleoperation Framework
 
 <p align="center">

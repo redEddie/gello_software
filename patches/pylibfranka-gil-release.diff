@@ -1,0 +1,78 @@
+diff --git a/pylibfranka/src/pylibfranka.cpp b/pylibfranka/src/pylibfranka.cpp
+index 0ba0d1b..c0fd3ca 100644
+--- a/pylibfranka/src/pylibfranka.cpp
++++ b/pylibfranka/src/pylibfranka.cpp
+@@ -395,21 +395,34 @@ PYBIND11_MODULE(_pylibfranka, m) {
+ 
+   // Bind ActiveControlBase
+   py::class_<franka::ActiveControlBase>(m, "ActiveControlBase")
++      // NOTE: this is a lambda, so py::call_guard would release the GIL across
++      // the whole body -- including make_tuple, which builds Python objects and
++      // would segfault. Release only around the blocking read.
+       .def("readOnce",
+            [](franka::ActiveControlBase& self) {
+-             auto result = self.readOnce();
++             std::pair<franka::RobotState, franka::Duration> result;
++             {
++               py::gil_scoped_release release;
++               result = self.readOnce();
++             }
+              return py::make_tuple(result.first, result.second);
+            })
+       .def("writeOnce",
+-           py::overload_cast<const franka::Torques&>(&franka::ActiveControlBase::writeOnce))
++           py::overload_cast<const franka::Torques&>(&franka::ActiveControlBase::writeOnce),
++           py::call_guard<py::gil_scoped_release>())
+       .def("writeOnce",
+-           py::overload_cast<const franka::JointPositions&>(&franka::ActiveControlBase::writeOnce))
++           py::overload_cast<const franka::JointPositions&>(&franka::ActiveControlBase::writeOnce),
++           py::call_guard<py::gil_scoped_release>())
+       .def("writeOnce",
+-           py::overload_cast<const franka::JointVelocities&>(&franka::ActiveControlBase::writeOnce))
++           py::overload_cast<const franka::JointVelocities&>(&franka::ActiveControlBase::writeOnce),
++           py::call_guard<py::gil_scoped_release>())
+       .def("writeOnce",
+-           py::overload_cast<const franka::CartesianPose&>(&franka::ActiveControlBase::writeOnce))
+-      .def("writeOnce", py::overload_cast<const franka::CartesianVelocities&>(
+-                            &franka::ActiveControlBase::writeOnce));
++           py::overload_cast<const franka::CartesianPose&>(&franka::ActiveControlBase::writeOnce),
++           py::call_guard<py::gil_scoped_release>())
++      .def("writeOnce",
++           py::overload_cast<const franka::CartesianVelocities&>(
++               &franka::ActiveControlBase::writeOnce),
++           py::call_guard<py::gil_scoped_release>());
+ 
+   // Bind control types
+   py::class_<franka::Torques>(m, "Torques")
+@@ -451,7 +464,7 @@ PYBIND11_MODULE(_pylibfranka, m) {
+       .def("set_EE", &PyRobot::setEE)
+       .def("set_load", &PyRobot::setLoad)
+       .def("automatic_error_recovery", &PyRobot::automaticErrorRecovery)
+-      .def("read_once", &PyRobot::readOnce)
++      .def("read_once", &PyRobot::readOnce, py::call_guard<py::gil_scoped_release>())
+       .def("load_model", &PyRobot::loadModel)
+       .def("stop", &PyRobot::stop);
+ 
+@@ -466,13 +479,17 @@ PYBIND11_MODULE(_pylibfranka, m) {
+   // Bind PyGripper
+   py::class_<PyGripper>(m, "Gripper")
+       .def(py::init<const std::string&>())
+-      .def("homing", &PyGripper::homing)
++      // Every gripper call blocks until the gripper finishes; move() can hold
++      // for ~1s. Without releasing the GIL that stalls the 1 kHz control thread
++      // and the robot aborts with communication_constraints_violation.
++      .def("homing", &PyGripper::homing, py::call_guard<py::gil_scoped_release>())
+       .def("grasp", &PyGripper::grasp, py::arg("width"), py::arg("speed"), py::arg("force"),
+            py::arg("epsilon_inner") = 0.005,  // Default inner tolerance
+-           py::arg("epsilon_outer") = 0.005)  // Default outer tolerance
+-      .def("read_once", &PyGripper::readOnce)
+-      .def("stop", &PyGripper::stop)
+-      .def("move", &PyGripper::move)
++           py::arg("epsilon_outer") = 0.005,  // Default outer tolerance
++           py::call_guard<py::gil_scoped_release>())
++      .def("read_once", &PyGripper::readOnce, py::call_guard<py::gil_scoped_release>())
++      .def("stop", &PyGripper::stop, py::call_guard<py::gil_scoped_release>())
++      .def("move", &PyGripper::move, py::call_guard<py::gil_scoped_release>())
+       .def("server_version", &PyGripper::serverVersion);
+ 
+   // Add docstring

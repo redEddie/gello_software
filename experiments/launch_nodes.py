@@ -13,6 +13,10 @@ class Args:
     robot_port: int = 6001
     hostname: str = "127.0.0.1"
     robot_ip: str = "192.168.1.10"
+    # FR3 (pylibfranka) hardware options; only used when robot == "fr3".
+    fr3_read_only: bool = False
+    fr3_use_gripper: bool = True
+    fr3_enforce_rt: bool = True
 
 
 def launch_robot_server(args: Args):
@@ -38,6 +42,25 @@ def launch_robot_server(args: Args):
 
         server = MujocoRobotServer(
             xml_path=xml, gripper_xml_path=None, port=port, host=args.hostname
+        )
+        server.serve()
+    elif args.robot == "sim_fr3":
+        from gello.robots.sim_robot import MujocoRobotServer
+
+        MENAGERIE_ROOT: Path = (
+            Path(__file__).parent.parent / "third_party" / "mujoco_menagerie"
+        )
+        xml = MENAGERIE_ROOT / "franka_fr3" / "fr3.xml"
+        gripper_xml = MENAGERIE_ROOT / "franka_emika_panda" / "hand.xml"
+        # fr3.xml's attachment_site is the bare flange frame; rotate it by +135deg
+        # so the attached hand lands at the real robot's -45deg mount, identical
+        # to the integrated franka_emika_panda/panda.xml
+        server = MujocoRobotServer(
+            xml_path=xml,
+            gripper_xml_path=gripper_xml,
+            gripper_quat=(0.3826834, 0, 0, 0.9238795),
+            port=port,
+            host=args.hostname,
         )
         server.serve()
     elif args.robot == "sim_panda":
@@ -78,6 +101,16 @@ def launch_robot_server(args: Args):
             from gello.robots.panda import PandaRobot
 
             robot = PandaRobot(robot_ip=args.robot_ip)
+        elif args.robot == "fr3":
+            # Real FR3 via pylibfranka (see gello/robots/franka_fr3.py).
+            from gello.robots.franka_fr3 import FrankaFR3Robot
+
+            robot = FrankaFR3Robot(
+                robot_ip=args.robot_ip,
+                use_gripper=args.fr3_use_gripper,
+                read_only=args.fr3_read_only,
+                enforce_rt=args.fr3_enforce_rt,
+            )
         elif args.robot == "bimanual_ur":
             from gello.robots.ur import URRobot
 
