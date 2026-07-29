@@ -3,7 +3,10 @@
 #
 #     ./scripts/runme.sh
 #
-# 여기서 하는 것은 전부 (a) sudo가 필요하고 (b) 재부팅하면 초기화되는 것들이다.
+# 여기서 하는 것은 전부 (a) 관리자 권한이 필요하고 (b) 재부팅하면 초기화되는 것들이다.
+# 터미널 없이(데스크톱 아이콘, Terminal=false) 실행돼도 비밀번호를 물어볼 수 있도록
+# sudo 대신 pkexec를 쓴다 -- GUI 비밀번호 창이 뜬다 (collect_libero_gui.py가 GUI
+# 시작 시 이 스크립트를 자동 실행함).
 # 서보 쪽 설정(baud 1 Mbps, Return Delay 0)은 서보 EEPROM에 있어 전원을 내려도
 # 유지되므로 여기서는 확인만 한다 -- 되돌리려면 scripts/ 의 설정 스크립트를 쓴다.
 #
@@ -29,7 +32,7 @@ else
   elif [ "$(cat "$lat_path")" = "1" ]; then
     ok "latency_timer=1 ($tty, 이미 적용됨)"
   else
-    echo 1 | sudo tee "$lat_path" > /dev/null
+    echo 1 | pkexec tee "$lat_path" > /dev/null
     if [ "$(cat "$lat_path")" = "1" ]; then
       ok "latency_timer=1 ($tty, 방금 설정)"
     else
@@ -56,8 +59,8 @@ else
   if [ "$n_perf" -eq "$n_total" ]; then
     ok "governor=performance ($n_total개 코어, 이미 적용됨)"
   else
-    # stdout만 버린다: sudo 비밀번호 프롬프트는 stderr로 나가므로 살려둬야 한다
-    printf 'performance\n' | sudo tee "${govs[@]}" > /dev/null
+    # stdout만 버린다: pkexec 인증 실패 메시지는 stderr로 나가므로 살려둬야 한다
+    printf 'performance\n' | pkexec tee "${govs[@]}" > /dev/null
     n_perf=$(grep -lx performance "${govs[@]}" 2>/dev/null | wc -l)
     [ "$n_perf" -eq "$n_total" ] && ok "governor=performance ($n_total개 코어, 방금 설정)" \
       || warn "governor 설정 실패 ($n_perf/$n_total 코어만 적용됨)"
