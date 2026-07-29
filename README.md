@@ -1,15 +1,17 @@
 # FR3 + GELLO LIBERO 데이터 수집기
 
-기존 `fr3-real-teleop` 포크(아래) 위에, FR3 + GELLO 텔레옵으로 **LIBERO 포맷** 모방학습 데이터를 수집하는 PyQt6 GUI를 추가했다. 신규 파일만 추가했고 기존 코드는 건드리지 않았다 (단, GELLO/Dynamixel 쪽에 실기 테스트로 발견한 버그 2건은 아래처럼 고쳤다).
+기존 `fr3-real-teleop` 포크(아래) 위에, FR3 + GELLO 텔레옵으로 **LIBERO 포맷** 모방학습 데이터를 수집하는 PyQt6 GUI를 추가했다. 신규 파일 위주로 추가했고, 실기 테스트로 발견한 버그 몇 건은 아래처럼 고쳤다.
 
 <p align="center">
   <img src="imgs/libero_collector_gui.jpg" width="90%" />
 </p>
 
-- **`experiments/collect_libero_gui.py`** -- PyQt6 메인 GUI. 로봇 노드(`launch_nodes.py`)를 GUI 안에서 직접 시작/재시작/중지 (별도 터미널 불필요), 저장된 task 이름을 드롭다운으로 다시 선택(--resume 자동 체크), 연결 전에도 카메라 드롭다운 선택 시 실시간 미리보기, 자세 매칭 게이트(조인트별 델타 바), 세션/에피소드 제어, 데이터셋 탐색기(파일·에피소드 목록/삭제), 홈으로 이동 버튼, 세션 종료 시 요약.
+- **`experiments/collect_libero_gui.py`** -- PyQt6 메인 GUI. 로봇 노드(`launch_nodes.py`)를 GUI 안에서 직접 시작/재시작/중지 (별도 터미널 불필요), 저장된 task 이름을 드롭다운으로 다시 선택(--resume 자동 체크), 연결 전에도 카메라 드롭다운 선택 시 실시간 미리보기, 자세 매칭 게이트(조인트별 델타 바), 세션/에피소드 제어, 데이터셋 탐색기(파일·에피소드 목록/삭제/실제 구조 확인), 홈으로 이동 버튼, 세션 종료 시 요약, GUI 내에서 바로 LeRobot 포맷 변환/업로드. 한손 조작용 단축키(Space/Esc/Delete/Enter), 세션 로그를 파일로도 저장. GUI 시작 시 `scripts/runme.sh`(USB latency timer, CPU governor 튜닝)를 자동 실행 -- 터미널 없이 바탕화면 아이콘으로 켜도 `pkexec` GUI 비밀번호 창으로 동작.
 - **`gello/libero_gui_worker.py`** -- `record_dataset.py`의 홈복귀→리셋대기→자세게이트→접근램프→기록 상태 머신을 커맨드큐+Qt시그널 방식으로 이식한 백그라운드 `QThread`.
-- **`gello/libero_format.py`** -- LIBERO 표준 HDF5(`<task>_demo.hdf5`) writer. GELLO는 조인트 공간으로 텔레옵하지만, 저장되는 `actions`는 실현된 EE 궤적에서 계산한 델타 포즈(OSC_POSE 스타일, [-1,1] 정규화)로 LIBERO 관례에 맞춤.
-- **버그 수정 (기존 파일)**: `GelloAgent.close()`가 leader의 Dynamixel 시리얼 포트를 한 번도 닫지 않아, 같은 프로세스에서 재연결 시 포트가 자기 자신에 의해 점유된 것으로 잡혀 `fuser -k`가 자기 자신을 죽이는 버그를 고침 (`gello/agents/gello_agent.py`, `gello/robots/dynamixel.py`, `gello/dynamixel/driver.py`).
+- **`gello/libero_format.py`** -- LIBERO 표준 HDF5(`<task>_demo.hdf5`) writer.
+- **`gello/dataset_schema.py`** -- 저장할 데이터 구조를 세션별로 커스터마이징. GUI의 "데이터셋 구조: 기본/사용자 지정" 버튼에서: action space 선택(EE-delta/EE-pose absolute/Joint-angle delta/Joint-angle absolute), action에 그리퍼 포함 여부, 그리퍼 인코딩(-1/+1 robosuite 관례 vs observation과 동일한 0/1), 저장할 observation 필드 선택(이미지 2종/joint states/gripper state/EE pos·ori·states), 추가 필드(joint velocities, timestamp), 이미지 해상도(256x256 LIBERO 기본 vs 원본 해상도). "기본값 사용"이 켜져 있으면 나머지 설정과 무관하게 항상 원래 LIBERO 고정 스키마(EE-delta, 그리퍼 -1/+1, obs 전부, 256x256)로 저장됨 -- GELLO는 조인트 공간으로 텔레옵하지만 기본 action은 실현된 EE 궤적에서 계산한 델타 포즈(OSC_POSE 스타일, [-1,1] 정규화)로 LIBERO 관례에 맞춤. 선택은 `~/libero_gui_logs/dataset_schema.json`에 저장되어 다음 실행에도 유지.
+- **`scripts/convert_libero_to_lerobot.py`** -- 위 스키마를 실제로 반영해 변환 (파일의 `obs`/`actions` 실물을 읽어 action space·obs 필드·그리퍼 포함 여부를 자동 감지, 여러 파일을 함께 변환할 때 스키마가 다르면 변환 시작 전에 에러로 막음). 이미지는 아직 256x256만 지원 -- "원본 해상도 유지"로 수집한 파일은 변환 전 에러로 안내.
+- **버그 수정 (기존 파일)**: `GelloAgent.close()`가 leader의 Dynamixel 시리얼 포트를 한 번도 닫지 않아, 같은 프로세스에서 재연결 시 포트가 자기 자신에 의해 점유된 것으로 잡혀 `fuser -k`가 자기 자신을 죽이는 버그를 고침 (`gello/agents/gello_agent.py`, `gello/robots/dynamixel.py`, `gello/dynamixel/driver.py`). 홈 복귀 중 그리퍼가 직전 상태를 그대로 유지하던(안 열리던) 버그도 고침 (`gello/libero_gui_worker.py`의 `_ramp_to`).
 
 실행: `run_libero_collector.sh` 또는 바탕화면 바로가기로 GUI만 켜면, 그 안에서 로봇 노드까지 관리 가능.
 
