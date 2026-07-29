@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import queue
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
 import zmq
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from gello.dataset_schema import DatasetSchemaConfig
 from gello.lerobot_plugin import (
     JOINT_KEYS,
     FR3ZMQRobot,
@@ -35,6 +36,7 @@ from gello.robots.franka_fr3 import FR3_RESET_POSES
 
 GATE_RAD = 0.5  # run_env.py / gello_match_pose.py's start-gate threshold
 RAMP_STEP = 0.05  # rad/tick @ 20Hz = 1.0 rad/s, same as record_dataset.py
+GRIPPER_OPEN = 0.0  # GELLO/franka_fr3 convention: 0=open, 1=closed
 
 # Fallback defaults, used only if the GUI doesn't supply a serial (e.g. a
 # script driving CollectionWorker directly). The GUI itself always populates
@@ -61,6 +63,7 @@ class WorkerConfig:
     resume: bool = False
     agent_camera_serial: str = AGENT_CAMERA_SERIAL
     wrist_camera_serial: str = WRIST_CAMERA_SERIAL
+    schema: DatasetSchemaConfig = field(default_factory=DatasetSchemaConfig)
 
 
 class CollectionWorker(QThread):
@@ -111,6 +114,15 @@ class CollectionWorker(QThread):
 
     def cmd_delete_episode(self, name: str) -> None:
         self._cmds.put(("delete_episode", name))
+
+    def current_schema(self) -> Optional[DatasetSchemaConfig]:
+        """The effective schema this session's writer is currently using,
+        or None if not connected yet. ``DatasetSchemaConfig`` is a plain,
+        immutable-after-construction dataclass (never mutated once the
+        writer is built), so reading it from the GUI thread is safe --
+        unlike the writer's open h5py.File, which only this worker thread
+        may touch (see _handle_delete_episode's docstring)."""
+        return self._writer.schema if self._writer is not None else None
 
     # --------------------------------------------------------------- helpers
     def _handle_delete_episode(self, name: str) -> None:
@@ -182,18 +194,23 @@ class CollectionWorker(QThread):
         return np.array([d[k] for k in JOINT_KEYS], dtype=float)
 
     def _get_obs(self) -> dict:
-        """Like ``FR3ZMQRobot.get_observation()`` but also carries ``ee_pos_quat``.
+        """Like ``FR3ZMQRobot.get_observation()`` but also carries ``ee_pos_quat``
+        and ``joint_velocities``.
 
         The lerobot-facing ``get_observation()`` only forwards the
         ``JOINT_KEYS``-shaped dict (it feeds LeRobot's ``observation_features``
         schema, which record_dataset.py relies on and this module must not
-        change). The LIBERO delta-action writer needs the Cartesian pose too,
-        so this pulls the same raw ZMQ observation once and keeps both.
+        change). The LIBERO writer's optional fields need the Cartesian pose
+        and joint velocities too, so this pulls the same raw ZMQ observation
+        once and keeps all of it -- joint_velocities is cheap (the control
+        loop already computes it every tick) and only gets buffered/written
+        if the active DatasetSchemaConfig asks for it.
         """
         raw = self._robot._client.get_observations()
         pos = np.asarray(raw["joint_positions"], dtype=float)
         out: dict = dict(zip(JOINT_KEYS, pos.tolist()))
         out["_ee_pos_quat"] = np.asarray(raw["ee_pos_quat"], dtype=float)
+        out["_joint_velocities"] = np.asarray(raw["joint_velocities"], dtype=float)
         for cam_key, cam in self._robot.cameras.items():
             out[cam_key] = cam.read_latest()
         return out
@@ -204,7 +221,20 @@ class CollectionWorker(QThread):
     ) -> str:
         """Returns "ok", "quit", or "go_home" (go_home only possible when
         react_to_go_home). Running out of ticks without converging is
-        treated like "quit" -- same abort-the-session behavior as before."""
+        treated like "quit" -- same abort-the-session behavior as before.
+
+        Always commands the gripper OPEN (GRIPPER_OPEN), not whatever it
+        currently is: this is the homing/reset ramp (called at the top of
+        every loop iteration and during final teardown), so an episode that
+        ended with the gripper closed must not leave it closed through
+        reset -- it previously echoed back obs["gripper.pos"] every tick,
+        which is a no-op command (send whatever it already is), so a closed
+        gripper just silently stayed closed through "homing". The command
+        only needs to be set once -- FrankaFR3Robot's gripper thread drives
+        toward _gripper_target continuously in the background, independent
+        of whether new joint commands keep arriving -- but resending it
+        every tick here is harmless and keeps this loop's shape unchanged.
+        """
         for _ in range(max_ticks):
             interrupt = self._drain_interrupt(react_to_go_home=react_to_go_home)
             if interrupt:
@@ -215,7 +245,7 @@ class CollectionWorker(QThread):
             if np.abs(d).max() < 0.02:
                 return "ok"
             step = np.clip(d, -RAMP_STEP, RAMP_STEP)
-            cmd = dict(zip(JOINT_KEYS, np.append(q + step, obs["gripper.pos"]).tolist()))
+            cmd = dict(zip(JOINT_KEYS, np.append(q + step, GRIPPER_OPEN).tolist()))
             self._robot.send_action(cmd)
             self._emit_frames(obs)
             time.sleep(0.05)
@@ -336,6 +366,8 @@ class CollectionWorker(QThread):
                 gripper_position=obs["gripper.pos"],
                 ee_pos_quat=obs["_ee_pos_quat"],
                 gripper_closed=action["gripper.pos"] > 0.5,
+                joint_velocities=obs["_joint_velocities"][:7],
+                timestamp=time.time(),
             )
             self._emit_frames(obs)
             n = i + 1
@@ -364,6 +396,7 @@ class CollectionWorker(QThread):
                 task_name=self.cfg.task_name,
                 language_instruction=self.cfg.language_instruction,
                 resume=self.cfg.resume,
+                schema=self.cfg.schema,
             )
         except Exception as e:  # noqa: BLE001
             # Covers both robot/camera/GELLO connect failures and writer
