@@ -77,7 +77,13 @@ from gello.dataset_schema import (  # noqa: E402
     load_schema_config,
     save_schema_config,
 )
-from gello.libero_format import describe_episode, describe_schema  # noqa: E402
+from gello.i18n import get_language, set_language, tr  # noqa: E402
+from gello.libero_format import (  # noqa: E402
+    action_column_names,
+    describe_episode,
+    describe_schema,
+    schema_from_episode,
+)
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
 from gello.robots.franka_fr3 import FR3_RESET_POSES  # noqa: E402
 
@@ -217,19 +223,19 @@ class DatasetSchemaDialog(QDialog):
 
     def __init__(self, parent: QWidget, cfg: DatasetSchemaConfig) -> None:
         super().__init__(parent)
-        self.setWindowTitle("데이터셋 구조 사용자 지정")
+        self.setWindowTitle(tr("데이터셋 구조 사용자 지정"))
         layout = QVBoxLayout(self)
 
-        self.default_check = QCheckBox("기본값 사용 (LIBERO 표준 구조)")
+        self.default_check = QCheckBox(tr("기본값 사용 (LIBERO 표준 구조)"))
         self.default_check.setChecked(cfg.use_default)
         self.default_check.toggled.connect(self._on_default_toggled)
         layout.addWidget(self.default_check)
 
         action_row = QHBoxLayout()
-        action_row.addWidget(QLabel("Action Space:"))
+        action_row.addWidget(QLabel(tr("Action Space:")))
         self.action_combo = QComboBox()
         for key in ACTION_SPACES:
-            self.action_combo.addItem(ACTION_SPACE_LABELS[key], key)
+            self.action_combo.addItem(tr(ACTION_SPACE_LABELS[key]), key)
         idx = self.action_combo.findData(cfg.action_space)
         if idx >= 0:
             self.action_combo.setCurrentIndex(idx)
@@ -239,15 +245,17 @@ class DatasetSchemaDialog(QDialog):
         self.field_checks: dict[str, QCheckBox] = {}
 
         self.gripper_action_check = QCheckBox(
-            "Action에 그리퍼 값 포함 (끄면 위 Action Space 어떤 걸 골라도 그리퍼 차원이 빠집니다)"
+            tr("Action에 그리퍼 값 포함 (끄면 위 Action Space 어떤 걸 골라도 그리퍼 차원이 빠집니다)")
         )
         self.gripper_action_check.setChecked(cfg.action_include_gripper)
         self.field_checks["action_include_gripper"] = self.gripper_action_check
         layout.addWidget(self.gripper_action_check)
 
         self.gripper_match_obs_check = QCheckBox(
-            "Action 그리퍼 값을 Observation과 동일하게 0=open/1=close로 저장 "
-            "(기본은 -1/+1, robosuite 컨벤션)"
+            tr(
+                "Action 그리퍼 값을 Observation과 동일하게 0=open/1=close로 저장 "
+                "(기본은 -1/+1, robosuite 컨벤션)"
+            )
         )
         self.gripper_match_obs_check.setChecked(cfg.gripper_action_match_obs)
         self.field_checks["gripper_action_match_obs"] = self.gripper_match_obs_check
@@ -257,14 +265,29 @@ class DatasetSchemaDialog(QDialog):
         self.gripper_action_check.toggled.connect(lambda _: self._update_gripper_match_obs_enabled())
         layout.addWidget(self.gripper_match_obs_check)
 
-        obs_box = QGroupBox("저장할 Observation 필드")
+        # Per-column action name overrides, keyed by the built-in default
+        # name (e.g. "joint1.pos") -- survives switching Action Space back
+        # and forth within this dialog session via _pending_overrides, since
+        # the edit widgets themselves get rebuilt every time (the column set
+        # changes with the action space). Seeded from whatever was already
+        # saved (possibly for a different action_space than the one shown
+        # first) so a previous custom name isn't silently lost.
+        self._pending_overrides: dict[str, str] = dict(cfg.action_column_name_overrides)
+        self.name_override_edits: dict[str, QLineEdit] = {}
+        names_box = QGroupBox(tr("Action 열 이름 (선택 -- 비워두면 기본값)"))
+        self.names_layout = QVBoxLayout(names_box)
+        layout.addWidget(names_box)
+        self.action_combo.currentIndexChanged.connect(lambda _: self._rebuild_name_edits())
+        self.gripper_action_check.toggled.connect(lambda _: self._rebuild_name_edits())
+
+        obs_box = QGroupBox(tr("저장할 Observation 필드"))
         obs_layout = QVBoxLayout(obs_box)
 
         image_size_row = QHBoxLayout()
-        image_size_row.addWidget(QLabel("이미지 해상도:"))
+        image_size_row.addWidget(QLabel(tr("이미지 해상도:")))
         self.image_size_combo = QComboBox()
-        self.image_size_combo.addItem("256x256 (LIBERO 기본, 정사각형 크롭)", 256)
-        self.image_size_combo.addItem("원본 해상도 유지 (리사이즈 안 함)", self._IMAGE_SIZE_NATIVE)
+        self.image_size_combo.addItem(tr("256x256 (LIBERO 기본, 정사각형 크롭)"), 256)
+        self.image_size_combo.addItem(tr("원본 해상도 유지 (리사이즈 안 함)"), self._IMAGE_SIZE_NATIVE)
         target = cfg.image_size if cfg.image_size is not None else self._IMAGE_SIZE_NATIVE
         idx = self.image_size_combo.findData(target)
         if idx >= 0:
@@ -273,16 +296,16 @@ class DatasetSchemaDialog(QDialog):
         obs_layout.addLayout(image_size_row)
 
         for attr, label in self._OBS_FIELDS:
-            cb = QCheckBox(label)
+            cb = QCheckBox(tr(label))
             cb.setChecked(getattr(cfg, attr))
             self.field_checks[attr] = cb
             obs_layout.addWidget(cb)
         layout.addWidget(obs_box)
 
-        extra_box = QGroupBox("추가 필드 (LIBERO 표준 아님)")
+        extra_box = QGroupBox(tr("추가 필드 (LIBERO 표준 아님)"))
         extra_layout = QVBoxLayout(extra_box)
         for attr, label in self._EXTRA_FIELDS:
-            cb = QCheckBox(label)
+            cb = QCheckBox(tr(label))
             cb.setChecked(getattr(cfg, attr))
             self.field_checks[attr] = cb
             extra_layout.addWidget(cb)
@@ -291,16 +314,18 @@ class DatasetSchemaDialog(QDialog):
         self._editable_widgets = [
             self.action_combo,
             self.gripper_action_check,
+            names_box,
             obs_box,
             extra_box,
         ]
+        self._rebuild_name_edits()
         self._on_default_toggled(self.default_check.isChecked())
 
         # Not in _editable_widgets on purpose -- stays clickable even while
         # "기본값 사용" is checked, since describe_schema() resolves
         # .effective() internally and will just show the LIBERO default
         # structure in that case (still a useful confirmation).
-        preview_btn = QPushButton("구조 미리보기...")
+        preview_btn = QPushButton(tr("구조 미리보기..."))
         preview_btn.clicked.connect(self._show_preview)
         layout.addWidget(preview_btn)
 
@@ -321,6 +346,46 @@ class DatasetSchemaDialog(QDialog):
             not self.default_check.isChecked() and self.gripper_action_check.isChecked()
         )
 
+    def _rebuild_name_edits(self) -> None:
+        """Swaps the name-override row widgets for whatever column set the
+        currently-selected Action Space + gripper-include state implies.
+        Edits for the OLD column set are folded into _pending_overrides
+        first, so switching Action Space back and forth (or toggling
+        gripper-include) within this dialog session doesn't lose them --
+        only committing (OK) or discarding the whole dialog does.
+        """
+        for key, edit in self.name_override_edits.items():
+            text = edit.text().strip()
+            if text and text != key:
+                self._pending_overrides[key] = text
+            else:
+                self._pending_overrides.pop(key, None)
+
+        while self.names_layout.count():
+            item = self.names_layout.takeAt(0)
+            w = item.widget()
+            lay = item.layout()
+            if w is not None:
+                w.deleteLater()
+            elif lay is not None:
+                while lay.count():
+                    sub = lay.takeAt(0).widget()
+                    if sub is not None:
+                        sub.deleteLater()
+
+        self.name_override_edits = {}
+        cols = action_column_names(self.action_combo.currentData())
+        if self.gripper_action_check.isChecked():
+            cols = cols + ["gripper.pos"]
+        for default_name in cols:
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"{default_name}  ->"))
+            edit = QLineEdit(self._pending_overrides.get(default_name, ""))
+            edit.setPlaceholderText(default_name)
+            row.addWidget(edit)
+            self.names_layout.addLayout(row)
+            self.name_override_edits[default_name] = edit
+
     def _current_config(self) -> DatasetSchemaConfig:
         """The config implied by the dialog's current widget state --
         regardless of whether OK has been clicked yet. Shared by
@@ -330,6 +395,16 @@ class DatasetSchemaDialog(QDialog):
         kwargs = {attr: cb.isChecked() for attr, cb in self.field_checks.items()}
         raw_size = self.image_size_combo.currentData()
         kwargs["image_size"] = None if raw_size == self._IMAGE_SIZE_NATIVE else raw_size
+
+        overrides = dict(self._pending_overrides)
+        for key, edit in self.name_override_edits.items():
+            text = edit.text().strip()
+            if text and text != key:
+                overrides[key] = text
+            else:
+                overrides.pop(key, None)
+        kwargs["action_column_name_overrides"] = overrides
+
         return DatasetSchemaConfig(
             use_default=self.default_check.isChecked(),
             action_space=self.action_combo.currentData(),
@@ -342,14 +417,14 @@ class DatasetSchemaDialog(QDialog):
     def _show_preview(self) -> None:
         text = describe_schema(self._current_config())
         dlg = QDialog(self)
-        dlg.setWindowTitle("데이터셋 구조 미리보기")
+        dlg.setWindowTitle(tr("데이터셋 구조 미리보기"))
         layout = QVBoxLayout(dlg)
         view = QPlainTextEdit(text)
         view.setReadOnly(True)
         view.setFont(QFont("monospace"))
         view.setMinimumSize(480, 360)
         layout.addWidget(view)
-        close_btn = QPushButton("닫기")
+        close_btn = QPushButton(tr("닫기"))
         close_btn.clicked.connect(dlg.accept)
         layout.addWidget(close_btn)
         dlg.exec()
@@ -365,65 +440,82 @@ class LerobotConvertDialog(QDialog):
 
     def __init__(self, parent: QWidget, default_root: str) -> None:
         super().__init__(parent)
-        self.setWindowTitle("LeRobot 형식으로 변환")
+        self.setWindowTitle(tr("LeRobot 형식으로 변환"))
         layout = QVBoxLayout(self)
 
-        layout.addWidget(QLabel("변환할 .hdf5 파일 (여러 개 선택 가능, 이미 큐레이션 끝난 파일):"))
+        layout.addWidget(QLabel(tr("변환할 .hdf5 파일 (여러 개 선택 가능, 이미 큐레이션 끝난 파일):")))
         file_row = QHBoxLayout()
         self.files_edit = QLineEdit()
-        self.files_edit.setPlaceholderText("찾아보기로 선택하세요")
+        self.files_edit.setPlaceholderText(tr("찾아보기로 선택하세요"))
         file_row.addWidget(self.files_edit, 1)
-        browse_files_btn = QPushButton("찾아보기...")
+        browse_files_btn = QPushButton(tr("찾아보기..."))
         browse_files_btn.clicked.connect(lambda: self._browse_files(default_root))
         file_row.addWidget(browse_files_btn)
         layout.addLayout(file_row)
 
         grid = QGridLayout()
-        grid.addWidget(QLabel("Repo ID:"), 0, 0)
+        grid.addWidget(QLabel(tr("Repo ID:")), 0, 0)
         self.repo_id_edit = QLineEdit()
-        self.repo_id_edit.setPlaceholderText("예: knu-physical-ai/fr3-libero-teleop-lerobot")
+        self.repo_id_edit.setPlaceholderText(tr("예: knu-physical-ai/fr3-libero-teleop-lerobot"))
         grid.addWidget(self.repo_id_edit, 0, 1, 1, 2)
 
-        grid.addWidget(QLabel("로컬 출력 경로:"), 1, 0)
+        grid.addWidget(QLabel(tr("로컬 출력 경로:")), 1, 0)
         self.out_root_edit = QLineEdit(str(Path.home() / "lerobot_upload"))
         grid.addWidget(self.out_root_edit, 1, 1)
-        browse_root_btn = QPushButton("찾아보기...")
+        browse_root_btn = QPushButton(tr("찾아보기..."))
         browse_root_btn.clicked.connect(self._browse_root)
         grid.addWidget(browse_root_btn, 1, 2)
 
-        grid.addWidget(QLabel("FPS:"), 2, 0)
+        grid.addWidget(QLabel(tr("FPS:")), 2, 0)
         self.fps_edit = QLineEdit("20")
         grid.addWidget(self.fps_edit, 2, 1)
         layout.addLayout(grid)
 
-        self.only_success_check = QCheckBox("성공(success=True) 에피소드만 포함 (--only-success)")
+        self.only_success_check = QCheckBox(tr("성공(success=True) 에피소드만 포함 (--only-success)"))
         layout.addWidget(self.only_success_check)
 
-        self.push_check = QCheckBox("변환 후 Hugging Face Hub에 바로 업로드 (--push)")
+        self.resume_check = QCheckBox(
+            tr(
+                "처음부터 새로 만들지 않고 기존 Hub 데이터셋에 이어붙이기 (--resume) -- 다른 task를 "
+                "추가할 때, 기존 데이터는 재변환/재업로드하지 않음"
+            )
+        )
+        layout.addWidget(self.resume_check)
+        resume_warning = QLabel(
+            tr(
+                "⚠ 동시에 두 명이 같은 Repo ID로 --resume 변환하지 마세요 -- 같은 파일 경로를 서로 "
+                "덮어써서 조용히 데이터가 유실될 수 있습니다."
+            )
+        )
+        resume_warning.setStyleSheet("color: #e67e22;")
+        resume_warning.setWordWrap(True)
+        layout.addWidget(resume_warning)
+
+        self.push_check = QCheckBox(tr("변환 후 Hugging Face Hub에 바로 업로드 (--push)"))
         self.push_check.toggled.connect(lambda on: self.private_check.setEnabled(on))
         layout.addWidget(self.push_check)
 
-        self.private_check = QCheckBox("비공개 데이터셋으로 업로드 (--private)")
+        self.private_check = QCheckBox(tr("비공개 데이터셋으로 업로드 (--private)"))
         self.private_check.setEnabled(False)
         layout.addWidget(self.private_check)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("변환 시작")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(tr("변환 시작"))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
     def _browse_files(self, default_root: str) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "변환할 .hdf5 파일", default_root or str(Path.home()), "HDF5 (*.hdf5)"
+            self, tr("변환할 .hdf5 파일"), default_root or str(Path.home()), "HDF5 (*.hdf5)"
         )
         if paths:
             self.files_edit.setText(" ".join(paths))
 
     def _browse_root(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "로컬 출력 경로", self.out_root_edit.text())
+        d = QFileDialog.getExistingDirectory(self, tr("로컬 출력 경로"), self.out_root_edit.text())
         if d:
             self.out_root_edit.setText(d)
 
@@ -432,15 +524,15 @@ class LerobotConvertDialog(QDialog):
         warning dialog already shown) if required fields are missing."""
         paths = self.files_edit.text().split()
         if not paths:
-            QMessageBox.warning(self, "파일 필요", ".hdf5 파일을 하나 이상 선택하세요.")
+            QMessageBox.warning(self, tr("파일 필요"), tr(".hdf5 파일을 하나 이상 선택하세요."))
             return None
         repo_id = self.repo_id_edit.text().strip()
         if not repo_id:
-            QMessageBox.warning(self, "Repo ID 필요", "Repo ID를 입력하세요.")
+            QMessageBox.warning(self, tr("Repo ID 필요"), tr("Repo ID를 입력하세요."))
             return None
         out_root = self.out_root_edit.text().strip()
         if not out_root:
-            QMessageBox.warning(self, "출력 경로 필요", "로컬 출력 경로를 입력하세요.")
+            QMessageBox.warning(self, tr("출력 경로 필요"), tr("로컬 출력 경로를 입력하세요."))
             return None
         args = list(paths) + [
             "--repo-id", repo_id,
@@ -449,16 +541,98 @@ class LerobotConvertDialog(QDialog):
         ]
         if self.only_success_check.isChecked():
             args.append("--only-success")
+        if self.resume_check.isChecked():
+            args.append("--resume")
         if self.push_check.isChecked():
             args.append("--push")
             args.append("--private" if self.private_check.isChecked() else "--no-private")
         return args
 
 
+class HdfUploadDialog(QDialog):
+    """Collects args for scripts/upload_to_hub.py before running it as a
+    subprocess (see LiberoCollectorWindow._open_hdf5_upload). Uploads the
+    RAW curated .hdf5 as-is -- the converted/LeRobot half of the dual
+    upload (see ~/huggingface_upload_process.md) is the separate "LeRobot
+    변환..." button's --push option.
+    """
+
+    def __init__(self, parent: QWidget, default_file: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("HDF5 원본 업로드"))
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel(tr("업로드할 .hdf5 파일 (이미 큐레이션 끝난 파일):")))
+        file_row = QHBoxLayout()
+        self.file_edit = QLineEdit(default_file)
+        file_row.addWidget(self.file_edit, 1)
+        browse_btn = QPushButton(tr("찾아보기..."))
+        browse_btn.clicked.connect(self._browse_file)
+        file_row.addWidget(browse_btn)
+        layout.addLayout(file_row)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel(tr("Repo ID:")), 0, 0)
+        self.repo_id_edit = QLineEdit()
+        self.repo_id_edit.setPlaceholderText(tr("예: knu-physical-ai/fr3-libero-teleop"))
+        grid.addWidget(self.repo_id_edit, 0, 1)
+
+        grid.addWidget(QLabel(tr("Repo 안 파일 이름:")), 1, 0)
+        self.path_in_repo_edit = QLineEdit(Path(default_file).name if default_file else "")
+        self.path_in_repo_edit.setPlaceholderText(
+            tr("예: <task>_demo_<이름>_<날짜>.hdf5 -- 비워두면 로컬 파일 이름 그대로")
+        )
+        grid.addWidget(self.path_in_repo_edit, 1, 1)
+        layout.addLayout(grid)
+
+        self.private_check = QCheckBox(tr("비공개 데이터셋으로 업로드 (--private)"))
+        layout.addWidget(self.private_check)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(tr("업로드 시작"))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _browse_file(self) -> None:
+        start = self.file_edit.text() or str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(self, tr("업로드할 .hdf5 파일"), start, "HDF5 (*.hdf5)")
+        if path:
+            self.file_edit.setText(path)
+            if not self.path_in_repo_edit.text().strip():
+                self.path_in_repo_edit.setText(Path(path).name)
+
+    def build_args(self) -> "list[str] | None":
+        """Returns the script's argv (sans program name), or None (with a
+        warning dialog already shown) if required fields are missing."""
+        local_file = self.file_edit.text().strip()
+        if not local_file:
+            QMessageBox.warning(self, tr("파일 필요"), tr(".hdf5 파일을 선택하세요."))
+            return None
+        repo_id = self.repo_id_edit.text().strip()
+        if not repo_id:
+            QMessageBox.warning(self, tr("Repo ID 필요"), tr("Repo ID를 입력하세요."))
+            return None
+        args = [local_file, "--repo-id", repo_id]
+        path_in_repo = self.path_in_repo_edit.text().strip()
+        if path_in_repo:
+            args += ["--path-in-repo", path_in_repo]
+        args.append("--private" if self.private_check.isChecked() else "--no-private")
+        return args
+
+
 class LiberoCollectorWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("FR3 + GELLO -- LIBERO 데이터 수집기")
+        # (setter, ko_text) pairs registered via self._reg() -- lets
+        # _retranslate_ui() re-apply every static widget's text after the
+        # language toggle, without needing self.xxx references for widgets
+        # that otherwise wouldn't need to be kept around (e.g. plain
+        # QLabels/QPushButtons local to a _build_* method).
+        self._i18n_registry: list[tuple] = []
+        self._reg(self.setWindowTitle, "FR3 + GELLO -- LIBERO 데이터 수집기")
         self.worker: CollectionWorker | None = None
         self.episodes_this_session = 0
         self.node_ok = True
@@ -468,9 +642,11 @@ class LiberoCollectorWindow(QMainWindow):
         self.wrist_preview_worker: CameraPreviewWorker | None = None
         self.node_process: QProcess | None = None
         self.convert_process: QProcess | None = None
+        self.hdf5_upload_process: QProcess | None = None
         self.runme_process: QProcess | None = None
         self._node_restart_pending = False
         self._current_state = "idle"
+        self._node_status_received = False
         self.schema_cfg = load_schema_config()
 
         # Persistent log -- the on-screen log panel is in-memory only and
@@ -549,61 +725,119 @@ class LiberoCollectorWindow(QMainWindow):
 
         self._run_runme_sh()
 
+    # ------------------------------------------------------------------ i18n
+    def _reg(self, setter, ko_text: str) -> None:
+        """Applies `tr(ko_text)` via `setter` now, and remembers the pair so
+        _retranslate_ui() can re-apply it (in whatever language is current
+        then) after the language toggle. `setter` is any single-string
+        setter -- setText/setTitle/setToolTip/setPlaceholderText/
+        setWindowTitle all fit.
+        """
+        setter(tr(ko_text))
+        self._i18n_registry.append((setter, ko_text))
+
+    def _toggle_language(self) -> None:
+        set_language("en" if get_language() == "ko" else "ko")
+        self._retranslate_ui()
+
+    def _retranslate_ui(self) -> None:
+        for setter, ko_text in self._i18n_registry:
+            setter(tr(ko_text))
+        self.lang_toggle_btn.setText("English" if get_language() == "ko" else "한국어")
+        # Everything below has runtime-derived text (not a fixed source
+        # string) -- re-derive each from the state that's already tracked
+        # in instance attributes, rather than re-applying a stored string.
+        self._update_schema_btn_label()
+        self.state_label.setText(tr(STATE_LABELS_KO.get(self._current_state, self._current_state)))
+        self.episode_label.setText(tr("에피소드: {n}").format(n=self.episodes_this_session))
+        if self._node_status_received:
+            self.node_label.setText(
+                tr("노드: 정상") if self.node_ok else tr("노드: 응답 없음 (launch_nodes 재시작 필요)")
+            )
+        else:
+            self.node_label.setText(tr("노드: -"))
+        if self.node_process is not None and self.node_process.state() != QProcess.ProcessState.NotRunning:
+            self.node_proc_label.setText(tr("실행 중 (PID {pid})").format(pid=self.node_process.processId()))
+        else:
+            self.node_proc_label.setText(tr("중지됨"))
+        self.dataset_tree.setHeaderLabels([tr("파일 / 에피소드"), tr("프레임수"), tr("결과")])
+        self._refresh_dataset_tree()
+
     # ------------------------------------------------------------ UI build
     def _build_node_box(self) -> QGroupBox:
-        box = QGroupBox("로봇 노드 (launch_nodes.py, pylibfranka-venv)")
+        box = QGroupBox()
+        self._reg(box.setTitle, "로봇 노드 (launch_nodes.py, pylibfranka-venv)")
         layout = QHBoxLayout(box)
 
-        layout.addWidget(QLabel("로봇 IP:"))
+        ip_label = QLabel()
+        self._reg(ip_label.setText, "로봇 IP:")
+        layout.addWidget(ip_label)
         self.robot_ip_edit = QLineEdit("172.16.0.2")
         self.robot_ip_edit.setFixedWidth(120)
         layout.addWidget(self.robot_ip_edit)
 
-        self.node_start_btn = QPushButton("노드 시작")
+        self.node_start_btn = QPushButton()
+        self._reg(self.node_start_btn.setText, "노드 시작")
         self.node_start_btn.setStyleSheet("background-color: #2ecc71;")
         self.node_start_btn.clicked.connect(self._on_start_node)
         layout.addWidget(self.node_start_btn)
 
-        self.node_restart_btn = QPushButton("노드 재시작")
+        self.node_restart_btn = QPushButton()
+        self._reg(self.node_restart_btn.setText, "노드 재시작")
         self.node_restart_btn.setStyleSheet("background-color: #f39c12;")
         self.node_restart_btn.clicked.connect(self._on_restart_node)
         layout.addWidget(self.node_restart_btn)
 
-        self.node_stop_btn = QPushButton("노드 중지")
+        self.node_stop_btn = QPushButton()
+        self._reg(self.node_stop_btn.setText, "노드 중지")
         self.node_stop_btn.clicked.connect(self._on_stop_node)
         layout.addWidget(self.node_stop_btn)
 
-        self.node_proc_label = QLabel("중지됨")
+        self.node_proc_label = QLabel(tr("중지됨"))
         self.node_proc_label.setStyleSheet("color: #888;")
         layout.addWidget(self.node_proc_label)
         layout.addStretch()
+
+        self.lang_toggle_btn = QPushButton("English")
+        self.lang_toggle_btn.setToolTip("Switch UI language / 언어 전환")
+        self.lang_toggle_btn.clicked.connect(self._toggle_language)
+        layout.addWidget(self.lang_toggle_btn)
         return box
 
     def _build_config_box(self) -> QGroupBox:
-        box = QGroupBox("세션 설정 (연결 전에만 수정 가능)")
+        box = QGroupBox()
+        self._reg(box.setTitle, "세션 설정 (연결 전에만 수정 가능)")
         grid = QGridLayout(box)
 
-        grid.addWidget(QLabel("Task 이름:"), 0, 0)
+        task_label = QLabel()
+        self._reg(task_label.setText, "Task 이름:")
+        grid.addWidget(task_label, 0, 0)
         self.task_combo = QComboBox()
         self.task_combo.setEditable(True)
-        self.task_combo.lineEdit().setPlaceholderText("예: pick up the red block")
-        self.task_combo.setToolTip("저장 경로에 이미 있는 task를 선택하면 이어서 수집 가능 (--resume 자동 체크)")
+        self._reg(self.task_combo.lineEdit().setPlaceholderText, "예: pick up the red block")
+        self._reg(self.task_combo.setToolTip, "저장 경로에 이미 있는 task를 선택하면 이어서 수집 가능 (--resume 자동 체크)")
         self.task_combo.activated.connect(self._on_task_selected)
         grid.addWidget(self.task_combo, 0, 1, 1, 3)
 
-        grid.addWidget(QLabel("언어 지시문:"), 1, 0)
+        lang_label = QLabel()
+        self._reg(lang_label.setText, "언어 지시문:")
+        grid.addWidget(lang_label, 1, 0)
         self.lang_edit = QLineEdit()
-        self.lang_edit.setPlaceholderText("비워두면 Task 이름과 동일하게 사용")
+        self._reg(self.lang_edit.setPlaceholderText, "비워두면 Task 이름과 동일하게 사용")
         grid.addWidget(self.lang_edit, 1, 1, 1, 3)
 
-        grid.addWidget(QLabel("데이터 저장 경로:"), 2, 0)
+        root_label = QLabel()
+        self._reg(root_label.setText, "데이터 저장 경로:")
+        grid.addWidget(root_label, 2, 0)
         self.root_edit = QLineEdit(str(Path.home() / "libero_datasets"))
         grid.addWidget(self.root_edit, 2, 1, 1, 2)
-        browse_btn = QPushButton("찾아보기...")
+        browse_btn = QPushButton()
+        self._reg(browse_btn.setText, "찾아보기...")
         browse_btn.clicked.connect(self._browse_root)
         grid.addWidget(browse_btn, 2, 3)
 
-        grid.addWidget(QLabel("Reset pose:"), 3, 0)
+        reset_pose_label = QLabel("Reset pose:")
+        grid.addWidget(reset_pose_label, 3, 0)
         self.reset_pose_combo = QComboBox()
         self.reset_pose_combo.addItems(sorted(FR3_RESET_POSES.keys()))
         self.reset_pose_combo.setCurrentText("libero")
@@ -614,42 +848,53 @@ class LiberoCollectorWindow(QMainWindow):
         self.grip_combo.addItems(["right", "left"])
         grid.addWidget(self.grip_combo, 3, 3)
 
-        self.wall_check = QCheckBox("GELLO 조인트 한계 벽(wall) 사용")
+        self.wall_check = QCheckBox()
+        self._reg(self.wall_check.setText, "GELLO 조인트 한계 벽(wall) 사용")
         self.wall_check.setChecked(True)
         grid.addWidget(self.wall_check, 4, 0, 1, 2)
 
-        self.resume_check = QCheckBox("기존 데이터셋에 이어붙이기 (--resume)")
+        self.resume_check = QCheckBox()
+        self._reg(self.resume_check.setText, "기존 데이터셋에 이어붙이기 (--resume)")
         grid.addWidget(self.resume_check, 4, 2, 1, 2)
 
-        grid.addWidget(QLabel("에피소드 최대 길이(초):"), 5, 0)
+        max_seconds_label = QLabel()
+        self._reg(max_seconds_label.setText, "에피소드 최대 길이(초):")
+        grid.addWidget(max_seconds_label, 5, 0)
         self.max_seconds_edit = QLineEdit("20")
         grid.addWidget(self.max_seconds_edit, 5, 1)
 
-        grid.addWidget(QLabel("리셋 대기(초):"), 5, 2)
+        reset_wait_label = QLabel()
+        self._reg(reset_wait_label.setText, "리셋 대기(초):")
+        grid.addWidget(reset_wait_label, 5, 2)
         self.reset_wait_edit = QLineEdit("10")
         grid.addWidget(self.reset_wait_edit, 5, 3)
 
-        grid.addWidget(QLabel("Agentview 카메라:"), 6, 0)
+        agent_cam_label = QLabel()
+        self._reg(agent_cam_label.setText, "Agentview 카메라:")
+        grid.addWidget(agent_cam_label, 6, 0)
         self.agent_cam_combo = QComboBox()
         self.agent_cam_combo.setEditable(True)
-        self.agent_cam_combo.setToolTip("연결된 RealSense 목록에서 선택하거나 시리얼번호를 직접 입력")
+        self._reg(self.agent_cam_combo.setToolTip, "연결된 RealSense 목록에서 선택하거나 시리얼번호를 직접 입력")
         self.agent_cam_combo.currentIndexChanged.connect(lambda _: self._on_camera_selection_changed("agent"))
         self.agent_cam_combo.lineEdit().editingFinished.connect(
             lambda: self._on_camera_selection_changed("agent")
         )
         grid.addWidget(self.agent_cam_combo, 6, 1)
 
-        grid.addWidget(QLabel("Wrist 카메라:"), 6, 2)
+        wrist_cam_label = QLabel()
+        self._reg(wrist_cam_label.setText, "Wrist 카메라:")
+        grid.addWidget(wrist_cam_label, 6, 2)
         self.wrist_cam_combo = QComboBox()
         self.wrist_cam_combo.setEditable(True)
-        self.wrist_cam_combo.setToolTip("연결된 RealSense 목록에서 선택하거나 시리얼번호를 직접 입력")
+        self._reg(self.wrist_cam_combo.setToolTip, "연결된 RealSense 목록에서 선택하거나 시리얼번호를 직접 입력")
         self.wrist_cam_combo.currentIndexChanged.connect(lambda _: self._on_camera_selection_changed("wrist"))
         self.wrist_cam_combo.lineEdit().editingFinished.connect(
             lambda: self._on_camera_selection_changed("wrist")
         )
         grid.addWidget(self.wrist_cam_combo, 6, 3)
 
-        self.cam_refresh_btn = QPushButton("카메라 목록 새로고침")
+        self.cam_refresh_btn = QPushButton()
+        self._reg(self.cam_refresh_btn.setText, "카메라 목록 새로고침")
         self.cam_refresh_btn.clicked.connect(self._refresh_cameras)
         grid.addWidget(self.cam_refresh_btn, 7, 0, 1, 2)
 
@@ -697,7 +942,7 @@ class LiberoCollectorWindow(QMainWindow):
 
             cams = RealSenseCamera.find_cameras()
         except Exception as e:  # noqa: BLE001
-            self.camera_hint.setText(f"카메라 목록 조회 실패: {type(e).__name__}: {e}")
+            self.camera_hint.setText(tr("카메라 목록 조회 실패: {err}").format(err=f"{type(e).__name__}: {e}"))
             self._log(f"[카메라] 목록을 가져오지 못했습니다: {type(e).__name__}: {e}")
             return
 
@@ -705,7 +950,7 @@ class LiberoCollectorWindow(QMainWindow):
             prev = self._camera_serial_from_combo(combo)
             combo.blockSignals(True)
             combo.clear()
-            combo.addItem("(선택 안함)", "")
+            combo.addItem(tr("(선택 안함)"), "")
             for c in cams:
                 combo.addItem(f"{c.get('name', '?')} ({c['id']})", c["id"])
             idx = combo.findData(prev) if prev else 0
@@ -716,9 +961,9 @@ class LiberoCollectorWindow(QMainWindow):
             combo.blockSignals(False)
 
         if cams:
-            self.camera_hint.setText(f"{len(cams)}대 감지됨")
+            self.camera_hint.setText(tr("{n}대 감지됨").format(n=len(cams)))
         else:
-            self.camera_hint.setText("감지된 RealSense 카메라가 없습니다 (시리얼번호 직접 입력 가능)")
+            self.camera_hint.setText(tr("감지된 RealSense 카메라가 없습니다 (시리얼번호 직접 입력 가능)"))
         self._log(f"[카메라] {len(cams)}대 감지됨: " + ", ".join(f"{c.get('name', '?')}={c['id']}" for c in cams))
 
         # blockSignals() suppressed currentIndexChanged during repopulation --
@@ -728,12 +973,12 @@ class LiberoCollectorWindow(QMainWindow):
 
     def _update_schema_btn_label(self) -> None:
         if self.schema_cfg.use_default:
-            self.schema_btn.setText("데이터셋 구조: 기본 (LIBERO 표준) -- 사용자 지정...")
+            self.schema_btn.setText(tr("데이터셋 구조: 기본 (LIBERO 표준) -- 사용자 지정..."))
         else:
-            action_label = ACTION_SPACE_LABELS.get(
+            action_label = tr(ACTION_SPACE_LABELS.get(
                 self.schema_cfg.action_space, self.schema_cfg.action_space
-            )
-            self.schema_btn.setText(f"데이터셋 구조: 사용자 지정 ({action_label}) -- 편집...")
+            ))
+            self.schema_btn.setText(tr("데이터셋 구조: 사용자 지정 ({action}) -- 편집...").format(action=action_label))
 
     def _open_schema_dialog(self) -> None:
         dlg = DatasetSchemaDialog(self, self.schema_cfg)
@@ -769,11 +1014,11 @@ class LiberoCollectorWindow(QMainWindow):
 
         if not serial:
             view.setPixmap(QPixmap())
-            view.setText("선택 안함 -- 대기 중")
+            view.setText(tr("선택 안함 -- 대기 중"))
             return
 
         view.setPixmap(QPixmap())
-        view.setText(f"{serial} 미리보기 연결 중...")
+        view.setText(tr("{serial} 미리보기 연결 중...").format(serial=serial))
         w = CameraPreviewWorker(serial)
         w.frame_ready.connect(lambda frame, r=role, ww=w: self._on_preview_frame(r, frame, ww))
         w.error.connect(lambda msg, r=role, ww=w: self._on_preview_error(r, msg, ww))
@@ -831,76 +1076,91 @@ class LiberoCollectorWindow(QMainWindow):
         if current is not worker:
             return
         view = self.agent_view if role == "agent" else self.wrist_view
-        view.setText(f"미리보기 실패: {msg}")
+        view.setText(tr("미리보기 실패: {msg}").format(msg=msg))
         self._log(f"[카메라 미리보기 실패] {role}: {msg}")
 
     def _build_video_box(self) -> QGroupBox:
-        box = QGroupBox("카메라")
+        box = QGroupBox()
+        self._reg(box.setTitle, "카메라")
         layout = QHBoxLayout(box)
-        self.agent_view = QLabel("선택 안함 -- 대기 중")
+        self.agent_view = QLabel(tr("선택 안함 -- 대기 중"))
         self.agent_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.agent_view.setMinimumSize(400, 300)
         self.agent_view.setStyleSheet("background-color: #111; color: #888;")
-        self.wrist_view = QLabel("선택 안함 -- 대기 중")
+        self.wrist_view = QLabel(tr("선택 안함 -- 대기 중"))
         self.wrist_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.wrist_view.setMinimumSize(400, 300)
         self.wrist_view.setStyleSheet("background-color: #111; color: #888;")
         col_a = QVBoxLayout()
-        col_a.addWidget(QLabel("Agentview (외부 카메라)"))
+        agent_label = QLabel()
+        self._reg(agent_label.setText, "Agentview (외부 카메라)")
+        col_a.addWidget(agent_label)
         col_a.addWidget(self.agent_view)
         col_w = QVBoxLayout()
-        col_w.addWidget(QLabel("Eye-in-hand (손목 카메라)"))
+        wrist_label = QLabel()
+        self._reg(wrist_label.setText, "Eye-in-hand (손목 카메라)")
+        col_w.addWidget(wrist_label)
         col_w.addWidget(self.wrist_view)
         layout.addLayout(col_a)
         layout.addLayout(col_w)
         return box
 
     def _build_gate_box(self) -> QGroupBox:
-        box = QGroupBox(f"자세 매칭 (leader vs follower, 게이트 {GATE_RAD} rad)")
+        box = QGroupBox()
+        self._reg(box.setTitle, "자세 매칭 (leader vs follower, 게이트 {gate} rad)".format(gate=GATE_RAD))
         layout = QVBoxLayout(box)
         self.delta_bars = [DeltaBar(name) for name in JOINT_LABELS]
         for bar in self.delta_bars:
             layout.addWidget(bar)
-        self.gate_summary = QLabel("로봇 연결 후 표시됩니다")
+        self.gate_summary = QLabel(tr("로봇 연결 후 표시됩니다"))
         layout.addWidget(self.gate_summary)
         return box
 
     def _build_control_box(self) -> QGroupBox:
-        box = QGroupBox("제어")
+        box = QGroupBox()
+        self._reg(box.setTitle, "제어")
         layout = QHBoxLayout(box)
 
-        self.connect_btn = QPushButton("로봇 연결")
+        self.connect_btn = QPushButton()
+        self._reg(self.connect_btn.setText, "로봇 연결")
         self.connect_btn.clicked.connect(self._on_connect)
         layout.addWidget(self.connect_btn)
 
-        self.start_teleop_btn = QPushButton("텔레옵 시작 (Space)")
+        self.start_teleop_btn = QPushButton()
+        self._reg(self.start_teleop_btn.setText, "텔레옵 시작 (Space)")
         self.start_teleop_btn.clicked.connect(self._on_start_teleop)
         layout.addWidget(self.start_teleop_btn)
 
-        self.skip_reset_btn = QPushButton("리셋 대기 건너뛰기 (Enter)")
+        self.skip_reset_btn = QPushButton()
+        self._reg(self.skip_reset_btn.setText, "리셋 대기 건너뛰기 (Enter)")
         self.skip_reset_btn.clicked.connect(self._on_skip_reset)
         layout.addWidget(self.skip_reset_btn)
 
-        self.save_success_btn = QPushButton("저장 (성공) (Space)")
+        self.save_success_btn = QPushButton()
+        self._reg(self.save_success_btn.setText, "저장 (성공) (Space)")
         self.save_success_btn.setStyleSheet("background-color: #2ecc71;")
         self.save_success_btn.clicked.connect(lambda: self._on_save(True))
         layout.addWidget(self.save_success_btn)
 
-        self.save_fail_btn = QPushButton("저장 (실패) (Esc)")
+        self.save_fail_btn = QPushButton()
+        self._reg(self.save_fail_btn.setText, "저장 (실패) (Esc)")
         self.save_fail_btn.setStyleSheet("background-color: #f1c40f;")
         self.save_fail_btn.clicked.connect(lambda: self._on_save(False))
         layout.addWidget(self.save_fail_btn)
 
-        self.discard_btn = QPushButton("폐기 (Delete)")
+        self.discard_btn = QPushButton()
+        self._reg(self.discard_btn.setText, "폐기 (Delete)")
         self.discard_btn.clicked.connect(self._on_discard)
         layout.addWidget(self.discard_btn)
 
-        self.go_home_btn = QPushButton("홈으로 이동")
+        self.go_home_btn = QPushButton()
+        self._reg(self.go_home_btn.setText, "홈으로 이동")
         self.go_home_btn.setStyleSheet("background-color: #3498db; color: white;")
         self.go_home_btn.clicked.connect(self._on_go_home)
         layout.addWidget(self.go_home_btn)
 
-        self.quit_btn = QPushButton("세션 종료")
+        self.quit_btn = QPushButton()
+        self._reg(self.quit_btn.setText, "세션 종료")
         self.quit_btn.setStyleSheet("background-color: #e74c3c; color: white;")
         self.quit_btn.clicked.connect(self._on_quit)
         layout.addWidget(self.quit_btn)
@@ -908,56 +1168,75 @@ class LiberoCollectorWindow(QMainWindow):
         return box
 
     def _build_status_box(self) -> QGroupBox:
-        box = QGroupBox("상태")
-        layout = QHBoxLayout(box)
-        self.state_label = QLabel("대기")
+        box = QGroupBox()
+        self._reg(box.setTitle, "상태")
+        outer = QVBoxLayout(box)
+        status_row = QHBoxLayout()
+        self.state_label = QLabel(tr("대기"))
         self.state_label.setStyleSheet("font-weight: bold; font-size: 14pt;")
-        self.node_label = QLabel("노드: -")
-        self.episode_label = QLabel("에피소드: 0")
+        self.node_label = QLabel(tr("노드: -"))
+        self.episode_label = QLabel(tr("에피소드: {n}").format(n=0))
         self.progress_label = QLabel("")
         for w in (self.state_label, self.node_label, self.episode_label, self.progress_label):
-            layout.addWidget(w)
-        layout.addStretch()
-        note = QLabel(
+            status_row.addWidget(w)
+        status_row.addStretch()
+        outer.addLayout(status_row)
+
+        note = QLabel()
+        self._reg(
+            note.setText,
             "⚠ 이 화면의 버튼은 소프트웨어 텔레옵 루프만 멈춥니다. "
-            "실제 비상정지는 로봇 하드웨어 E-stop을 사용하세요."
+            "실제 비상정지는 로봇 하드웨어 E-stop을 사용하세요.",
         )
         note.setStyleSheet("color: #e67e22;")
-        layout.addWidget(note)
+        note.setWordWrap(True)
+        outer.addWidget(note)
         return box
 
     def _build_dataset_box(self) -> QGroupBox:
-        box = QGroupBox("데이터셋 탐색기 (저장 경로 아래의 *_demo.hdf5)")
+        box = QGroupBox()
+        self._reg(box.setTitle, "데이터셋 탐색기 (저장 경로 아래의 *_demo.hdf5)")
         layout = QVBoxLayout(box)
 
         self.dataset_tree = QTreeWidget()
         self.dataset_tree.setColumnCount(3)
-        self.dataset_tree.setHeaderLabels(["파일 / 에피소드", "프레임수", "결과"])
+        self.dataset_tree.setHeaderLabels([tr("파일 / 에피소드"), tr("프레임수"), tr("결과")])
         self.dataset_tree.setMaximumHeight(220)
         layout.addWidget(self.dataset_tree)
 
         btn_row = QHBoxLayout()
-        refresh_btn = QPushButton("새로고침")
+        refresh_btn = QPushButton()
+        self._reg(refresh_btn.setText, "새로고침")
         refresh_btn.clicked.connect(self._refresh_dataset_tree)
         btn_row.addWidget(refresh_btn)
-        delete_btn = QPushButton("선택 삭제")
+        delete_btn = QPushButton()
+        self._reg(delete_btn.setText, "선택 삭제")
         delete_btn.setStyleSheet("background-color: #e74c3c; color: white;")
         delete_btn.clicked.connect(self._on_delete_selected)
         btn_row.addWidget(delete_btn)
-        structure_btn = QPushButton("선택 구조 확인...")
+        structure_btn = QPushButton()
+        self._reg(structure_btn.setText, "선택 구조 확인...")
         structure_btn.clicked.connect(self._on_show_structure)
         btn_row.addWidget(structure_btn)
-        self.lerobot_convert_btn = QPushButton("LeRobot 변환...")
+        self.lerobot_convert_btn = QPushButton()
+        self._reg(self.lerobot_convert_btn.setText, "LeRobot 변환...")
         self.lerobot_convert_btn.clicked.connect(self._open_lerobot_convert)
         btn_row.addWidget(self.lerobot_convert_btn)
+        self.hdf5_upload_btn = QPushButton()
+        self._reg(self.hdf5_upload_btn.setText, "HDF5 업로드...")
+        self.hdf5_upload_btn.clicked.connect(self._open_hdf5_upload)
+        btn_row.addWidget(self.hdf5_upload_btn)
         btn_row.addStretch()
-        hint = QLabel(
+        hint = QLabel()
+        self._reg(
+            hint.setText,
             "HDF5는 삭제해도 파일 용량이 즉시 줄지 않습니다 (디스크 공간까지 "
-            "회수하려면 h5repack 필요)."
+            "회수하려면 h5repack 필요).",
         )
         hint.setStyleSheet("color: #888;")
-        btn_row.addWidget(hint)
+        hint.setWordWrap(True)
         layout.addLayout(btn_row)
+        layout.addWidget(hint)
         return box
 
     # -------------------------------------------------------------- helpers
@@ -972,7 +1251,7 @@ class LiberoCollectorWindow(QMainWindow):
                 pass
 
     def _browse_root(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "데이터 저장 경로", self.root_edit.text())
+        d = QFileDialog.getExistingDirectory(self, tr("데이터 저장 경로"), self.root_edit.text())
         if d:
             self.root_edit.setText(d)
             self._refresh_dataset_tree()
@@ -983,12 +1262,17 @@ class LiberoCollectorWindow(QMainWindow):
         retyped. Filenames use ``LiberoTaskWriter``'s exact slugification
         (spaces -> underscores), reversed here to recover the task name --
         so re-selecting an entry and connecting targets the same file.
+
+        Non-recursive on purpose -- only files directly under 데이터 저장
+        경로 itself, not subdirectories, so what's listed always matches
+        exactly where a new session would actually write (LiberoTaskWriter
+        never creates subdirectories of its own).
         """
         prev = self.task_combo.currentText()
         root = Path(self.root_edit.text()).expanduser()
         tasks = []
         if root.is_dir():
-            for path in sorted(root.glob("**/*_demo.hdf5")):
+            for path in sorted(root.glob("*_demo.hdf5")):
                 stem = path.stem
                 if stem.endswith("_demo"):
                     stem = stem[: -len("_demo")]
@@ -1006,23 +1290,54 @@ class LiberoCollectorWindow(QMainWindow):
     def _on_task_selected(self, index: int) -> None:
         """Fires only when the operator explicitly picks a dropdown entry
         (not on every keystroke of a new task name). Prefills the language
-        instruction from the existing file and checks --resume, since
-        picking an existing task almost always means continuing it.
+        instruction, non-camera session settings (reset pose, grip, wall,
+        episode/reset timing), and the dataset schema from the existing
+        file's own last-used values, and checks --resume -- picking an
+        existing task almost always means continuing it exactly as it was,
+        not starting a differently-configured session against the same
+        file. Camera selection is deliberately left alone -- which physical
+        camera is plugged in now has nothing to do with what a previous
+        session used.
         """
         task = self.task_combo.itemText(index)
         root = Path(self.root_edit.text()).expanduser()
         safe_name = task.strip().replace(" ", "_")
+        # Non-recursive, matching _refresh_tasks()/_refresh_dataset_tree()'s
+        # own search -- only files directly under 데이터 저장 경로.
         path = root / f"{safe_name}_demo.hdf5"
         if not path.exists():
             return
         self.resume_check.setChecked(True)
         try:
             with h5py.File(path, "r") as f:
-                info = json.loads(f["data"].attrs["problem_info"])
-            lang = info.get("language_instruction", "")
-            if len(lang) >= 2 and lang.startswith('"') and lang.endswith('"'):
-                lang = lang[1:-1]
-            self.lang_edit.setText(lang)
+                data = f["data"]
+                info = json.loads(data.attrs["problem_info"])
+                lang = info.get("language_instruction", "")
+                if len(lang) >= 2 and lang.startswith('"') and lang.endswith('"'):
+                    lang = lang[1:-1]
+                self.lang_edit.setText(lang)
+
+                session_cfg_raw = data.attrs.get("session_config")
+                if session_cfg_raw:
+                    session_cfg = json.loads(session_cfg_raw)
+                    if session_cfg.get("reset_pose") in FR3_RESET_POSES:
+                        self.reset_pose_combo.setCurrentText(session_cfg["reset_pose"])
+                    if session_cfg.get("grip") in ("right", "left"):
+                        self.grip_combo.setCurrentText(session_cfg["grip"])
+                    if "enable_wall" in session_cfg:
+                        self.wall_check.setChecked(bool(session_cfg["enable_wall"]))
+                    if "max_episode_seconds" in session_cfg:
+                        self.max_seconds_edit.setText(str(session_cfg["max_episode_seconds"]))
+                    if "reset_wait_seconds" in session_cfg:
+                        self.reset_wait_edit.setText(str(session_cfg["reset_wait_seconds"]))
+
+                names = sorted(data.keys(), key=lambda n: int(n.split("_")[1]))
+                if names:
+                    # Last episode, not first -- a --resume'd file may mix
+                    # schemas across sessions; the last one is what a new
+                    # episode would actually continue from.
+                    self.schema_cfg = schema_from_episode(data[names[-1]])
+                    self._update_schema_btn_label()
         except Exception as e:  # noqa: BLE001
             self._log(f"[Task] 기존 정보를 읽지 못했습니다: {type(e).__name__}: {e}")
 
@@ -1038,8 +1353,11 @@ class LiberoCollectorWindow(QMainWindow):
         root = Path(self.root_edit.text()).expanduser()
         if not root.is_dir():
             return
-        for path in sorted(root.glob("**/*_demo.hdf5")):
-            file_item = QTreeWidgetItem([path.name, "", ""])
+        # Non-recursive -- only files directly under 데이터 저장 경로, not
+        # subdirectories (a nested folder might hold older/archived data
+        # that isn't meant to show up as part of the current working set).
+        for path in sorted(root.glob("*_demo.hdf5")):
+            file_item = QTreeWidgetItem([str(path), "", ""])
             file_item.setData(0, Qt.ItemDataRole.UserRole, str(path))
             self.dataset_tree.addTopLevelItem(file_item)
 
@@ -1047,7 +1365,7 @@ class LiberoCollectorWindow(QMainWindow):
                 if self.active_episode_cache is None:
                     # Connected, but the worker's first episode_list_changed
                     # hasn't arrived yet -- don't claim 0 episodes.
-                    file_item.setText(1, "불러오는 중...")
+                    file_item.setText(1, tr("불러오는 중..."))
                     continue
                 episodes = self.active_episode_cache
             else:
@@ -1067,16 +1385,16 @@ class LiberoCollectorWindow(QMainWindow):
                             )
                         episodes.sort(key=lambda d: int(d["name"].split("_")[1]))
                 except OSError as e:
-                    file_item.setText(1, f"(읽기 실패: {e})")
+                    file_item.setText(1, tr("(읽기 실패: {e})").format(e=e))
                     continue
 
             for ep in episodes:
                 success = ep["success"]
-                result = "-" if success is None else ("성공" if success else "실패")
+                result = "-" if success is None else (tr("성공") if success else tr("실패"))
                 child = QTreeWidgetItem(["  " + ep["name"], str(ep["num_samples"]), result])
                 child.setData(0, Qt.ItemDataRole.UserRole, ep["name"])
                 file_item.addChild(child)
-            file_item.setText(1, f"{len(episodes)}개 에피소드")
+            file_item.setText(1, tr("{n}개 에피소드").format(n=len(episodes)))
         self.dataset_tree.expandAll()
         self._refresh_tasks()
 
@@ -1092,13 +1410,15 @@ class LiberoCollectorWindow(QMainWindow):
             file_path = Path(item.data(0, Qt.ItemDataRole.UserRole))
             if self.active_file_path is not None and file_path.samefile(self.active_file_path):
                 QMessageBox.warning(
-                    self, "삭제 불가", "현재 세션이 사용 중인 파일입니다. 먼저 '세션 종료'를 누르세요."
+                    self, tr("삭제 불가"), tr("현재 세션이 사용 중인 파일입니다. 먼저 '세션 종료'를 누르세요.")
                 )
                 return
             reply = QMessageBox.question(
                 self,
-                "파일 전체 삭제",
-                f"{file_path.name}\n이 작업의 데이터 전체(모든 에피소드)가 영구 삭제됩니다. 계속할까요?",
+                tr("파일 전체 삭제"),
+                tr("{name}\n이 작업의 데이터 전체(모든 에피소드)가 영구 삭제됩니다. 계속할까요?").format(
+                    name=file_path.name
+                ),
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
@@ -1111,14 +1431,14 @@ class LiberoCollectorWindow(QMainWindow):
         file_path = Path(parent.data(0, Qt.ItemDataRole.UserRole))
         demo_name = item.data(0, Qt.ItemDataRole.UserRole)
         reply = QMessageBox.question(
-            self, "에피소드 삭제", f"{file_path.name} / {demo_name} 를 삭제할까요?"
+            self, tr("에피소드 삭제"), tr("{name} / {demo} 를 삭제할까요?").format(name=file_path.name, demo=demo_name)
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
         if self.active_file_path is not None and file_path.samefile(self.active_file_path):
             if self.worker is None:
-                QMessageBox.warning(self, "삭제 불가", "세션이 종료되었습니다. 새로고침 후 다시 시도하세요.")
+                QMessageBox.warning(self, tr("삭제 불가"), tr("세션이 종료되었습니다. 새로고침 후 다시 시도하세요."))
                 return
             self.worker.cmd_delete_episode(demo_name)  # worker deletes + re-emits episode_list_changed
         else:
@@ -1136,7 +1456,7 @@ class LiberoCollectorWindow(QMainWindow):
         """
         items = self.dataset_tree.selectedItems()
         if not items:
-            QMessageBox.information(self, "선택 필요", "구조를 확인할 파일 또는 에피소드를 선택하세요.")
+            QMessageBox.information(self, tr("선택 필요"), tr("구조를 확인할 파일 또는 에피소드를 선택하세요."))
             return
         item = items[0]
         parent = item.parent()
@@ -1157,11 +1477,11 @@ class LiberoCollectorWindow(QMainWindow):
             # episodes in a --resume'd file may differ.
             schema = self.worker.current_schema() if self.worker is not None else None
             if schema is None:
-                QMessageBox.warning(self, "확인 불가", "세션이 아직 완전히 연결되지 않았습니다.")
+                QMessageBox.warning(self, tr("확인 불가"), tr("세션이 아직 완전히 연결되지 않았습니다."))
                 return
             note = "[현재 세션이 기록 중인 구조 -- 이 파일의 다른 에피소드는 다를 수 있음]\n\n"
             text = note + describe_schema(schema)
-            title = f"구조 확인 -- {file_path.name} (진행 중인 세션)"
+            title = tr("구조 확인 -- {name} (진행 중인 세션)").format(name=file_path.name)
         else:
             try:
                 with h5py.File(file_path, "r") as f:
@@ -1169,15 +1489,15 @@ class LiberoCollectorWindow(QMainWindow):
                     if demo_name is None:
                         names = sorted(data.keys(), key=lambda n: int(n.split("_")[1]))
                         if not names:
-                            QMessageBox.information(self, "빈 파일", "에피소드가 없습니다.")
+                            QMessageBox.information(self, tr("빈 파일"), tr("에피소드가 없습니다."))
                             return
                         demo_name = names[0]
                         note = f"[파일의 첫 에피소드({demo_name}) 기준 -- 다른 에피소드는 다를 수 있음]\n\n"
                     text = note + describe_episode(data[demo_name])
             except (OSError, KeyError) as e:
-                QMessageBox.warning(self, "읽기 실패", f"{type(e).__name__}: {e}")
+                QMessageBox.warning(self, tr("읽기 실패"), f"{type(e).__name__}: {e}")
                 return
-            title = f"구조 확인 -- {file_path.name} / {demo_name}"
+            title = tr("구조 확인 -- {name} / {demo}").format(name=file_path.name, demo=demo_name)
 
         dlg = QDialog(self)
         dlg.setWindowTitle(title)
@@ -1187,7 +1507,7 @@ class LiberoCollectorWindow(QMainWindow):
         view.setFont(QFont("monospace"))
         view.setMinimumSize(480, 360)
         layout.addWidget(view)
-        close_btn = QPushButton("닫기")
+        close_btn = QPushButton(tr("닫기"))
         close_btn.clicked.connect(dlg.accept)
         layout.addWidget(close_btn)
         dlg.exec()
@@ -1229,28 +1549,36 @@ class LiberoCollectorWindow(QMainWindow):
             and self.convert_process.state() != QProcess.ProcessState.NotRunning
         )
         self.lerobot_convert_btn.setEnabled(not connected and not converting)
+        # Same reasoning as lerobot_convert_btn -- upload after curation is
+        # done and the session's ended, not against a file still being
+        # actively recorded to.
+        uploading = (
+            self.hdf5_upload_process is not None
+            and self.hdf5_upload_process.state() != QProcess.ProcessState.NotRunning
+        )
+        self.hdf5_upload_btn.setEnabled(not connected and not uploading)
 
     # -------------------------------------------------------------- actions
     def _on_connect(self) -> None:
         task = self.task_combo.currentText().strip()
         if not task:
-            QMessageBox.warning(self, "Task 이름 필요", "Task 이름을 입력하세요.")
+            QMessageBox.warning(self, tr("Task 이름 필요"), tr("Task 이름을 입력하세요."))
             return
         lang = self.lang_edit.text().strip() or task
         try:
             max_seconds = float(self.max_seconds_edit.text())
             reset_wait = float(self.reset_wait_edit.text())
         except ValueError:
-            QMessageBox.warning(self, "입력 오류", "에피소드 길이/리셋 대기는 숫자여야 합니다.")
+            QMessageBox.warning(self, tr("입력 오류"), tr("에피소드 길이/리셋 대기는 숫자여야 합니다."))
             return
 
         agent_serial = self._camera_serial_from_combo(self.agent_cam_combo)
         wrist_serial = self._camera_serial_from_combo(self.wrist_cam_combo)
         if not agent_serial or not wrist_serial:
-            QMessageBox.warning(self, "카메라 선택 필요", "Agentview / Wrist 카메라를 모두 선택하세요.")
+            QMessageBox.warning(self, tr("카메라 선택 필요"), tr("Agentview / Wrist 카메라를 모두 선택하세요."))
             return
         if agent_serial == wrist_serial:
-            QMessageBox.warning(self, "카메라 중복", "Agentview와 Wrist에 같은 카메라가 선택되었습니다.")
+            QMessageBox.warning(self, tr("카메라 중복"), tr("Agentview와 Wrist에 같은 카메라가 선택되었습니다."))
             return
 
         # Release the preview pipelines before the session opens the same
@@ -1259,8 +1587,8 @@ class LiberoCollectorWindow(QMainWindow):
         if not self._stop_previews():
             QMessageBox.critical(
                 self,
-                "카메라 해제 실패",
-                "미리보기 카메라를 제때 해제하지 못했습니다. 잠시 후 다시 시도하세요.",
+                tr("카메라 해제 실패"),
+                tr("미리보기 카메라를 제때 해제하지 못했습니다. 잠시 후 다시 시도하세요."),
             )
             return
 
@@ -1305,7 +1633,7 @@ class LiberoCollectorWindow(QMainWindow):
     @pyqtSlot(int, str)
     def _on_connected(self, start_count: int, file_path: str) -> None:
         self.episodes_this_session = start_count
-        self.episode_label.setText(f"에피소드: {start_count}")
+        self.episode_label.setText(tr("에피소드: {n}").format(n=start_count))
         self.active_file_path = Path(file_path)
         self._log(f"[연결 완료] 기존 {start_count}개 에피소드 ({file_path})")
         self._set_controls_enabled(connected=True, gate_ok=False, recording=False, reset_wait=False)
@@ -1318,7 +1646,7 @@ class LiberoCollectorWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_state_changed(self, state: str) -> None:
         self._current_state = state
-        self.state_label.setText(STATE_LABELS_KO.get(state, state))
+        self.state_label.setText(tr(STATE_LABELS_KO.get(state, state)))
         recording = state == "recording"
         reset_wait = state == "reset_wait"
         self._set_controls_enabled(
@@ -1352,23 +1680,25 @@ class LiberoCollectorWindow(QMainWindow):
         for bar, d in zip(self.delta_bars, deltas):
             bar.update_delta(float(d), GATE_RAD)
         if all_ok:
-            self.gate_summary.setText("모든 조인트 일치 -- '텔레옵 시작'을 누르세요")
+            self.gate_summary.setText(tr("모든 조인트 일치 -- '텔레옵 시작'을 누르세요"))
             self.gate_summary.setStyleSheet("color: #2ecc71; font-weight: bold;")
         else:
             worst = int(np.argmax(np.abs(deltas)))
             self.gate_summary.setText(
-                f"{JOINT_LABELS[worst]} 조인트를 맞춰주세요 (차이 {deltas[worst]:+.3f} rad)"
+                tr("{joint} 조인트를 맞춰주세요 (차이 {diff} rad)").format(
+                    joint=JOINT_LABELS[worst], diff=f"{deltas[worst]:+.3f}"
+                )
             )
             self.gate_summary.setStyleSheet("color: #e74c3c;")
 
     @pyqtSlot(int, float)
     def _on_episode_progress(self, n_frames, seconds) -> None:
-        self.progress_label.setText(f"기록 중: {n_frames} 프레임 ({seconds:.1f}s)")
+        self.progress_label.setText(tr("기록 중: {n} 프레임 ({s}s)").format(n=n_frames, s=f"{seconds:.1f}"))
 
     @pyqtSlot(str, int)
     def _on_episode_saved(self, demo_name, n_frames) -> None:
         self.episodes_this_session += 1
-        self.episode_label.setText(f"에피소드: {self.episodes_this_session}")
+        self.episode_label.setText(tr("에피소드: {n}").format(n=self.episodes_this_session))
         self._log(f"[저장] {demo_name} ({n_frames} 프레임)")
 
     @pyqtSlot(int)
@@ -1377,24 +1707,31 @@ class LiberoCollectorWindow(QMainWindow):
 
     @pyqtSlot(float)
     def _on_reset_countdown(self, remaining) -> None:
-        self.progress_label.setText(f"환경 리셋 대기: {remaining:.0f}s (건너뛰려면 버튼 클릭)")
+        self.progress_label.setText(
+            tr("환경 리셋 대기: {s}s (건너뛰려면 버튼 클릭)").format(s=f"{remaining:.0f}")
+        )
 
     @pyqtSlot(bool)
     def _on_node_status(self, ok) -> None:
         self.node_ok = ok
-        self.node_label.setText("노드: 정상" if ok else "노드: 응답 없음 (launch_nodes 재시작 필요)")
+        self._node_status_received = True
+        self.node_label.setText(tr("노드: 정상") if ok else tr("노드: 응답 없음 (launch_nodes 재시작 필요)"))
         self.node_label.setStyleSheet("color: #2ecc71;" if ok else "color: #e74c3c; font-weight: bold;")
+        # Compare the tracked state key, not the (possibly-translated)
+        # displayed label text -- state_label.text() no longer reliably
+        # equals STATE_LABELS_KO's Korean values once the language toggle
+        # has switched it to English.
         self._set_controls_enabled(
             connected=True,
-            gate_ok=(self.state_label.text() == STATE_LABELS_KO["gate"]),
-            recording=(self.state_label.text() == STATE_LABELS_KO["recording"]),
-            reset_wait=(self.state_label.text() == STATE_LABELS_KO["reset_wait"]),
+            gate_ok=(self._current_state == "gate"),
+            recording=(self._current_state == "recording"),
+            reset_wait=(self._current_state == "reset_wait"),
         )
 
     @pyqtSlot(str)
     def _on_fatal_error(self, msg) -> None:
         self._log(f"[오류] {msg}")
-        QMessageBox.critical(self, "오류", msg)
+        QMessageBox.critical(self, tr("오류"), msg)
 
     @pyqtSlot(dict)
     def _on_session_summary(self, s: dict) -> None:
@@ -1407,7 +1744,12 @@ class LiberoCollectorWindow(QMainWindow):
         )
         self._log("[세션 요약]\n" + text)
         if s["num_episodes"] > 0:
-            QMessageBox.information(self, "세션 요약", text)
+            translated = tr(
+                "파일: {path}\n에피소드: {num_episodes}개 (성공 {num_success} / "
+                "실패 {num_fail} / 미표시 {num_unlabeled})\n총 프레임: {total_frames} "
+                "(에피소드당 {min_frames}~{max_frames} 프레임)"
+            ).format(**s)
+            QMessageBox.information(self, tr("세션 요약"), translated)
 
     def _on_worker_finished(self) -> None:
         self._log("[세션 종료]")
@@ -1416,7 +1758,7 @@ class LiberoCollectorWindow(QMainWindow):
         self._current_state = "idle"
         self.active_file_path = None  # file is no longer exclusively open; browser can read it directly
         self._set_controls_enabled(connected=False, gate_ok=False, recording=False, reset_wait=False)
-        self.state_label.setText("대기")
+        self.state_label.setText(tr("대기"))
         self._refresh_dataset_tree()
         # The worker released both cameras on its way out -- resume previews
         # for whatever's currently selected in the combo boxes.
@@ -1503,7 +1845,7 @@ class LiberoCollectorWindow(QMainWindow):
     # --------------------------------------------------------- robot node
     def _on_start_node(self) -> None:
         if self.node_process is not None and self.node_process.state() != QProcess.ProcessState.NotRunning:
-            QMessageBox.information(self, "이미 실행 중", "로봇 노드가 이미 실행 중입니다.")
+            QMessageBox.information(self, tr("이미 실행 중"), tr("로봇 노드가 이미 실행 중입니다."))
             return
         ip = self.robot_ip_edit.text().strip() or "172.16.0.2"
         proc = QProcess(self)
@@ -1517,7 +1859,7 @@ class LiberoCollectorWindow(QMainWindow):
         proc.errorOccurred.connect(self._on_node_error)
         self.node_process = proc
         self._log(f"[NODE] 시작: {PYLIBFRANKA_PYTHON} {LAUNCH_NODES_SCRIPT} --robot fr3 --robot-ip {ip}")
-        self.node_proc_label.setText("시작 중...")
+        self.node_proc_label.setText(tr("시작 중..."))
         self.node_proc_label.setStyleSheet("color: #f39c12;")
         proc.start()
 
@@ -1556,7 +1898,7 @@ class LiberoCollectorWindow(QMainWindow):
 
     def _on_node_started(self) -> None:
         pid = self.node_process.processId() if self.node_process else "?"
-        self.node_proc_label.setText(f"실행 중 (PID {pid})")
+        self.node_proc_label.setText(tr("실행 중 (PID {pid})").format(pid=pid))
         self.node_proc_label.setStyleSheet("color: #2ecc71;")
 
     def _on_node_error(self, error) -> None:  # noqa: ANN001 - QProcess.ProcessError
@@ -1564,7 +1906,7 @@ class LiberoCollectorWindow(QMainWindow):
 
     def _on_node_finished(self, exit_code: int, exit_status) -> None:  # noqa: ANN001
         self._log(f"[NODE] 종료됨 (exit code {exit_code})")
-        self.node_proc_label.setText("중지됨")
+        self.node_proc_label.setText(tr("중지됨"))
         self.node_proc_label.setStyleSheet("color: #888;")
         if self._node_restart_pending:
             self._node_restart_pending = False
@@ -1573,7 +1915,7 @@ class LiberoCollectorWindow(QMainWindow):
     # ------------------------------------------------------- LeRobot convert
     def _open_lerobot_convert(self) -> None:
         if self.convert_process is not None and self.convert_process.state() != QProcess.ProcessState.NotRunning:
-            QMessageBox.information(self, "이미 실행 중", "변환이 이미 진행 중입니다. 로그를 확인하세요.")
+            QMessageBox.information(self, tr("이미 실행 중"), tr("변환이 이미 진행 중입니다. 로그를 확인하세요."))
             return
         dlg = LerobotConvertDialog(self, self.root_edit.text())
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -1623,9 +1965,77 @@ class LiberoCollectorWindow(QMainWindow):
         self._log(f"[LEROBOT 변환] 종료됨 (exit code {exit_code})")
         self.lerobot_convert_btn.setEnabled(True)
         if exit_code == 0:
-            QMessageBox.information(self, "변환 완료", "LeRobot 변환이 완료되었습니다. 로그를 확인하세요.")
+            QMessageBox.information(self, tr("변환 완료"), tr("LeRobot 변환이 완료되었습니다. 로그를 확인하세요."))
         else:
-            QMessageBox.warning(self, "변환 실패", f"exit code {exit_code} -- 로그를 확인하세요.")
+            QMessageBox.warning(self, tr("변환 실패"), tr("exit code {code} -- 로그를 확인하세요.").format(code=exit_code))
+
+    # -------------------------------------------------------- HDF5 upload
+    def _open_hdf5_upload(self) -> None:
+        if (
+            self.hdf5_upload_process is not None
+            and self.hdf5_upload_process.state() != QProcess.ProcessState.NotRunning
+        ):
+            QMessageBox.information(self, tr("이미 실행 중"), tr("업로드가 이미 진행 중입니다. 로그를 확인하세요."))
+            return
+
+        # Prefill from whatever's selected in the dataset tree (file row or
+        # an episode row -- either way, its parent file) so the common case
+        # (upload the file I was just looking at) needs no typing.
+        default_file = ""
+        items = self.dataset_tree.selectedItems()
+        if items:
+            item = items[0]
+            parent = item.parent()
+            raw = parent.data(0, Qt.ItemDataRole.UserRole) if parent is not None else item.data(0, Qt.ItemDataRole.UserRole)
+            default_file = str(raw)
+
+        dlg = HdfUploadDialog(self, default_file)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        args = dlg.build_args()
+        if args is None:
+            return
+
+        script = str(Path(__file__).resolve().parent.parent / "scripts" / "upload_to_hub.py")
+        proc = QProcess(self)
+        proc.setProgram(sys.executable)
+        proc.setArguments([script, *args])
+        proc.setWorkingDirectory(str(Path(script).resolve().parent.parent))
+        proc.readyReadStandardOutput.connect(self._on_hdf5_upload_stdout)
+        proc.readyReadStandardError.connect(self._on_hdf5_upload_stderr)
+        proc.finished.connect(self._on_hdf5_upload_finished)
+        proc.errorOccurred.connect(self._on_hdf5_upload_error)
+        self.hdf5_upload_process = proc
+        self._log(f"[HDF5 업로드] 시작: {sys.executable} {script} " + " ".join(args))
+        self.hdf5_upload_btn.setEnabled(False)
+        proc.start()
+
+    def _on_hdf5_upload_stdout(self) -> None:
+        if self.hdf5_upload_process is None:
+            return
+        data = bytes(self.hdf5_upload_process.readAllStandardOutput()).decode(errors="replace")
+        for line in data.splitlines():
+            if line.strip():
+                self._log(f"[HDF5 업로드] {line}")
+
+    def _on_hdf5_upload_stderr(self) -> None:
+        if self.hdf5_upload_process is None:
+            return
+        data = bytes(self.hdf5_upload_process.readAllStandardError()).decode(errors="replace")
+        for line in data.splitlines():
+            if line.strip():
+                self._log(f"[HDF5 업로드][stderr] {line}")
+
+    def _on_hdf5_upload_error(self, error) -> None:  # noqa: ANN001 - QProcess.ProcessError
+        self._log(f"[HDF5 업로드] 프로세스 오류: {error}")
+
+    def _on_hdf5_upload_finished(self, exit_code: int, exit_status) -> None:  # noqa: ANN001
+        self._log(f"[HDF5 업로드] 종료됨 (exit code {exit_code})")
+        self.hdf5_upload_btn.setEnabled(True)
+        if exit_code == 0:
+            QMessageBox.information(self, tr("업로드 완료"), tr("HDF5 업로드가 완료되었습니다. 로그를 확인하세요."))
+        else:
+            QMessageBox.warning(self, tr("업로드 실패"), tr("exit code {code} -- 로그를 확인하세요.").format(code=exit_code))
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._stop_previews()
@@ -1638,6 +2048,14 @@ class LiberoCollectorWindow(QMainWindow):
             if not self.convert_process.waitForFinished(3000):
                 self.convert_process.kill()
                 self.convert_process.waitForFinished(2000)
+        if (
+            self.hdf5_upload_process is not None
+            and self.hdf5_upload_process.state() != QProcess.ProcessState.NotRunning
+        ):
+            self.hdf5_upload_process.terminate()
+            if not self.hdf5_upload_process.waitForFinished(3000):
+                self.hdf5_upload_process.kill()
+                self.hdf5_upload_process.waitForFinished(2000)
         if self.runme_process is not None and self.runme_process.state() != QProcess.ProcessState.NotRunning:
             self.runme_process.terminate()
             if not self.runme_process.waitForFinished(3000):

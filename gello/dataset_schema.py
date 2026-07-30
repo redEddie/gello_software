@@ -8,7 +8,7 @@ collect_libero_gui.py's "사용자 지정" dialog) survives across restarts.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 ACTION_SPACE_EE_DELTA = "ee_delta"
@@ -75,6 +75,16 @@ class DatasetSchemaConfig:
     # gello/libero_gui_worker.py's _get_obs).
     save_joint_velocities: bool = False
     save_timestamp: bool = False
+
+    # Per-dimension action column name overrides, keyed by the BUILT-IN
+    # default name (see libero_format._ACTION_COLUMNS / "gripper.pos") so
+    # switching action_space doesn't carry stale overrides from a different
+    # space's columns. Empty (default) means "use the built-in names" --
+    # only affects the human-readable names shown in the schema preview and
+    # the LeRobotDataset feature names built from them (see
+    # libero_format.resolved_action_column_names); the underlying array data
+    # and column ORDER are unaffected.
+    action_column_name_overrides: dict[str, str] = field(default_factory=dict)
 
     def effective(self) -> "DatasetSchemaConfig":
         """The config that actually governs a write. Toggling ``use_default``

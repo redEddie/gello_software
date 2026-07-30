@@ -52,6 +52,7 @@ cumulative ``actions`` roughly reproduces ``ee_states``).
 
 from __future__ import annotations
 
+import fcntl
 import json
 import time
 from pathlib import Path
@@ -217,7 +218,14 @@ _ACTION_COLUMNS = {
     ACTION_SPACE_EE_DELTA: ["dx", "dy", "dz", "d_axis_x", "d_axis_y", "d_axis_z"],
     ACTION_SPACE_EE_ABSOLUTE: ["x", "y", "z", "axis_x", "axis_y", "axis_z"],
     ACTION_SPACE_JOINT_DELTA: [f"d_joint{i}" for i in range(1, 8)],
-    ACTION_SPACE_JOINT_ABSOLUTE: [f"joint{i}" for i in range(1, 8)],
+    # obs/joint_states is exposed to LeRobotDataset as observation.state dims
+    # named "joint1.pos".."joint7.pos" (see convert_libero_to_lerobot.py's
+    # _build_features) -- this action space's targets are the same physical
+    # quantity (an absolute joint position, not a delta), so its column names
+    # must match those, or a state<->action dim pairs by name downstream
+    # (e.g. a policy computing its own state-to-action correspondence) sees a
+    # false mismatch.
+    ACTION_SPACE_JOINT_ABSOLUTE: [f"joint{i}.pos" for i in range(1, 8)],
 }
 
 
@@ -226,6 +234,24 @@ def action_column_names(action_space: str) -> list[str]:
     LeRobotDataset ``features`` dict (see scripts/convert_libero_to_lerobot.py)
     without hardcoding a copy of :data:`_ACTION_COLUMNS` elsewhere."""
     return list(_ACTION_COLUMNS[action_space])
+
+
+def resolved_action_column_names(schema: DatasetSchemaConfig) -> list[str]:
+    """The exact action column names ``save_episode`` will write to the
+    ``action_column_names`` attr, and that ``describe_schema``/
+    ``_build_features`` (scripts/convert_libero_to_lerobot.py) show/use --
+    the built-in per-``action_space`` names with any operator overrides
+    (``schema.action_column_name_overrides``, keyed by the built-in default
+    name) applied, plus the gripper column's name if included. Does not
+    include the human-readable "(0=open/1=close...)" convention note
+    :func:`describe_schema`/:func:`describe_episode` append for display.
+    """
+    schema = schema.effective()
+    overrides = schema.action_column_name_overrides
+    cols = [overrides.get(c, c) for c in _ACTION_COLUMNS[schema.action_space]]
+    if schema.action_include_gripper:
+        cols.append(overrides.get("gripper.pos", "gripper.pos"))
+    return cols
 
 
 def describe_schema(cfg: DatasetSchemaConfig) -> str:
@@ -240,10 +266,10 @@ def describe_schema(cfg: DatasetSchemaConfig) -> str:
     """
     schema = cfg.effective()
 
-    cols = list(_ACTION_COLUMNS[schema.action_space])
+    cols = resolved_action_column_names(schema)
     if schema.action_include_gripper:
         gripper_note = "0=open/1=close, matches obs" if schema.gripper_action_match_obs else "-1=open/+1=close"
-        cols.append(f"gripper ({gripper_note})")
+        cols[-1] = f"{cols[-1]} ({gripper_note})"
     lines = [
         f"Action space: {ACTION_SPACE_LABELS.get(schema.action_space, schema.action_space)}",
         f"  actions: (T, {len(cols)}) float32 = [{', '.join(cols)}]",
@@ -317,7 +343,12 @@ def describe_episode(grp: Any) -> str:
     # written -1/+1, so that's the correct fallback, not "01".
     gripper_convention = grp.attrs.get("gripper_action_convention", "pm1")
     gripper_note = "0=open/1=close, matches obs" if gripper_convention == "01" else "-1=open/+1=close"
-    cols = base_cols + ([f"gripper ({gripper_note})"] if has_gripper else [])
+    # Old episodes predate action_column_names too -- fall back to the
+    # built-in names (no custom overrides possible for those anyway).
+    raw = grp.attrs.get("action_column_names")
+    cols = json.loads(raw) if raw else base_cols + (["gripper.pos"] if has_gripper else [])
+    if has_gripper:
+        cols[-1] = f"{cols[-1]} ({gripper_note})"
 
     lines = [
         f"Action space: {ACTION_SPACE_LABELS.get(action_space, action_space)}",
@@ -339,6 +370,57 @@ def describe_episode(grp: Any) -> str:
         f"success: {None if success is None else bool(success)}",
     ]
     return "\n".join(lines)
+
+
+def schema_from_episode(grp: Any) -> DatasetSchemaConfig:
+    """Reconstructs the ``DatasetSchemaConfig`` that (as best as can be
+    recovered from what's actually on disk) matches an already-saved
+    ``demo_N`` group -- used to prefill the GUI's schema when an operator
+    resumes an existing task from the Task 이름 dropdown (see
+    collect_libero_gui.py's ``_on_task_selected``), so continuing a file
+    doesn't silently start recording under a different schema than what's
+    already in it. Like :func:`describe_episode`, reads real attrs/shapes,
+    not whatever the GUI happens to be configured with right now.
+    """
+    obs = grp["obs"]
+    obs_keys = set(obs.keys())
+    action_space = grp.attrs.get("action_space", ACTION_SPACE_EE_DELTA)
+    base_cols = action_column_names(action_space)
+    actions_shape = tuple(grp["actions"].shape)
+    has_gripper = actions_shape[1] == len(base_cols) + 1
+    gripper_convention = grp.attrs.get("gripper_action_convention", "pm1")
+
+    image_size = None
+    for key in ("agentview_rgb", "eye_in_hand_rgb"):
+        if key in obs:
+            h, w = obs[key].shape[1:3]
+            image_size = int(h) if h == w else None
+            break
+
+    overrides: dict[str, str] = {}
+    raw_names = grp.attrs.get("action_column_names")
+    if raw_names:
+        actual = json.loads(raw_names)
+        default = base_cols + (["gripper.pos"] if has_gripper else [])
+        overrides = {d: a for d, a in zip(default, actual) if d != a}
+
+    return DatasetSchemaConfig(
+        use_default=False,
+        action_space=action_space,
+        action_include_gripper=has_gripper,
+        gripper_action_match_obs=(gripper_convention == "01"),
+        image_size=image_size,
+        save_agentview_rgb="agentview_rgb" in obs_keys,
+        save_eye_in_hand_rgb="eye_in_hand_rgb" in obs_keys,
+        save_joint_states="joint_states" in obs_keys,
+        save_gripper_states="gripper_states" in obs_keys,
+        save_ee_states="ee_states" in obs_keys,
+        save_ee_pos="ee_pos" in obs_keys,
+        save_ee_ori="ee_ori" in obs_keys,
+        save_joint_velocities="joint_velocities" in obs_keys,
+        save_timestamp="timestamp" in obs_keys,
+        action_column_name_overrides=overrides,
+    )
 
 
 def resize_rgb(img: np.ndarray, size: int = IMAGE_SIZE) -> np.ndarray:
@@ -412,6 +494,26 @@ class LiberoEpisodeBuffer:
         self._reset_lists()
 
 
+def _mark_close_on_exec(f: h5py.File) -> None:
+    """Without this, a task .hdf5 opened here stays locked forever by any
+    child process spawned (e.g. via QProcess) while the file is open --
+    HDF5's C library doesn't set FD_CLOEXEC on the fd it opens, unlike
+    Python's own open()/io, so e.g. restarting the robot node mid-session
+    (experiments/launch_nodes.py, spawned from the GUI) silently inherits
+    and keeps holding the lock via fork+exec even after this writer's own
+    session ends and closes its copy -- the file then can't be read/
+    converted by anything until that unrelated child process is killed.
+    Best-effort: not every HDF5 driver's fd is retrievable this way, so a
+    failure here is not fatal.
+    """
+    try:
+        fd = f.id.get_vfd_handle()
+        flags = fcntl.fcntl(fd, fcntl.F_GETFD)
+        fcntl.fcntl(fd, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class LiberoTaskWriter:
     """Owns one ``<task>_demo.hdf5`` file: one file per task, one ``demo_N`` per episode.
 
@@ -442,6 +544,7 @@ class LiberoTaskWriter:
             )
 
         self._file = h5py.File(self.path, "a")
+        _mark_close_on_exec(self._file)
         self._data = self._file.require_group("data")
         if "env_args" not in self._data.attrs:
             env_args = {
@@ -471,6 +574,19 @@ class LiberoTaskWriter:
             # been deleted.
             existing = [int(k.split("_")[1]) for k in self._data.keys()]
             self._data.attrs["next_demo_idx"] = max(existing, default=-1) + 1
+        self._file.flush()
+
+    def record_session_config(self, **kwargs: Any) -> None:
+        """Overwrites the file-level ``session_config`` attr with whatever
+        non-camera session settings (reset_pose, grip, enable_wall,
+        max_episode_seconds, reset_wait_seconds) this session was started
+        with -- lets the GUI restore them when an operator picks this task
+        again from the Task 이름 dropdown (see collect_libero_gui.py's
+        ``_on_task_selected``). Always reflects the LATEST session, not the
+        first-ever one: intentionally overwritten every time, since this is
+        "how to continue this task", not a history log.
+        """
+        self._data.attrs["session_config"] = json.dumps(kwargs)
         self._file.flush()
 
     @property
@@ -598,6 +714,7 @@ class LiberoTaskWriter:
         # operator changed the "사용자 지정" config between sessions).
         grp.attrs["action_space"] = schema.action_space
         grp.attrs["gripper_action_convention"] = "01" if schema.gripper_action_match_obs else "pm1"
+        grp.attrs["action_column_names"] = json.dumps(resolved_action_column_names(schema))
 
         obs = grp.create_group("obs")
         if schema.save_agentview_rgb:

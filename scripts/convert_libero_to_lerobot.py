@@ -39,6 +39,55 @@ at native camera resolution instead (image_size="원본 해상도 유지") -- th
 script does not support converting those files yet; it fails loudly with a
 clear message rather than mis-declaring the LeRobotDataset feature shape.
 
+--resume: TRUE INCREMENTAL UPLOAD (verified against lerobot's actual code,
+not just its docstring)
+--------------------------------------------------------------------------
+Without --resume, every run rebuilds the whole LeRobotDataset from scratch
+via LeRobotDataset.create() -- converting/re-encoding *all* task files again
+just to add one new task gets more wasteful as the dataset grows.
+LeRobotDataset.resume(repo_id, root) fixes this, but three things about it
+are non-obvious enough that they were checked directly against
+lerobot/datasets/{lerobot_dataset,dataset_metadata,dataset_writer}.py
+before wiring it in here (not assumed from the docstring):
+
+1. What resume() actually downloads: ONLY meta/ (info.json, stats.json,
+   tasks.parquet, episodes/*.parquet) -- never data/ or videos/. This is
+   safe (not "silently incomplete") because the first episode saved after
+   resume() *always* starts a brand-new chunk/file for both the parquet and
+   the video (dataset_writer.py's _save_episode_data/_save_episode_video
+   unconditionally call update_chunk_file_indices() the first time), so it
+   never needs to open or append into an old chunk file it doesn't have
+   locally. Verified locally (no network) by resuming into the SAME root a
+   create()'d dataset was built in, adding a new task's episodes, and
+   hashing every file before/after: only meta/info.json, meta/stats.json,
+   and meta/tasks.parquet changed (all KB-sized bookkeeping); every
+   data/*.parquet and videos/*.mp4 file was byte-identical. push_to_hub()
+   (huggingface_hub's upload_folder) only uploads new/changed local files
+   and does not delete untouched remote ones, so a --resume + --push cycle
+   only ever transfers the small metadata + the new task's own chunk files
+   -- old tasks' videos are never re-encoded or re-uploaded.
+
+2. Re-curating an ALREADY-PUSHED task (deleting/relabeling episodes in the
+   source .hdf5 after that batch is already on the Hub): there is no
+   supported way to edit or remove an individual episode from a published
+   LeRobotDataset -- resume() only ever appends. The .hdf5 files remain the
+   editable source of truth; the Hub LeRobotDataset should be treated as
+   append-only once pushed. Practical rule: finish curating a task's .hdf5
+   (delete bad takes) *before* the first --resume --push for it, the same
+   "convert after you've deleted what you don't want" rule this script
+   already followed pre-resume.
+
+3. Concurrent --resume + --push from two people is NOT safe. Both sides
+   compute their next chunk/file index from whatever meta/ they each
+   downloaded; if two people resume from the same base state, both compute
+   the SAME next chunk/file path and each push overwrites the other's file
+   at that path with their own content (huggingface_hub's commit API has no
+   compare-and-swap against a stale base revision) -- silent data loss for
+   whoever pushes second, not a merge conflict either side would notice.
+   There is no locking here (out of scope) -- coordinate so only one person
+   resume+pushes to a given --repo-id at a time; if you weren't first,
+   re-run --resume against the now-current Hub state before pushing.
+
 Usage:
     python scripts/convert_libero_to_lerobot.py \
         /home/franka/libero_datasets/*.hdf5 \
@@ -51,6 +100,14 @@ Usage:
         --repo-id knu-physical-ai/fr3-libero-teleop-lerobot \
         --root /home/franka/lerobot_upload \
         --push --private=false
+
+    # Later: add a new task's episodes to that same Hub dataset, without
+    # re-converting/re-uploading the earlier tasks (see --resume above):
+    python scripts/convert_libero_to_lerobot.py \
+        /home/franka/libero_datasets/pick_up_the_blue_cup_demo.hdf5 \
+        --repo-id knu-physical-ai/fr3-libero-teleop-lerobot \
+        --root /home/franka/lerobot_upload \
+        --resume --push --private=false
 """
 
 import argparse
@@ -92,10 +149,21 @@ def _episode_schema(grp: h5py.Group) -> dict:
     # this script does not support converting those; check_image_shapes()
     # fails loudly rather than silently mis-declaring the LeRobotDataset
     # feature shape.
+    has_gripper = action_dim == len(base_cols) + 1
+    # Episodes written after the schema dialog's per-column name overrides
+    # were added carry the ACTUAL names used (see gello/libero_format.py's
+    # save_episode); older episodes predate the attr and never had
+    # overrides, so the built-in names are exactly right for them too.
+    raw_names = grp.attrs.get("action_column_names")
+    if raw_names:
+        action_names = tuple(json.loads(raw_names))
+    else:
+        action_names = tuple(base_cols) + (("gripper.pos",) if has_gripper else ())
     return {
         "obs_keys": obs_keys,
         "action_space": action_space,
-        "has_gripper": action_dim == len(base_cols) + 1,
+        "has_gripper": has_gripper,
+        "action_names": action_names,
     }
 
 
@@ -165,13 +233,47 @@ def _build_features(schema: dict) -> tuple[dict, list[str]]:
             "dtype": "video", "shape": (IMAGE_SIZE, IMAGE_SIZE, 3), "names": ["height", "width", "channel"],
         }
 
-    action_names = action_column_names(schema["action_space"])
-    if schema["has_gripper"]:
-        action_names = action_names + ["gripper"]
+    action_names = list(schema["action_names"])
     features["action"] = {
         "dtype": "float32", "shape": (len(action_names),), "names": action_names,
     }
     return features, state_parts
+
+
+# Only the features this script itself declares -- not the bookkeeping keys
+# (timestamp, frame_index, episode_index, index, task_index) LeRobotDataset
+# adds on its own regardless of what's passed to create().
+_CHECKED_FEATURE_KEYS = ("observation.state", "observation.images.agent", "observation.images.wrist", "action")
+
+
+def _check_resume_compatible(remote_features: dict, local_features: dict) -> None:
+    """--resume appends into an existing Hub dataset, which already has ONE
+    fixed features dict -- LeRobotDataset.resume() doesn't take a `features`
+    argument to re-declare it, so a mismatch would only surface later, mid-
+    conversion, as a validate_frame() crash inside add_frame(). Catch it here
+    instead, before any conversion work starts."""
+    for key in _CHECKED_FEATURE_KEYS:
+        in_remote, in_local = key in remote_features, key in local_features
+        if in_remote != in_local:
+            raise SystemExit(
+                f"--resume 대상 Hub 데이터셋과 스키마가 다릅니다: '{key}'가 "
+                f"{'기존 데이터셋에는 있는데 지금 변환할 파일들에는 없음' if in_remote else '지금 변환할 파일들에는 있는데 기존 데이터셋에는 없음'}.\n"
+                "다른 스키마로 이어붙이면 Hub 데이터셋이 망가집니다 -- --repo-id를 바꿔 별도 데이터셋으로 변환하세요."
+            )
+        if not in_remote:
+            continue
+        r, local = remote_features[key], local_features[key]
+        if (
+            r["dtype"] != local["dtype"]
+            or tuple(r["shape"]) != tuple(local["shape"])
+            or list(r.get("names") or []) != list(local.get("names") or [])
+        ):
+            raise SystemExit(
+                f"--resume 대상 Hub 데이터셋과 '{key}' 스키마가 다릅니다:\n"
+                f"  기존: dtype={r['dtype']} shape={tuple(r['shape'])} names={r.get('names')}\n"
+                f"  지금: dtype={local['dtype']} shape={tuple(local['shape'])} names={local.get('names')}\n"
+                "다른 스키마로 이어붙이면 Hub 데이터셋이 망가집니다 -- --repo-id를 바꿔 별도 데이터셋으로 변환하세요."
+            )
 
 
 def main() -> None:
@@ -182,6 +284,15 @@ def main() -> None:
     p.add_argument("--fps", type=int, default=20)
     p.add_argument("--only-success", action="store_true", help="success=True인 에피소드만 포함")
     p.add_argument("--image-writer-threads", type=int, default=4)
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "처음부터 새로 만드는 대신 --repo-id의 기존 Hub 데이터셋에 이 파일들의 에피소드만 "
+            "이어붙임 (기존 task는 재변환/재업로드하지 않음). 동시에 두 명이 같은 --repo-id에 "
+            "--resume --push 하지 말 것 -- 이 파일 상단 docstring 3번 참고"
+        ),
+    )
     p.add_argument("--push", action="store_true", help="변환 후 바로 Hugging Face Hub에 업로드")
     p.add_argument("--private", action=argparse.BooleanOptionalAction, default=None, help="--push일 때만 적용")
     args = p.parse_args()
@@ -195,16 +306,29 @@ def main() -> None:
     )
     print(f"features: {list(features.keys())}")
 
-    ds = LeRobotDataset.create(
-        repo_id=args.repo_id,
-        fps=args.fps,
-        root=args.root,
-        robot_type="fr3_gello_real",
-        features=features,
-        use_videos=True,
-        image_writer_processes=0,
-        image_writer_threads=args.image_writer_threads,
-    )
+    if args.resume:
+        ds = LeRobotDataset.resume(
+            repo_id=args.repo_id,
+            root=args.root,
+            image_writer_processes=0,
+            image_writer_threads=args.image_writer_threads,
+        )
+        _check_resume_compatible(ds.meta.features, features)
+        print(
+            f"기존 데이터셋에 이어붙임: 현재 {ds.meta.total_episodes}개 에피소드, "
+            f"{ds.meta.total_frames} 프레임, task {ds.meta.total_tasks}개"
+        )
+    else:
+        ds = LeRobotDataset.create(
+            repo_id=args.repo_id,
+            fps=args.fps,
+            root=args.root,
+            robot_type="fr3_gello_real",
+            features=features,
+            use_videos=True,
+            image_writer_processes=0,
+            image_writer_threads=args.image_writer_threads,
+        )
 
     has_agent = "observation.images.agent" in features
     has_wrist = "observation.images.wrist" in features

@@ -398,6 +398,13 @@ class CollectionWorker(QThread):
                 resume=self.cfg.resume,
                 schema=self.cfg.schema,
             )
+            self._writer.record_session_config(
+                reset_pose=self.cfg.reset_pose,
+                grip=self.cfg.grip,
+                enable_wall=self.cfg.enable_wall,
+                max_episode_seconds=self.cfg.max_episode_seconds,
+                reset_wait_seconds=self.cfg.reset_wait_seconds,
+            )
         except Exception as e:  # noqa: BLE001
             # Covers both robot/camera/GELLO connect failures and writer
             # creation failing (e.g. task file exists without --resume) --
