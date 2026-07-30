@@ -423,6 +423,34 @@ def schema_from_episode(grp: Any) -> DatasetSchemaConfig:
     )
 
 
+def renumber_episodes(data: Any) -> None:
+    """Closes gaps left by deleted episodes so the remaining ones become a
+    contiguous ``demo_0..demo_{n-1}`` run again (``data`` is the file's
+    top-level ``data`` group). Renames on disk -- not just a display-only
+    renumbering -- so LeRobot conversion, the dataset explorer, and
+    anything else that reads names straight off disk all agree, at the
+    cost of reversing ``save_episode``'s original "monotonic, never
+    reused" numbering (see its ``next_demo_idx`` comment): resets
+    ``next_demo_idx`` to the post-renumber count here, so the next
+    ``save_episode`` continues right after the last renumbered episode
+    instead of leaving a gap again immediately.
+
+    Safe to call with no gaps (every rename below is then a no-op skip).
+    Always renames in ascending order of CURRENT index, which is
+    collision-free without a temporary name / two-pass shuffle: the k-th
+    (0-indexed) episode in sorted order can only have current index >= k
+    (deleting can only ever pull indices down, never up), so demo_k can
+    never already belong to a later, not-yet-processed episode when it's
+    that episode's turn.
+    """
+    names = sorted(data.keys(), key=lambda n: int(n.split("_")[1]))
+    for new_idx, name in enumerate(names):
+        new_name = f"demo_{new_idx}"
+        if name != new_name:
+            data.move(name, new_name)
+    data.attrs["next_demo_idx"] = len(names)
+
+
 def resize_rgb(img: np.ndarray, size: int = IMAGE_SIZE) -> np.ndarray:
     """Resize an (H, W, 3) uint8 RGB image to (size, size, 3), center-cropped square first."""
     import cv2
@@ -567,11 +595,12 @@ class LiberoTaskWriter:
             }
             self._data.attrs["problem_info"] = json.dumps(problem_info)
         if "next_demo_idx" not in self._data.attrs:
-            # Monotonic, never reused -- so deleting demo_2 and recording a new
-            # episode afterwards can't collide with the name of a demo that
-            # still exists. `num_episodes` (live count) and this counter
-            # (total ever assigned) intentionally diverge once anything has
-            # been deleted.
+            # delete_episode() renumbers to close gaps and resets this attr
+            # to the post-renumber count (see renumber_episodes()), so in
+            # steady state this is just `num_episodes` -- this fallback
+            # only matters for a file that predates renumbering and still
+            # has old gaps, where it's still the highest-index-plus-one so
+            # a new episode's name can't collide with a surviving one.
             existing = [int(k.split("_")[1]) for k in self._data.keys()]
             self._data.attrs["next_demo_idx"] = max(existing, default=-1) + 1
         self._file.flush()
@@ -610,7 +639,8 @@ class LiberoTaskWriter:
         return items
 
     def delete_episode(self, name: str) -> None:
-        """Removes a ``demo_N`` group.
+        """Removes a ``demo_N`` group, then renumbers the rest to close the
+        resulting gap (see :func:`renumber_episodes`).
 
         HDF5 does not shrink the file on delete -- the freed space is only
         reusable by later writes *within this same file*, not returned to the
@@ -619,6 +649,7 @@ class LiberoTaskWriter:
         if name not in self._data:
             raise KeyError(f"{name!r} not found in {self.path}")
         del self._data[name]
+        renumber_episodes(self._data)
         self._file.flush()
 
     def start_episode(self) -> None:

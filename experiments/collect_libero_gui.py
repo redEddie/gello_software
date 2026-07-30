@@ -82,6 +82,7 @@ from gello.libero_format import (  # noqa: E402
     action_column_names,
     describe_episode,
     describe_schema,
+    renumber_episodes,
     schema_from_episode,
 )
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
@@ -1443,7 +1444,9 @@ class LiberoCollectorWindow(QMainWindow):
             self.worker.cmd_delete_episode(demo_name)  # worker deletes + re-emits episode_list_changed
         else:
             with h5py.File(file_path, "a") as f:
-                del f["data"][demo_name]
+                data = f["data"]
+                del data[demo_name]
+                renumber_episodes(data)
             self._log(f"[삭제] {file_path.name} / {demo_name}")
             self._refresh_dataset_tree()
 
