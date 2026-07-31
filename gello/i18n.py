@@ -110,6 +110,8 @@ _EN: dict[str, str] = {
         "-- adding another task without re-converting/re-uploading the existing data",
     "변환 후 Hugging Face Hub에 바로 업로드 (--push)": "Upload to Hugging Face Hub right after converting (--push)",
     "비공개 데이터셋으로 업로드 (--private)": "Upload as a private dataset (--private)",
+    "업로드 전 Hub의 기존 파일 삭제 (다른 이름으로 올렸던 예전 파일 정리용)":
+        "Delete an existing file on the Hub before uploading (for cleaning up an old upload under a different name)",
 
     # ---- group boxes (dialogs) ----
     "저장할 Observation 필드": "Observation fields to save",
@@ -161,6 +163,8 @@ _EN: dict[str, str] = {
     "로컬 출력 경로": "Local output path",
     "FPS:": "FPS:",
     "Repo 안 파일 이름:": "Filename in repo:",
+    "삭제할 기존 파일 이름:": "Existing filename to delete:",
+    "비워두면 위 'Repo 안 파일 이름'과 동일": "Same as 'Filename in repo' above if left blank",
 
     # ---- QMessageBox titles/bodies ----
     "이미 실행 중": "Already running",

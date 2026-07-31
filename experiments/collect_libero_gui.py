@@ -589,6 +589,22 @@ class HdfUploadDialog(QDialog):
         self.private_check = QCheckBox(tr("비공개 데이터셋으로 업로드 (--private)"))
         layout.addWidget(self.private_check)
 
+        self.delete_existing_check = QCheckBox(
+            tr("업로드 전 Hub의 기존 파일 삭제 (다른 이름으로 올렸던 예전 파일 정리용)")
+        )
+        self.delete_existing_check.toggled.connect(self._on_delete_existing_toggled)
+        layout.addWidget(self.delete_existing_check)
+
+        old_name_row = QHBoxLayout()
+        self.old_path_label = QLabel(tr("삭제할 기존 파일 이름:"))
+        self.old_path_label.setEnabled(False)
+        old_name_row.addWidget(self.old_path_label)
+        self.old_path_in_repo_edit = QLineEdit()
+        self.old_path_in_repo_edit.setPlaceholderText(tr("비워두면 위 'Repo 안 파일 이름'과 동일"))
+        self.old_path_in_repo_edit.setEnabled(False)
+        old_name_row.addWidget(self.old_path_in_repo_edit, 1)
+        layout.addLayout(old_name_row)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -596,6 +612,10 @@ class HdfUploadDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _on_delete_existing_toggled(self, on: bool) -> None:
+        self.old_path_label.setEnabled(on)
+        self.old_path_in_repo_edit.setEnabled(on)
 
     def _browse_file(self) -> None:
         start = self.file_edit.text() or str(Path.home())
@@ -621,6 +641,11 @@ class HdfUploadDialog(QDialog):
         if path_in_repo:
             args += ["--path-in-repo", path_in_repo]
         args.append("--private" if self.private_check.isChecked() else "--no-private")
+        if self.delete_existing_check.isChecked():
+            args.append("--delete-existing")
+            old_path_in_repo = self.old_path_in_repo_edit.text().strip()
+            if old_path_in_repo:
+                args += ["--old-path-in-repo", old_path_in_repo]
         return args
 
 

@@ -7,17 +7,38 @@ upload. This is the raw-format half of the dual upload described in
 ~/huggingface_upload_process.md -- the converted half is
 scripts/convert_libero_to_lerobot.py's --push.
 
+Re-uploading to the SAME --path-in-repo already overwrites the previous
+content wholesale (upload_file() replaces whatever's at that path in a new
+commit) -- since the local .hdf5 keeps accumulating episodes across
+sessions, re-running this with the same path naturally makes the Hub copy
+whole again. There is no partial/byte-level append.
+
+--delete-existing is for a DIFFERENT case: the file on the Hub was uploaded
+under an old name (e.g. an earlier naming convention) and you want that old
+entry gone as part of this upload, not left behind as a stale duplicate.
+Combine with --old-path-in-repo when the stale name differs from the new
+--path-in-repo; otherwise it just deletes-then-recreates the same path
+(equivalent to the implicit overwrite above, just explicit about it).
+
 Usage:
     python scripts/upload_to_hub.py \
         /home/franka/libero_datasets/pick_up_the_red_block_demo.hdf5 \
         --repo-id knu-physical-ai/fr3-libero-teleop \
         --path-in-repo pick_up_the_red_block_demo_gibeom25_20260730.hdf5
+
+    # Replace a stale, differently-named upload of the same task:
+    python scripts/upload_to_hub.py \
+        /home/franka/libero_datasets/pick_up_the_red_block_demo.hdf5 \
+        --repo-id knu-physical-ai/fr3-libero-teleop \
+        --path-in-repo pick_up_the_red_block_demo_gibeom25_20260730.hdf5 \
+        --delete-existing --old-path-in-repo pick_up_the_red_block_demo_old.hdf5
 """
 
 import argparse
 from pathlib import Path
 
 from huggingface_hub import HfApi
+from huggingface_hub.errors import EntryNotFoundError
 
 
 def main() -> None:
@@ -29,6 +50,16 @@ def main() -> None:
         help="repo 안에서의 파일 이름 (기본: 로컬 파일 이름 그대로)",
     )
     p.add_argument("--private", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument(
+        "--delete-existing", action="store_true",
+        help="업로드 전에 Hub에 있는 기존 파일을 먼저 삭제 (기본은 --path-in-repo와 동일한 경로, "
+        "--old-path-in-repo로 다른 이름 지정 가능)",
+    )
+    p.add_argument(
+        "--old-path-in-repo", default=None,
+        help="--delete-existing과 함께 사용 -- 삭제할 파일이 --path-in-repo와 다른 이름일 때 지정 "
+        "(기본: --path-in-repo와 동일)",
+    )
     args = p.parse_args()
 
     if not args.local_file.is_file():
@@ -39,6 +70,15 @@ def main() -> None:
     # exist_ok=True: repeat uploads to an already-existing repo (e.g. a
     # second task file for the same dataset) shouldn't fail here.
     api.create_repo(repo_id=args.repo_id, repo_type="dataset", private=bool(args.private), exist_ok=True)
+
+    if args.delete_existing:
+        old_path = args.old_path_in_repo or path_in_repo
+        try:
+            api.delete_file(path_in_repo=old_path, repo_id=args.repo_id, repo_type="dataset")
+            print(f"기존 파일 삭제: {args.repo_id}/{old_path}")
+        except EntryNotFoundError:
+            print(f"기존 파일 없음 (건너뜀): {args.repo_id}/{old_path}")
+
     print(f"업로드 중: {args.local_file} -> {args.repo_id}/{path_in_repo}")
     api.upload_file(
         path_or_fileobj=str(args.local_file),
