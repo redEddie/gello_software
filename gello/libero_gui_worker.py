@@ -359,6 +359,7 @@ class CollectionWorker(QThread):
             obs = self._get_obs()
 
             q = self._joint_vec(obs)
+            q_cmd = self._joint_vec(action)
             self._writer.add_frame(
                 agentview_rgb=obs["agent"],
                 eye_in_hand_rgb=obs["wrist"],
@@ -368,6 +369,8 @@ class CollectionWorker(QThread):
                 gripper_closed=action["gripper.pos"] > 0.5,
                 joint_velocities=obs["_joint_velocities"][:7],
                 timestamp=time.time(),
+                commanded_joint_positions=q_cmd[:7],
+                commanded_gripper=float(action["gripper.pos"]),
             )
             self._emit_frames(obs)
             n = i + 1

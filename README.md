@@ -17,6 +17,16 @@
 
 실행: `run_libero_collector.sh` 또는 바탕화면 바로가기로 GUI만 켜면, 그 안에서 로봇 노드까지 관리 가능.
 
+## 명령(commanded) 스트림 기록 + commanded EE-delta 유도
+
+기존 action space 4종은 전부 follower의 **실현된(achieved)** 궤적에서 사후 재구성된다. 접촉 구간에서는 leader가 계속 밀어도 실현 delta가 ~0으로 붕괴하므로, 조작자의 힘 의도는 실현 궤적에 남지 않는다 (자유공간 재생은 되지만 접촉 작업 재생이 실패하는 원인). 이를 위해:
+
+- **수집 시**: 매 프레임 GELLO leader 명령을 스키마와 무관하게 항상 저장 -- `obs/commanded_joint_states` (T,7 rad), `obs/commanded_gripper_states` (T,1, 0=open..1=closed). 기존 `actions` 계산은 그대로 (하위호환).
+- **수집 후**: `scripts/derive_commanded_ee_actions.py <task>_demo.hdf5`가 FR3 FK(numpy MDH, 의존성 없음)로 commanded EE pose를 계산해 **commanded delta** 액션 2종을 추가한다:
+  - `actions_ee` (T,7): frame t의 follower EE 좌표계 기준 명령 delta (LIBERO `actions_ee` 소비자와 규약 일치 -- pos/rot을 R_t^T로 회전, 0.05m/0.5rad 정규화, [-1,1] clip)
+  - `actions_world_cmd` (T,7): 같은 값의 world-frame 버전
+  - flange→EE 변환은 가정하지 않고 파일별로 자가 캘리브레이션 (FK(joint_states) vs 기록된 `ee_pos_quat` 평균) 후 잔차 검증 -- median 잔차가 `--max-fk-residual-mm`(기본 5mm) 초과 시 중단. `--dry-run`으로 통계만 확인 가능. 기존 데이터셋은 수정하지 않음.
+
 ---
 
 ## Fork notes (`fr3-real-teleop`)

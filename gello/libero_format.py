@@ -48,6 +48,21 @@ attempts to stream one in this sandbox hit transient network failures --
 before training anything on this data, sanity-check a few saved episodes by
 eye: gripper sign flips exactly when the operator's trigger did, and replaying
 cumulative ``actions`` roughly reproduces ``ee_states``).
+
+Realized-trajectory actions lose the operator's force intent wherever the
+follower is in contact: the leader keeps commanding *through* the obstacle
+while the realized pose barely moves, so a realized delta goes to ~zero
+exactly where the demonstration is pressing. To keep that intent recoverable,
+every episode ALSO stores the raw teleop command stream (independent of the
+selected action space; see ``save_episode``)::
+
+    obs/commanded_joint_states    (T, 7) float32  -- GELLO leader joints (rad),
+                                                     the command sent at frame t
+    obs/commanded_gripper_states  (T, 1) float32  -- commanded gripper, 0=open..1=closed
+
+``scripts/derive_commanded_ee_actions.py`` turns these into commanded EE
+delta actions (``actions_ee`` / ``actions_world_cmd``) offline via FR3
+forward kinematics -- no extra dependency in the collection loop.
 """
 
 from __future__ import annotations
@@ -301,6 +316,11 @@ def describe_schema(cfg: DatasetSchemaConfig) -> str:
     if schema.save_timestamp:
         obs_rows.append(("timestamp", "(T,) float64  -- wall-clock seconds"))
 
+    # Not schema-gated: the GUI worker always supplies the teleop command
+    # stream, so every episode it records carries these (see save_episode).
+    obs_rows.append(("commanded_joint_states", "(T, 7) float32  -- GELLO leader command (rad)"))
+    obs_rows.append(("commanded_gripper_states", "(T, 1) float32  -- commanded, 0=open..1=closed"))
+
     if not obs_rows:
         lines.append("  (선택된 obs 필드 없음)")
     else:
@@ -319,6 +339,8 @@ _OBS_KEY_NOTES = {
     "ee_states": "  -- pos(3) + axis-angle(3)",
     "ee_ori": "  -- axis-angle",
     "timestamp": "  -- wall-clock seconds",
+    "commanded_joint_states": "  -- GELLO leader command (rad)",
+    "commanded_gripper_states": "  -- commanded, 0=open..1=closed",
 }
 
 
@@ -470,6 +492,8 @@ class LiberoEpisodeBuffer:
     action space is selected, and no matter which obs fields end up written
     (see LiberoTaskWriter.save_episode). Only the genuinely optional/costly
     fields (images, joint velocities, timestamps) are gated on ``schema``.
+    The commanded_* fields are buffered whenever the caller passes them
+    (the GUI worker always does) and likewise bypass the schema.
     """
 
     def __init__(self, schema: Optional[DatasetSchemaConfig] = None) -> None:
@@ -485,6 +509,8 @@ class LiberoEpisodeBuffer:
         self.gripper_closed: list[bool] = []
         self.joint_velocities: list[np.ndarray] = []
         self.timestamps: list[float] = []
+        self.commanded_joint_positions: list[np.ndarray] = []
+        self.commanded_gripper: list[float] = []
 
     def __len__(self) -> int:
         return len(self.joint_states)
@@ -499,11 +525,19 @@ class LiberoEpisodeBuffer:
         gripper_closed: bool,
         joint_velocities: Optional[np.ndarray] = None,
         timestamp: Optional[float] = None,
+        commanded_joint_positions: Optional[np.ndarray] = None,
+        commanded_gripper: Optional[float] = None,
     ) -> None:
         self.joint_states.append(np.asarray(joint_positions, dtype=np.float32))
         self.gripper_states.append(np.array([gripper_position], dtype=np.float32))
         self.ee_pos_quat.append(np.asarray(ee_pos_quat, dtype=np.float64))
         self.gripper_closed.append(bool(gripper_closed))
+        if commanded_joint_positions is not None:
+            self.commanded_joint_positions.append(
+                np.asarray(commanded_joint_positions, dtype=np.float32)
+            )
+        if commanded_gripper is not None:
+            self.commanded_gripper.append(float(commanded_gripper))
         if self.schema.save_agentview_rgb:
             self.agentview_rgb.append(self._process_image(agentview_rgb))
         if self.schema.save_eye_in_hand_rgb:
@@ -786,6 +820,22 @@ class LiberoTaskWriter:
         if schema.save_timestamp and self._buffer.timestamps:
             obs.create_dataset(
                 "timestamp", data=np.array(self._buffer.timestamps, dtype=np.float64)
+            )
+        # Raw teleop command stream -- written whenever the caller supplied it,
+        # independent of the schema and of which action space `actions` used:
+        # realized-trajectory actions zero out wherever the follower is blocked
+        # by contact, and the command is the only record of what the operator
+        # was actually asking for there. Tiny (7+1 floats/frame), so never
+        # worth a schema toggle. See scripts/derive_commanded_ee_actions.py.
+        if len(self._buffer.commanded_joint_positions) == n:
+            obs.create_dataset(
+                "commanded_joint_states",
+                data=np.stack(self._buffer.commanded_joint_positions),
+            )
+        if len(self._buffer.commanded_gripper) == n:
+            obs.create_dataset(
+                "commanded_gripper_states",
+                data=np.array(self._buffer.commanded_gripper, dtype=np.float32).reshape(-1, 1),
             )
 
         grp.create_dataset("actions", data=actions)
