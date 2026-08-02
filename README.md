@@ -17,6 +17,36 @@
 
 실행: `run_libero_collector.sh` 또는 바탕화면 바로가기로 GUI만 켜면, 그 안에서 로봇 노드까지 관리 가능.
 
+## 학습된 정책 실행 (policy client)
+
+`experiments/fr3_policy_client.py` — GPU 머신의 정책 서버(mamba-embeddingvla
+`real_deploy/fr3_policy_server.py`)에 관측을 보내고 8-dim 절대 관절각 청크를 받아
+실행한다. 이 컴퓨터에서는 모델 연산 없음.
+
+**프로토콜** (HTTP POST JSON, lehome/so101 구조):
+- `POST /reset {"instruction": str}` — 에피소드 시작 시 1회 (텍스트 인코딩 + 상태 초기화)
+- `POST /infer {observation}` → `{"actions": [[8 floats] × 15]}` (joint1-7 rad + gripper 0..1, 절대값)
+  - `observation.state`: `[8]` (관절 rad 7 + gripper 0..1 — `get_observation()` 그대로)
+  - `observation.images.agent`/`.wrist`: `{"base64","shape":[256,256,3],"dtype":"uint8"}` —
+    **수집과 동일한 `resize_rgb`(center-crop→256², INTER_AREA)를 클라이언트에서 적용** 후 raw base64.
+    학습/배포 픽셀 파이프라인이 동일해야 하므로 이 전처리를 생략하면 안 됨 (640×480 raw를
+    보내면 서버가 근사 처리하지만 비권장).
+
+**실행 순서** (FR3 컨트롤러 컴퓨터):
+```bash
+# 0) 통신 테스트 (로봇/카메라 불필요 — 합성 관측으로 서버 왕복 확인)
+(lerobot-venv) python experiments/fr3_policy_client.py --dry-run
+
+# 1) 로봇 노드
+(pylibfranka-venv) python experiments/launch_nodes.py --robot fr3
+
+# 2) 클라이언트 (상단 CONFIG에서 SERVER_URL/카메라 시리얼 확인)
+(lerobot-venv) python experiments/fr3_policy_client.py --max-seconds 30
+```
+
+안전장치: 시작 시 수집기와 동일한 램프로 `libero` reset pose 복귀 후 시작, 매 스텝
+목표 관절각을 측정치 ±0.15 rad로 클램프 (정책 오동작 시 급가속 차단). Ctrl-C 안전 종료.
+
 ---
 
 ## Fork notes (`fr3-real-teleop`)
