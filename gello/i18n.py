@@ -82,6 +82,7 @@ _EN: dict[str, str] = {
     "닫기": "Close",
     "변환 시작": "Start conversion",
     "업로드 시작": "Start upload",
+    "자세 매칭 자동화 (Space)": "Automate pose matching (Space)",
 
     # ---- checkboxes ----
     "GELLO 조인트 한계 벽(wall) 사용": "Use GELLO joint-limit wall",
@@ -135,6 +136,8 @@ _EN: dict[str, str] = {
     # ---- tooltips / placeholders ----
     "저장 경로에 이미 있는 task를 선택하면 이어서 수집 가능 (--resume 자동 체크)":
         "Picking a task already in the save path lets you continue it (--resume auto-checked)",
+    "먼저 대략적으로 자세를 맞추면 활성화됩니다 (게이트 {gate} rad 이내)":
+        "Enables once roughly matched by hand (within {gate} rad gate)",
     "연결된 RealSense 목록에서 선택하거나 시리얼번호를 직접 입력":
         "Pick from connected RealSense cameras, or type a serial number directly",
     "예: pick up the red block": "e.g. pick up the red block",
@@ -197,6 +200,12 @@ _EN: dict[str, str] = {
     "미리보기 카메라를 제때 해제하지 못했습니다. 잠시 후 다시 시도하세요.":
         "Couldn't release the preview cameras in time. Try again shortly.",
     "카메라 목록 조회 실패: {err}": "Failed to list cameras: {err}",
+    "이름이 다릅니다": "Name mismatch",
+    "로컬 파일({local}) 내용을 저장소의 다른 이름({repo})으로 "
+    "업로드합니다 -- 그 이름의 기존 파일이 있다면 덮어씁니다. 계속할까요?":
+        "Uploading the local file ({local}) under a different name in the "
+        "repo ({repo}) -- this overwrites any existing file already at that "
+        "name. Continue?",
     "(선택 안함)": "(None selected)",
     "삭제 불가": "Cannot delete",
     "현재 세션이 사용 중인 파일입니다. 먼저 '세션 종료'를 누르세요.":
@@ -236,7 +245,12 @@ _EN: dict[str, str] = {
     "노드: 정상": "Node: OK",
     "노드: 응답 없음 (launch_nodes 재시작 필요)": "Node: not responding (restart launch_nodes)",
     "모든 조인트 일치 -- '텔레옵 시작'을 누르세요": "All joints match -- click 'Start teleop'",
+    "모든 조인트 일치 -- '자세 매칭 자동화'를 눌러 정밀 정렬하세요":
+        "All joints match -- click 'Automate pose matching' for fine alignment",
     "{joint} 조인트를 맞춰주세요 (차이 {diff} rad)": "Match joint {joint} (diff {diff} rad)",
+    "자동 정렬 중...": "Auto-aligning...",
+    "자동 정렬 중... (최대 오차 {err} rad)": "Auto-aligning... (max error {err} rad)",
+    "자동 정렬 완료 -- '텔레옵 시작'을 누르세요": "Auto-alignment complete -- click 'Start teleop'",
     "기록 중: {n} 프레임 ({s}s)": "Recording: {n} frames ({s}s)",
     "환경 리셋 대기: {s}s (건너뛰려면 버튼 클릭)": "Waiting for env reset: {s}s (click button to skip)",
     "{n}대 감지됨": "{n} detected",

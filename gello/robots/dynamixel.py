@@ -19,6 +19,7 @@ class DynamixelRobot(Robot):
         gripper_config: Optional[Tuple[int, float, float]] = None,
         start_joints: Optional[np.ndarray] = None,
         joint_limits: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+        servo_types: Optional[Sequence[str]] = None,
     ):
         from gello.dynamixel.driver import (
             DynamixelDriver,
@@ -69,9 +70,18 @@ class DynamixelRobot(Robot):
         assert np.all(
             np.abs(self._joint_signs) == 1
         ), f"joint_signs: {self._joint_signs}"
+        if servo_types is not None:
+            # Caller passes one entry per servo actually on the bus -- arm
+            # joints AND the gripper if gripper_config is set (joint_ids
+            # above has already grown to include it by this point).
+            assert len(servo_types) == len(joint_ids), (
+                f"servo_types: {len(servo_types)}, joint_ids: {len(joint_ids)}"
+            )
 
         if real:
-            self._driver = DynamixelDriver(joint_ids, port=port, baudrate=baudrate)
+            self._driver = DynamixelDriver(
+                joint_ids, servo_types=servo_types, port=port, baudrate=baudrate
+            )
             self._driver.set_torque_mode(False)
         else:
             self._driver = FakeDynamixelDriver(joint_ids)

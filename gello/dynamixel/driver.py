@@ -641,7 +641,26 @@ class DynamixelDriver(DynamixelDriverProtocol):
             return
 
         self._stop_thread.set()
-        self._reading_thread.join()
+        # Bounded on purpose: _read_joint_states only re-checks _stop_thread
+        # between bus transactions, so a wedged txRxPacket() (e.g. a
+        # USB-serial hiccup) can leave the thread never getting back to that
+        # check. An unbounded join() here would then hang forever -- and
+        # since this runs inside CollectionWorker.run()'s teardown (itself
+        # wrapped in try/except by the caller, which doesn't help against a
+        # call that never raises, just never returns), that hangs the whole
+        # worker QThread, which the GUI's closeEvent can wait out (its own
+        # wait() has a timeout) but never actually recovers from -- the
+        # window closes while the process lingers forever in the
+        # background. The reading thread is a daemon (see
+        # _start_reading_thread), so giving up here and closing the port
+        # anyway is safe: nothing waits on it, and closePort() often
+        # unblocks a stuck read as a side effect anyway.
+        self._reading_thread.join(timeout=2.0)
+        if self._reading_thread.is_alive():
+            print(
+                f"warning: Dynamixel reading thread on {self._port} did not "
+                "stop within 2s (stuck bus read?) -- closing the port anyway"
+            )
         self._portHandler.closePort()
 
 

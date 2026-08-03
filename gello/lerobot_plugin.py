@@ -231,6 +231,21 @@ class GelloFR3Teleop(Teleoperator):
     def send_feedback(self, feedback: dict[str, Any]) -> None:
         pass
 
+    # ------------------------------------------------------- pose-match assist
+    def start_pose_match(self, target_q: np.ndarray) -> None:
+        """See ``GelloAgent.start_pose_match``. Requires ``connect()`` first."""
+        assert self._agent is not None, "not connected"
+        self._agent.start_pose_match(target_q)
+
+    def pose_match_status(self) -> dict[str, Any]:
+        if self._agent is None:
+            return {"error": None, "done": True}
+        return self._agent.pose_match_status()
+
+    def cancel_pose_match(self) -> None:
+        if self._agent is not None:
+            self._agent.cancel_pose_match()
+
     def disconnect(self) -> None:
         if self._agent is not None:
             self._agent.close()
