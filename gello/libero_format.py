@@ -696,62 +696,80 @@ class LiberoTaskWriter:
     def discard_episode(self) -> None:
         self._buffer.clear()
 
+    def detach_buffer(self) -> LiberoEpisodeBuffer:
+        """Swap out the filled episode buffer and install a fresh one, so the
+        next episode can start recording while the detached buffer is being
+        written by a background thread (see libero_gui_worker.EpisodeSaver)."""
+        buf = self._buffer
+        self._buffer = LiberoEpisodeBuffer(self.schema)
+        return buf
+
     def save_episode(self, success: Optional[bool] = None) -> Optional[str]:
-        """Commits the buffered episode as a new ``demo_N`` group.
+        """Synchronous convenience wrapper: detach + save_buffer in one call."""
+        return self.save_buffer(self.detach_buffer(), success=success)
+
+    def save_buffer(self, buf: LiberoEpisodeBuffer, success: Optional[bool] = None) -> Optional[str]:
+        """Commits one (detached) episode buffer as a new ``demo_N`` group.
+
+        h5py is not thread-safe: every file-touching call on this writer
+        (save_buffer / delete_episode / list_episodes / close) must be
+        serialized onto ONE thread by the caller -- EpisodeSaver owns exactly
+        that serialization in the GUI.
 
         Args:
+            buf: the buffer returned by :meth:`detach_buffer`.
             success: operator-labeled outcome (no simulator goal-check exists
                 for a real robot). Not a canonical LIBERO field; stored as a
                 per-demo attr for downstream filtering. ``None`` if unlabeled.
 
         Returns the group name, or None if the buffer was empty.
         """
-        n = len(self._buffer)
+        n = len(buf)
         if n < 2:
-            self._buffer.clear()
+            buf.clear()
             return None
 
         schema = self.schema
         if schema.action_space == ACTION_SPACE_JOINT_DELTA:
-            q = np.stack(self._buffer.joint_states)  # (n, 7)
+            q = np.stack(buf.joint_states)  # (n, 7)
             actions = np.zeros((n, 8), dtype=np.float32)
             for t in range(n - 1):
                 actions[t] = compute_joint_delta_action(
-                    q[t], q[t + 1], self._buffer.gripper_closed[t]
+                    q[t], q[t + 1], buf.gripper_closed[t]
                 )
             # Terminal frame: no further motion recorded; hold gripper state.
             actions[n - 1, :7] = 0.0
-            actions[n - 1, 7] = 1.0 if self._buffer.gripper_closed[-1] else -1.0
+            actions[n - 1, 7] = 1.0 if buf.gripper_closed[-1] else -1.0
         elif schema.action_space == ACTION_SPACE_JOINT_ABSOLUTE:
-            q = np.stack(self._buffer.joint_states)  # (n, 7)
+            q = np.stack(buf.joint_states)  # (n, 7)
             actions = np.zeros((n, 8), dtype=np.float32)
             for t in range(n - 1):
                 actions[t] = compute_joint_absolute_action(
-                    q[t + 1], self._buffer.gripper_closed[t]
+                    q[t + 1], buf.gripper_closed[t]
                 )
             # Terminal frame: no further target recorded; hold current position.
             actions[n - 1, :7] = q[n - 1]
-            actions[n - 1, 7] = 1.0 if self._buffer.gripper_closed[-1] else -1.0
+            actions[n - 1, 7] = 1.0 if buf.gripper_closed[-1] else -1.0
         elif schema.action_space == ACTION_SPACE_EE_ABSOLUTE:
-            ee = np.stack(self._buffer.ee_pos_quat)  # (n, 7)
+            ee = np.stack(buf.ee_pos_quat)  # (n, 7)
             actions = np.zeros((n, 7), dtype=np.float32)
             for t in range(n - 1):
                 actions[t] = compute_ee_absolute_action(
-                    ee[t + 1], self._buffer.gripper_closed[t]
+                    ee[t + 1], buf.gripper_closed[t]
                 )
             # Terminal frame: no further target recorded; hold current pose.
             actions[n - 1, :3] = ee[n - 1, :3]
             actions[n - 1, 3:6] = _quat_to_axis_angle(*ee[n - 1, 3:7])
-            actions[n - 1, 6] = 1.0 if self._buffer.gripper_closed[-1] else -1.0
+            actions[n - 1, 6] = 1.0 if buf.gripper_closed[-1] else -1.0
         else:
-            ee = np.stack(self._buffer.ee_pos_quat)  # (n, 7)
+            ee = np.stack(buf.ee_pos_quat)  # (n, 7)
             actions = np.zeros((n, 7), dtype=np.float32)
             for t in range(n - 1):
                 actions[t] = compute_delta_action(
-                    ee[t], ee[t + 1], self._buffer.gripper_closed[t]
+                    ee[t], ee[t + 1], buf.gripper_closed[t]
                 )
             actions[n - 1, :6] = 0.0
-            actions[n - 1, 6] = 1.0 if self._buffer.gripper_closed[-1] else -1.0
+            actions[n - 1, 6] = 1.0 if buf.gripper_closed[-1] else -1.0
 
         # Every branch above always ends with gripper as the last column,
         # in -1=open/+1=close (robosuite Panda convention) -- remap to
@@ -785,25 +803,23 @@ class LiberoTaskWriter:
         if schema.save_agentview_rgb:
             obs.create_dataset(
                 "agentview_rgb",
-                data=np.stack(self._buffer.agentview_rgb),
-                compression="gzip",
-                compression_opts=4,
+                data=np.stack(buf.agentview_rgb),
+                compression="lzf",
             )
         if schema.save_eye_in_hand_rgb:
             obs.create_dataset(
                 "eye_in_hand_rgb",
-                data=np.stack(self._buffer.eye_in_hand_rgb),
-                compression="gzip",
-                compression_opts=4,
+                data=np.stack(buf.eye_in_hand_rgb),
+                compression="lzf",
             )
         if schema.save_joint_states:
-            obs.create_dataset("joint_states", data=np.stack(self._buffer.joint_states))
+            obs.create_dataset("joint_states", data=np.stack(buf.joint_states))
         if schema.save_gripper_states:
             obs.create_dataset(
-                "gripper_states", data=np.stack(self._buffer.gripper_states)
+                "gripper_states", data=np.stack(buf.gripper_states)
             )
         if schema.save_ee_states or schema.save_ee_pos or schema.save_ee_ori:
-            ee = np.stack(self._buffer.ee_pos_quat)  # (n, 7)
+            ee = np.stack(buf.ee_pos_quat)  # (n, 7)
             ee_ori = np.stack([_quat_to_axis_angle(*q[3:7]) for q in ee]).astype(np.float32)
             ee_pos = ee[:, :3].astype(np.float32)
             if schema.save_ee_states:
@@ -813,13 +829,13 @@ class LiberoTaskWriter:
                 obs.create_dataset("ee_pos", data=ee_pos)
             if schema.save_ee_ori:
                 obs.create_dataset("ee_ori", data=ee_ori)
-        if schema.save_joint_velocities and self._buffer.joint_velocities:
+        if schema.save_joint_velocities and buf.joint_velocities:
             obs.create_dataset(
-                "joint_velocities", data=np.stack(self._buffer.joint_velocities)
+                "joint_velocities", data=np.stack(buf.joint_velocities)
             )
-        if schema.save_timestamp and self._buffer.timestamps:
+        if schema.save_timestamp and buf.timestamps:
             obs.create_dataset(
-                "timestamp", data=np.array(self._buffer.timestamps, dtype=np.float64)
+                "timestamp", data=np.array(buf.timestamps, dtype=np.float64)
             )
         # Raw teleop command stream -- written whenever the caller supplied it,
         # independent of the schema and of which action space `actions` used:
@@ -827,15 +843,15 @@ class LiberoTaskWriter:
         # by contact, and the command is the only record of what the operator
         # was actually asking for there. Tiny (7+1 floats/frame), so never
         # worth a schema toggle. See scripts/derive_commanded_ee_actions.py.
-        if len(self._buffer.commanded_joint_positions) == n:
+        if len(buf.commanded_joint_positions) == n:
             obs.create_dataset(
                 "commanded_joint_states",
-                data=np.stack(self._buffer.commanded_joint_positions),
+                data=np.stack(buf.commanded_joint_positions),
             )
-        if len(self._buffer.commanded_gripper) == n:
+        if len(buf.commanded_gripper) == n:
             obs.create_dataset(
                 "commanded_gripper_states",
-                data=np.array(self._buffer.commanded_gripper, dtype=np.float32).reshape(-1, 1),
+                data=np.array(buf.commanded_gripper, dtype=np.float32).reshape(-1, 1),
             )
 
         grp.create_dataset("actions", data=actions)
@@ -845,7 +861,7 @@ class LiberoTaskWriter:
         grp.create_dataset("dones", data=dones)
 
         self._file.flush()
-        self._buffer.clear()
+        buf.clear()
         return name
 
     def close(self) -> None:

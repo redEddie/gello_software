@@ -47,6 +47,70 @@ AGENT_CAMERA_SERIAL = "338122300664"
 WRIST_CAMERA_SERIAL = "230422272249"
 
 
+class EpisodeSaver(QThread):
+    """Owns ALL h5py-file-touching writer calls, serialized through one queue.
+
+    h5py is not thread-safe, so once this thread starts, save_buffer /
+    delete_episode / list_episodes go ONLY through here. The worker keeps
+    buffer-only calls (add_frame / start_episode / discard_episode) and hands
+    a detached buffer over for saving -- recording the next episode overlaps
+    with compressing/writing the previous one, so homing/preview never stall
+    on an episode commit.
+    """
+
+    episode_saved = pyqtSignal(str, int)      # demo_name, n_frames
+    episode_list_changed = pyqtSignal(list)
+    save_status = pyqtSignal(str)             # ""=idle; else short status text
+    log_message = pyqtSignal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._writer = None  # set by CollectionWorker.run() before start()
+        self._q: "queue.Queue[tuple]" = queue.Queue()
+
+    def set_writer(self, writer) -> None:
+        self._writer = writer
+
+    def enqueue_save(self, buf, success) -> None:
+        self._q.put(("save", buf, success))
+
+    def enqueue_delete(self, name: str) -> None:
+        self._q.put(("delete", name))
+
+    def finish(self) -> None:
+        """Drain the queue, then exit run(). Caller must wait() afterwards."""
+        self._q.put(("stop",))
+
+    def run(self) -> None:
+        while True:
+            item = self._q.get()
+            if item[0] == "stop":
+                break
+            try:
+                if item[0] == "save":
+                    _, buf, success = item
+                    n = len(buf)
+                    waiting = self._q.qsize()
+                    self.save_status.emit(
+                        f"저장 중... {n}프레임" + (f" (+대기 {waiting})" if waiting else ""))
+                    t0 = time.monotonic()
+                    name = self._writer.save_buffer(buf, success=success)
+                    dt = time.monotonic() - t0
+                    if name:
+                        self.episode_saved.emit(name, n)
+                        self.log_message.emit(f"[저장] {name} ({n} 프레임, {dt:.1f}s, 백그라운드)")
+                    self.episode_list_changed.emit(self._writer.list_episodes())
+                    self.save_status.emit("")
+                elif item[0] == "delete":
+                    name = item[1]
+                    self._writer.delete_episode(name)
+                    self.log_message.emit(f"[삭제] {name}")
+                    self.episode_list_changed.emit(self._writer.list_episodes())
+            except Exception as e:  # noqa: BLE001
+                self.log_message.emit(f"[저장 스레드 오류] {type(e).__name__}: {e}")
+                self.save_status.emit("")
+
+
 @dataclass
 class WorkerConfig:
     task_name: str
@@ -91,6 +155,9 @@ class CollectionWorker(QThread):
         self._writer: Optional[LiberoTaskWriter] = None
         self._reset_q = FR3_RESET_POSES[self.cfg.reset_pose]
         self._episode_count = 0
+        # GUI 스레드에서 시그널을 미리 connect할 수 있도록 여기서 생성;
+        # writer 주입/start()는 run()에서 (h5py 접근 직렬화는 saver가 소유).
+        self.saver = EpisodeSaver()
 
     # ------------------------------------------------------------------ API
     # Called from the GUI (main) thread; safe because queue.Queue is thread-safe.
@@ -126,15 +193,9 @@ class CollectionWorker(QThread):
 
     # --------------------------------------------------------------- helpers
     def _handle_delete_episode(self, name: str) -> None:
-        """Runs on this thread -- the only thread allowed to touch ``self._writer``'s
-        open h5py.File. Deletion is a metadata edit, not robot I/O, so it is
-        safe to service from any state (gate/recording/ramping/idle)."""
-        try:
-            self._writer.delete_episode(name)
-            self.log_message.emit(f"[삭제] {name}")
-        except Exception as e:  # noqa: BLE001
-            self.log_message.emit(f"[삭제 실패] {name}: {type(e).__name__}: {e}")
-        self.episode_list_changed.emit(self._writer.list_episodes())
+        """File-touching ops are serialized on the saver thread (h5py is not
+        thread-safe); pending saves queued before this delete commit first."""
+        self.saver.enqueue_delete(name)
 
     def _poll_cmd(self, block: bool = False, timeout: float = 0.0) -> Optional[tuple]:
         """Pops queued commands, servicing ``delete_episode`` inline (it doesn't
@@ -428,6 +489,9 @@ class CollectionWorker(QThread):
         self._episode_count = self._writer.num_episodes
         self.connected.emit(self._episode_count, str(self._writer.path))
         self.episode_list_changed.emit(self._writer.list_episodes())
+        # 이 시점 이후 파일을 만지는 호출(save/delete/list)은 전부 saver 스레드로.
+        self.saver.set_writer(self._writer)
+        self.saver.start()
 
         need_reset = False
         try:
@@ -473,10 +537,10 @@ class CollectionWorker(QThread):
                         self.log_message.emit("[EP] 프레임이 너무 적어 저장하지 않음")
                         continue
 
-                    demo_name = self._writer.save_episode(success=self._pending_success)
+                    # 버퍼를 떼어 백그라운드 저장으로 넘기고 즉시 홈 복귀 진행.
+                    # episode_saved/episode_list_changed는 saver가 emit.
+                    self.saver.enqueue_save(self._writer.detach_buffer(), self._pending_success)
                     self._episode_count += 1
-                    self.episode_saved.emit(demo_name or "?", n)
-                    self.episode_list_changed.emit(self._writer.list_episodes())
 
                     if outcome == "quit":
                         break
@@ -511,6 +575,11 @@ class CollectionWorker(QThread):
         finally:
             try:
                 self._writer.discard_episode()
+                # 대기 중인 백그라운드 저장을 모두 커밋한 뒤에야 요약/close 가능
+                # (saver 종료 후에는 이 스레드가 파일을 만져도 경합 없음).
+                if self.saver.isRunning():
+                    self.saver.finish()
+                    self.saver.wait(60000)
                 self._emit_session_summary()
                 self._writer.close()
             except Exception:  # noqa: BLE001

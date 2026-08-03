@@ -1203,7 +1203,10 @@ class LiberoCollectorWindow(QMainWindow):
         self.node_label = QLabel(tr("노드: -"))
         self.episode_label = QLabel(tr("에피소드: {n}").format(n=0))
         self.progress_label = QLabel("")
-        for w in (self.state_label, self.node_label, self.episode_label, self.progress_label):
+        self.save_label = QLabel("")  # 백그라운드 저장 상태 (EpisodeSaver.save_status)
+        self.save_label.setStyleSheet("color: #888;")
+        for w in (self.state_label, self.node_label, self.episode_label, self.progress_label,
+                  self.save_label):
             status_row.addWidget(w)
         status_row.addStretch()
         outer.addLayout(status_row)
@@ -1649,6 +1652,11 @@ class LiberoCollectorWindow(QMainWindow):
         self.worker.episode_list_changed.connect(self._on_episode_list_changed)
         self.worker.session_summary.connect(self._on_session_summary)
         self.worker.finished.connect(self._on_worker_finished)
+        # 백그라운드 저장 스레드(EpisodeSaver): 저장/삭제 완료·목록 갱신·상태 표시는 여기서 옴
+        self.worker.saver.episode_saved.connect(self._on_episode_saved)
+        self.worker.saver.episode_list_changed.connect(self._on_episode_list_changed)
+        self.worker.saver.log_message.connect(self._log)
+        self.worker.saver.save_status.connect(self._on_save_status)
 
         self.active_episode_cache = None  # drop any stale cache from a previous session
         self._log(
@@ -1727,7 +1735,11 @@ class LiberoCollectorWindow(QMainWindow):
     def _on_episode_saved(self, demo_name, n_frames) -> None:
         self.episodes_this_session += 1
         self.episode_label.setText(tr("에피소드: {n}").format(n=self.episodes_this_session))
-        self._log(f"[저장] {demo_name} ({n_frames} 프레임)")
+        # 저장 로그는 EpisodeSaver.log_message가 소요 시간과 함께 남김
+
+    @pyqtSlot(str)
+    def _on_save_status(self, text) -> None:
+        self.save_label.setText(text)
 
     @pyqtSlot(int)
     def _on_episode_discarded(self, n_frames) -> None:
@@ -2143,9 +2155,12 @@ def main() -> None:
     app = QApplication(sys.argv)
     window = LiberoCollectorWindow()
 
+    # availableGeometry는 GNOME 상단바/독을 이미 제외한 값. 1080p(+독 ~72px)에서
+    # 약 1848x1048 → 아래 계산으로 ~1790x1000, 이전 상한(1500x950)보다 화면을
+    # 넉넉히 사용. 더 작은 화면에서는 비율로 자연 축소.
     screen = app.primaryScreen().availableGeometry()
-    width = min(1500, int(screen.width() * 0.95))
-    height = min(950, int(screen.height() * 0.92))
+    width = min(1820, int(screen.width() * 0.97))
+    height = min(1030, int(screen.height() * 0.96))
     window.resize(width, height)
     window.show()
     sys.exit(app.exec())
