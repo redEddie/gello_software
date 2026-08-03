@@ -52,7 +52,11 @@ cumulative ``actions`` roughly reproduces ``ee_states``).
 Realized-trajectory actions lose the operator's force intent wherever the
 follower is in contact: the leader keeps commanding *through* the obstacle
 while the realized pose barely moves, so a realized delta goes to ~zero
-exactly where the demonstration is pressing. To keep that intent recoverable,
+exactly where the demonstration is pressing. They also break closed-loop
+execution outright -- see ``compute_joint_absolute_action`` for the measured
+consequences (backward regression at every replan, 1.3-2.0x slowdown). The
+``joint_absolute`` space therefore records the **leader's command**, matching
+ACT/ALOHA. To keep that intent recoverable for the other spaces too,
 every episode ALSO stores the raw teleop command stream (independent of the
 selected action space; see ``save_episode``)::
 
@@ -206,25 +210,35 @@ def compute_ee_absolute_action(
     return np.concatenate([pos, axis_angle, [gripper]]).astype(np.float32)
 
 
-def compute_joint_absolute_action(q_next: np.ndarray, gripper_closed: bool) -> np.ndarray:
-    """Absolute target joint position (rad) at frame t+1 -- NOT a delta.
+def compute_joint_absolute_action(q_cmd: np.ndarray, gripper_closed: bool) -> np.ndarray:
+    """The GELLO leader's absolute joint target (rad) at frame t -- NOT a delta.
 
-    Some BC policies prefer predicting an absolute next-joint-position target
-    over a frame-to-frame difference; this is that convention, as opposed to
-    :func:`compute_joint_delta_action`'s ``q_next - q_curr``. Note this looks
-    similar to (but is semantically distinct from) ``obs/joint_states``: the
-    obs field is what the robot measured *at* frame t, this is the target the
-    action at frame t is driving *towards* (frame t+1's realized position).
+    This is the ACT/ALOHA convention: observation is the follower's *measured*
+    joints, action is the leader's *command*, and the force the operator is
+    applying lives implicitly in the difference between them (Zhao et al.,
+    "Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware").
+
+    Do NOT substitute the follower's realized ``joint_states[t+1]`` here, even
+    though it looks like the same quantity. The follower runs behind a
+    critically-damped reference filter and trails the leader by ~4 ticks; the
+    lead the leader needed to drag the arm forward (up to 0.28 rad measured) is
+    absent from the realized trajectory. A policy trained on realized values
+    can only ever emit "one tick past where the arm already is", so it cannot
+    command a catch-up: its own tracking lag re-anchors at every replan, the
+    target regresses behind the previous chunk's frontier, and the motion
+    stutters backwards at the replan period while running 1.3-2.0x slow. See
+    ``knu-physical-ai/fr3-action-space-case-study`` on the Hub for the
+    measurements behind this.
 
     Args:
-        q_next: (7,) measured joint positions (rad) at frame t+1.
+        q_cmd: (7,) GELLO leader commanded joint positions (rad) at frame t.
         gripper_closed: binary gripper *target* in effect at frame t.
 
     Returns:
         (8,) float32: (joint1..joint7, gripper), gripper -1=open/+1=close
         (matching compute_delta_action's sign convention).
     """
-    q = np.asarray(q_next, dtype=np.float32)
+    q = np.asarray(q_cmd, dtype=np.float32)
     gripper = 1.0 if gripper_closed else -1.0
     return np.concatenate([q, [gripper]]).astype(np.float32)
 
@@ -261,7 +275,6 @@ def resolved_action_column_names(schema: DatasetSchemaConfig) -> list[str]:
     include the human-readable "(0=open/1=close...)" convention note
     :func:`describe_schema`/:func:`describe_episode` append for display.
     """
-    schema = schema.effective()
     overrides = schema.action_column_name_overrides
     cols = [overrides.get(c, c) for c in _ACTION_COLUMNS[schema.action_space]]
     if schema.action_include_gripper:
@@ -275,12 +288,9 @@ def describe_schema(cfg: DatasetSchemaConfig) -> str:
 
     Pure description, no robot/episode needed -- backs the GUI's "구조
     미리보기" so an operator can check a custom schema before committing to
-    it (and before ever connecting). Resolves ``cfg.effective()`` first, so
-    it always reflects what would actually be written, not what a possibly
-    unrelated set of checkboxes says while "기본값 사용" is on.
+    it (and before ever connecting).
     """
-    schema = cfg.effective()
-
+    schema = cfg
     cols = resolved_action_column_names(schema)
     if schema.action_include_gripper:
         gripper_note = "0=open/1=close, matches obs" if schema.gripper_action_match_obs else "-1=open/+1=close"
@@ -427,7 +437,6 @@ def schema_from_episode(grp: Any) -> DatasetSchemaConfig:
         overrides = {d: a for d, a in zip(default, actual) if d != a}
 
     return DatasetSchemaConfig(
-        use_default=False,
         action_space=action_space,
         action_include_gripper=has_gripper,
         gripper_action_match_obs=(gripper_convention == "01"),
@@ -497,7 +506,7 @@ class LiberoEpisodeBuffer:
     """
 
     def __init__(self, schema: Optional[DatasetSchemaConfig] = None) -> None:
-        self.schema = (schema or DatasetSchemaConfig()).effective()
+        self.schema = schema or DatasetSchemaConfig()
         self._reset_lists()
 
     def _reset_lists(self) -> None:
@@ -597,7 +606,7 @@ class LiberoTaskWriter:
         safe_name = task_name.strip().replace(" ", "_")
         self.path = self.root / f"{safe_name}_demo.hdf5"
         self.language_instruction = language_instruction
-        self.schema = (schema or DatasetSchemaConfig()).effective()
+        self.schema = schema or DatasetSchemaConfig()
         self._buffer = LiberoEpisodeBuffer(self.schema)
 
         if self.path.exists() and not resume:
@@ -741,15 +750,23 @@ class LiberoTaskWriter:
             actions[n - 1, :7] = 0.0
             actions[n - 1, 7] = 1.0 if buf.gripper_closed[-1] else -1.0
         elif schema.action_space == ACTION_SPACE_JOINT_ABSOLUTE:
-            q = np.stack(buf.joint_states)  # (n, 7)
-            actions = np.zeros((n, 8), dtype=np.float32)
-            for t in range(n - 1):
-                actions[t] = compute_joint_absolute_action(
-                    q[t + 1], buf.gripper_closed[t]
+            # The leader's command, verbatim -- see compute_joint_absolute_action
+            # for why the follower's realized joint_states must not be used here.
+            # No terminal-frame special case is needed: unlike a realized-next-
+            # state target, a command exists at every frame including the last.
+            if len(buf.commanded_joint_positions) != n:
+                raise ValueError(
+                    "action_space='joint_absolute' needs commanded_joint_positions "
+                    f"on every frame (got {len(buf.commanded_joint_positions)} of {n}). "
+                    "The GUI worker supplies them; a caller that does not must use "
+                    "a different action space."
                 )
-            # Terminal frame: no further target recorded; hold current position.
-            actions[n - 1, :7] = q[n - 1]
-            actions[n - 1, 7] = 1.0 if buf.gripper_closed[-1] else -1.0
+            q_cmd = np.stack(buf.commanded_joint_positions)  # (n, 7)
+            actions = np.zeros((n, 8), dtype=np.float32)
+            for t in range(n):
+                actions[t] = compute_joint_absolute_action(
+                    q_cmd[t], buf.gripper_closed[t]
+                )
         elif schema.action_space == ACTION_SPACE_EE_ABSOLUTE:
             ee = np.stack(buf.ee_pos_quat)  # (n, 7)
             actions = np.zeros((n, 7), dtype=np.float32)
@@ -872,3 +889,46 @@ class LiberoTaskWriter:
 
     def __exit__(self, *exc: Any) -> None:
         self.close()
+
+
+# ---------------------------------------------------------------- repack state
+REPACK_MARKER_ATTR = "repacked"
+
+
+def hdf5_repack_status(path) -> dict:
+    """Has this file been through scripts/repack_hdf5.py?
+
+    Two signals, because the marker only exists on files repacked after it was
+    introduced. The image compressor is the retroactive one and is decisive on
+    its own: the collector always writes images with ``lzf`` (fast, so the
+    background save never stalls the operator), and repack rewrites them with
+    ``gzip``. Anything already gzip has been repacked.
+
+    Returns ``{"repacked", "compression", "marker", "size", "episodes",
+    "error"}``; never raises -- an unreadable file comes back with ``error``
+    set so a caller listing a directory can show it instead of dying.
+    """
+    out = {"repacked": False, "compression": None, "marker": None,
+           "size": 0, "episodes": 0, "error": None}
+    try:
+        out["size"] = Path(path).stat().st_size
+        with h5py.File(path, "r") as f:
+            data = f["data"]
+            out["episodes"] = len(data.keys())
+            out["marker"] = data.attrs.get(REPACK_MARKER_ATTR)
+            if isinstance(out["marker"], bytes):
+                out["marker"] = out["marker"].decode(errors="replace")
+            for name in sorted(data.keys()):
+                obs = data[name].get("obs")
+                if obs is None:
+                    continue
+                for key in ("agentview_rgb", "eye_in_hand_rgb"):
+                    ds = obs.get(key)
+                    if ds is not None:
+                        out["compression"] = ds.compression
+                        break
+                break
+        out["repacked"] = bool(out["marker"]) or out["compression"] == "gzip"
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out

@@ -35,7 +35,10 @@ from gello.libero_format import LiberoTaskWriter
 from gello.robots.franka_fr3 import FR3_RESET_POSES
 
 GATE_RAD = 0.5  # run_env.py / gello_match_pose.py's start-gate threshold
-RAMP_STEP = 0.05  # rad/tick @ 20Hz = 1.0 rad/s, same as record_dataset.py
+# rad/tick @ 20Hz. The FR3 driver's reference filter saturates at 1.0 rad/s
+# regardless, so this only has to be large enough not to be the binding
+# constraint -- 0.10 lets the filter reach ~0.91 rad/s (0.05 gave ~0.80).
+RAMP_STEP = 0.10
 GRIPPER_OPEN = 0.0  # GELLO/franka_fr3 convention: 0=open, 1=closed
 
 # Fallback defaults, used only if the GUI doesn't supply a serial (e.g. a
@@ -124,6 +127,11 @@ class WorkerConfig:
     max_episode_seconds: float = 20.0
     reset_wait_seconds: float = 10.0
     enable_wall: bool = True
+    # True: pull the leader onto the follower's reset pose at the start of
+    # every episode, so each one begins from an identical joint configuration.
+    # False: the operator aligns by hand, so the starting pose varies
+    # episode-to-episode -- deliberate variation, not sloppiness.
+    auto_match_pose: bool = True
     resume: bool = False
     agent_camera_serial: str = AGENT_CAMERA_SERIAL
     wrist_camera_serial: str = WRIST_CAMERA_SERIAL
@@ -159,6 +167,11 @@ class CollectionWorker(QThread):
         # GUI 스레드에서 시그널을 미리 connect할 수 있도록 여기서 생성;
         # writer 주입/start()는 run()에서 (h5py 접근 직렬화는 saver가 소유).
         self.saver = EpisodeSaver()
+        # Stale-frame bookkeeping, see _get_obs.
+        self._cam_last_fp: dict = {}
+        self._cam_stale: dict = {}
+        self._cam_stale_run: dict = {}
+        self._cam_stale_max_run: dict = {}
 
     # ------------------------------------------------------------------ API
     # Called from the GUI (main) thread; safe because queue.Queue is thread-safe.
@@ -309,7 +322,34 @@ class CollectionWorker(QThread):
         out["_ee_pos_quat"] = np.asarray(raw["ee_pos_quat"], dtype=float)
         out["_joint_velocities"] = np.asarray(raw["joint_velocities"], dtype=float)
         for cam_key, cam in self._robot.cameras.items():
-            out[cam_key] = cam.read_latest()
+            frame = cam.read_latest()
+            # read_latest() is non-blocking by design: it hands back whatever
+            # is in the buffer and only raises once that is older than
+            # max_age_ms (500 by default). At 20 Hz that means a stalled
+            # camera silently repeats the SAME image for up to ten ticks while
+            # the joint states beside it keep updating -- a frozen wrist view
+            # paired with a moving arm, which is exactly the temporal
+            # misalignment a policy must not be trained on. Nothing upstream
+            # reports it, so count it here: identical consecutive frames are
+            # tallied per camera and surfaced with the episode.
+            fp = hash(frame[::37, ::37].tobytes())
+            if fp == self._cam_last_fp.get(cam_key):
+                self._cam_stale[cam_key] = self._cam_stale.get(cam_key, 0) + 1
+                run = self._cam_stale_run.get(cam_key, 0) + 1
+                self._cam_stale_run[cam_key] = run
+                self._cam_stale_max_run[cam_key] = max(
+                    run, self._cam_stale_max_run.get(cam_key, 0)
+                )
+                # One repeat is a rounding artifact; a run of them is a stall.
+                if run == 3:
+                    self.log_message.emit(
+                        f"[카메라] {cam_key} 프레임이 {run}틱 연속 동일 -- "
+                        "정지(stall) 의심, 이 에피소드는 버리는 것을 고려하세요"
+                    )
+            else:
+                self._cam_stale_run[cam_key] = 0
+            self._cam_last_fp[cam_key] = fp
+            out[cam_key] = frame
         return out
 
     # ------------------------------------------------------------------ ramp
@@ -332,21 +372,45 @@ class CollectionWorker(QThread):
         of whether new joint commands keep arriving -- but resending it
         every tick here is harmless and keeps this loop's shape unchanged.
         """
+        q_cmd = None
         for _ in range(max_ticks):
             interrupt = self._drain_interrupt(react_to_go_home=react_to_go_home)
             if interrupt:
                 return interrupt
             obs = self._get_obs()
             q = np.array([obs[k] for k in JOINT_KEYS[:7]])
-            d = target_q - q
-            if np.abs(d).max() < 0.02:
+            if np.abs(target_q - q).max() < 0.02:
                 return "ok"
-            step = np.clip(d, -RAMP_STEP, RAMP_STEP)
-            cmd = dict(zip(JOINT_KEYS, np.append(q + step, GRIPPER_OPEN).tolist()))
+            # Integrate the *commanded* position instead of re-anchoring it to
+            # the measured one each tick (see _advance_cmd).
+            if q_cmd is None:
+                q_cmd = q.copy()
+            q_cmd = self._advance_cmd(q_cmd, target_q)
+            cmd = dict(zip(JOINT_KEYS, np.append(q_cmd, GRIPPER_OPEN).tolist()))
             self._robot.send_action(cmd)
             self._emit_frames(obs)
             time.sleep(0.05)
         return "quit"
+
+    @staticmethod
+    def _advance_cmd(q_cmd: np.ndarray, target_q: np.ndarray) -> np.ndarray:
+        """Move the commanded position one ``RAMP_STEP`` toward ``target_q``.
+
+        Both ramps used to command ``measured + clip(target - measured)``,
+        re-anchoring to the encoder every tick. That looks like it asks for
+        RAMP_STEP/dt = 1.0 rad/s, but the follower sits behind a
+        critically-damped reference filter (``franka_fr3.py``): the filter
+        only closes part of a 0.05 rad gap per tick, and re-anchoring throws
+        away the rest instead of letting the target run ahead. Simulating the
+        real filter, the arm actually crept at **0.23 rad/s** -- a 1 rad move
+        took 4.4 s. Integrating the command instead lets the filter saturate
+        at its own limit and the same move takes 1.25 s (0.80 rad/s), a 3.5x
+        speedup with no change to what the driver is allowed to do.
+
+        (Same failure mode as the action-space bug: never feed a low-pass
+        filter its own output back as the setpoint.)
+        """
+        return q_cmd + np.clip(target_q - q_cmd, -RAMP_STEP, RAMP_STEP)
 
     def _approach_ramp(self, timeout: float = 3600.0) -> str:
         """Blocks (emitting frames) until the follower actually reaches the
@@ -364,6 +428,7 @@ class CollectionWorker(QThread):
         """
         deadline = time.monotonic() + timeout
         last_log = 0.0
+        q_cmd = None
         while True:
             interrupt = self._drain_interrupt()
             if interrupt:
@@ -376,8 +441,13 @@ class CollectionWorker(QThread):
             self._emit_frames(obs)
             if np.abs(d).max() < RAMP_STEP:
                 return "ok"
-            step = np.clip(d, -RAMP_STEP, RAMP_STEP)
-            cmd = dict(zip(JOINT_KEYS, np.append(q_rob + step, act["gripper.pos"]).tolist()))
+            # Integrated command, not measured+step -- see _advance_cmd. The
+            # target here is live (the operator may still be moving), so the
+            # commanded position is re-seeded from measurement only on entry.
+            if q_cmd is None:
+                q_cmd = q_rob.copy()
+            q_cmd = self._advance_cmd(q_cmd, q_led)
+            cmd = dict(zip(JOINT_KEYS, np.append(q_cmd, act["gripper.pos"]).tolist()))
             self._robot.send_action(cmd)
             now = time.monotonic()
             if now - last_log > 2.0:
@@ -412,6 +482,15 @@ class CollectionWorker(QThread):
         """
         self.state_changed.emit("gate")
         deadline = time.monotonic() + timeout
+        if self.cfg.auto_match_pose:
+            # Pull the leader onto the reset pose before handing control back,
+            # so every episode starts from the same joint configuration.
+            outcome = self._auto_match_pose()
+            if outcome in ("quit", "go_home"):
+                return outcome
+            if outcome == "start_teleop":
+                self._teleop.cancel_pose_match()
+                return "ok"
         try:
             while True:
                 cmd = self._poll_cmd()
@@ -530,6 +609,9 @@ class CollectionWorker(QThread):
         """Returns (outcome, n_frames); outcome is "save", "discard", "quit", or "go_home"."""
         self.state_changed.emit("recording")
         self._writer.start_episode()
+        self._cam_stale = {}  # per-episode, see _get_obs
+        self._cam_stale_run = {}
+        self._cam_stale_max_run = {}
         self._pending_success: Optional[bool] = None
         budget = 1.0 / self.cfg.fps
         max_frames = int(self.cfg.max_episode_seconds * self.cfg.fps)
@@ -583,6 +665,24 @@ class CollectionWorker(QThread):
             self.log_message.emit(
                 f"[EP] 에피소드 최대 길이({self.cfg.max_episode_seconds:.0f}s) 초과 -- 실패로 자동 저장"
             )
+        # Report camera stalls with the episode, while the operator can still
+        # act on it: a frozen image paired with moving joint states is not
+        # something the saved file makes obvious later.
+        # Only a *run* of identical frames means the camera stalled. Isolated
+        # repeats are the 30 fps camera being sampled at 20 Hz -- every
+        # episode has one or two and they carry no information, so reporting
+        # them just trains the operator to ignore this line. A percentage
+        # threshold is useless here too: 1 repeat in a 3-frame episode is 33%
+        # and means nothing.
+        stalls = {k: v for k, v in self._cam_stale_max_run.items() if v >= 3}
+        if stalls and n:
+            detail = ", ".join(
+                f"{k} 최장 {v}틱({v/self.cfg.fps*1000:.0f} ms), 총 {self._cam_stale.get(k, 0)}프레임"
+                for k, v in sorted(stalls.items())
+            )
+            self.log_message.emit(
+                f"[카메라] 정지 감지: {detail} / 전체 {n}프레임  ← 폐기 권장"
+            )
         return outcome, n
 
     # ------------------------------------------------------------------- run
@@ -608,7 +708,21 @@ class CollectionWorker(QThread):
             # Covers both robot/camera/GELLO connect failures and writer
             # creation failing (e.g. task file exists without --resume) --
             # either way, undo whatever hardware DID connect before returning.
-            self.fatal_error.emit(f"연결 실패: {type(e).__name__}: {e}")
+            #
+            # zmq.Again is by far the most common one and its own message
+            # ("Resource temporarily unavailable") says nothing about what
+            # actually happened: the ZMQ request to the robot node timed out.
+            # Name the cause and the fix instead of the errno.
+            if isinstance(e, zmq.error.Again):
+                self.fatal_error.emit(
+                    f"연결 실패: 로봇 노드가 응답하지 않습니다 (ZMQ 타임아웃, "
+                    f"{self.cfg.hostname}:{self.cfg.robot_port}).\n"
+                    "'노드 시작' 버튼으로 launch_nodes.py를 띄웠는지, 이미 떠 있다면 "
+                    "제어 루프가 죽지 않았는지(리플렉스 abort) 확인하세요. "
+                    "'노드 재시작'이 보통 해결합니다."
+                )
+            else:
+                self.fatal_error.emit(f"연결 실패: {type(e).__name__}: {e}")
             for cleanup in (
                 getattr(self._teleop, "disconnect", None),
                 getattr(self._robot, "disconnect", None),

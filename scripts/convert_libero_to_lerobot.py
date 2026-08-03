@@ -132,6 +132,20 @@ def _language_instruction(f: h5py.File) -> str:
     return lang
 
 
+def _is_success(grp) -> bool:
+    """True only for an episode explicitly marked successful.
+
+    NOT ``attrs.get("success") is not True``: h5py hands back ``numpy.bool_``,
+    and ``np.True_ is True`` is False, so identity comparison rejected every
+    episode -- ``--only-success`` silently filtered out the entire dataset and
+    reported "변환할 에피소드가 없습니다". Compare by value, and treat a
+    missing attr (older files, never labeled) as not-success rather than
+    crashing.
+    """
+    v = grp.attrs.get("success")
+    return bool(v) if v is not None else False
+
+
 def _episode_schema(grp: h5py.Group) -> dict:
     obs = grp["obs"]
     obs_keys = frozenset(obs.keys())
@@ -190,7 +204,7 @@ def _scan_schema(hdf5_paths: list, only_success: bool) -> dict:
             data = f["data"]
             for name in sorted(data.keys(), key=lambda n: int(n.split("_")[1])):
                 grp = data[name]
-                if only_success and grp.attrs.get("success") is not True:
+                if only_success and not _is_success(grp):
                     continue
                 schema = _episode_schema(grp)
                 if reference is None:
@@ -303,7 +317,8 @@ def _check_resume_compatible(remote_features: dict, local_features: dict) -> Non
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("hdf5_paths", type=Path, nargs="+", help="<task>_demo.hdf5 파일들 (여러 개 가능)")
+    p.add_argument("hdf5_paths", type=Path, nargs="*",
+                   help="<task>_demo.hdf5 파일들 (여러 개 가능). --push-only 일 때는 불필요")
     p.add_argument("--repo-id", required=True, help="예: knu-physical-ai/fr3-libero-teleop-lerobot")
     p.add_argument("--root", type=Path, required=True, help="로컬에 LeRobotDataset을 만들 경로")
     p.add_argument("--fps", type=int, default=20)
@@ -319,8 +334,33 @@ def main() -> None:
         ),
     )
     p.add_argument("--push", action="store_true", help="변환 후 바로 Hugging Face Hub에 업로드")
+    p.add_argument("--push-only", action="store_true",
+                   help="변환하지 않고 --root의 기존 LeRobot 데이터셋만 업로드 "
+                        "(hdf5 인자는 무시됨). 이미 변환해둔 결과를 올릴 때 사용")
     p.add_argument("--private", action=argparse.BooleanOptionalAction, default=None, help="--push일 때만 적용")
     args = p.parse_args()
+
+    if not args.push_only and not args.hdf5_paths:
+        raise SystemExit("변환할 .hdf5 파일을 지정하세요 (업로드만 하려면 --push-only)")
+
+    if args.push_only:
+        # Upload what is already in --root, without re-encoding anything.
+        # Without this, "I converted yesterday, now just upload it" has no
+        # answer: a plain re-run re-converts every episode, and --resume
+        # appends them a second time.
+        # NOTE: no local `import LeRobotDataset` here. A function-scoped
+        # import binds the name as a local for the WHOLE function, which shadows
+        # the module-level import and makes the later resume()/create() calls
+        # raise UnboundLocalError. It is already imported at module level.
+        root = Path(args.root)
+        if not (root / "meta" / "info.json").exists():
+            raise SystemExit(f"{root}에 변환된 LeRobot 데이터셋이 없습니다 (meta/info.json 없음)")
+        ds = LeRobotDataset(repo_id=args.repo_id, root=root)
+        print(f"업로드만 진행: {ds.meta.total_episodes}개 에피소드, "
+              f"{ds.meta.total_frames} 프레임 -> {args.repo_id}", flush=True)
+        ds.push_to_hub(private=args.private)
+        print(f"완료: https://huggingface.co/datasets/{args.repo_id}", flush=True)
+        return 0
 
     schema = _scan_schema(args.hdf5_paths, args.only_success)
     features, state_parts, cmd_parts = _build_features(schema)
@@ -369,7 +409,7 @@ def main() -> None:
             for name in demo_names:
                 grp = data[name]
                 success = grp.attrs.get("success")
-                if args.only_success and success is not True:
+                if args.only_success and not _is_success(grp):
                     n_skipped += 1
                     continue
                 obs = grp["obs"]

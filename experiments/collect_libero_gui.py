@@ -36,6 +36,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -62,7 +63,9 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
+    QStackedWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -82,6 +85,7 @@ from gello.libero_format import (  # noqa: E402
     action_column_names,
     describe_episode,
     describe_schema,
+    hdf5_repack_status,
     renumber_episodes,
     schema_from_episode,
 )
@@ -100,6 +104,73 @@ cv2.setNumThreads(1)
 PYLIBFRANKA_PYTHON = str(Path.home() / "pylibfranka-venv" / "bin" / "python")
 LAUNCH_NODES_SCRIPT = str(Path(__file__).resolve().parent / "launch_nodes.py")
 RUNME_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "runme.sh")
+REPACK_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "repack_hdf5.py")
+
+# Repo IDs and output paths get retyped every session otherwise, and a typo in
+# a repo ID silently creates a *new* Hub dataset rather than failing.
+RECENTS_PATH = Path.home() / "libero_gui_logs" / "recent_inputs.json"
+_RECENTS_MAX = 8
+
+
+class Recents:
+    """Most-recently-used values per field key, persisted as JSON.
+
+    Never raises: a corrupt or unwritable file just means "no history", which
+    must not be able to stop the GUI from starting or a conversion from running.
+    """
+
+    def __init__(self, path: Path = RECENTS_PATH) -> None:
+        self._path = path
+        try:
+            self._data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(self._data, dict):
+                self._data = {}
+        except (OSError, ValueError):
+            self._data = {}
+
+    def get(self, key: str) -> list[str]:
+        v = self._data.get(key)
+        return [str(x) for x in v] if isinstance(v, list) else []
+
+    def most_recent(self, key: str, fallback: str = "") -> str:
+        v = self.get(key)
+        return v[0] if v else fallback
+
+    def add(self, key: str, value: str) -> None:
+        value = (value or "").strip()
+        if not value:
+            return
+        cur = [v for v in self.get(key) if v != value]
+        self._data[key] = [value] + cur[: _RECENTS_MAX - 1]
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(
+                json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError:
+            pass  # history is a convenience, never a hard failure
+
+
+def hf_account() -> tuple[str, str]:
+    """(display text, css color) describing who a --push would upload as.
+
+    Imported lazily and defensively: this runs on a GUI thread at startup and
+    huggingface_hub may be missing, or the token cached but expired.
+    """
+    try:
+        from huggingface_hub import whoami
+
+        info = whoami()
+        name = info.get("name", "?")
+        orgs = [o["name"] for o in info.get("orgs", []) if isinstance(o, dict) and "name" in o]
+        text = f"HF 로그인: {name}"
+        if orgs:
+            text += f"  (orgs: {', '.join(orgs)})"
+        return text, "#27ae60"
+    except ImportError:
+        return "HF: huggingface_hub 미설치 -- 업로드 불가", "#e74c3c"
+    except Exception:
+        return "HF: 로그인 안 됨 -- 터미널에서 `hf auth login` 실행", "#e67e22"
 
 JOINT_LABELS = [f"J{i}" for i in range(1, 8)] + ["grip"]
 
@@ -112,6 +183,37 @@ STATE_LABELS_KO = {
     "approach": "접근 중",
     "recording": "기록 중",
 }
+
+
+# tqdm (huggingface_hub's uploader) redraws one progress line in place using
+# carriage returns and ANSI cursor-up codes. Down a pipe there is no cursor to
+# move, so every redraw arrives as another line -- a 955 MB upload produced
+# dozens of identical "100%|####| 955MB / 955MB" entries. Strip the escapes,
+# then collapse consecutive progress redraws to at most one per interval.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\r")
+_PROGRESS_RE = re.compile(r"\d+%\|")
+
+
+def clean_stream_lines(data: str, state: dict, every_s: float = 3.0) -> list[str]:
+    """Split subprocess output into log-worthy lines, de-spamming progress."""
+    out = []
+    for raw in _ANSI_RE.sub("\n", data).splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if _PROGRESS_RE.search(line):
+            now = time.monotonic()
+            # Always keep a finished bar; throttle the rest.
+            done = line.lstrip().startswith("100%") or "100%|" in line
+            if not done and now - state.get("t", 0.0) < every_s:
+                continue
+            if done and state.get("last_done") == line:
+                continue
+            state["t"] = now
+            if done:
+                state["last_done"] = line
+        out.append(line)
+    return out
 
 
 def np_to_pixmap(arr: np.ndarray) -> QPixmap:
@@ -181,7 +283,15 @@ class CameraPreviewWorker(QThread):
         try:
             while self._running:
                 try:
-                    frame = cam.read()
+                    # read_latest() returns the newest buffered frame instead
+                    # of blocking on wait_for_frames(). stop() is only a flag
+                    # this loop checks between reads, so a blocking read made
+                    # it unobservable for as long as the camera stalled -- up
+                    # to librealsense's 5 s frame timeout, which is what
+                    # produced "미리보기 스레드가 3초 내에 종료되지 않았습니다"
+                    # on the wrist D405 (marginal USB 2 link, see docs). Now
+                    # the flag is seen within one sleep interval.
+                    frame = cam.read_latest(max_age_ms=1000)
                 except Exception as e:  # noqa: BLE001
                     if not self._running:
                         break
@@ -189,6 +299,7 @@ class CameraPreviewWorker(QThread):
                     break
                 if self._running:
                     self.frame_ready.emit(frame)
+                self.msleep(33)  # preview only needs ~30 fps
         finally:
             try:
                 cam.disconnect()
@@ -198,10 +309,13 @@ class CameraPreviewWorker(QThread):
 
 class DatasetSchemaDialog(QDialog):
     """Lets the operator pick the action space and which obs fields get
-    written, before connecting. "기본값 사용" at the top is the escape hatch
-    back to LIBERO's original fixed schema -- when checked, every other
-    control here is disabled (not reset -- the underlying checkboxes keep
-    whatever was last chosen, see DatasetSchemaConfig.effective()).
+    written, before connecting.
+
+    There is deliberately no "use LIBERO defaults" master switch: it used to
+    override every control here at write time, so a session set to
+    ``joint_absolute`` silently wrote ``ee_delta`` instead. A bare
+    ``DatasetSchemaConfig()`` already *is* the LIBERO default, so leaving the
+    controls alone achieves the same thing visibly.
     """
 
     _OBS_FIELDS = [
@@ -226,11 +340,6 @@ class DatasetSchemaDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr("데이터셋 구조 사용자 지정"))
         layout = QVBoxLayout(self)
-
-        self.default_check = QCheckBox(tr("기본값 사용 (LIBERO 표준 구조)"))
-        self.default_check.setChecked(cfg.use_default)
-        self.default_check.toggled.connect(self._on_default_toggled)
-        layout.addWidget(self.default_check)
 
         action_row = QHBoxLayout()
         action_row.addWidget(QLabel(tr("Action Space:")))
@@ -320,10 +429,10 @@ class DatasetSchemaDialog(QDialog):
             extra_box,
         ]
         self._rebuild_name_edits()
-        self._on_default_toggled(self.default_check.isChecked())
+        self._update_gripper_match_obs_enabled()
 
-        # Not in _editable_widgets on purpose -- stays clickable even while
-        # "기본값 사용" is checked, since describe_schema() resolves
+        # Not in _editable_widgets on purpose -- always clickable, since
+        # describe_schema() resolves
         # .effective() internally and will just show the LIBERO default
         # structure in that case (still a useful confirmation).
         preview_btn = QPushButton(tr("구조 미리보기..."))
@@ -337,15 +446,8 @@ class DatasetSchemaDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _on_default_toggled(self, checked: bool) -> None:
-        for w in self._editable_widgets:
-            w.setEnabled(not checked)
-        self._update_gripper_match_obs_enabled()
-
     def _update_gripper_match_obs_enabled(self) -> None:
-        self.gripper_match_obs_check.setEnabled(
-            not self.default_check.isChecked() and self.gripper_action_check.isChecked()
-        )
+        self.gripper_match_obs_check.setEnabled(self.gripper_action_check.isChecked())
 
     def _rebuild_name_edits(self) -> None:
         """Swaps the name-override row widgets for whatever column set the
@@ -407,7 +509,6 @@ class DatasetSchemaDialog(QDialog):
         kwargs["action_column_name_overrides"] = overrides
 
         return DatasetSchemaConfig(
-            use_default=self.default_check.isChecked(),
             action_space=self.action_combo.currentData(),
             **kwargs,
         )
@@ -441,7 +542,7 @@ class LerobotConvertDialog(QDialog):
 
     def __init__(self, parent: QWidget, default_root: str) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("LeRobot 형식으로 변환"))
+        self.setWindowTitle(tr("LeRobot 변환 / 업로드"))
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel(tr("변환할 .hdf5 파일 (여러 개 선택 가능, 이미 큐레이션 끝난 파일):")))
@@ -454,14 +555,38 @@ class LerobotConvertDialog(QDialog):
         file_row.addWidget(browse_files_btn)
         layout.addLayout(file_row)
 
+        self._recents = Recents()
+
         grid = QGridLayout()
+        # Each row shows a filled-in example next to the field. Parts that must
+        # be replaced are written as **** so a copy-paste of the example alone
+        # can never be mistaken for a working value.
+        ex = QLabel(tr("예)  knu-physical-ai/****"))
+        ex.setStyleSheet("color: #888; font-family: monospace;")
         grid.addWidget(QLabel(tr("Repo ID:")), 0, 0)
-        self.repo_id_edit = QLineEdit()
-        self.repo_id_edit.setPlaceholderText(tr("예: knu-physical-ai/fr3-libero-teleop-lerobot"))
+        grid.addWidget(ex, 0, 3)
+        # Editable combo, not a plain edit: the previous repo IDs are right
+        # there in the dropdown, so a session that appends to an existing Hub
+        # dataset never depends on retyping the ID exactly.
+        self.repo_id_edit = QComboBox()
+        self.repo_id_edit.setEditable(True)
+        self.repo_id_edit.addItems(self._recents.get("repo_id"))
+        self.repo_id_edit.setCurrentText(self._recents.most_recent("repo_id"))
+        self.repo_id_edit.lineEdit().setPlaceholderText(
+            tr("<org>/<dataset-name> 형식")
+        )
         grid.addWidget(self.repo_id_edit, 0, 1, 1, 2)
 
+        ex_root = QLabel(tr("예)  /home/franka/****"))
+        ex_root.setStyleSheet("color: #888; font-family: monospace;")
         grid.addWidget(QLabel(tr("로컬 출력 경로:")), 1, 0)
-        self.out_root_edit = QLineEdit(str(Path.home() / "lerobot_upload"))
+        grid.addWidget(ex_root, 1, 3)
+        self.out_root_edit = QComboBox()
+        self.out_root_edit.setEditable(True)
+        self.out_root_edit.addItems(self._recents.get("lerobot_root"))
+        self.out_root_edit.setCurrentText(
+            self._recents.most_recent("lerobot_root", str(Path.home() / "lerobot_upload"))
+        )
         grid.addWidget(self.out_root_edit, 1, 1)
         browse_root_btn = QPushButton(tr("찾아보기..."))
         browse_root_btn.clicked.connect(self._browse_root)
@@ -472,8 +597,12 @@ class LerobotConvertDialog(QDialog):
         grid.addWidget(self.fps_edit, 2, 1)
         layout.addLayout(grid)
 
+        # Options live under the mode they belong to, so a mode's irrelevant
+        # knobs are not just disabled-but-visible next to the ones that matter.
+        self.convert_opts = QGroupBox(tr("변환 옵션"))
+        conv_col = QVBoxLayout(self.convert_opts)
         self.only_success_check = QCheckBox(tr("성공(success=True) 에피소드만 포함 (--only-success)"))
-        layout.addWidget(self.only_success_check)
+        conv_col.addWidget(self.only_success_check)
 
         self.resume_check = QCheckBox(
             tr(
@@ -481,7 +610,7 @@ class LerobotConvertDialog(QDialog):
                 "추가할 때, 기존 데이터는 재변환/재업로드하지 않음"
             )
         )
-        layout.addWidget(self.resume_check)
+        conv_col.addWidget(self.resume_check)
         resume_warning = QLabel(
             tr(
                 "⚠ 동시에 두 명이 같은 Repo ID로 --resume 변환하지 마세요 -- 같은 파일 경로를 서로 "
@@ -490,23 +619,66 @@ class LerobotConvertDialog(QDialog):
         )
         resume_warning.setStyleSheet("color: #e67e22;")
         resume_warning.setWordWrap(True)
-        layout.addWidget(resume_warning)
+        conv_col.addWidget(resume_warning)
+        layout.addWidget(self.convert_opts)
 
-        self.push_check = QCheckBox(tr("변환 후 Hugging Face Hub에 바로 업로드 (--push)"))
-        self.push_check.toggled.connect(lambda on: self.private_check.setEnabled(on))
-        layout.addWidget(self.push_check)
+        self.upload_opts = QGroupBox(tr("업로드 옵션"))
+        up_col = QVBoxLayout(self.upload_opts)
+
+        # Conversion and upload are separate jobs: conversion is minutes of
+        # AV1 encoding, upload is seconds. Bundling them meant "I already
+        # converted, just upload it" had no answer -- re-running re-encoded
+        # everything. Three explicit modes instead of one ambiguous checkbox.
+        mode_box = QGroupBox(tr("실행 모드"))
+        mode_col = QVBoxLayout(mode_box)
+        # Deliberately NO "convert and upload in one go": an episode pushed
+        # to the Hub stays there even after it is deleted locally, so the
+        # local result must be reviewed before anything is uploaded. A
+        # combined mode exists only to skip that review.
+        self.mode_convert = QRadioButton(tr("변환만 (로컬에 만들고 결과를 확인)"))
+        self.mode_push_only = QRadioButton(
+            tr("업로드만 (확인 끝난 '로컬 출력 경로'를 그대로 올림 -- 재변환 없음)")
+        )
+        self.mode_convert.setChecked(True)
+        for b in (self.mode_convert, self.mode_push_only):
+            mode_col.addWidget(b)
+            b.toggled.connect(self._on_mode_changed)
+        layout.addWidget(mode_box)
+
+        # Which account a --push actually uploads as. This machine is shared,
+        # so "whose token is cached right now" is not something to assume.
+        acct_text, acct_color = hf_account()
+        self.hf_account_label = QLabel(acct_text)
+        self.hf_account_label.setStyleSheet(f"color: {acct_color}; font-weight: bold;")
+        up_col.addWidget(self.hf_account_label)
 
         self.private_check = QCheckBox(tr("비공개 데이터셋으로 업로드 (--private)"))
-        self.private_check.setEnabled(False)
-        layout.addWidget(self.private_check)
+        up_col.addWidget(self.private_check)
+        layout.addWidget(self.upload_opts)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(tr("변환 시작"))
+        self._ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self._ok_btn.setText(tr("변환 시작"))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        # The default mode's radio is already checked, so toggled never fires
+        # for it -- apply the initial visibility explicitly.
+        self._on_mode_changed()
+
+    def _on_mode_changed(self) -> None:
+        push_only = self.mode_push_only.isChecked()
+        self.convert_opts.setVisible(not push_only)
+        self.upload_opts.setVisible(push_only)
+        # The .hdf5 picker and FPS belong to conversion; they sit above the
+        # mode box (shared layout) so hide-by-disable rather than by removal.
+        for w in (self.files_edit, self.fps_edit):
+            w.setEnabled(not push_only)
+        if hasattr(self, "_ok_btn"):
+            self._ok_btn.setText(tr("업로드 시작") if push_only else tr("변환 시작"))
+        self.adjustSize()
 
     def _browse_files(self, default_root: str) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -516,25 +688,34 @@ class LerobotConvertDialog(QDialog):
             self.files_edit.setText(" ".join(paths))
 
     def _browse_root(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, tr("로컬 출력 경로"), self.out_root_edit.text())
+        d = QFileDialog.getExistingDirectory(
+            self, tr("로컬 출력 경로"), self.out_root_edit.currentText()
+        )
         if d:
-            self.out_root_edit.setText(d)
+            self.out_root_edit.setCurrentText(d)
 
     def build_args(self) -> "list[str] | None":
         """Returns the script's argv (sans program name), or None (with a
         warning dialog already shown) if required fields are missing."""
+        push_only = self.mode_push_only.isChecked()
         paths = self.files_edit.text().split()
-        if not paths:
+        if not paths and not push_only:
             QMessageBox.warning(self, tr("파일 필요"), tr(".hdf5 파일을 하나 이상 선택하세요."))
             return None
-        repo_id = self.repo_id_edit.text().strip()
+        repo_id = self.repo_id_edit.currentText().strip()
         if not repo_id:
             QMessageBox.warning(self, tr("Repo ID 필요"), tr("Repo ID를 입력하세요."))
             return None
-        out_root = self.out_root_edit.text().strip()
+        out_root = self.out_root_edit.currentText().strip()
         if not out_root:
             QMessageBox.warning(self, tr("출력 경로 필요"), tr("로컬 출력 경로를 입력하세요."))
             return None
+        # Only remember values that made it past validation.
+        self._recents.add("repo_id", repo_id)
+        self._recents.add("lerobot_root", out_root)
+        if push_only:
+            return ["--repo-id", repo_id, "--root", out_root, "--push-only",
+                    "--private" if self.private_check.isChecked() else "--no-private"]
         args = list(paths) + [
             "--repo-id", repo_id,
             "--root", out_root,
@@ -544,9 +725,6 @@ class LerobotConvertDialog(QDialog):
             args.append("--only-success")
         if self.resume_check.isChecked():
             args.append("--resume")
-        if self.push_check.isChecked():
-            args.append("--push")
-            args.append("--private" if self.private_check.isChecked() else "--no-private")
         return args
 
 
@@ -572,16 +750,32 @@ class HdfUploadDialog(QDialog):
         file_row.addWidget(browse_btn)
         layout.addLayout(file_row)
 
+        self._recents = Recents()
+
         grid = QGridLayout()
+        # Each row shows a filled-in example next to the field. Parts that must
+        # be replaced are written as **** so a copy-paste of the example alone
+        # can never be mistaken for a working value.
+        ex = QLabel(tr("예)  knu-physical-ai/****"))
+        ex.setStyleSheet("color: #888; font-family: monospace;")
         grid.addWidget(QLabel(tr("Repo ID:")), 0, 0)
-        self.repo_id_edit = QLineEdit()
-        self.repo_id_edit.setPlaceholderText(tr("예: knu-physical-ai/fr3-libero-teleop"))
+        grid.addWidget(ex, 0, 3)
+        self.repo_id_edit = QComboBox()
+        self.repo_id_edit.setEditable(True)
+        self.repo_id_edit.addItems(self._recents.get("hdf5_repo_id"))
+        self.repo_id_edit.setCurrentText(self._recents.most_recent("hdf5_repo_id"))
+        self.repo_id_edit.lineEdit().setPlaceholderText(
+            tr("<org>/<dataset-name> 형식")
+        )
         grid.addWidget(self.repo_id_edit, 0, 1)
 
+        ex_name = QLabel(tr("예)  ****_demo.hdf5"))
+        ex_name.setStyleSheet("color: #888; font-family: monospace;")
         grid.addWidget(QLabel(tr("Repo 안 파일 이름:")), 1, 0)
+        grid.addWidget(ex_name, 1, 2)
         self.path_in_repo_edit = QLineEdit(Path(default_file).name if default_file else "")
         self.path_in_repo_edit.setPlaceholderText(
-            tr("예: <task>_demo_<이름>_<날짜>.hdf5 -- 비워두면 로컬 파일 이름 그대로")
+            tr("비워두면 로컬 파일 이름 그대로")
         )
         grid.addWidget(self.path_in_repo_edit, 1, 1)
         layout.addLayout(grid)
@@ -604,6 +798,11 @@ class HdfUploadDialog(QDialog):
         self.old_path_in_repo_edit.setEnabled(False)
         old_name_row.addWidget(self.old_path_in_repo_edit, 1)
         layout.addLayout(old_name_row)
+
+        acct_text, acct_color = hf_account()
+        self.hf_account_label = QLabel(acct_text)
+        self.hf_account_label.setStyleSheet(f"color: {acct_color}; font-weight: bold;")
+        layout.addWidget(self.hf_account_label)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -632,10 +831,11 @@ class HdfUploadDialog(QDialog):
         if not local_file:
             QMessageBox.warning(self, tr("파일 필요"), tr(".hdf5 파일을 선택하세요."))
             return None
-        repo_id = self.repo_id_edit.text().strip()
+        repo_id = self.repo_id_edit.currentText().strip()
         if not repo_id:
             QMessageBox.warning(self, tr("Repo ID 필요"), tr("Repo ID를 입력하세요."))
             return None
+        self._recents.add("hdf5_repo_id", repo_id)
         args = [local_file, "--repo-id", repo_id]
         path_in_repo = self.path_in_repo_edit.text().strip()
         if path_in_repo:
@@ -647,6 +847,97 @@ class HdfUploadDialog(QDialog):
             if old_path_in_repo:
                 args += ["--old-path-in-repo", old_path_in_repo]
         return args
+
+
+
+class RepackDialog(QDialog):
+    """Pick which .hdf5 files to repack, pre-checking only the un-repacked ones.
+
+    Repacking is minutes of CPU per GB and gains nothing the second time, so
+    running it over a directory that already contains finished files is pure
+    waste -- but "which of these did I already do?" is not something the
+    operator should have to remember. hdf5_repack_status() answers it from the
+    file itself, and only the files that would actually benefit start checked.
+    """
+
+    def __init__(self, parent: QWidget, paths: list) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("용량 최적화 (재압축)"))
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(tr(
+            "재압축할 파일을 선택하세요. 이미 재압축된 파일은 기본으로 해제되어 있습니다."
+        )))
+
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(5)
+        self.tree.setHeaderLabels([tr("파일"), tr("크기"), tr("에피소드"),
+                                   tr("이미지 압축"), tr("재압축 이력")])
+        self.tree.setRootIsDecorated(False)
+        self.tree.setMinimumSize(880, 240)
+        self._rows = []
+        n_todo = 0
+        for path in paths:
+            st = hdf5_repack_status(path)
+            item = QTreeWidgetItem([
+                Path(path).name,
+                f"{st['size']/1e6:,.1f} MB",
+                str(st["episodes"]),
+                st["compression"] or ("?" if st["error"] else "없음"),
+                st["marker"] or (tr("완료 (gzip 감지)") if st["repacked"] else tr("안 됨")),
+            ])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            todo = not st["repacked"] and not st["error"]
+            item.setCheckState(0, Qt.CheckState.Checked if todo else Qt.CheckState.Unchecked)
+            if st["error"]:
+                item.setText(4, st["error"])
+                item.setDisabled(True)
+            elif st["repacked"]:
+                item.setForeground(0, Qt.GlobalColor.gray)
+            n_todo += bool(todo)
+            self.tree.addTopLevelItem(item)
+            self._rows.append((path, item))
+        for c in range(5):
+            self.tree.resizeColumnToContents(c)
+        layout.addWidget(self.tree)
+
+        row = QHBoxLayout()
+        all_btn = QPushButton(tr("전체 선택"))
+        all_btn.clicked.connect(lambda: self._set_all(True))
+        none_btn = QPushButton(tr("전체 해제"))
+        none_btn.clicked.connect(lambda: self._set_all(False))
+        row.addWidget(all_btn)
+        row.addWidget(none_btn)
+        row.addStretch()
+        row.addWidget(QLabel(tr("재압축 안 된 파일: {n}개").format(n=n_todo)))
+        layout.addLayout(row)
+
+        note = QLabel(tr(
+            "재압축은 삭제된 에피소드가 차지하던 공간을 회수하고 이미지를 gzip으로 다시 "
+            "압축합니다. 내용 검증 후 원본을 교체하며, 실패하면 원본은 그대로 남습니다.\n"
+            "수집 세션이 파일을 열고 있으면 실패합니다 -- 세션을 먼저 종료하세요."
+        ))
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #888;")
+        layout.addWidget(note)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(tr("재압축 시작"))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _set_all(self, on: bool) -> None:
+        for _, item in self._rows:
+            if not item.isDisabled():
+                item.setCheckState(
+                    0, Qt.CheckState.Checked if on else Qt.CheckState.Unchecked
+                )
+
+    def selected(self) -> list:
+        return [p for p, it in self._rows
+                if it.checkState(0) == Qt.CheckState.Checked and not it.isDisabled()]
 
 
 class LiberoCollectorWindow(QMainWindow):
@@ -670,6 +961,12 @@ class LiberoCollectorWindow(QMainWindow):
         self.convert_process: QProcess | None = None
         self.hdf5_upload_process: QProcess | None = None
         self.runme_process: QProcess | None = None
+        self.repack_process: QProcess | None = None
+        # per-stream de-spam state, see clean_stream_lines
+        self._convert_stdout_state: dict = {}
+        self._convert_stderr_state: dict = {}
+        self._hdf5_stdout_state: dict = {}
+        self._hdf5_stderr_state: dict = {}
         self._node_restart_pending = False
         self._current_state = "idle"
         self._node_status_received = False
@@ -693,46 +990,68 @@ class LiberoCollectorWindow(QMainWindow):
         self.log_view.setMaximumBlockCount(2000)
         self.log_view.setFixedHeight(160)
 
-        # Left column: robot-node control, session setup, camera preview.
-        left_col = QVBoxLayout()
-        left_col.addWidget(self._build_node_box())
-        left_col.addWidget(self._build_config_box())
-        left_col.addWidget(self._build_video_box())
+        # ---- three phases, one at a time -------------------------------
+        # Everything used to be on one screen, which meant hunting for the
+        # three or four widgets that mattered right now among ~40 that did
+        # not. The work is genuinely sequential -- you set up once, then
+        # record for a while, then curate/convert/upload -- so the window
+        # follows that: 준비 -> 수집 -> 정리.
+        self.video_box = self._build_video_box()
 
-        # Right column: pose-match gate, status, log, dataset browser -- lets a
-        # maximized window show setup+camera and monitoring+data side by
-        # side instead of one long vertical stack.
-        right_col = QVBoxLayout()
-        right_col.addWidget(self._build_gate_box())
-        right_col.addWidget(self._build_status_box())
-        right_col.addWidget(self.log_view)
-        right_col.addWidget(self._build_dataset_box())
+        # 준비: everything that must be decided before the robot connects.
+        setup_page = QWidget()
+        setup_col = QVBoxLayout(setup_page)
+        setup_col.addWidget(self._build_node_box())
+        setup_col.addWidget(self._build_config_box())
+        setup_col.addWidget(self._build_camera_box())
+        setup_col.addStretch()
+        # Leaving 준비 IS connecting -- there is nothing else to do here, so
+        # the transition and the action are the same button. It lives on this
+        # page rather than in 제어 because 제어 only exists during 수집.
+        self.connect_btn = QPushButton()
+        self._reg(self.connect_btn.setText, "로봇 연결하고 수집 시작 →")
+        self.connect_btn.setStyleSheet(
+            "background-color: #2ecc71; color: white; font-weight: bold; padding: 10px;"
+        )
+        self.connect_btn.clicked.connect(self._on_connect)
+        setup_col.addWidget(self.connect_btn)
 
-        columns = QHBoxLayout()
-        columns.addLayout(left_col, 1)
-        columns.addLayout(right_col, 1)
+        # 수집: only what the operator watches while their hands are on GELLO.
+        collect_page = QWidget()
+        collect_col = QVBoxLayout(collect_page)
+        self.collect_video_slot = QVBoxLayout()
+        collect_col.addLayout(self.collect_video_slot)
+        collect_row = QHBoxLayout()
+        collect_row.addWidget(self._build_gate_box(), 1)
+        collect_row.addWidget(self._build_status_box(), 1)
+        collect_col.addLayout(collect_row)
+        collect_col.addStretch()
 
-        scroll_content = QWidget()
-        scroll_root = QVBoxLayout(scroll_content)
-        scroll_root.addLayout(columns)
+        # 정리: nothing here touches the robot.
+        review_page = QWidget()
+        review_col = QVBoxLayout(review_page)
+        review_col.addWidget(self._build_dataset_box())
+        review_col.addStretch()
 
-        # The two columns can still exceed a laptop screen's height; a
-        # scroll area lets the window itself stay within the screen while
-        # the (taller) content scrolls, instead of the window manager
-        # clamping/clipping the window off-screen.
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(scroll_content)
+        self.pages = QStackedWidget()
+        for page in (setup_page, collect_page, review_page):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(page)
+            self.pages.addWidget(scroll)
 
-        # 제어 row is deliberately OUTSIDE the scroll area, pinned to the
-        # bottom of the window so it stays visible in one row regardless of
-        # scroll position or window resizing.
         central = QWidget()
         central_layout = QVBoxLayout(central)
-        central_layout.setContentsMargins(0, 0, 0, 0)
-        central_layout.addWidget(scroll, 1)
+        central_layout.setContentsMargins(6, 6, 6, 6)
+        central_layout.addWidget(self._build_phase_bar())
+        central_layout.addWidget(self.pages, 1)
+        # 제어 row and the log stay outside the stack: the control row is
+        # keyboard-driven during 수집 and must never move, and the log is the
+        # one thing worth seeing in every phase.
         central_layout.addWidget(self._build_control_box())
+        central_layout.addWidget(self.log_view)
         self.setCentralWidget(central)
+        self._set_phase(0)
 
         self._set_controls_enabled(connected=False, gate_ok=False, recording=False, reset_wait=False)
         self._refresh_dataset_tree()
@@ -883,6 +1202,20 @@ class LiberoCollectorWindow(QMainWindow):
         self._reg(self.resume_check.setText, "기존 데이터셋에 이어붙이기 (--resume)")
         grid.addWidget(self.resume_check, 4, 2, 1, 2)
 
+        self.auto_match_check = QCheckBox()
+        self._reg(
+            self.auto_match_check.setText,
+            "항상 같은 초기값에서 시작 (에피소드마다 리더를 리셋 포즈로 자동 정렬)",
+        )
+        self._reg(
+            self.auto_match_check.setToolTip,
+            "끄면 리더를 손으로 맞추게 되어 에피소드마다 시작 자세가 달라집니다 "
+            "(초기 위치 변동). 배포는 항상 리셋 포즈에서 시작하므로, 켜면 학습과 "
+            "배포의 시작 조건이 일치합니다.",
+        )
+        self.auto_match_check.setChecked(True)
+        grid.addWidget(self.auto_match_check, 7, 0, 1, 4)
+
         max_seconds_label = QLabel()
         self._reg(max_seconds_label.setText, "에피소드 최대 길이(초):")
         grid.addWidget(max_seconds_label, 5, 0)
@@ -895,9 +1228,85 @@ class LiberoCollectorWindow(QMainWindow):
         self.reset_wait_edit = QLineEdit("10")
         grid.addWidget(self.reset_wait_edit, 5, 3)
 
+        self.schema_btn = QPushButton()
+        self.schema_btn.clicked.connect(self._open_schema_dialog)
+        grid.addWidget(self.schema_btn, 6, 0, 1, 4)
+        self._update_schema_btn_label()
+
+        return box
+
+    # ------------------------------------------------------------- phases
+    PHASES = (("1. 준비", "카메라·세션·Task 설정"),
+              ("2. 수집", "텔레옵으로 에피소드 기록"),
+              ("3. 정리", "큐레이션·용량 최적화·변환·업로드"))
+
+    def _build_phase_bar(self) -> QWidget:
+        bar = QWidget()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.phase_btns = []
+        for i, (name, hint) in enumerate(self.PHASES):
+            b = QPushButton(f"{name}\n{hint}")
+            b.setCheckable(True)
+            b.clicked.connect(lambda _=False, idx=i: self._on_phase_clicked(idx))
+            row.addWidget(b, 1)
+            self.phase_btns.append(b)
+        return bar
+
+    def _on_phase_clicked(self, idx: int) -> None:
+        """Manual phase switch. 수집 is entered by connecting, not by clicking:
+        the page is meaningless without a live worker, and clicking into it
+        would suggest otherwise."""
+        if idx == 1 and self.worker is None:
+            self._set_phase(self.pages.currentIndex())  # undo the button check
+            QMessageBox.information(
+                self, tr("먼저 로봇 연결"),
+                tr("'수집' 단계는 로봇을 연결하면 자동으로 열립니다. 준비 단계에서 '로봇 연결'을 누르세요."),
+            )
+            return
+        if self.worker is not None and idx != 1:
+            self._set_phase(1)
+            QMessageBox.information(
+                self, tr("수집 중"),
+                tr("수집이 진행 중입니다. 다른 단계로 가려면 먼저 '세션 종료'를 누르세요."),
+            )
+            return
+        self._set_phase(idx)
+
+    def _set_phase(self, idx: int) -> None:
+        self.pages.setCurrentIndex(idx)
+        for i, b in enumerate(self.phase_btns):
+            b.setChecked(i == idx)
+            b.setStyleSheet(
+                "font-weight: bold; background-color: #3498db; color: white;"
+                if i == idx else "color: #888;"
+            )
+        # The live preview follows the operator between 준비 and 수집.
+        slot = self.collect_video_slot if idx == 1 else self.setup_video_slot
+        slot.addWidget(self.video_box)
+        self.video_box.setVisible(idx != 2)
+        # 제어 is only meaningful while a session exists.
+        self.control_box.setVisible(idx == 1)
+        if idx == 2:
+            self._refresh_dataset_tree()
+
+    def _build_camera_box(self) -> QGroupBox:
+        """Camera selection, refresh and live preview in one place.
+
+        Selection used to sit in the session-config grid and the preview in a
+        separate box at the other end of the window, so choosing a serial and
+        seeing what it points at meant looking in two places. Both belong to
+        the same question -- "is this the right camera, aimed correctly?" --
+        which is answered once, during setup.
+        """
+        box = QGroupBox()
+        self._reg(box.setTitle, "카메라")
+        layout = QVBoxLayout(box)
+
+        grid = QGridLayout()
         agent_cam_label = QLabel()
         self._reg(agent_cam_label.setText, "Agentview 카메라:")
-        grid.addWidget(agent_cam_label, 6, 0)
+        grid.addWidget(agent_cam_label, 0, 0)
         self.agent_cam_combo = QComboBox()
         self.agent_cam_combo.setEditable(True)
         self._reg(self.agent_cam_combo.setToolTip, "연결된 RealSense 목록에서 선택하거나 시리얼번호를 직접 입력")
@@ -905,11 +1314,11 @@ class LiberoCollectorWindow(QMainWindow):
         self.agent_cam_combo.lineEdit().editingFinished.connect(
             lambda: self._on_camera_selection_changed("agent")
         )
-        grid.addWidget(self.agent_cam_combo, 6, 1)
+        grid.addWidget(self.agent_cam_combo, 0, 1)
 
         wrist_cam_label = QLabel()
         self._reg(wrist_cam_label.setText, "Wrist 카메라:")
-        grid.addWidget(wrist_cam_label, 6, 2)
+        grid.addWidget(wrist_cam_label, 0, 2)
         self.wrist_cam_combo = QComboBox()
         self.wrist_cam_combo.setEditable(True)
         self._reg(self.wrist_cam_combo.setToolTip, "연결된 RealSense 목록에서 선택하거나 시리얼번호를 직접 입력")
@@ -917,22 +1326,23 @@ class LiberoCollectorWindow(QMainWindow):
         self.wrist_cam_combo.lineEdit().editingFinished.connect(
             lambda: self._on_camera_selection_changed("wrist")
         )
-        grid.addWidget(self.wrist_cam_combo, 6, 3)
+        grid.addWidget(self.wrist_cam_combo, 0, 3)
 
         self.cam_refresh_btn = QPushButton()
         self._reg(self.cam_refresh_btn.setText, "카메라 목록 새로고침")
         self.cam_refresh_btn.clicked.connect(self._refresh_cameras)
-        grid.addWidget(self.cam_refresh_btn, 7, 0, 1, 2)
+        grid.addWidget(self.cam_refresh_btn, 1, 0, 1, 2)
 
         self.camera_hint = QLabel("")
         self.camera_hint.setStyleSheet("color: #888;")
-        grid.addWidget(self.camera_hint, 7, 2, 1, 2)
+        grid.addWidget(self.camera_hint, 1, 2, 1, 2)
+        layout.addLayout(grid)
 
-        self.schema_btn = QPushButton()
-        self.schema_btn.clicked.connect(self._open_schema_dialog)
-        grid.addWidget(self.schema_btn, 8, 0, 1, 4)
-        self._update_schema_btn_label()
-
+        # The live preview is needed while aiming (준비) AND while recording
+        # (수집), but a QWidget has exactly one parent -- so it is built once
+        # and moved between the two pages' slots by _set_phase().
+        self.setup_video_slot = QVBoxLayout()
+        layout.addLayout(self.setup_video_slot)
         return box
 
     def _camera_serial_from_combo(self, combo: QComboBox) -> str:
@@ -998,13 +1408,12 @@ class LiberoCollectorWindow(QMainWindow):
         self._on_camera_selection_changed("wrist")
 
     def _update_schema_btn_label(self) -> None:
-        if self.schema_cfg.use_default:
-            self.schema_btn.setText(tr("데이터셋 구조: 기본 (LIBERO 표준) -- 사용자 지정..."))
-        else:
-            action_label = tr(ACTION_SPACE_LABELS.get(
-                self.schema_cfg.action_space, self.schema_cfg.action_space
-            ))
-            self.schema_btn.setText(tr("데이터셋 구조: 사용자 지정 ({action}) -- 편집...").format(action=action_label))
+        action_label = tr(ACTION_SPACE_LABELS.get(
+            self.schema_cfg.action_space, self.schema_cfg.action_space
+        ))
+        self.schema_btn.setText(
+            tr("데이터셋 구조: action = {action} -- 편집...").format(action=action_label)
+        )
 
     def _open_schema_dialog(self) -> None:
         dlg = DatasetSchemaDialog(self, self.schema_cfg)
@@ -1012,8 +1421,7 @@ class LiberoCollectorWindow(QMainWindow):
             self.schema_cfg = dlg.result_config()
             save_schema_config(self.schema_cfg)
             self._update_schema_btn_label()
-            mode = "기본" if self.schema_cfg.use_default else f"사용자 지정 (action={self.schema_cfg.action_space})"
-            self._log(f"[구조] {mode} 설정 저장됨")
+            self._log(f"[구조] 저장됨 (action={self.schema_cfg.action_space})")
 
     def _on_camera_selection_changed(self, role: str) -> None:
         combo = self.agent_cam_combo if role == "agent" else self.wrist_cam_combo
@@ -1144,13 +1552,9 @@ class LiberoCollectorWindow(QMainWindow):
 
     def _build_control_box(self) -> QGroupBox:
         box = QGroupBox()
+        self.control_box = box  # _set_phase() shows it only during 수집
         self._reg(box.setTitle, "제어")
         layout = QHBoxLayout(box)
-
-        self.connect_btn = QPushButton()
-        self._reg(self.connect_btn.setText, "로봇 연결")
-        self.connect_btn.clicked.connect(self._on_connect)
-        layout.addWidget(self.connect_btn)
 
         self.start_teleop_btn = QPushButton()
         self._reg(self.start_teleop_btn.setText, "텔레옵 시작 (Space)")
@@ -1247,8 +1651,13 @@ class LiberoCollectorWindow(QMainWindow):
         self._reg(structure_btn.setText, "선택 구조 확인...")
         structure_btn.clicked.connect(self._on_show_structure)
         btn_row.addWidget(structure_btn)
+        self.repack_btn = QPushButton()
+        self._reg(self.repack_btn.setText, "용량 최적화 (재압축)")
+        self.repack_btn.setStyleSheet("background-color: #9b59b6; color: white;")
+        self.repack_btn.clicked.connect(self._on_repack)
+        btn_row.addWidget(self.repack_btn)
         self.lerobot_convert_btn = QPushButton()
-        self._reg(self.lerobot_convert_btn.setText, "LeRobot 변환...")
+        self._reg(self.lerobot_convert_btn.setText, "LeRobot 변환/업로드...")
         self.lerobot_convert_btn.clicked.connect(self._open_lerobot_convert)
         btn_row.addWidget(self.lerobot_convert_btn)
         self.hdf5_upload_btn = QPushButton()
@@ -1555,6 +1964,7 @@ class LiberoCollectorWindow(QMainWindow):
             self.grip_combo,
             self.wall_check,
             self.resume_check,
+            self.auto_match_check,
             self.max_seconds_edit,
             self.reset_wait_edit,
             self.agent_cam_combo,
@@ -1632,6 +2042,7 @@ class LiberoCollectorWindow(QMainWindow):
             max_episode_seconds=max_seconds,
             reset_wait_seconds=reset_wait,
             enable_wall=self.wall_check.isChecked(),
+            auto_match_pose=self.auto_match_check.isChecked(),
             resume=self.resume_check.isChecked(),
             agent_camera_serial=agent_serial,
             wrist_camera_serial=wrist_serial,
@@ -1673,6 +2084,7 @@ class LiberoCollectorWindow(QMainWindow):
         self.active_file_path = Path(file_path)
         self._log(f"[연결 완료] 기존 {start_count}개 에피소드 ({file_path})")
         self._set_controls_enabled(connected=True, gate_ok=False, recording=False, reset_wait=False)
+        self._set_phase(1)  # 준비 -> 수집
 
     @pyqtSlot(list)
     def _on_episode_list_changed(self, episodes: list) -> None:
@@ -1804,6 +2216,7 @@ class LiberoCollectorWindow(QMainWindow):
         # for whatever's currently selected in the combo boxes.
         self._on_camera_selection_changed("agent")
         self._on_camera_selection_changed("wrist")
+        self._set_phase(2)  # 수집 -> 정리
 
     def _on_start_teleop(self) -> None:
         if self.worker:
@@ -1953,9 +2366,74 @@ class LiberoCollectorWindow(QMainWindow):
             self._on_start_node()
 
     # ------------------------------------------------------- LeRobot convert
+    # --------------------------------------------------- 용량 최적화 (재압축)
+    def _selected_hdf5_paths(self) -> list:
+        """The .hdf5 files implied by the tree selection (episode rows resolve
+        to their parent file). Falls back to every file under the data root."""
+        paths = []
+        for item in self.dataset_tree.selectedItems():
+            node = item if item.parent() is None else item.parent()
+            p = node.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(p, str) and p.endswith(".hdf5") and p not in paths:
+                paths.append(p)
+        if not paths:
+            root = Path(self.root_edit.text().strip() or str(Path.home()))
+            paths = [str(p) for p in sorted(root.glob("**/*_demo.hdf5"))]
+        return paths
+
+    def _on_repack(self) -> None:
+        if self.repack_process is not None and self.repack_process.state() != QProcess.ProcessState.NotRunning:
+            QMessageBox.information(self, tr("이미 실행 중"), tr("재압축이 이미 진행 중입니다. 로그를 확인하세요."))
+            return
+        if self.worker is not None:
+            QMessageBox.warning(
+                self, tr("수집 중"),
+                tr("수집 중에는 재압축할 수 없습니다. 먼저 세션을 종료하세요."),
+            )
+            return
+        paths = self._selected_hdf5_paths()
+        if not paths:
+            QMessageBox.warning(self, tr("파일 없음"), tr("재압축할 .hdf5 파일이 없습니다."))
+            return
+        dlg = RepackDialog(self, paths)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        paths = dlg.selected()
+        if not paths:
+            QMessageBox.information(
+                self, tr("선택 없음"), tr("재압축할 파일을 하나 이상 선택하세요.")
+            )
+            return
+        total = sum(Path(p).stat().st_size for p in paths if Path(p).exists())
+        proc = QProcess(self)
+        proc.setProgram(sys.executable)
+        proc.setArguments([REPACK_SCRIPT, *paths])
+        proc.setWorkingDirectory(str(Path(REPACK_SCRIPT).resolve().parent.parent))
+        proc.readyReadStandardOutput.connect(self._on_repack_stdout)
+        proc.readyReadStandardError.connect(self._on_repack_stdout)
+        proc.finished.connect(self._on_repack_finished)
+        self.repack_process = proc
+        self._log(f"[재압축] 시작: {len(paths)}개 파일, {total/1e6:.0f} MB")
+        self.repack_btn.setEnabled(False)
+        proc.start()
+
+    def _on_repack_stdout(self) -> None:
+        if self.repack_process is None:
+            return
+        data = bytes(self.repack_process.readAllStandardOutput()).decode(errors="replace")
+        for line in data.splitlines():
+            if line.strip():
+                self._log(f"[재압축] {line}")
+
+    def _on_repack_finished(self, code: int, _status) -> None:
+        self._log(f"[재압축] 종료 (exit={code})")
+        self.repack_btn.setEnabled(True)
+        self.repack_process = None
+        self._refresh_dataset_tree()
+
     def _open_lerobot_convert(self) -> None:
         if self.convert_process is not None and self.convert_process.state() != QProcess.ProcessState.NotRunning:
-            QMessageBox.information(self, tr("이미 실행 중"), tr("변환이 이미 진행 중입니다. 로그를 확인하세요."))
+            QMessageBox.information(self, tr("이미 실행 중"), tr("LeRobot 변환/업로드가 이미 진행 중입니다. 로그를 확인하세요."))
             return
         dlg = LerobotConvertDialog(self, self.root_edit.text())
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -1978,7 +2456,7 @@ class LiberoCollectorWindow(QMainWindow):
         proc.finished.connect(self._on_convert_finished)
         proc.errorOccurred.connect(self._on_convert_error)
         self.convert_process = proc
-        self._log(f"[LEROBOT 변환] 시작: {sys.executable} {script} " + " ".join(args))
+        self._log(f"[LeRobot] 시작: {sys.executable} {script} " + " ".join(args))
         self.lerobot_convert_btn.setEnabled(False)
         proc.start()
 
@@ -1986,26 +2464,24 @@ class LiberoCollectorWindow(QMainWindow):
         if self.convert_process is None:
             return
         data = bytes(self.convert_process.readAllStandardOutput()).decode(errors="replace")
-        for line in data.splitlines():
-            if line.strip():
-                self._log(f"[LEROBOT 변환] {line}")
+        for line in clean_stream_lines(data, self._convert_stdout_state):
+            self._log(f"[LeRobot] {line}")
 
     def _on_convert_stderr(self) -> None:
         if self.convert_process is None:
             return
         data = bytes(self.convert_process.readAllStandardError()).decode(errors="replace")
-        for line in data.splitlines():
-            if line.strip():
-                self._log(f"[LEROBOT 변환][stderr] {line}")
+        for line in clean_stream_lines(data, self._convert_stderr_state):
+            self._log(f"[LeRobot][stderr] {line}")
 
     def _on_convert_error(self, error) -> None:  # noqa: ANN001 - QProcess.ProcessError
-        self._log(f"[LEROBOT 변환] 프로세스 오류: {error}")
+        self._log(f"[LeRobot] 프로세스 오류: {error}")
 
     def _on_convert_finished(self, exit_code: int, exit_status) -> None:  # noqa: ANN001
-        self._log(f"[LEROBOT 변환] 종료됨 (exit code {exit_code})")
+        self._log(f"[LeRobot] 종료됨 (exit code {exit_code})")
         self.lerobot_convert_btn.setEnabled(True)
         if exit_code == 0:
-            QMessageBox.information(self, tr("변환 완료"), tr("LeRobot 변환이 완료되었습니다. 로그를 확인하세요."))
+            QMessageBox.information(self, tr("완료"), tr("LeRobot 변환/업로드가 완료되었습니다. 로그를 확인하세요."))
         else:
             QMessageBox.warning(self, tr("변환 실패"), tr("exit code {code} -- 로그를 확인하세요.").format(code=exit_code))
 
@@ -2054,17 +2530,15 @@ class LiberoCollectorWindow(QMainWindow):
         if self.hdf5_upload_process is None:
             return
         data = bytes(self.hdf5_upload_process.readAllStandardOutput()).decode(errors="replace")
-        for line in data.splitlines():
-            if line.strip():
-                self._log(f"[HDF5 업로드] {line}")
+        for line in clean_stream_lines(data, self._hdf5_stdout_state):
+            self._log(f"[HDF5 업로드] {line}")
 
     def _on_hdf5_upload_stderr(self) -> None:
         if self.hdf5_upload_process is None:
             return
         data = bytes(self.hdf5_upload_process.readAllStandardError()).decode(errors="replace")
-        for line in data.splitlines():
-            if line.strip():
-                self._log(f"[HDF5 업로드][stderr] {line}")
+        for line in clean_stream_lines(data, self._hdf5_stderr_state):
+            self._log(f"[HDF5 업로드][stderr] {line}")
 
     def _on_hdf5_upload_error(self, error) -> None:  # noqa: ANN001 - QProcess.ProcessError
         self._log(f"[HDF5 업로드] 프로세스 오류: {error}")
@@ -2101,6 +2575,14 @@ class LiberoCollectorWindow(QMainWindow):
             if not self.runme_process.waitForFinished(3000):
                 self.runme_process.kill()
                 self.runme_process.waitForFinished(2000)
+        # Repack replaces a file only after verifying it, so a kill mid-run
+        # leaves the original intact -- but give it a chance to exit cleanly
+        # and remove its temp file first.
+        if self.repack_process is not None and self.repack_process.state() != QProcess.ProcessState.NotRunning:
+            self.repack_process.terminate()
+            if not self.repack_process.waitForFinished(5000):
+                self.repack_process.kill()
+                self.repack_process.waitForFinished(2000)
         if self._log_file is not None:
             try:
                 self._log_file.close()

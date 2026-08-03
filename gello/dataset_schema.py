@@ -26,7 +26,7 @@ ACTION_SPACE_LABELS = {
     ACTION_SPACE_EE_DELTA: "EE-delta (LIBERO 기본)",
     ACTION_SPACE_EE_ABSOLUTE: "EE-pose absolute (절대 목표 pose)",
     ACTION_SPACE_JOINT_DELTA: "Joint-angle delta (변화량)",
-    ACTION_SPACE_JOINT_ABSOLUTE: "Joint-angle absolute (절대 목표값)",
+    ACTION_SPACE_JOINT_ABSOLUTE: "Joint-angle absolute (리더 명령, ACT 규약)",
 }
 
 DEFAULT_CONFIG_PATH = Path.home() / "libero_gui_logs" / "dataset_schema.json"
@@ -34,15 +34,17 @@ DEFAULT_CONFIG_PATH = Path.home() / "libero_gui_logs" / "dataset_schema.json"
 
 @dataclass
 class DatasetSchemaConfig:
-    """``use_default=True`` is the escape hatch back to LIBERO's original
-    fixed schema, regardless of what the other fields below say -- see
-    :meth:`effective`. Every field already defaults to that original schema,
-    so ``DatasetSchemaConfig()`` and ``DatasetSchemaConfig(use_default=True)``
-    produce byte-identical files; only a saved *custom* config (use_default
-    False, something toggled) changes what gets written.
+    """What gets written to the HDF5. Every field defaults to LIBERO's
+    original fixed schema, so a bare ``DatasetSchemaConfig()`` reproduces it.
+
+    There used to be a ``use_default`` flag that overrode every other field
+    at write time. It was removed: it silently discarded the operator's
+    ``action_space`` choice (a session set to ``joint_absolute`` would write
+    ``ee_delta`` instead, with no error), which is exactly the kind of
+    invisible mismatch this schema exists to prevent. Old saved JSON that
+    still carries the key is simply ignored by :meth:`from_json`.
     """
 
-    use_default: bool = True
     action_space: str = ACTION_SPACE_EE_DELTA
     # LIBERO's original actions always end with a gripper component (see
     # libero_format.py's compute_delta_action) -- True keeps that. Off drops
@@ -85,12 +87,6 @@ class DatasetSchemaConfig:
     # libero_format.resolved_action_column_names); the underlying array data
     # and column ORDER are unaffected.
     action_column_name_overrides: dict[str, str] = field(default_factory=dict)
-
-    def effective(self) -> "DatasetSchemaConfig":
-        """The config that actually governs a write. Toggling ``use_default``
-        back off in the GUI restores whatever custom selection was last made
-        -- it isn't lost just because default was on for a session."""
-        return DatasetSchemaConfig() if self.use_default else self
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, ensure_ascii=False)

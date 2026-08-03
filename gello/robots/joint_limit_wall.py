@@ -88,6 +88,17 @@ ADDR_INPUT_VOLTAGE = 144  # Present Input Voltage (2 B, units of 0.1 V)
 ADDR_TEMPERATURE = 146    # Present Temperature (1 B, deg C)
 
 
+def _wrap_pi(d: np.ndarray) -> np.ndarray:
+    """Wrap an angular difference into (-pi, pi] -- the shortest way around.
+
+    Distinct from wrap_into_limits, which normalizes an absolute *position*
+    into a joint's range. This normalizes a *difference*, so a pose match
+    always takes the short path even when the two poses are written in
+    representations a full turn apart.
+    """
+    return (np.asarray(d, dtype=float) + np.pi) % (2 * np.pi) - np.pi
+
+
 def wrap_into_limits(q: np.ndarray, lower, upper) -> np.ndarray:
     """Add whole turns (2*pi*k, k integer) to each joint so it lands nearest its
     range center.
@@ -185,10 +196,14 @@ class JointLimitWall:
         trigger_kd: float = 5.0,
         match_kp: float = 400.0,
         match_kd: float = 20.0,
-        match_max_current: float = 350.0,
+        match_max_current=350.0,  # scalar or per-arm-joint sequence (mA)
         match_tol: float = 0.05,
         match_vel_tol: float = 0.15,
         match_hold_s: float = 0.3,
+        match_rate: float = 0.6,
+        match_max_lead: float = 0.35,
+        match_stiff_kp: float = 1200.0,
+        match_stiff_tol: float = 0.10,
         gravity_gains: Optional[np.ndarray] = None,
         gravity_offsets: Optional[np.ndarray] = None,
         stiction_gain: float = 0.0,
@@ -251,9 +266,32 @@ class JointLimitWall:
 
         self._match_kp = match_kp
         self._match_kd = match_kd
-        self._match_max_current = match_max_current
+        # Scalar or one value per arm joint. Per-joint matters because the
+        # supply is the real constraint, not any single servo: every armed
+        # joint can saturate at once, so the worst-case draw is the SUM of
+        # these caps. Splitting a fixed budget lets the pitch joints (which
+        # carry the arm's weight) get most of it while the rest stay small,
+        # instead of one scalar that is either too weak for pitch or lets the
+        # total run past what the supply can deliver.
+        self._match_max_current = np.broadcast_to(
+            np.asarray(match_max_current, dtype=float), (self._n_arm,)
+        ).copy()
         self._match_tol = match_tol
         self._match_vel_tol = match_vel_tol
+        # A step target is what makes the leader lurch: kp=400 against a 1 rad
+        # error saturates the current cap on the very first tick, so all seven
+        # joints slam toward their goals at once along whatever path the
+        # linkage happens to take -- which is how the arm ties itself in a
+        # knot. Instead the spring chases a *moving* setpoint that starts at
+        # wherever the leader already is (zero initial force, no lurch) and
+        # travels toward the target at match_rate rad/s. Near the goal the
+        # gain switches to match_stiff_kp so it locks in place and holds
+        # rather than staying soft where the operator is about to let go.
+        self._match_rate = float(match_rate)
+        self._match_max_lead = float(match_max_lead)
+        self._match_stiff_kp = float(match_stiff_kp)
+        self._match_stiff_tol = float(match_stiff_tol)
+        self._match_setpoint: Optional[np.ndarray] = None
         self._match_hold_s = match_hold_s
         # Set/cleared by set_match_target(), read once per tick in _run().
         # Plain attribute swap, not lock-protected: CPython's GIL makes a
@@ -322,6 +360,10 @@ class JointLimitWall:
         self._match_target = None if target is None else np.array(target, dtype=float)
         self._match_done = False
         self._match_hold_start = None
+        # Cleared so _run() re-seeds it from the leader's *current* pose on
+        # the next tick -- the pull always starts from where the arm is, never
+        # from a stale setpoint that would produce an instant jump.
+        self._match_setpoint = None
 
     def start(self) -> None:
         """Switch the servos to current control and start the wall thread."""
@@ -435,12 +477,42 @@ class JointLimitWall:
                 # through the target mid-swing doesn't register as arrival.
                 match_err = None
                 if match_target is not None:
-                    terr = match_target - q
-                    match_err = float(np.abs(terr).max())
-                    cur_match = np.clip(
-                        self._match_kp * terr - self._match_kd * dq,
-                        -self._match_max_current, self._match_max_current,
+                    # Moving setpoint, seeded at the current pose: the spring
+                    # only ever sees a <= match_rate*dt error, so the leader
+                    # eases onto the target instead of being slammed at it.
+                    if self._match_setpoint is None:
+                        self._match_setpoint = q.copy()
+                    # Shortest way around, ALWAYS. q has been through
+                    # wrap_into_limits, which is right for the limit spring
+                    # (push at the real limit) but wrong here: a joint whose
+                    # span is close to 2*pi -- J1/J3/J5/J7 on the FR3 are all
+                    # 5.5-6.0 rad -- can wrap to the far side of its range, so
+                    # target - q comes out pointing the long way round. The
+                    # leader then winds a whole extra turn to reach a pose it
+                    # was already next to, which is what "the arm ties itself
+                    # in a knot" actually was.
+                    goal_err = _wrap_pi(match_target - q)
+                    match_err = float(np.abs(goal_err).max())
+                    lead = self._match_rate * self._dt
+                    self._match_setpoint = self._match_setpoint + np.clip(
+                        _wrap_pi(match_target - self._match_setpoint), -lead, lead
                     )
+                    # Bound how far the setpoint may run ahead of the actual
+                    # pose, so the spring force stays at the level it was
+                    # designed for instead of winding up to saturation the
+                    # moment a joint lags (friction, gravity, a hand resting
+                    # on the leader).
+                    terr = np.clip(
+                        _wrap_pi(self._match_setpoint - q),
+                        -self._match_max_lead, self._match_max_lead,
+                    )
+                    # Stiffen once actually close to the goal, so the pose is
+                    # held rigidly while the operator lets go of the leader.
+                    kp = self._match_stiff_kp if match_err < self._match_stiff_tol else self._match_kp
+                    cur_match = np.clip(
+                        kp * terr - self._match_kd * dq,
+                        -self._match_max_current, self._match_max_current,
+                    )  # per-joint caps; np.clip broadcasts elementwise
                     cur = cur + cur_match
                     if match_err < self._match_tol and float(np.abs(dq).max()) < self._match_vel_tol:
                         if self._match_hold_start is None:
@@ -452,6 +524,7 @@ class JointLimitWall:
                 else:
                     self._match_done = False
                     self._match_hold_start = None
+                    self._match_setpoint = None
 
                 # Empirical gravity comp (see class docstring for why this is
                 # a per-joint single-pendulum approximation, not RNEA): each

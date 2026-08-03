@@ -53,6 +53,12 @@ class DynamixelRobotConfig:
     see JointLimitWall.set_gravity_comp. Meaningless while gravity_gains is
     all-zero."""
 
+    match_max_current: Optional[Sequence[float]] = None
+    """Per-arm-joint current cap (mA) for the pose-match pull, or None for
+    JointLimitWall's scalar default. Sized to the SUPPLY, not to any one
+    servo: every armed joint can saturate simultaneously, so the worst-case
+    draw is the sum of these plus the trigger spring's."""
+
     def __post_init__(self):
         assert len(self.joint_ids) == len(self.joint_offsets)
         assert len(self.joint_ids) == len(self.joint_signs)
@@ -134,6 +140,13 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
         gravity_gains=(0.0,) * 7,
         gravity_offsets=(0.0,) * 7,
         stiction_gain=0.0,
+        # Pose-match current budget, split across the 4 A supply rather than
+        # given to each joint independently -- all seven can saturate at the
+        # same instant, so what matters is the sum. J2/J4 are the pitch joints
+        # carrying the arm's weight against gravity and get 1 A each; the rest
+        # only have to overcome their own friction and get 0.3 A. Total here
+        # is 3.5 A, leaving ~0.3 A of headroom for the trigger spring.
+        match_max_current=(300.0, 1000.0, 300.0, 1000.0, 300.0, 300.0, 300.0),
     ),
     # xArm
     "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT3M9NVB-if00-port0": DynamixelRobotConfig(
@@ -252,6 +265,11 @@ class GelloAgent(Agent):
                 gravity_gains=config.gravity_gains,
                 gravity_offsets=config.gravity_offsets,
                 stiction_gain=config.stiction_gain,
+                **(
+                    {"match_max_current": np.asarray(config.match_max_current, dtype=float)}
+                    if config.match_max_current is not None
+                    else {}
+                ),
             )
             self._wall.start()
         elif enable_wall:
