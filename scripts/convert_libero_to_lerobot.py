@@ -164,6 +164,8 @@ def _episode_schema(grp: h5py.Group) -> dict:
         "action_space": action_space,
         "has_gripper": has_gripper,
         "action_names": action_names,
+        # derive_commanded_ee_actions.py가 추가하는 파생 액션 (있는 파일만)
+        "has_actions_ee": "actions_ee" in grp,
     }
 
 
@@ -233,17 +235,40 @@ def _build_features(schema: dict) -> tuple[dict, list[str]]:
             "dtype": "video", "shape": (IMAGE_SIZE, IMAGE_SIZE, 3), "names": ["height", "width", "channel"],
         }
 
+    # GELLO leader 명령 스트림 (commanded-ee-actions 브랜치 수집분).
+    # 차원 이름을 observation.state와 동일하게 맞춰 시각화에서 실측 vs 명령이
+    # 같은 이름으로 나란히 비교되게 한다.
+    cmd_parts = []
+    cmd_names = []
+    if "commanded_joint_states" in obs_keys:
+        cmd_parts.append("commanded_joint_states")
+        cmd_names += [f"joint{i}.pos" for i in range(1, 8)]
+    if "commanded_gripper_states" in obs_keys:
+        cmd_parts.append("commanded_gripper_states")
+        cmd_names += ["gripper.pos"]
+    if cmd_parts:
+        features["observation.commanded_state"] = {
+            "dtype": "float32", "shape": (len(cmd_names),), "names": cmd_names,
+        }
+
     action_names = list(schema["action_names"])
     features["action"] = {
         "dtype": "float32", "shape": (len(action_names),), "names": action_names,
     }
-    return features, state_parts
+    if schema["has_actions_ee"]:
+        features["action_ee"] = {
+            "dtype": "float32", "shape": (7,),
+            "names": ["dx", "dy", "dz", "d_axis_x", "d_axis_y", "d_axis_z", "gripper.pos"],
+        }
+    return features, state_parts, cmd_parts
 
 
 # Only the features this script itself declares -- not the bookkeeping keys
 # (timestamp, frame_index, episode_index, index, task_index) LeRobotDataset
 # adds on its own regardless of what's passed to create().
-_CHECKED_FEATURE_KEYS = ("observation.state", "observation.images.agent", "observation.images.wrist", "action")
+_CHECKED_FEATURE_KEYS = ("observation.state", "observation.commanded_state",
+                         "observation.images.agent", "observation.images.wrist",
+                         "action", "action_ee")
 
 
 def _check_resume_compatible(remote_features: dict, local_features: dict) -> None:
@@ -298,7 +323,7 @@ def main() -> None:
     args = p.parse_args()
 
     schema = _scan_schema(args.hdf5_paths, args.only_success)
-    features, state_parts = _build_features(schema)
+    features, state_parts, cmd_parts = _build_features(schema)
     print(
         f"감지된 스키마: action_space={schema['action_space']!r} "
         f"(gripper {'포함' if schema['has_gripper'] else '제외'}), "
@@ -353,9 +378,11 @@ def main() -> None:
                 if has_wrist:
                     _check_image_shape(path, name, obs, "eye_in_hand_rgb")
                 state_arrays = [obs[part][:] for part in state_parts]
+                cmd_arrays = [obs[part][:] for part in cmd_parts]
                 agent_rgb = obs["agentview_rgb"][:] if has_agent else None
                 wrist_rgb = obs["eye_in_hand_rgb"][:] if has_wrist else None
                 actions = grp["actions"][:]
+                actions_ee = grp["actions_ee"][:] if schema["has_actions_ee"] else None
                 n = actions.shape[0]
                 for t in range(n):
                     frame = {"action": actions[t].astype("float32"), "task": task}
@@ -363,6 +390,12 @@ def main() -> None:
                         frame["observation.state"] = np.concatenate(
                             [arr[t] for arr in state_arrays]
                         ).astype("float32")
+                    if cmd_arrays:
+                        frame["observation.commanded_state"] = np.concatenate(
+                            [arr[t] for arr in cmd_arrays]
+                        ).astype("float32")
+                    if actions_ee is not None:
+                        frame["action_ee"] = actions_ee[t].astype("float32")
                     if has_agent:
                         frame["observation.images.agent"] = agent_rgb[t]
                     if has_wrist:

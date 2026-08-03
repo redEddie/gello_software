@@ -26,6 +26,7 @@
   - `actions_ee` (T,7): frame t의 follower EE 좌표계 기준 명령 delta (LIBERO `actions_ee` 소비자와 규약 일치 -- pos/rot을 R_t^T로 회전, 0.05m/0.5rad 정규화, [-1,1] clip)
   - `actions_world_cmd` (T,7): 같은 값의 world-frame 버전
   - flange→EE 변환은 가정하지 않고 파일별로 자가 캘리브레이션 (FK(joint_states) vs 기록된 `ee_pos_quat` 평균) 후 잔차 검증 -- median 잔차가 `--max-fk-residual-mm`(기본 5mm) 초과 시 중단. `--dry-run`으로 통계만 확인 가능. 기존 데이터셋은 수정하지 않음.
+- **LeRobot 변환/시각화**: `convert_libero_to_lerobot.py`가 위 필드들을 자동 감지해 함께 내보냄 -- `observation.commanded_state` (차원 이름을 `observation.state`와 동일하게 `joint1.pos`..`gripper.pos`로 통일 → 데이터셋 시각화에서 실측 vs 명령이 같은 이름으로 나란히 비교됨), `actions_ee`가 유도돼 있으면 `action_ee` 피처로 추가. 일부 파일만 유도된 상태로 섞어 변환하면 스키마 불일치 에러로 사전에 차단.
 
 ---
 
