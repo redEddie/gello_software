@@ -1110,7 +1110,6 @@ class LiberoCollectorWindow(QMainWindow):
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(2000)
-        self.log_view.setFixedHeight(160)
 
         # ---- three phases, one at a time -------------------------------
         # Everything used to be on one screen, which meant hunting for the
@@ -1152,8 +1151,9 @@ class LiberoCollectorWindow(QMainWindow):
         # 정리: nothing here touches the robot.
         review_page = QWidget()
         review_col = QVBoxLayout(review_page)
-        review_col.addWidget(self._build_dataset_box())
-        review_col.addStretch()
+        # addStretch를 두면 남는 세로를 전부 그쪽이 먹어서, 로그를 줄여도
+        # 탐색기/영상 박스는 최소 높이에 머문다. 여기선 박스가 늘어나야 한다.
+        review_col.addWidget(self._build_dataset_box(), 1)
 
         self.pages = QStackedWidget()
         for page in (setup_page, collect_page, review_page):
@@ -1162,16 +1162,40 @@ class LiberoCollectorWindow(QMainWindow):
             scroll.setWidget(page)
             self.pages.addWidget(scroll)
 
+        # 제어 row and the log stay outside the stack: the control row is
+        # keyboard-driven during 수집 and must never move, and the log is the
+        # one thing worth seeing in every phase.
+        #
+        # 로그는 160px 고정이었다. 정리 단계의 영상 크기는 세로 공간이 정하는데
+        # 그 160px이 손댈 수 없는 몫이었다. 제어 row를 페이지와 같은 칸에 넣어
+        # 화면 순서(단계바 / 페이지 / 제어 / 로그)를 그대로 유지하면서, 로그와의
+        # 경계만 끌 수 있게 한다 -- 로그를 줄이면 그만큼 영상이 커진다.
+        upper = QWidget()
+        upper_layout = QVBoxLayout(upper)
+        upper_layout.setContentsMargins(0, 0, 0, 0)
+        upper_layout.addWidget(self.pages, 1)
+        upper_layout.addWidget(self._build_control_box())
+
+        self.log_view.setMinimumHeight(60)
+        vsplit = QSplitter(Qt.Orientation.Vertical)
+        vsplit.addWidget(upper)
+        vsplit.addWidget(self.log_view)
+        vsplit.setStretchFactor(0, 1)
+        vsplit.setStretchFactor(1, 0)
+        vsplit.setSizes([820, 160])
+        vsplit.setHandleWidth(8)
+        vsplit.setChildrenCollapsible(False)
+        vsplit.setStyleSheet(
+            "QSplitter::handle:vertical {"
+            " background: #777; margin: 0 2px; border-radius: 2px; }"
+            "QSplitter::handle:vertical:hover { background: #2ecc71; }"
+        )
+
         central = QWidget()
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(6, 6, 6, 6)
         central_layout.addWidget(self._build_phase_bar())
-        central_layout.addWidget(self.pages, 1)
-        # 제어 row and the log stay outside the stack: the control row is
-        # keyboard-driven during 수집 and must never move, and the log is the
-        # one thing worth seeing in every phase.
-        central_layout.addWidget(self._build_control_box())
-        central_layout.addWidget(self.log_view)
+        central_layout.addWidget(vsplit, 1)
         self.setCentralWidget(central)
         self._set_phase(0)
 
@@ -1756,10 +1780,10 @@ class LiberoCollectorWindow(QMainWindow):
         left would each be smaller than the source.
         """
         panel = QWidget()
-        # 두 칸을 위아래로 쌓으므로 한 칸의 높이가 곧 영상 한 변의 상한이고,
-        # 그보다 넓은 폭은 전부 좌우 여백이 된다. 폭에 상한을 두어 남는 가로를
-        # 트리에 넘긴다 -- 트리 첫 컬럼이 560px라 그쪽이 폭을 훨씬 잘 쓴다.
-        panel.setMaximumWidth(400)
+        # 폭 상한을 두지 않는다. 예전엔 400으로 묶어 남는 가로를 트리에 넘겼는데,
+        # 그러면 스플리터를 오른쪽으로 끌어도 400에서 멈춰 고장난 것처럼 느껴진다.
+        # VideoView가 스스로 정사각으로 줄어들어 검은 여백을 만들지 않으므로,
+        # 넓게 끌어도 손해가 없다 -- 얼마나 크게 볼지는 조작자가 정한다.
         col = QVBoxLayout(panel)
         col.setContentsMargins(0, 0, 0, 0)
 
@@ -1916,7 +1940,9 @@ class LiberoCollectorWindow(QMainWindow):
         header = self.dataset_tree.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        self.dataset_tree.setMinimumWidth(600)
+        # 컬럼 폭 합(720)을 최소로 잡으면 트리를 줄여 영상을 키울 수가 없다.
+        # 최소는 낮게 두고 초기 폭만 넉넉히 준다.
+        self.dataset_tree.setMinimumWidth(320)
         self.dataset_tree.itemSelectionChanged.connect(self._on_dataset_selection)
 
         # 탐색기는 세로로 길게(에피소드가 수십 개), 카메라는 그 오른쪽에 위아래로.
@@ -1925,6 +1951,14 @@ class LiberoCollectorWindow(QMainWindow):
         split.addWidget(self._build_player_panel())
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 0)
+        # 기본 핸들은 4px이라 사실상 못 잡는다. 넓히고 보이게 칠한다.
+        split.setHandleWidth(8)
+        split.setChildrenCollapsible(False)
+        split.setStyleSheet(
+            "QSplitter::handle:horizontal {"
+            " background: #777; margin: 2px 0; border-radius: 2px; }"
+            "QSplitter::handle:horizontal:hover { background: #2ecc71; }"
+        )
         # 정사각 프레임 2개를 위아래로 쌓으므로, 오른쪽 폭이 높이보다 넓어봐야
         # 좌우 여백만 늘어난다. 폭은 한 칸 높이에 맞춰 좁게 주고 남는 가로는
         # 트리에 넘긴다 (트리 첫 컬럼이 560px라 그쪽이 폭을 더 쓴다).
