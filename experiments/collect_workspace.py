@@ -527,9 +527,11 @@ class WorkspaceWindow(QMainWindow):
         self.dataset_tree.itemSelectionChanged.connect(self._on_dataset_selection)
         col.addWidget(self.dataset_tree, 1)
         row = QHBoxLayout()
+        # 파일 삭제는 여기 없다. 에피소드 삭제 바로 옆에 두었더니 실제로 오클릭이
+        # 났고, 한 번에 태스크 하나가 통째로 날아간다. 되돌릴 수 없는 조작은
+        # 한 단계 더 들어가야 닿도록 Dataset 메뉴에만 둔다.
         for text, slot in ((tr("새로고침"), self._refresh_dataset_tree),
                            (tr("에피소드 삭제"), self._on_delete_selected),
-                           (tr("파일 삭제"), self._on_delete_file),
                            (tr("구조 확인"), self._on_show_structure)):
             b = QPushButton(text)
             b.clicked.connect(slot)
@@ -1468,19 +1470,28 @@ class WorkspaceWindow(QMainWindow):
                                 tr("{job}이(가) 진행 중입니다. 끝난 뒤 삭제하세요.").format(job=busy))
             return
         st = hdf5_repack_status(path)
+        # unlink는 되돌릴 수 없다. 실제로 아직 업로드하지 않은 태스크 하나가
+        # 오클릭 한 번으로 사라졌고, 열린 fd도 Hub 사본도 없어 복구가 불가능했다.
+        # 휴지통으로 옮기기만 한다 -- 데이터 루트 아래 .trash/ 는 트리와 재압축
+        # 후보 모두 비재귀 glob(*_demo.hdf5)이라 걸리지 않는다.
+        trash = path.parent / ".trash"
+        dest = trash / f"{time.strftime('%Y%m%d_%H%M%S')}_{path.name}"
         confirm = QMessageBox.warning(
             self, tr("파일 삭제"),
-            tr("{f}\n\n에피소드 {n}개, {mb:.1f} MB 를 통째로 지웁니다.\n"
-               "되돌릴 수 없습니다. Hub에 올린 사본은 영향받지 않습니다.").format(
-                   f=path.name, n=st["episodes"], mb=st["size"] / 1e6),
+            tr("{f}\n\n에피소드 {n}개, {mb:.1f} MB\n\n"
+               "휴지통으로 옮깁니다:\n  {d}\n\n"
+               "목록에서는 사라지지만 디스크 공간은 그대로입니다. 완전히 지우려면 "
+               "그 폴더를 직접 비우세요.").format(
+                   f=path.name, n=st["episodes"], mb=st["size"] / 1e6, d=dest),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel)
         if confirm != QMessageBox.StandardButton.Yes:
             return
         try:
-            path.unlink()
+            trash.mkdir(exist_ok=True)
+            shutil.move(str(path), str(dest))
             self.log(f"[파일 삭제] {path.name} ({st['episodes']}개 에피소드, "
-                     f"{st['size'] / 1e6:.1f} MB)")
+                     f"{st['size'] / 1e6:.1f} MB) -> {dest}")
         except OSError as e:
             QMessageBox.critical(self, tr("삭제 실패"), str(e))
             self.log(f"[파일 삭제 실패] {path.name}: {e}")
