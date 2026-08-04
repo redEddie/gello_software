@@ -1245,6 +1245,15 @@ class WorkspaceWindow(QMainWindow):
         w.connected.connect(self._on_connected)
         w.episode_list_changed.connect(self._on_episode_list)
         w.session_summary.connect(self._on_summary)
+        # 저장은 CollectionWorker가 아니라 그 안의 EpisodeSaver 스레드가 알린다
+        # (h5py 접근을 한 스레드로 직렬화하려고 분리해 둔 것). 워커 쪽 시그널만
+        # 연결해 두면 episode_saved/episode_list_changed가 영원히 오지 않아,
+        # 에피소드 수·세션 통계·실패 표시 해제·탐색기 목록이 전부 멈춘 채로
+        # 있는다 -- 실제로 10개를 저장한 세션 로그에 [저장] 줄이 한 줄도 없었다.
+        w.saver.episode_saved.connect(self._on_saved)
+        w.saver.episode_list_changed.connect(self._on_episode_list)
+        w.saver.log_message.connect(self.log)
+        w.saver.save_status.connect(self._on_save_status)
         self.worker = w
         self._no_dataset_session = no_dataset
         # The right panel's serials were only filled by _restart_previews, so
@@ -1360,6 +1369,13 @@ class WorkspaceWindow(QMainWindow):
         self.right_fields["episode"].setText(name)
         self._update_dataset_panel()
         self._refresh_stats()
+
+    @pyqtSlot(str)
+    def _on_save_status(self, text: str) -> None:
+        """Background-save progress. Empty string means idle."""
+        self.save_status_label.setText(text)
+        self.save_status_label.setStyleSheet(
+            "color:#f39c12;" if text else "color:#888;")
 
     @pyqtSlot(int)
     def _on_discarded(self, n_frames) -> None:
