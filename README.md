@@ -7,6 +7,7 @@
 </p>
 
 - **`experiments/collect_workspace.py`** -- PyQt6 메인 GUI (워크스페이스형). VS Code 식 레이아웃: 왼쪽 액티비티 바(Configure/Collect/Dataset/Upload/Statistics/Settings)가 왼쪽 패널만 바꾸고, **카메라 미리보기는 항상 중앙에 유지된다** -- 3단계 마법사(준비/수집/정리)를 대체한 것으로, 단계 전환마다 화면 전체가(카메라까지) 바뀌던 문제를 없앴다. 중앙은 Live/Playback 탭, 오른쪽은 로봇·카메라·기록 상태, 아래는 Log/Upload/Validation 탭, 맨 아래 상태바. 로봇 노드 시작/종료, 자세 매칭 게이트(조인트별 델타 바), 에피소드 제어, 데이터셋 탐색기와 20fps 재생, 재압축·HDF5 업로드·LeRobot 변환/업로드까지 한 창에서 처리한다. 모든 패널은 스플리터로 자유롭게 조절된다.
+- **`scripts/check_cameras.py`** -- 카메라 USB 링크 속도와 실제 프레임 수신을 세션 전에 확인하는 독립 스크립트 (`scripts/check_cameras.py`, `--stream` 붙이면 실제 프레임까지). sysfs에서 협상된 링크 속도를 읽으므로 GUI가 켜져 있어도 정확하고, librealsense 쪽에서는 수집기가 쓰는 시리얼을 가져와 둘을 대조한다 -- USB에는 붙어 있는데 SDK가 못 보면 접촉 불량이다. `devnum`이 높으면 재연결이 잦았다는 뜻이라 함께 경고한다. 종료 코드 0=정상, 1=문제, 2=일부 확인 못 함.
 - **`gello/gui_widgets.py`** -- 두 GUI가 공유하던 위젯·대화상자를 분리한 모듈 (VideoView, DeltaBar, EpisodeLoadWorker, CameraPreviewWorker, 스키마/변환/업로드/재압축 대화상자).
 - **`gello/libero_gui_worker.py`** -- `record_dataset.py`의 홈복귀→리셋대기→자세게이트→접근램프→기록 상태 머신을 커맨드큐+Qt시그널 방식으로 이식한 백그라운드 `QThread`.
 - **`gello/libero_format.py`** -- LIBERO 표준 HDF5(`<task>_demo.hdf5`) writer. 재시작된 `launch_nodes.py` 같은 자식 프로세스가 fork+exec로 파일 fd를 물려받아 계속 잠가버리는 문제를 막기 위해 `FD_CLOEXEC` 설정.
