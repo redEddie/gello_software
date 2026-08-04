@@ -4,11 +4,11 @@ Streams observations to the GPU policy server (mamba-embeddingvla
 real_deploy/fr3_policy_server.py) and executes the returned 8-dim absolute
 joint-angle chunks on the robot. No model compute on this machine.
 
-Data path per replan cycle (default 0.75 s = 15 steps @ 20 Hz):
+Data path per replan cycle (default 0.50 s = 10 steps @ 20 Hz):
   FR3ZMQRobot.get_observation()             joints 7 rad + gripper 0..1, 2x 640x480 RGB
     -> resize_rgb (libero_format)           center-crop 480^2 -> 256^2  (train-identical)
     -> base64 JSON POST /infer              ~0.4 MB/request
-    <- {"actions": [[8] x 15]}              joint1-7 rad + gripper 0..1 (absolute)
+    <- {"actions": [[8] x 10]}              joint1-7 rad + gripper 0..1 (absolute)
     -> send_action at 20 Hz                 with per-step |dq| safety clamp
 
 Prerequisites:
@@ -32,17 +32,26 @@ import numpy as np
 import requests
 
 # ───────────────────────── CONFIG (edit me) ─────────────────────────
-SERVER_URL = "http://192.168.0.10:8080"   # GPU 머신 IP:port
+SERVER_URL = "http://155.230.189.77:8080"  # GPU 머신 IP:port (같은 /22 서브넷, RTT 0.24ms)
 ROBOT_PORT = 6001                          # launch_nodes.py ZMQ port
 HOSTNAME = "127.0.0.1"
 AGENT_CAMERA_SERIAL = "338122300664"       # RealSense serials (수집 GUI와 동일)
 WRIST_CAMERA_SERIAL = "230422272249"
 FPS = 20                                   # 학습 데이터와 동일 (20 Hz)
-EXEC_HORIZON = 15                          # 청크 중 실행 개수 (15=full=0.75s 재계획)
+EXEC_HORIZON = 10                          # 청크 중 실행 개수 (10=full=0.50s 재계획)
 RESET_POSE = "libero"                      # FR3_RESET_POSES key (수집 세션과 동일해야 함)
-DEFAULT_INSTRUCTION = "pick up the skyblue cup and place it on the yellow bowl"
+# 학습된 4개 태스크 (다른 문장을 주면 분포 밖 — 2026-08-03 수집분 117 에피소드):
+#   pick up the {blue|white} cup and place it on the {blue|yellow} bowl
+DEFAULT_INSTRUCTION = "pick up the white cup and place it on the yellow bowl"
 RAMP_STEP = 0.05                           # rad/tick @20Hz — 홈 복귀 램프 (수집기와 동일)
-MAX_STEP_RAD = 0.15                        # 안전 클램프: 스텝당 관절 목표-측정 최대 괴리
+# 안전 클램프: 스텝당 "명령 목표 - 측정 위치" 최대 괴리.
+# 이건 속도 제한이 아니다 — 실제 속도/가속/저크 제한은 로봇 노드의 레퍼런스 필터
+# (v_max 1.0 rad/s, a_max 4.0 rad/s^2, 1 kHz)가 하고, 이 값과 무관하게 항상 건다.
+# 여기서 하는 일은 "명령이 실측보다 얼마나 앞서 나갈 수 있는가"의 상한이며,
+# 리더 명령 액션 공간에서는 그 앞섬 자체가 신호다(리더가 팔로워를 끌고 가는 힘).
+# 학습 데이터 실측: p95 0.254 / p99 0.395 / p99.9 0.707 rad.
+# 0.15이면 프레임의 20%가 잘려나가 — 우리가 고친 지연 버그를 클라이언트에서 재현한다.
+MAX_STEP_RAD = 0.50                        # p99.5(0.469) 통과, 폭주 액션은 여전히 차단
 GRIPPER_OPEN = 0.0
 # ─────────────────────────────────────────────────────────────────────
 
@@ -149,10 +158,17 @@ def main() -> None:
             t0 = time.perf_counter()
             r = requests.post(f"{args.server}/infer", json=payload, timeout=60)
             r.raise_for_status()
-            chunk = np.asarray(r.json()["actions"], dtype=float)  # [15,8]
+            chunk = np.asarray(r.json()["actions"], dtype=float)  # [10,8]
             n_replans += 1
+            if n_replans == 1 and len(chunk) < args.exec_horizon:
+                # 서버 청크가 요청보다 짧으면 슬라이스가 조용히 잘린다 -- 실제
+                # 재계획 주기가 의도와 달라지므로 한 번은 눈에 보이게 알린다.
+                print(f"[client] 주의: 서버 청크 {len(chunk)}개 < exec-horizon "
+                      f"{args.exec_horizon} — 실제 실행은 {len(chunk)}개"
+                      f"({len(chunk)/FPS:.2f}s 주기)")
             if n_replans % 4 == 1:
-                print(f"[client] replan #{n_replans}: infer {1000*(time.perf_counter()-t0):.0f} ms")
+                print(f"[client] replan #{n_replans}: infer "
+                      f"{1000*(time.perf_counter()-t0):.0f} ms, chunk {chunk.shape}")
 
             t_next = time.monotonic()
             for a in chunk[: args.exec_horizon]:
