@@ -1080,6 +1080,12 @@ class WorkspaceWindow(QMainWindow):
         w.session_summary.connect(self._on_summary)
         self.worker = w
         self._no_dataset_session = no_dataset
+        # The right panel's serials were only filled by _restart_previews, so
+        # they blanked out for the whole session -- exactly when knowing which
+        # camera is which matters most.
+        self.right_fields["cam_agent"].setText(agent)
+        self.right_fields["cam_wrist"].setText(wrist)
+        self.lights["camera"].set("ok", tr("세션"))
         self.ep_progress.setMaximum(max(1, int(ep_len * cfg.fps)))
         self._set_running(True)
         self._set_activity("collect")
