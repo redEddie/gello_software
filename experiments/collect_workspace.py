@@ -154,6 +154,10 @@ TODO_MARK = "미개발"
 # 오른쪽 패널에서 값이 길어 좌우 배치로는 읽기 어려운 항목들.
 WIDE_FIELDS = {"ds_file", "ds_task"}
 
+# 0.5배는 접촉 순간을 한 프레임씩 보려고, 2~3배는 긴 에피소드를 훑으려고 쓴다.
+# 3배면 60Hz라 프레임을 건너뛰지 않고도 타이머만으로 낼 수 있다.
+PLAYBACK_SPEEDS = (("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("3x", 3.0))
+
 
 def soft_wrap(text: str) -> str:
     """Lets a long filename wrap.
@@ -340,6 +344,17 @@ class WorkspaceWindow(QMainWindow):
         self.play_pos.setMinimumWidth(80)
         self.play_pos.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self.play_pos)
+        # 배속. 3배까지는 타이머 주기만 줄이면 되고(20 -> 60Hz) 프레임을 건너뛸
+        # 필요가 없어서, 빠르게 훑을 때도 놓치는 프레임이 없다.
+        row.addWidget(QLabel(tr("배속")))
+        self.speed_combo = QComboBox()
+        for label, mult in PLAYBACK_SPEEDS:
+            self.speed_combo.addItem(label, mult)
+        self.speed_combo.setCurrentIndex(
+            [m for _l, m in PLAYBACK_SPEEDS].index(1.0))
+        self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
+        self.speed_combo.setMaximumWidth(80)
+        row.addWidget(self.speed_combo)
         play_col.addLayout(row)
         self.play_caption = QLabel(tr("Dataset 패널에서 에피소드를 고르면 여기서 재생됩니다."))
         self.play_caption.setStyleSheet("color:#888;")
@@ -1842,7 +1857,8 @@ class WorkspaceWindow(QMainWindow):
         self.play_slider.setEnabled(True)
         self.play_btn.setEnabled(True)
         self.play_btn.setText(tr("일시정지"))
-        self.play_caption.setText(f"{Path(path).name} · {demo} · {n} frames @ {PLAYBACK_FPS} fps")
+        self._apply_speed()
+        self._refresh_play_caption()
         self._show_frame(0)
         self._play_timer.start()
 
@@ -1856,6 +1872,30 @@ class WorkspaceWindow(QMainWindow):
         self.play_pos.setText("-/-")
         for v in self.play_views.values():
             v.clear_frame(tr("에피소드를 선택하세요"))
+
+    def _speed(self) -> float:
+        data = self.speed_combo.currentData()
+        return float(data) if data else 1.0
+
+    def _apply_speed(self) -> None:
+        interval = max(1, int(round(1000.0 / (PLAYBACK_FPS * self._speed()))))
+        self._play_timer.setInterval(interval)
+
+    def _on_speed_changed(self) -> None:
+        self._apply_speed()
+        self._refresh_play_caption()
+
+    def _refresh_play_caption(self) -> None:
+        if not self._play_key:
+            return
+        path, demo = self._play_key
+        n = self.play_slider.maximum() + 1
+        speed = self._speed()
+        eff = PLAYBACK_FPS * speed
+        self.play_caption.setText(
+            f"{Path(path).name} · {demo} · {n} frames · "
+            + (tr("{s:g}배속 ({f:g} fps)").format(s=speed, f=eff) if speed != 1
+               else tr("{f:g} fps (실제 속도)").format(f=eff)))
 
     def _on_play_toggle(self) -> None:
         if self._play_timer.isActive():
