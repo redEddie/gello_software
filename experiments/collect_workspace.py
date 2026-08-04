@@ -682,12 +682,25 @@ class WorkspaceWindow(QMainWindow):
             self.activity_bar.addAction(act)
             self._activity_actions[key] = act
 
+        # 로그는 중앙 열 안에, 카메라 바로 아래에만 둔다. 창 전체 폭으로 깔면
+        # 왼쪽/오른쪽 패널이 로그 높이만큼 잘려서, 정작 세로로 긴 것들(에피소드
+        # 트리, 상태 목록)이 먼저 손해를 본다. VS Code의 사이드바가 전체 높이를
+        # 쓰고 패널이 에디터 아래에만 오는 것과 같은 이유다.
+        self.center_split = QSplitter(Qt.Orientation.Vertical)
+        self.center_split.addWidget(self.center_tabs)
+        self.center_split.addWidget(self.bottom_tabs)
+        self.center_split.setStretchFactor(0, 1)
+        self.center_split.setStretchFactor(1, 0)
+        self.center_split.setSizes([720, 220])
+        self.center_split.setChildrenCollapsible(False)
+
         self.upper_split = QSplitter(Qt.Orientation.Horizontal)
         self.left_stack.setMinimumWidth(240)
         self.right_panel.setMinimumWidth(200)
         self.center_tabs.setMinimumWidth(420)
+        self.bottom_tabs.setMinimumHeight(90)
         self.upper_split.addWidget(self.left_stack)
-        self.upper_split.addWidget(self.center_tabs)
+        self.upper_split.addWidget(self.center_split)
         self.upper_split.addWidget(self.right_panel)
         # Only the center grows when the window does: the two side panels hold
         # text at a readable width, the camera is the thing worth more pixels.
@@ -697,20 +710,12 @@ class WorkspaceWindow(QMainWindow):
         self.upper_split.setSizes([320, 1120, 300])
         self.upper_split.setChildrenCollapsible(False)
 
-        self.main_split = QSplitter(Qt.Orientation.Vertical)
-        self.main_split.addWidget(self.upper_split)
-        self.main_split.addWidget(self.bottom_tabs)
-        self.main_split.setStretchFactor(0, 1)
-        self.main_split.setStretchFactor(1, 0)
-        self.main_split.setSizes([760, 200])
-        self.main_split.setChildrenCollapsible(False)
-
         central = QWidget()
         row = QHBoxLayout(central)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
         row.addWidget(self.activity_bar)
-        row.addWidget(self.main_split, 1)
+        row.addWidget(self.upper_split, 1)
         self.setCentralWidget(central)
 
     def _build_toolbar(self) -> None:
