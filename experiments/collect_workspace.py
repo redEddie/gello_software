@@ -45,6 +45,7 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
+import json
 import shutil
 import sys
 import time
@@ -627,8 +628,15 @@ class WorkspaceWindow(QMainWindow):
         for title, keys in (
             ("Robot", (("robot", "연결"), ("node", "노드"), ("state", "상태"))),
             ("Camera", (("cam_agent", "Agent"), ("cam_wrist", "Wrist"), ("fps", "FPS"))),
-            ("Recording", (("recording", "기록"), ("episode", "에피소드"),
-                           ("frames", "프레임"), ("file", "파일"))),
+            ("Recording", (("recording", "기록"), ("episode", "마지막 에피소드"),
+                           ("frames", "프레임"))),
+            # 파일과 스키마가 한 칸에 같이 있어야 "지금 어디에, 어떤 형식으로
+            # 쌓이는가"가 한눈에 잡힌다. 세션 중에는 그 세션의 값이, 아닐 때는
+            # 트리에서 고른 파일의 값이 뜬다.
+            ("Dataset", (("ds_file", "파일"), ("ds_task", "태스크"),
+                         ("ds_episodes", "에피소드"), ("ds_action", "액션 공간"),
+                         ("ds_gripper", "그리퍼 규약"), ("ds_image", "이미지"),
+                         ("ds_fps", "FPS"), ("ds_repack", "재압축"))),
         ):
             box = QGroupBox(tr(title))
             form = QFormLayout(box)
@@ -1227,11 +1235,11 @@ class WorkspaceWindow(QMainWindow):
         if self._no_dataset_session:
             # NullTaskWriter has no real path; claiming one here would make the
             # dataset tree think a file is locked by this session.
-            self.right_fields["file"].setText(tr("(기록 안 함)"))
+            self._update_dataset_panel()
             self.log("[연결] 연습 모드로 연결되었습니다.")
             return
         self.active_file_path = Path(path)
-        self.right_fields["file"].setText(Path(path).name)
+        self._update_dataset_panel()
         self.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
         self._refresh_dataset_tree()
 
@@ -1277,6 +1285,71 @@ class WorkspaceWindow(QMainWindow):
         except OSError:
             self.disk_label.setText("-")
 
+    def _update_dataset_panel(self, path: "Path | None" = None) -> None:
+        """Fills the right panel's Dataset box.
+
+        During a session it describes what this session is writing (from the
+        config, since the file's own attrs only exist after the first save).
+        Otherwise it describes whichever file is selected in the tree, read
+        straight off disk -- so 'what format is this old file?' is answerable
+        without opening the schema dialog or connecting anything.
+        """
+        f = self.right_fields
+        if self.worker is not None:
+            cfg = self.worker.cfg
+            f["ds_file"].setText(tr("(기록 안 함)") if self._no_dataset_session
+                                 else Path(str(self.active_file_path or "-")).name)
+            f["ds_task"].setText(cfg.language_instruction or cfg.task_name)
+            f["ds_episodes"].setText(str(len(self.active_episode_cache or [])))
+            f["ds_action"].setText(cfg.schema.action_space)
+            f["ds_gripper"].setText(
+                "0/1 (obs와 동일)" if cfg.schema.gripper_action_match_obs else "-1/+1")
+            f["ds_image"].setText(f"{cfg.schema.image_size}²" if cfg.schema.image_size
+                                  else tr("원본 해상도"))
+            f["ds_fps"].setText(str(cfg.fps))
+            f["ds_repack"].setText("-")
+            return
+
+        if path is None or not Path(path).exists():
+            for k in ("ds_file", "ds_task", "ds_episodes", "ds_action",
+                      "ds_gripper", "ds_image", "ds_fps", "ds_repack"):
+                f[k].setText("-")
+            return
+
+        path = Path(path)
+        st = hdf5_repack_status(path)
+        f["ds_file"].setText(path.name)
+        f["ds_episodes"].setText(f"{st['episodes']}  ({st['size'] / 1e6:.0f} MB)")
+        f["ds_repack"].setText(
+            tr("혼합 — 다시 필요") if st["mixed"]
+            else (st["marker"] or (tr("완료") if st["repacked"] else tr("안 됨"))))
+        task = action = gripper = image = "-"
+        try:
+            with h5py.File(path, "r") as h:
+                data = h["data"]
+                info = data.attrs.get("problem_info")
+                if info:
+                    try:
+                        task = json.loads(json.loads(info)["language_instruction"])
+                    except Exception:  # noqa: BLE001
+                        task = str(info)[:60]
+                names = sorted(data.keys(), key=lambda s: int(s.split("_")[1]))
+                if names:
+                    g = data[names[0]]
+                    action = str(g.attrs.get("action_space", "-"))
+                    conv = str(g.attrs.get("gripper_action_convention", ""))
+                    gripper = {"01": "0/1 (obs와 동일)", "pm1": "-1/+1"}.get(conv, conv or "-")
+                    rgb = g.get("obs", {}).get("agentview_rgb")
+                    if rgb is not None and rgb.ndim == 4:
+                        image = f"{rgb.shape[1]}×{rgb.shape[2]}"
+        except Exception as e:  # noqa: BLE001
+            task = f"({type(e).__name__})"
+        f["ds_task"].setText(task)
+        f["ds_action"].setText(action)
+        f["ds_gripper"].setText(gripper)
+        f["ds_image"].setText(image)
+        f["ds_fps"].setText("-")
+
     # ------------------------------------------------------------ dataset
     def _refresh_dataset_tree(self) -> None:
         self.dataset_tree.clear()
@@ -1312,6 +1385,7 @@ class WorkspaceWindow(QMainWindow):
                 item.addChild(child)
             item.setText(1, tr("{n}개").format(n=len(episodes)))
         self.dataset_tree.expandAll()
+        self._update_dataset_panel(self._selected_file())
 
     def _selected_file(self) -> Path | None:
         items = self.dataset_tree.selectedItems()
@@ -1436,6 +1510,8 @@ class WorkspaceWindow(QMainWindow):
     def _on_dataset_selection(self) -> None:
         items = self.dataset_tree.selectedItems()
         item = items[0] if items else None
+        # 파일 행을 골라도 오른쪽 Dataset 칸은 갱신된다 -- 재생은 에피소드 행에서만.
+        self._update_dataset_panel(self._selected_file())
         if item is None or item.parent() is None:
             return
         path = item.parent().data(0, Qt.ItemDataRole.UserRole)
