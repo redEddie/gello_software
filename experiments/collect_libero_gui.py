@@ -44,7 +44,7 @@ from pathlib import Path
 import cv2
 import h5py
 import numpy as np
-from PyQt6.QtCore import QEvent, QProcess, Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QProcess, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QFont, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -64,7 +64,10 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QHeaderView,
     QScrollArea,
+    QSlider,
+    QSplitter,
     QStackedWidget,
     QTreeWidget,
     QTreeWidgetItem,
@@ -109,6 +112,9 @@ REPACK_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "repack
 # Repo IDs and output paths get retyped every session otherwise, and a typo in
 # a repo ID silently creates a *new* Hub dataset rather than failing.
 RECENTS_PATH = Path.home() / "libero_gui_logs" / "recent_inputs.json"
+# Episodes are recorded at 20 Hz, so playing them back at 20 fps shows the
+# motion at the speed it actually happened -- which is the point of reviewing.
+PLAYBACK_FPS = 20
 _RECENTS_MAX = 8
 
 
@@ -247,6 +253,41 @@ class DeltaBar(QWidget):
         self.bar.setStyleSheet(
             f"QProgressBar::chunk {{ background-color: {color}; }}"
         )
+
+
+class EpisodeLoadWorker(QThread):
+    """Reads one episode's two image streams into RAM, off the UI thread.
+
+    Playback could read frame-by-frame instead -- gzip images cost ~1.7 ms per
+    frame, 3% of a 20 Hz tick -- but that puts an h5py read inside the timer
+    callback, where a stall from a cold page cache or a competing repack shows
+    up directly as a dropped frame. A whole episode is ~47 MB for both cameras
+    and loads in ~0.4 s, so it is bought once here and played from memory,
+    which also keeps the file handle open for the shortest possible time (the
+    collection session may want it back).
+    """
+
+    loaded = pyqtSignal(str, str, object, object)  # path, demo, agent, wrist
+    failed = pyqtSignal(str)
+
+    def __init__(self, path: str, demo: str) -> None:
+        super().__init__()
+        self.path = path
+        self.demo = demo
+
+    def run(self) -> None:
+        try:
+            with h5py.File(self.path, "r") as f:
+                obs = f["data"][self.demo]["obs"]
+                agent = obs["agentview_rgb"][:] if "agentview_rgb" in obs else None
+                wrist = obs["eye_in_hand_rgb"][:] if "eye_in_hand_rgb" in obs else None
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(f"{type(e).__name__}: {e}")
+            return
+        if agent is None and wrist is None:
+            self.failed.emit(tr("이 에피소드에는 이미지가 없습니다."))
+            return
+        self.loaded.emit(self.path, self.demo, agent, wrist)
 
 
 class CameraPreviewWorker(QThread):
@@ -878,12 +919,25 @@ class RepackDialog(QDialog):
         n_todo = 0
         for path in paths:
             st = hdf5_repack_status(path)
+            if st["mixed"]:
+                # Repacked once, then collected into again. The marker is stale
+                # and naming it alone would read as "already done" -- say what
+                # actually changed instead.
+                history = tr("{m} 이후 {n}개 추가됨 — 다시 필요").format(
+                    m=st["marker"] or tr("이전 재압축"),
+                    n=st["new_since"] or "?")
+            elif st["marker"]:
+                history = st["marker"]
+            elif st["repacked"]:
+                history = tr("완료 (gzip 감지)")
+            else:
+                history = tr("안 됨")
             item = QTreeWidgetItem([
                 Path(path).name,
                 f"{st['size']/1e6:,.1f} MB",
                 str(st["episodes"]),
                 st["compression"] or ("?" if st["error"] else "없음"),
-                st["marker"] or (tr("완료 (gzip 감지)") if st["repacked"] else tr("안 됨")),
+                history,
             ])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             todo = not st["repacked"] and not st["error"]
@@ -891,6 +945,9 @@ class RepackDialog(QDialog):
             if st["error"]:
                 item.setText(4, st["error"])
                 item.setDisabled(True)
+            elif st["mixed"]:
+                for c in range(5):
+                    item.setForeground(c, Qt.GlobalColor.darkYellow)
             elif st["repacked"]:
                 item.setForeground(0, Qt.GlobalColor.gray)
             n_todo += bool(todo)
@@ -1626,6 +1683,159 @@ class LiberoCollectorWindow(QMainWindow):
         outer.addWidget(note)
         return box
 
+    def _build_player_panel(self) -> QWidget:
+        """Agent over wrist, with transport controls under them.
+
+        Stacked vertically rather than side by side because the tree already
+        takes the width it needs, and two 256^2 frames side by side in what's
+        left would each be smaller than the source.
+        """
+        panel = QWidget()
+        col = QVBoxLayout(panel)
+        col.setContentsMargins(0, 0, 0, 0)
+
+        self.play_views = {}
+        for key, title in (("agent", "정면 (agent)"), ("wrist", "손목 (wrist)")):
+            box = QGroupBox()
+            self._reg(box.setTitle, title)
+            inner = QVBoxLayout(box)
+            view = QLabel()
+            view.setMinimumSize(320, 240)
+            view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            view.setStyleSheet("background-color: #111; color: #666;")
+            self._reg(view.setText, "에피소드를 선택하세요")
+            view.setScaledContents(False)
+            inner.addWidget(view)
+            col.addWidget(box, 1)
+            self.play_views[key] = view
+
+        self.play_label = QLabel()
+        self._reg(self.play_label.setText, "재생할 에피소드를 왼쪽에서 선택하세요")
+        self.play_label.setStyleSheet("color: #888;")
+        self.play_label.setWordWrap(True)
+        col.addWidget(self.play_label)
+
+        row = QHBoxLayout()
+        self.play_btn = QPushButton()
+        self._reg(self.play_btn.setText, "재생")
+        self.play_btn.setEnabled(False)
+        self.play_btn.clicked.connect(self._on_play_toggle)
+        row.addWidget(self.play_btn)
+        self.play_slider = QSlider(Qt.Orientation.Horizontal)
+        self.play_slider.setEnabled(False)
+        self.play_slider.valueChanged.connect(self._on_scrub)
+        row.addWidget(self.play_slider, 1)
+        self.play_frame_label = QLabel("-/-")
+        self.play_frame_label.setMinimumWidth(72)
+        self.play_frame_label.setAlignment(Qt.AlignmentFlag.AlignRight
+                                           | Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self.play_frame_label)
+        col.addLayout(row)
+
+        self._play_frames = {"agent": None, "wrist": None}
+        self._play_loader = None
+        self._play_key = None
+        self._play_timer = QTimer(self)
+        self._play_timer.setInterval(int(1000 / PLAYBACK_FPS))
+        self._play_timer.timeout.connect(self._on_play_tick)
+        return panel
+
+    # ------------------------------------------------------ 에피소드 재생
+    def _on_dataset_selection(self) -> None:
+        """Selecting a demo_N row loads and plays it; anything else stops."""
+        items = self.dataset_tree.selectedItems()
+        item = items[0] if items else None
+        if item is None or item.parent() is None:
+            self._stop_playback(tr("재생할 에피소드를 왼쪽에서 선택하세요"))
+            return
+        path = item.parent().data(0, Qt.ItemDataRole.UserRole)
+        demo = item.data(0, Qt.ItemDataRole.UserRole)
+        if path is None or demo is None:
+            return
+        if self._play_key == (path, demo):
+            return
+        # The worker owns the open handle on the active file; reading it from
+        # here is the same conflict _refresh_dataset_tree() avoids.
+        if self.active_file_path is not None and Path(path) == Path(self.active_file_path):
+            self._stop_playback(tr(
+                "수집 중인 파일은 재생할 수 없습니다 (세션 종료 후 가능)."))
+            return
+        self._stop_playback(tr("불러오는 중... {d}").format(d=demo))
+        self._play_key = (path, demo)
+        if self._play_loader is not None:
+            self._play_loader.wait()
+        self._play_loader = EpisodeLoadWorker(path, demo)
+        self._play_loader.loaded.connect(self._on_episode_loaded)
+        self._play_loader.failed.connect(self._on_episode_load_failed)
+        self._play_loader.start()
+
+    @pyqtSlot(str, str, object, object)
+    def _on_episode_loaded(self, path: str, demo: str, agent, wrist) -> None:
+        if self._play_key != (path, demo):
+            return  # 그 사이 다른 걸 골랐다
+        self._play_frames = {"agent": agent, "wrist": wrist}
+        n = len(agent) if agent is not None else len(wrist)
+        self.play_slider.blockSignals(True)
+        self.play_slider.setRange(0, max(0, n - 1))
+        self.play_slider.setValue(0)
+        self.play_slider.blockSignals(False)
+        self.play_slider.setEnabled(True)
+        self.play_btn.setEnabled(True)
+        # 재생/일시정지처럼 상태에 따라 바뀌는 문구는 _reg를 쓰면 안 된다 --
+        # _reg는 호출마다 i18n 레지스트리에 누적되므로 클릭할 때마다 늘어난다.
+        self.play_btn.setText(tr("일시정지"))
+        self.play_label.setText(
+            f"{Path(path).name} · {demo} · {n} frames @ {PLAYBACK_FPS} fps")
+        self._show_frame(0)
+        self._play_timer.start()
+
+    @pyqtSlot(str)
+    def _on_episode_load_failed(self, msg: str) -> None:
+        self._stop_playback(tr("재생 실패: {m}").format(m=msg))
+        self._play_key = None
+
+    def _stop_playback(self, message: str = "") -> None:
+        self._play_timer.stop()
+        self._play_frames = {"agent": None, "wrist": None}
+        self._play_key = None
+        self.play_btn.setEnabled(False)
+        self.play_btn.setText(tr("재생"))
+        self.play_slider.setEnabled(False)
+        self.play_frame_label.setText("-/-")
+        for view in self.play_views.values():
+            view.setPixmap(QPixmap())
+            view.setText(tr("에피소드를 선택하세요"))
+        if message:
+            self.play_label.setText(message)
+
+    def _on_play_toggle(self) -> None:
+        if self._play_timer.isActive():
+            self._play_timer.stop()
+            self.play_btn.setText(tr("재생"))
+        else:
+            self._play_timer.start()
+            self.play_btn.setText(tr("일시정지"))
+
+    def _on_play_tick(self) -> None:
+        n = self.play_slider.maximum() + 1
+        if n <= 1:
+            return
+        self.play_slider.setValue((self.play_slider.value() + 1) % n)
+
+    def _on_scrub(self, value: int) -> None:
+        self._show_frame(value)
+
+    def _show_frame(self, i: int) -> None:
+        for key, view in self.play_views.items():
+            frames = self._play_frames.get(key)
+            if frames is None or i >= len(frames):
+                continue
+            pm = np_to_pixmap(frames[i])
+            view.setPixmap(pm.scaled(view.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation))
+        total = self.play_slider.maximum() + 1
+        self.play_frame_label.setText(f"{i + 1}/{total}")
+
     def _build_dataset_box(self) -> QGroupBox:
         box = QGroupBox()
         self._reg(box.setTitle, "데이터셋 탐색기 (저장 경로 아래의 *_demo.hdf5)")
@@ -1634,8 +1844,28 @@ class LiberoCollectorWindow(QMainWindow):
         self.dataset_tree = QTreeWidget()
         self.dataset_tree.setColumnCount(3)
         self.dataset_tree.setHeaderLabels([tr("파일 / 에피소드"), tr("프레임수"), tr("결과")])
-        self.dataset_tree.setMaximumHeight(220)
-        layout.addWidget(self.dataset_tree)
+        # The first column holds full paths and indented demo names, so letting
+        # it size to contents makes it unreadably narrow on first show and the
+        # operator has to drag it every session. Give it a real width up front
+        # and let the two small numeric columns take only what they need.
+        self.dataset_tree.setColumnWidth(0, 560)
+        self.dataset_tree.setColumnWidth(1, 90)
+        self.dataset_tree.setColumnWidth(2, 70)
+        header = self.dataset_tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.dataset_tree.setMinimumWidth(600)
+        self.dataset_tree.itemSelectionChanged.connect(self._on_dataset_selection)
+
+        # 탐색기는 세로로 길게(에피소드가 수십 개), 카메라는 그 오른쪽에 위아래로.
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.addWidget(self.dataset_tree)
+        split.addWidget(self._build_player_panel())
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
+        split.setSizes([760, 460])
+        split.setMinimumHeight(560)
+        layout.addWidget(split, 1)
 
         btn_row = QHBoxLayout()
         refresh_btn = QPushButton()
@@ -1656,14 +1886,16 @@ class LiberoCollectorWindow(QMainWindow):
         self.repack_btn.setStyleSheet("background-color: #9b59b6; color: white;")
         self.repack_btn.clicked.connect(self._on_repack)
         btn_row.addWidget(self.repack_btn)
-        self.lerobot_convert_btn = QPushButton()
-        self._reg(self.lerobot_convert_btn.setText, "LeRobot 변환/업로드...")
-        self.lerobot_convert_btn.clicked.connect(self._open_lerobot_convert)
-        btn_row.addWidget(self.lerobot_convert_btn)
+        # 순서는 실제 작업 순서를 따른다: 원본(HDF5)을 먼저 백업해두고,
+        # 그 다음에 학습용 포맷(LeRobot)으로 변환/업로드한다.
         self.hdf5_upload_btn = QPushButton()
         self._reg(self.hdf5_upload_btn.setText, "HDF5 업로드...")
         self.hdf5_upload_btn.clicked.connect(self._open_hdf5_upload)
         btn_row.addWidget(self.hdf5_upload_btn)
+        self.lerobot_convert_btn = QPushButton()
+        self._reg(self.lerobot_convert_btn.setText, "LeRobot 변환/업로드...")
+        self.lerobot_convert_btn.clicked.connect(self._open_lerobot_convert)
+        btn_row.addWidget(self.lerobot_convert_btn)
         btn_row.addStretch()
         hint = QLabel()
         self._reg(
@@ -2553,6 +2785,11 @@ class LiberoCollectorWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._stop_previews()
+        self._play_timer.stop()
+        if self._play_loader is not None:
+            # Holds an open h5py handle; letting it outlive the window is how a
+            # repack started right after closing hits "can't retrieve stat info".
+            self._play_loader.wait(3000)
         if self.worker is not None and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(5000)

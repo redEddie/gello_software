@@ -893,6 +893,9 @@ class LiberoTaskWriter:
 
 # ---------------------------------------------------------------- repack state
 REPACK_MARKER_ATTR = "repacked"
+# Episode count at the moment of repack, so a later run can say how many were
+# appended since rather than only that the file changed.
+REPACK_COUNT_ATTR = "repacked_episodes"
 
 
 def hdf5_repack_status(path) -> dict:
@@ -904,12 +907,23 @@ def hdf5_repack_status(path) -> dict:
     background save never stalls the operator), and repack rewrites them with
     ``gzip``. Anything already gzip has been repacked.
 
-    Returns ``{"repacked", "compression", "marker", "size", "episodes",
-    "error"}``; never raises -- an unreadable file comes back with ``error``
-    set so a caller listing a directory can show it instead of dying.
+    **Every episode is checked, not just the first.** A file that was repacked
+    and then collected into again is the common case -- the operator adds a few
+    demos to an existing task file -- and it ends up *mixed*: the old episodes
+    are gzip, the new ones lzf, and the stale marker still names the earlier
+    run. Sampling one episode (or trusting the marker) reports such a file as
+    finished and silently drops it from the repack selection, which is exactly
+    the file that still has uncompressed episodes in it. So a mixed file counts
+    as not repacked, and the marker cannot override that.
+
+    Returns ``{"repacked", "compression", "mixed", "marker", "new_since",
+    "size", "episodes", "error"}``; never raises -- an unreadable file comes
+    back with ``error`` set so a caller listing a directory can show it
+    instead of dying.
     """
-    out = {"repacked": False, "compression": None, "marker": None,
-           "size": 0, "episodes": 0, "error": None}
+    out = {"repacked": False, "compression": None, "mixed": False,
+           "marker": None, "new_since": 0, "size": 0, "episodes": 0,
+           "error": None}
     try:
         out["size"] = Path(path).stat().st_size
         with h5py.File(path, "r") as f:
@@ -918,17 +932,23 @@ def hdf5_repack_status(path) -> dict:
             out["marker"] = data.attrs.get(REPACK_MARKER_ATTR)
             if isinstance(out["marker"], bytes):
                 out["marker"] = out["marker"].decode(errors="replace")
-            for name in sorted(data.keys()):
+            at_repack = data.attrs.get(REPACK_COUNT_ATTR)
+            if at_repack is not None:
+                out["new_since"] = max(0, out["episodes"] - int(at_repack))
+            comps = set()
+            for name in data.keys():
                 obs = data[name].get("obs")
                 if obs is None:
                     continue
                 for key in ("agentview_rgb", "eye_in_hand_rgb"):
                     ds = obs.get(key)
                     if ds is not None:
-                        out["compression"] = ds.compression
+                        comps.add(ds.compression)
                         break
-                break
-        out["repacked"] = bool(out["marker"]) or out["compression"] == "gzip"
+            out["mixed"] = len(comps) > 1
+            if comps:
+                out["compression"] = "+".join(sorted(c or "없음" for c in comps))
+        out["repacked"] = (comps == {"gzip"}) or (bool(out["marker"]) and not out["mixed"])
     except Exception as e:  # noqa: BLE001
         out["error"] = f"{type(e).__name__}: {e}"
     return out

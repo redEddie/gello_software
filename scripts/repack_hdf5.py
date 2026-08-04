@@ -206,6 +206,11 @@ def process(path: Path, compression: str, level: int, dry_run: bool,
                 f"{time.strftime('%Y-%m-%d %H:%M')} {compression}"
                 + (f"-{level}" if compression == "gzip" else "")
             )
+            # Episode count at this moment: collecting into the file again
+            # appends lzf episodes next to these gzip ones, and the count is
+            # what lets a later run report "N added since" instead of just
+            # trusting a marker that has gone stale.
+            f["data"].attrs["repacked_episodes"] = len(f["data"].keys())
     except Exception as e:  # noqa: BLE001
         print(f"  (경고) repacked 표시 기록 실패: {e}", flush=True)
     print("  교체 완료", flush=True)

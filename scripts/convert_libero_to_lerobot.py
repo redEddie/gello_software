@@ -285,6 +285,33 @@ _CHECKED_FEATURE_KEYS = ("observation.state", "observation.commanded_state",
                          "action", "action_ee")
 
 
+def _task_episode_count(ds, task: str) -> int:
+    """How many episodes of ``task`` the resumed dataset already holds.
+
+    The episode metadata stores the task as a list of strings (one dataset
+    supports multi-task episodes), so a plain equality test against the string
+    silently matches nothing and reports 0 -- which would re-add everything,
+    the exact failure this guards. Membership in the list is the right test.
+
+    Returns 0 for a task the dataset has never seen, which is also the correct
+    answer for "add a brand-new task file to an existing dataset".
+    """
+    meta = getattr(ds, "meta", None)
+    episodes = getattr(meta, "episodes", None)
+    if episodes is None:
+        return 0
+    n = 0
+    for i in range(len(episodes)):
+        tasks = episodes[i].get("tasks")
+        if tasks is None:
+            continue
+        if isinstance(tasks, str):
+            tasks = [tasks]
+        if task in list(tasks):
+            n += 1
+    return n
+
+
 def _check_resume_compatible(remote_features: dict, local_features: dict) -> None:
     """--resume appends into an existing Hub dataset, which already has ONE
     fixed features dict -- LeRobotDataset.resume() doesn't take a `features`
@@ -333,6 +360,9 @@ def main() -> None:
             "--resume --push 하지 말 것 -- 이 파일 상단 docstring 3번 참고"
         ),
     )
+    p.add_argument("--force-all", action="store_true",
+                   help="--resume에서 이미 들어간 에피소드 건너뛰기를 끄고 파일 전체를 "
+                        "다시 추가함. 중복이 생기고 되돌릴 수 없으니 거의 항상 쓰지 말 것")
     p.add_argument("--push", action="store_true", help="변환 후 바로 Hugging Face Hub에 업로드")
     p.add_argument("--push-only", action="store_true",
                    help="변환하지 않고 --root의 기존 LeRobot 데이터셋만 업로드 "
@@ -400,12 +430,32 @@ def main() -> None:
 
     n_episodes = 0
     n_skipped = 0
+    n_already = 0
     for path in args.hdf5_paths:
         with h5py.File(path, "r") as f:
             task = _language_instruction(f)
             data = f["data"]
             demo_names = sorted(data.keys(), key=lambda n: int(n.split("_")[1]))
             print(f"{path.name}: task={task!r}, {len(demo_names)} episodes")
+            # --resume appends unconditionally, so handing it a task file that
+            # has grown since the last run re-adds every episode already in the
+            # dataset -- and LeRobot has no way to delete one afterwards. Both
+            # sides append in demo order and never reorder, so the count of this
+            # task's episodes already present is exactly how many to skip.
+            if args.resume and not args.force_all:
+                have = _task_episode_count(ds, task)
+                if have:
+                    if have > len(demo_names):
+                        raise SystemExit(
+                            f"{path.name}: 데이터셋에 이 task 에피소드가 {have}개 있는데 "
+                            f"HDF5에는 {len(demo_names)}개뿐입니다. 푸시 뒤에 HDF5에서 "
+                            f"에피소드를 지우면 개수 대응이 깨져 이어붙이기가 안전하지 "
+                            f"않습니다 -- 처음부터 다시 만드세요(--resume 없이)."
+                        )
+                    print(f"  이미 데이터셋에 {have}개 있음 -> 뒤쪽 "
+                          f"{len(demo_names) - have}개만 추가합니다")
+                    n_already += have
+                    demo_names = demo_names[have:]
             for name in demo_names:
                 grp = data[name]
                 success = grp.attrs.get("success")
@@ -446,7 +496,9 @@ def main() -> None:
                 print(f"  {name} ({n} frames, success={success}) converted")
 
     ds.finalize()
-    print(f"\n완료: {n_episodes}개 에피소드 변환, {n_skipped}개 건너뜀 (--only-success) -> {args.root}")
+    print(f"\n완료: {n_episodes}개 에피소드 변환, {n_skipped}개 건너뜀 (--only-success)"
+          + (f", {n_already}개는 이미 데이터셋에 있어 제외" if n_already else "")
+          + f" -> {args.root}")
 
     if args.push:
         print("Hugging Face Hub에 업로드 중...")
