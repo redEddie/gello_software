@@ -140,6 +140,24 @@ _DOT = {"ok": "#2ecc71", "busy": "#f39c12", "off": "#7f8c8d", "bad": "#e74c3c"}
 TODO_STYLE = "color:#6b6b6b; font-style:italic;"
 TODO_MARK = "미개발"
 
+# 오른쪽 패널에서 값이 길어 좌우 배치로는 읽기 어려운 항목들.
+WIDE_FIELDS = {"ds_file", "ds_task"}
+
+
+def soft_wrap(text: str) -> str:
+    """Lets a long filename wrap.
+
+    QLabel only breaks at whitespace, and ``pick_up_the_blue_cup_..._demo.hdf5``
+    has none -- so word wrap did nothing and the name sat on one clipped line.
+    A zero-width space after each separator gives it legal break points without
+    changing the visible characters or what a copy-paste yields... except that
+    the copy would carry U+200B, so this is only ever applied to display text
+    whose real value is also in the tooltip.
+    """
+    for sep in ("_", "-", "."):
+        text = text.replace(sep, sep + "​")
+    return text
+
 # The worker's state names, and what the operator can do from each. Both the
 # 진행 label and the shortcut hint read from these, so the hint can never drift
 # out of sync with what eventFilter() actually accepts.
@@ -657,10 +675,32 @@ class WorkspaceWindow(QMainWindow):
         ):
             box = QGroupBox(tr(title))
             form = QFormLayout(box)
+            form.setVerticalSpacing(6)
             for key, label in keys:
                 lab = QLabel("-")
                 lab.setWordWrap(True)
-                form.addRow(tr(label), lab)
+                if key in WIDE_FIELDS:
+                    # 파일명과 자연어 지시문만 길다. 라벨-값을 좌우로 놓으면 값이
+                    # 150px 남짓에 갇혀 서너 줄로 접히는데, 정작 수집 중 가장
+                    # 자주 확인하는 두 줄이다. 이 둘만 캡션을 위에 올리고 값이
+                    # 패널 폭을 다 쓰게 한다.
+                    cap = QLabel(tr(label))
+                    cap.setStyleSheet("color:#888; font-size:11px;")
+                    lab.setStyleSheet("padding: 2px 0 6px 0;")
+                    lab.setTextInteractionFlags(
+                        Qt.TextInteractionFlag.TextSelectableByMouse)
+                    # QLabel은 wordWrap을 켜도 sizePolicy의 heightForWidth가
+                    # 꺼져 있어 레이아웃이 높이를 한 줄치로만 준다 -- 두 줄짜리
+                    # 지시문이 잘려서 뒤가 안 보였다. 켜 줘야 접힌 만큼 높이가
+                    # 확보된다.
+                    sp = lab.sizePolicy()
+                    sp.setHeightForWidth(True)
+                    sp.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
+                    lab.setSizePolicy(sp)
+                    form.addRow(cap)
+                    form.addRow(lab)
+                else:
+                    form.addRow(tr(label), lab)
                 self.right_fields[key] = lab
             col.addWidget(box)
 
@@ -1406,9 +1446,13 @@ class WorkspaceWindow(QMainWindow):
         f = self.right_fields
         if self.worker is not None:
             cfg = self.worker.cfg
-            f["ds_file"].setText(tr("(기록 안 함)") if self._no_dataset_session
-                                 else Path(str(self.active_file_path or "-")).name)
-            f["ds_task"].setText(cfg.language_instruction or cfg.task_name)
+            name = (tr("(기록 안 함)") if self._no_dataset_session
+                    else Path(str(self.active_file_path or "-")).name)
+            f["ds_file"].setText(soft_wrap(name))
+            f["ds_file"].setToolTip(name)
+            task_text = cfg.language_instruction or cfg.task_name
+            f["ds_task"].setText(task_text)
+            f["ds_task"].setToolTip(task_text)
             f["ds_episodes"].setText(str(len(self.active_episode_cache or [])))
             f["ds_action"].setText(cfg.schema.action_space)
             f["ds_gripper"].setText(
@@ -1427,7 +1471,8 @@ class WorkspaceWindow(QMainWindow):
 
         path = Path(path)
         st = hdf5_repack_status(path)
-        f["ds_file"].setText(path.name)
+        f["ds_file"].setText(soft_wrap(path.name))
+        f["ds_file"].setToolTip(str(path))
         f["ds_episodes"].setText(f"{st['episodes']}  ({st['size'] / 1e6:.0f} MB)")
         f["ds_repack"].setText(
             tr("혼합 — 다시 필요") if st["mixed"]
@@ -1454,6 +1499,7 @@ class WorkspaceWindow(QMainWindow):
         except Exception as e:  # noqa: BLE001
             task = f"({type(e).__name__})"
         f["ds_task"].setText(task)
+        f["ds_task"].setToolTip(task)
         f["ds_action"].setText(action)
         f["ds_gripper"].setText(gripper)
         f["ds_image"].setText(image)
