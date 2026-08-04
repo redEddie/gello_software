@@ -2710,12 +2710,12 @@ class LiberoCollectorWindow(QMainWindow):
         self._log(f"[LeRobot] 프로세스 오류: {error}")
 
     def _on_convert_finished(self, exit_code: int, exit_status) -> None:  # noqa: ANN001
-        self._log(f"[LeRobot] 종료됨 (exit code {exit_code})")
+        # 재압축과 동일하게 로그만 남긴다. 이 작업들은 몇 분씩 걸려서 끝날 때쯤
+        # 조작자가 다른 일을 하고 있고, 모달 창은 그걸 가로채면서 정작 원인이
+        # 적혀 있는 로그는 가린다. 결과는 종료 줄과 그 위 출력에 다 있다.
+        self._log(f"[LeRobot] 종료됨 (exit code {exit_code})"
+                  + ("" if exit_code == 0 else " -- 실패, 위 로그를 확인하세요"))
         self.lerobot_convert_btn.setEnabled(True)
-        if exit_code == 0:
-            QMessageBox.information(self, tr("완료"), tr("LeRobot 변환/업로드가 완료되었습니다. 로그를 확인하세요."))
-        else:
-            QMessageBox.warning(self, tr("변환 실패"), tr("exit code {code} -- 로그를 확인하세요.").format(code=exit_code))
 
     # -------------------------------------------------------- HDF5 upload
     def _open_hdf5_upload(self) -> None:
@@ -2776,12 +2776,9 @@ class LiberoCollectorWindow(QMainWindow):
         self._log(f"[HDF5 업로드] 프로세스 오류: {error}")
 
     def _on_hdf5_upload_finished(self, exit_code: int, exit_status) -> None:  # noqa: ANN001
-        self._log(f"[HDF5 업로드] 종료됨 (exit code {exit_code})")
+        self._log(f"[HDF5 업로드] 종료됨 (exit code {exit_code})"
+                  + ("" if exit_code == 0 else " -- 실패, 위 로그를 확인하세요"))
         self.hdf5_upload_btn.setEnabled(True)
-        if exit_code == 0:
-            QMessageBox.information(self, tr("업로드 완료"), tr("HDF5 업로드가 완료되었습니다. 로그를 확인하세요."))
-        else:
-            QMessageBox.warning(self, tr("업로드 실패"), tr("exit code {code} -- 로그를 확인하세요.").format(code=exit_code))
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._stop_previews()
