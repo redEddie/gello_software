@@ -840,9 +840,21 @@ class HdfUploadDialog(QDialog):
     변환..." button's --push option.
     """
 
-    def __init__(self, parent: QWidget, default_file: str) -> None:
+    def __init__(self, parent: QWidget, start_dir: str = "") -> None:
+        """``start_dir`` is where 찾아보기 opens -- NOT a preselected file.
+
+        It used to be a "default file" that callers filled with the data-root
+        *directory*. The field then held a directory, and 'Repo 안 파일 이름'
+        derived from it, so an upload went to the Hub under the folder's name
+        (`libero_datasets`, 0.81 GB). Worse, that name later collided with the
+        folder a multi-file upload wanted to create, and the Hub rejected the
+        commit with 'Invalid file change'. Starting empty removes the whole
+        class: nothing is ever uploaded under a name the operator didn't pick.
+        """
         super().__init__(parent)
         self.setWindowTitle(tr("HDF5 원본 업로드"))
+        self._start_dir = start_dir
+        default_file = ""
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel(tr("업로드할 .hdf5 파일 (여러 개 선택 가능, 이미 큐레이션 끝난 파일):")))
@@ -929,7 +941,7 @@ class HdfUploadDialog(QDialog):
 
     def _browse_file(self) -> None:
         first = self.file_edit.text().split()[0] if self.file_edit.text().strip() else ""
-        start = str(Path(first).parent) if first else str(Path.home())
+        start = str(Path(first).parent) if first else (self._start_dir or str(Path.home()))
         paths, _ = QFileDialog.getOpenFileNames(
             self, tr("업로드할 .hdf5 파일 (여러 개 선택 가능)"), start, "HDF5 (*.hdf5)")
         if not paths:
@@ -958,7 +970,10 @@ class HdfUploadDialog(QDialog):
             self.path_in_repo_label.setText(tr("Repo 안 파일 이름:"))
             self.path_in_repo_edit.setPlaceholderText(tr("비워두면 로컬 파일 이름 그대로"))
             if files and not self.path_in_repo_edit.text().strip():
-                self.path_in_repo_edit.setText(Path(files[0]).name)
+                # 디렉터리에서 이름을 따오지 않는다 -- 그렇게 만들어진 게
+                # Hub의 `libero_datasets` 파일이다.
+                if Path(files[0]).is_file():
+                    self.path_in_repo_edit.setText(Path(files[0]).name)
             self.file_count_label.setText("")
         # 여러 개일 때 '기존 파일 삭제'의 다른 이름 지정은 의미가 없다.
         self.old_path_label.setVisible(not multi)

@@ -38,7 +38,7 @@ import argparse
 from pathlib import Path
 
 from huggingface_hub import HfApi
-from huggingface_hub.errors import EntryNotFoundError
+from huggingface_hub.errors import BadRequestError, EntryNotFoundError
 
 
 def main() -> None:
@@ -97,12 +97,30 @@ def main() -> None:
         size_mb = local.stat().st_size / 1e6
         print(f"[{i}/{total}] 업로드 중: {local.name} ({size_mb:,.0f} MB) "
               f"-> {args.repo_id}/{path_in_repo}", flush=True)
-        api.upload_file(
-            path_or_fileobj=str(local),
-            path_in_repo=path_in_repo,
-            repo_id=args.repo_id,
-            repo_type="dataset",
-        )
+        try:
+            api.upload_file(
+                path_or_fileobj=str(local),
+                path_in_repo=path_in_repo,
+                repo_id=args.repo_id,
+                repo_type="dataset",
+            )
+        except BadRequestError as e:
+            # 'Invalid file change' 의 대표적인 원인: 만들려는 폴더와 같은 이름의
+            # 파일이 이미 repo에 있다. Hub은 이유를 말해주지 않으므로 여기서
+            # 확인해 알려준다 -- 1.3GB를 다 올린 뒤 원인 모를 400을 보는 것보다
+            # 낫다.
+            if "Invalid file change" in str(e) and "/" in path_in_repo:
+                folder = path_in_repo.split("/", 1)[0]
+                clash = any(s.rfilename == folder
+                            for s in api.dataset_info(args.repo_id).siblings)
+                if clash:
+                    raise SystemExit(
+                        f"업로드 거절됨: repo에 '{folder}' 라는 이름의 **파일**이 이미 있어서\n"
+                        f"같은 이름의 폴더('{path_in_repo}')를 만들 수 없습니다.\n"
+                        f"  - 그 파일을 지우거나(Hub 웹에서 삭제), \n"
+                        f"  - 'Repo 안 폴더'를 비우거나 다른 이름으로 바꾸세요."
+                    ) from e
+            raise
         print(f"[{i}/{total}] 완료: {local.name}", flush=True)
 
     print(f"전체 완료 ({total}개): https://huggingface.co/datasets/{args.repo_id}", flush=True)

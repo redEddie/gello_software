@@ -2076,6 +2076,7 @@ class WorkspaceWindow(QMainWindow):
         proc.start()
 
     def _on_hdf5_upload(self) -> None:
+        # 두 번째 인자는 '찾아보기'가 열릴 폴더다. 파일이 아니다.
         dlg = HdfUploadDialog(self, self.root_edit.text().strip())
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
