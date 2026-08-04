@@ -56,6 +56,7 @@ import numpy as np
 from PyQt6.QtCore import QEvent, QProcess, Qt, QThread, QTimer, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup, QFont
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -153,7 +154,7 @@ STATE_LABELS = {
 SHORTCUT_HINTS = {
     "reset_wait": "Enter: 대기 건너뛰고 바로 진행",
     "gate": "Space: 텔레옵 시작   Enter: 자동 정렬 다시",
-    "recording": "Space: 저장(성공)   Esc: 저장(실패)   Del: 폐기",
+    "recording": "Space: 저장(성공)   Esc: 실패로 표시   Del: 폐기",
 }
 
 
@@ -210,6 +211,7 @@ class WorkspaceWindow(QMainWindow):
         self._no_dataset_session = False
         self._current_state = "idle"
         self._gate_ok = False
+        self._fail_marked = False
         self._recents = Recents()
         self._log_file = None
         if log_path is not None:
@@ -478,9 +480,12 @@ class WorkspaceWindow(QMainWindow):
         self.skip_btn.clicked.connect(lambda: self._cmd("cmd_skip_reset_wait"))
         self.save_ok_btn = QPushButton(tr("저장 (성공)"))
         self.save_ok_btn.setStyleSheet("background-color:#2ecc71; color:white; font-weight:bold;")
-        self.save_ok_btn.clicked.connect(lambda: self._save(True))
-        self.save_ng_btn = QPushButton(tr("저장 (실패)"))
-        self.save_ng_btn.clicked.connect(lambda: self._save(False))
+        self.save_ok_btn.clicked.connect(lambda: self._save(not self._fail_marked))
+        # '저장(실패)'가 아니라 표시 토글. 저장은 Space/저장 버튼 하나뿐이고
+        # 성공 여부는 이 표시가 정한다.
+        self.save_ng_btn = QPushButton(tr("실패로 표시 (Esc)"))
+        self.save_ng_btn.setCheckable(True)
+        self.save_ng_btn.clicked.connect(lambda: self._toggle_fail_mark())
         self.discard_btn = QPushButton(tr("버리기"))
         self.discard_btn.setStyleSheet("background-color:#e74c3c; color:white;")
         self.discard_btn.clicked.connect(lambda: self._cmd("cmd_discard_episode"))
@@ -502,6 +507,9 @@ class WorkspaceWindow(QMainWindow):
         self.save_status_label = QLabel("")
         self.save_status_label.setStyleSheet("color:#888;")
         pcol.addWidget(self.save_status_label)
+        self.fail_mark_label = QLabel("")
+        self.fail_mark_label.setWordWrap(True)
+        pcol.addWidget(self.fail_mark_label)
         self.shortcut_hint = QLabel("")
         self.shortcut_hint.setStyleSheet(
             "color:#2ecc71; font-family:monospace; font-weight:bold;")
@@ -523,6 +531,9 @@ class WorkspaceWindow(QMainWindow):
         self.dataset_tree.setColumnCount(3)
         self.dataset_tree.setHeaderLabels([tr("파일 / 에피소드"), tr("프레임"), tr("결과")])
         self.dataset_tree.setColumnWidth(0, 300)
+        # 큐레이션은 실패 여러 개를 한 번에 지우는 작업이다.
+        self.dataset_tree.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
         self.dataset_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         self.dataset_tree.itemSelectionChanged.connect(self._on_dataset_selection)
         col.addWidget(self.dataset_tree, 1)
@@ -531,6 +542,7 @@ class WorkspaceWindow(QMainWindow):
         # 났고, 한 번에 태스크 하나가 통째로 날아간다. 되돌릴 수 없는 조작은
         # 한 단계 더 들어가야 닿도록 Dataset 메뉴에만 둔다.
         for text, slot in ((tr("새로고침"), self._refresh_dataset_tree),
+                           (tr("실패만 선택"), self._on_select_failed),
                            (tr("에피소드 삭제"), self._on_delete_selected),
                            (tr("구조 확인"), self._on_show_structure)):
             b = QPushButton(text)
@@ -765,8 +777,10 @@ class WorkspaceWindow(QMainWindow):
         # _save, not _cmd -- the success flag has to be recorded for the stats
         # panel, and a toolbar button that counts differently from the side
         # panel button next to it is a bug waiting to be blamed on the stats.
-        add("save", tr("✔ Save"), lambda: self._save(True), tr("성공으로 저장"))
-        add("savefail", tr("✖ Save (fail)"), lambda: self._save(False))
+        add("save", tr("✔ Save"), lambda: self._save(not self._fail_marked),
+            tr("표시된 대로 저장 (기본 성공)"))
+        add("savefail", tr("✖ Mark fail"), self._toggle_fail_mark,
+            tr("이번 에피소드를 실패로 표시 / 해제 (Esc)"))
         add("discard", tr("🗑 Discard"), lambda: self._cmd("cmd_discard_episode"))
         tb.addSeparator()
         add("home", tr("⌂ Home"), lambda: self._cmd("cmd_go_home"))
@@ -785,6 +799,7 @@ class WorkspaceWindow(QMainWindow):
 
         m = mb.addMenu(tr("Dataset"))
         m.addAction(tr("새로고침"), self._refresh_dataset_tree)
+        m.addAction(tr("실패만 선택"), self._on_select_failed)
         m.addAction(tr("에피소드 삭제"), self._on_delete_selected)
         m.addAction(tr("파일 삭제"), self._on_delete_file)
         m.addAction(tr("구조 확인..."), self._on_show_structure)
@@ -828,8 +843,8 @@ class WorkspaceWindow(QMainWindow):
             tr("양손이 GELLO 리더 위에 있으므로 마우스 없이 조작합니다.\n"
                "같은 키가 상태에 따라 다르게 동작합니다.\n\n"
                "  자세 정렬 중   Space        텔레옵 시작\n"
-               "  기록 중        Space        저장 (성공)\n"
-               "  기록 중        Esc          저장 (실패)\n"
+               "  기록 중        Space        저장 (표시된 대로)\n"
+               "  기록 중        Esc          실패로 표시 / 해제 (토글)\n"
                "  기록 중        Delete       폐기\n"
                "  자세 정렬 중   Enter        자동 정렬 다시 (대략 맞춘 뒤에만)\n"
                "  리셋 대기 중   Enter        대기 건너뛰기\n\n"
@@ -881,6 +896,37 @@ class WorkspaceWindow(QMainWindow):
             self.log("[제어] 아직 연결되지 않았습니다.")
             return
         getattr(self.worker, name)(*args)
+
+    def _toggle_fail_mark(self) -> None:
+        """Flips the pending episode's success flag while it is still being
+        recorded.
+
+        Esc used to save-as-failure immediately, which made a mis-press final:
+        the take was committed with the wrong verdict and the only remedy was
+        deleting it afterwards. Marking is reversible -- press again to clear
+        -- and the single save action (Space) then commits whatever the mark
+        says. Cleared at the start of every episode.
+        """
+        self._fail_marked = not self._fail_marked
+        self._refresh_fail_mark()
+        self.log("[표시] 이번 에피소드를 실패로 표시했습니다 (Esc로 해제)."
+                 if self._fail_marked else "[표시] 실패 표시를 해제했습니다.")
+
+    def _refresh_fail_mark(self) -> None:
+        marked = self._fail_marked
+        self.fail_mark_label.setText(
+            tr("● 실패로 표시됨 — Esc로 해제") if marked else "")
+        self.fail_mark_label.setStyleSheet(
+            "color:#e74c3c; font-weight:bold;" if marked else "")
+        self.save_ok_btn.setText(
+            tr("저장 (실패로 표시됨)") if marked else tr("저장 (성공)"))
+        self.save_ok_btn.setStyleSheet(
+            "background-color:#e74c3c; color:white; font-weight:bold;" if marked
+            else "background-color:#2ecc71; color:white; font-weight:bold;")
+        if self._current_state == "recording":
+            self.shortcut_hint.setText(
+                ("Space: 저장(실패로)   Esc: 실패 표시 해제   Del: 폐기" if marked
+                 else "Space: 저장(성공)   Esc: 실패로 표시   Del: 폐기"))
 
     def _save(self, success: bool) -> None:
         """episode_saved carries only (name, n_frames), so the success flag has
@@ -1154,9 +1200,14 @@ class WorkspaceWindow(QMainWindow):
     # ------------------------------------------------------ worker slots
     @pyqtSlot(str)
     def _on_state(self, state: str) -> None:
+        if state == "recording" and self._current_state != "recording":
+            # 표시는 에피소드 단위다. 새 기록이 시작되면 항상 성공에서 출발한다.
+            self._fail_marked = False
         self._current_state = state
         self.state_label.setText(STATE_LABELS.get(state, state))
         self.shortcut_hint.setText(SHORTCUT_HINTS.get(state, ""))
+        self.save_ng_btn.setChecked(self._fail_marked)
+        self._refresh_fail_mark()
         self.right_fields["state"].setText(state)
         recording = "기록" in state or "record" in state.lower()
         self.lights["recording"].set("bad" if recording else "off",
@@ -1208,6 +1259,9 @@ class WorkspaceWindow(QMainWindow):
         if self._pending_success is not None:
             self._session["success" if self._pending_success else "failed"] += 1
             self._pending_success = None
+        self._fail_marked = False
+        self.save_ng_btn.setChecked(False)
+        self._refresh_fail_mark()
         self.log(f"[저장] {name} ({n_frames} frames)")
         self.right_fields["episode"].setText(name)
         self._refresh_stats()
@@ -1417,41 +1471,81 @@ class WorkspaceWindow(QMainWindow):
         do it directly, which is the common case: curating yesterday's takes
         should not require connecting a robot first.
         """
-        items = self.dataset_tree.selectedItems()
-        if not items or items[0].parent() is None:
-            QMessageBox.information(self, tr("선택 필요"), tr("삭제할 에피소드를 선택하세요."))
-            return
-        name = items[0].data(0, Qt.ItemDataRole.UserRole)
-        path = self._selected_file()
-        if path is None:
+        # 파일별로 묶는다. 여러 개를 지울 때 이름 하나씩 지우고 매번 번호를 다시
+        # 매기면 두 번째부터는 이미 밀린 이름을 지우게 된다 -- 한 파일 안에서
+        # 전부 지운 뒤 renumber는 마지막에 한 번만.
+        by_file: dict = {}
+        for item in self.dataset_tree.selectedItems():
+            if item.parent() is None:
+                continue
+            p = item.parent().data(0, Qt.ItemDataRole.UserRole)
+            by_file.setdefault(Path(p), []).append(item.data(0, Qt.ItemDataRole.UserRole))
+        if not by_file:
+            QMessageBox.information(self, tr("선택 필요"),
+                                    tr("삭제할 에피소드를 선택하세요 (Ctrl/Shift로 여러 개)."))
             return
         busy = self._busy_reason()
         if busy:
             QMessageBox.warning(self, tr("삭제 불가"),
                                 tr("{job}이(가) 진행 중입니다. 끝난 뒤 삭제하세요.").format(job=busy))
             return
-        owned = self.active_file_path is not None and path == self.active_file_path
+
+        total = sum(len(v) for v in by_file.values())
+        detail = "\n".join(f"  {p.name}: {len(v)}개" for p, v in by_file.items())
         if QMessageBox.question(
                 self, tr("에피소드 삭제"),
-                tr("{f}\n{n}을(를) 삭제할까요?\n\n남은 에피소드는 번호가 다시 매겨집니다. "
-                   "파일 크기는 줄지 않습니다 (재압축 필요).").format(f=path.name, n=name)
+                tr("에피소드 {n}개를 삭제합니다.\n\n{d}\n\n남은 에피소드는 번호가 다시 "
+                   "매겨집니다. 파일 크기는 줄지 않습니다 (재압축 필요).").format(
+                       n=total, d=detail)
         ) != QMessageBox.StandardButton.Yes:
             return
-        if owned:
-            self.worker.cmd_delete_episode(name)
-            return
-        try:
-            with h5py.File(path, "a") as f:
-                data = f["data"]
-                if name not in data:
-                    raise KeyError(name)
-                del data[name]
-                renumber_episodes(data)
-            self.log(f"[삭제] {path.name}: {name}")
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, tr("삭제 실패"), f"{type(e).__name__}: {e}")
-            self.log(f"[삭제 실패] {path.name}: {type(e).__name__}: {e}")
+
+        for path, names in by_file.items():
+            owned = self.active_file_path is not None and path == self.active_file_path
+            if owned:
+                # 세션이 파일을 쥐고 있으면 saver 스레드가 유일한 통로다. 매 삭제
+                # 뒤 번호가 다시 매겨지므로 뒤에서부터 지워야 앞 이름이 안 밀린다.
+                for name in sorted(names, key=lambda s: int(s.split("_")[1]), reverse=True):
+                    self.worker.cmd_delete_episode(name)
+                self.log(f"[삭제] {path.name}: {len(names)}개 요청 (세션 경유)")
+                continue
+            try:
+                with h5py.File(path, "a") as f:
+                    data = f["data"]
+                    missing = [n for n in names if n not in data]
+                    if missing:
+                        raise KeyError(", ".join(missing))
+                    for name in names:
+                        del data[name]
+                    renumber_episodes(data)
+                self.log(f"[삭제] {path.name}: {len(names)}개 ({', '.join(sorted(names))})")
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.critical(self, tr("삭제 실패"), f"{path.name}\n{type(e).__name__}: {e}")
+                self.log(f"[삭제 실패] {path.name}: {type(e).__name__}: {e}")
         self._refresh_dataset_tree()
+
+    def _on_select_failed(self) -> None:
+        """Selects every episode marked failed, across all files.
+
+        This is the other half of marking-instead-of-discarding: failures pile
+        up during collection on purpose, and curation is where they go. Without
+        this the operator would ctrl-click them one at a time down a tree of a
+        hundred rows.
+        """
+        self.dataset_tree.clearSelection()
+        n = 0
+        for i in range(self.dataset_tree.topLevelItemCount()):
+            parent = self.dataset_tree.topLevelItem(i)
+            for j in range(parent.childCount()):
+                child = parent.child(j)
+                if child.text(2) == tr("실패"):
+                    child.setSelected(True)
+                    n += 1
+        self.log(f"[큐레이션] 실패로 표시된 에피소드 {n}개를 선택했습니다."
+                 + ("" if n else " (없음)"))
+        self.dataset_hint.setText(
+            tr("실패 {n}개 선택됨 — '에피소드 삭제'로 한 번에 지웁니다.").format(n=n)
+            if n else tr("실패로 표시된 에피소드가 없습니다."))
 
     def _on_delete_file(self) -> None:
         """Deletes a whole <task>_demo.hdf5. Never offered for the file a
@@ -1470,28 +1564,22 @@ class WorkspaceWindow(QMainWindow):
                                 tr("{job}이(가) 진행 중입니다. 끝난 뒤 삭제하세요.").format(job=busy))
             return
         st = hdf5_repack_status(path)
-        # unlink는 되돌릴 수 없다. 실제로 아직 업로드하지 않은 태스크 하나가
-        # 오클릭 한 번으로 사라졌고, 열린 fd도 Hub 사본도 없어 복구가 불가능했다.
-        # 휴지통으로 옮기기만 한다 -- 데이터 루트 아래 .trash/ 는 트리와 재압축
-        # 후보 모두 비재귀 glob(*_demo.hdf5)이라 걸리지 않는다.
-        trash = path.parent / ".trash"
-        dest = trash / f"{time.strftime('%Y%m%d_%H%M%S')}_{path.name}"
+        # 진짜 삭제한다. 오클릭 대책은 되돌리기가 아니라 닿기 어렵게 두는 것
+        # (이 항목은 Dataset 메뉴에만 있다) -- 반쯤 지워진 채 디스크만 차지하는
+        # 휴지통은 결국 아무도 비우지 않는다.
         confirm = QMessageBox.warning(
             self, tr("파일 삭제"),
-            tr("{f}\n\n에피소드 {n}개, {mb:.1f} MB\n\n"
-               "휴지통으로 옮깁니다:\n  {d}\n\n"
-               "목록에서는 사라지지만 디스크 공간은 그대로입니다. 완전히 지우려면 "
-               "그 폴더를 직접 비우세요.").format(
-                   f=path.name, n=st["episodes"], mb=st["size"] / 1e6, d=dest),
+            tr("{f}\n\n에피소드 {n}개, {mb:.1f} MB 를 완전히 삭제합니다.\n"
+               "되돌릴 수 없습니다. Hub에 올린 사본은 영향받지 않습니다.").format(
+                   f=path.name, n=st["episodes"], mb=st["size"] / 1e6),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel)
         if confirm != QMessageBox.StandardButton.Yes:
             return
         try:
-            trash.mkdir(exist_ok=True)
-            shutil.move(str(path), str(dest))
+            path.unlink()
             self.log(f"[파일 삭제] {path.name} ({st['episodes']}개 에피소드, "
-                     f"{st['size'] / 1e6:.1f} MB) -> {dest}")
+                     f"{st['size'] / 1e6:.1f} MB)")
         except OSError as e:
             QMessageBox.critical(self, tr("삭제 실패"), str(e))
             self.log(f"[파일 삭제 실패] {path.name}: {e}")
@@ -1734,11 +1822,13 @@ class WorkspaceWindow(QMainWindow):
                     self._cmd("cmd_start_teleop")
                     return True
                 if state == "recording" and not self._no_dataset_session:
-                    self._save(True)
+                    # 표시해 둔 대로 저장한다. 성공/실패가 각각 다른 키였을 때는
+                    # 잘못 누른 순간 그대로 확정됐다.
+                    self._save(not self._fail_marked)
                     return True
             elif key == Qt.Key.Key_Escape:
                 if state == "recording" and not self._no_dataset_session:
-                    self._save(False)
+                    self._toggle_fail_mark()
                     return True
             elif key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 if state == "recording":
