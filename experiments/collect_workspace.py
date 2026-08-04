@@ -126,6 +126,20 @@ ACTIVITIES = (
 
 _DOT = {"ok": "#2ecc71", "busy": "#f39c12", "off": "#7f8c8d", "bad": "#e74c3c"}
 
+# Panels named in the UI spec that this build does not implement yet. They are
+# shown, disabled and greyed, rather than omitted: a missing tab reads as "this
+# tool cannot do that", while a greyed one says "not built yet" -- and leaving
+# the shape visible is what makes the gap reviewable instead of forgotten.
+TODO_STYLE = "color:#6b6b6b; font-style:italic;"
+TODO_MARK = "미개발"
+
+
+def mark_todo(widget: QWidget, note: str = "") -> QWidget:
+    widget.setEnabled(False)
+    widget.setStyleSheet(TODO_STYLE)
+    widget.setToolTip(f"{TODO_MARK}: " + (note or tr("아직 구현되지 않은 기능입니다.")))
+    return widget
+
 
 def _dot(state: str, text: str) -> str:
     return f'<span style="color:{_DOT[state]};">●</span> {text}'
@@ -170,6 +184,7 @@ class WorkspaceWindow(QMainWindow):
         self._fps_count = 0
         self._fps_value = 0.0
         self._pending_success: bool | None = None
+        self._no_dataset_session = False
         self._recents = Recents()
         self._log_file = None
         if log_path is not None:
@@ -262,6 +277,13 @@ class WorkspaceWindow(QMainWindow):
         self.play_caption.setStyleSheet("color:#888;")
         play_col.addWidget(self.play_caption)
         self.center_tabs.addTab(play, tr("Playback"))
+        for title, why in ((tr("Depth"), tr("깊이 스트림을 아직 수집하지 않습니다.")),
+                           (tr("Point Cloud"), tr("포인트클라우드 렌더러가 없습니다."))):
+            ph = QLabel(tr("{t} — {m}\n\n{w}").format(t=title, m=TODO_MARK, w=why))
+            ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            ph.setStyleSheet(TODO_STYLE)
+            idx = self.center_tabs.addTab(ph, f"{title} ({TODO_MARK})")
+            self.center_tabs.setTabEnabled(idx, False)
 
     # --------------------------------------------------------------- left
     def _build_left(self) -> None:
@@ -298,7 +320,22 @@ class WorkspaceWindow(QMainWindow):
         nrow.addWidget(self.node_stop_btn)
         col.addWidget(node)
 
+        mode = QGroupBox(tr("모드"))
+        mcol = QVBoxLayout(mode)
+        self.no_dataset_check = QCheckBox(tr("데이터셋 없이 조작만 (연습 / 씬 세팅)"))
+        self.no_dataset_check.setToolTip(tr(
+            "파일을 전혀 만들지 않고 텔레옵만 합니다. 자세 게이트·카메라·프레임 "
+            "카운터는 그대로 동작하고, 저장을 눌러도 버려집니다."))
+        self.no_dataset_check.toggled.connect(self._on_no_dataset_toggled)
+        mcol.addWidget(self.no_dataset_check)
+        self.mode_hint = QLabel("")
+        self.mode_hint.setStyleSheet("color:#888;")
+        self.mode_hint.setWordWrap(True)
+        mcol.addWidget(self.mode_hint)
+        col.addWidget(mode)
+
         task = QGroupBox(tr("태스크"))
+        self.task_box = task
         form = QFormLayout(task)
         self.task_edit = QLineEdit()
         self.task_edit.setPlaceholderText(tr("예) pick_up_the_blue_cup_and_place_it_on_the_blue_bowl"))
@@ -366,6 +403,20 @@ class WorkspaceWindow(QMainWindow):
         col.addStretch()
         return w
 
+    def _on_no_dataset_toggled(self, on: bool) -> None:
+        """No file is written, so the task/path fields have nothing to name."""
+        self.task_box.setEnabled(not on)
+        self.mode_hint.setText(tr(
+            "연습 모드: 파일을 만들지 않습니다. 저장을 눌러도 버려집니다."
+        ) if on else "")
+        self.mode_hint.setStyleSheet("color:#e67e22;" if on else "color:#888;")
+        for key in ("save", "savefail"):
+            if key in getattr(self, "tb_actions", {}):
+                self.tb_actions[key].setEnabled(not on and self.worker is not None)
+        for b in (getattr(self, "save_ok_btn", None), getattr(self, "save_ng_btn", None)):
+            if b is not None:
+                b.setEnabled(not on and self.worker is not None)
+
     def _page_collect(self) -> QWidget:
         w = QWidget()
         col = QVBoxLayout(w)
@@ -423,6 +474,10 @@ class WorkspaceWindow(QMainWindow):
         w = QWidget()
         col = QVBoxLayout(w)
         col.setContentsMargins(0, 0, 0, 0)
+        search = QLineEdit()
+        search.setPlaceholderText(f"{tr('에피소드 검색')} ({TODO_MARK})")
+        mark_todo(search, tr("검색/필터는 아직 없습니다."))
+        col.addWidget(search)
         self.dataset_tree = QTreeWidget()
         self.dataset_tree.setColumnCount(3)
         self.dataset_tree.setHeaderLabels([tr("파일 / 에피소드"), tr("프레임"), tr("결과")])
@@ -469,6 +524,11 @@ class WorkspaceWindow(QMainWindow):
         note.setStyleSheet("color:#888;")
         note.setWordWrap(True)
         col.addWidget(note)
+        qbox = QGroupBox(f"{tr('업로드 큐 / 이력')} ({TODO_MARK})")
+        qcol = QVBoxLayout(qbox)
+        qcol.addWidget(QLabel(tr("업로드는 현재 한 번에 하나씩, 로그 탭으로만 확인합니다.")))
+        mark_todo(qbox, tr("큐잉과 이력 보관은 아직 없습니다."))
+        col.addWidget(qbox)
         col.addStretch()
         return w
 
@@ -535,6 +595,13 @@ class WorkspaceWindow(QMainWindow):
                 form.addRow(tr(label), lab)
                 self.right_fields[key] = lab
             col.addWidget(box)
+
+        sysbox = QGroupBox(f"System ({TODO_MARK})")
+        sform = QFormLayout(sysbox)
+        for label in ("CPU", "GPU", "Memory"):
+            sform.addRow(label, QLabel("-"))
+        mark_todo(sysbox, tr("시스템 사용률 표시는 아직 없습니다. 디스크는 Statistics에 있습니다."))
+        col.addWidget(sysbox)
         col.addStretch()
 
     # ------------------------------------------------------------- bottom
@@ -552,6 +619,15 @@ class WorkspaceWindow(QMainWindow):
         self.validation_view = QPlainTextEdit()
         self.validation_view.setReadOnly(True)
         self.bottom_tabs.addTab(self.validation_view, tr("Validation"))
+        for title, why in (
+            (tr("ROS2"), tr("이 스택은 ROS2가 아니라 pylibfranka로 직접 구동합니다.")),
+            (tr("Terminal"), tr("임베디드 셸은 아직 없습니다. 로그 탭을 쓰세요.")),
+        ):
+            ph = QPlainTextEdit(f"{title} — {TODO_MARK}\n\n{why}")
+            ph.setReadOnly(True)
+            ph.setStyleSheet(TODO_STYLE)
+            idx = self.bottom_tabs.addTab(ph, f"{title} ({TODO_MARK})")
+            self.bottom_tabs.setTabEnabled(idx, False)
 
     # ------------------------------------------------------------- layout
     def _build_layout(self) -> None:
@@ -628,8 +704,11 @@ class WorkspaceWindow(QMainWindow):
         add("disconnect", tr("■ Disconnect"), self._on_disconnect, tr("세션 종료"))
         tb.addSeparator()
         add("record", tr("● Record"), lambda: self._cmd("cmd_start_teleop"), tr("기록 시작"))
-        add("save", tr("✔ Save"), lambda: self._cmd("cmd_save_episode", True), tr("성공으로 저장"))
-        add("savefail", tr("✖ Save (fail)"), lambda: self._cmd("cmd_save_episode", False))
+        # _save, not _cmd -- the success flag has to be recorded for the stats
+        # panel, and a toolbar button that counts differently from the side
+        # panel button next to it is a bug waiting to be blamed on the stats.
+        add("save", tr("✔ Save"), lambda: self._save(True), tr("성공으로 저장"))
+        add("savefail", tr("✖ Save (fail)"), lambda: self._save(False))
         add("discard", tr("🗑 Discard"), lambda: self._cmd("cmd_discard_episode"))
         tb.addSeparator()
         add("home", tr("⌂ Home"), lambda: self._cmd("cmd_go_home"))
@@ -848,11 +927,16 @@ class WorkspaceWindow(QMainWindow):
         if self.worker is not None:
             self.log("[연결] 이미 세션이 실행 중입니다.")
             return
+        no_dataset = self.no_dataset_check.isChecked()
         task = self.task_edit.text().strip()
         lang = self.lang_edit.text().strip()
-        if not task:
+        if not task and not no_dataset:
             QMessageBox.warning(self, tr("Task 이름 필요"), tr("Task 이름을 입력하세요."))
             return
+        if no_dataset:
+            # Never reaches a writer, but WorkerConfig requires the fields and
+            # a blank task_name would show up as an empty label everywhere.
+            task = task or "practice"
         agent, wrist = self._combo_serial(self.agent_combo), self._combo_serial(self.wrist_combo)
         if not agent or not wrist:
             QMessageBox.warning(self, tr("카메라 선택 필요"),
@@ -881,6 +965,7 @@ class WorkspaceWindow(QMainWindow):
             enable_wall=self.wall_check.isChecked(),
             auto_match_pose=self.match_check.isChecked(),
             resume=self.resume_check.isChecked(),
+            no_dataset=no_dataset,
             agent_camera_serial=agent,
             wrist_camera_serial=wrist,
             schema=self.schema,
@@ -907,10 +992,14 @@ class WorkspaceWindow(QMainWindow):
         w.episode_list_changed.connect(self._on_episode_list)
         w.session_summary.connect(self._on_summary)
         self.worker = w
+        self._no_dataset_session = no_dataset
         self.ep_progress.setMaximum(max(1, int(ep_len * cfg.fps)))
         self._set_running(True)
         self._set_activity("collect")
-        self.log(f"[연결] 세션 시작: task={task!r}")
+        if no_dataset:
+            self.log("[연결] 연습 모드 — 파일을 만들지 않습니다. 저장은 버려집니다.")
+        else:
+            self.log(f"[연결] 세션 시작: task={task!r}")
         w.start()
 
     def _on_disconnect(self) -> None:
@@ -920,14 +1009,20 @@ class WorkspaceWindow(QMainWindow):
         self.worker.cmd_quit()
 
     def _set_running(self, running: bool) -> None:
-        for key in ("record", "save", "savefail", "discard", "home"):
+        savable = running and not self._no_dataset_session
+        for key in ("record", "discard", "home"):
             self.tb_actions[key].setEnabled(running)
+        for key in ("save", "savefail"):
+            self.tb_actions[key].setEnabled(savable)
         self.tb_actions["connect"].setEnabled(not running)
         self.tb_actions["disconnect"].setEnabled(running)
-        for b in (self.start_btn, self.skip_btn, self.save_ok_btn,
-                  self.save_ng_btn, self.discard_btn, self.home_btn):
+        for b in (self.start_btn, self.skip_btn, self.discard_btn, self.home_btn):
             b.setEnabled(running)
-        for w in (self.task_edit, self.lang_edit, self.root_edit, self.agent_combo,
+        for b in (self.save_ok_btn, self.save_ng_btn):
+            b.setEnabled(savable)
+        self.no_dataset_check.setEnabled(not running)
+        self.task_box.setEnabled(not running and not self.no_dataset_check.isChecked())
+        for w in (self.lang_edit, self.root_edit, self.agent_combo,
                   self.wrist_combo, self.reset_pose_combo, self.grip_combo,
                   self.eplen_edit, self.resetwait_edit, self.resume_check,
                   self.wall_check, self.match_check):
@@ -1009,6 +1104,12 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(int, str)
     def _on_connected(self, n_episodes, path) -> None:
+        if self._no_dataset_session:
+            # NullTaskWriter has no real path; claiming one here would make the
+            # dataset tree think a file is locked by this session.
+            self.right_fields["file"].setText(tr("(기록 안 함)"))
+            self.log("[연결] 연습 모드로 연결되었습니다.")
+            return
         self.active_file_path = Path(path)
         self.right_fields["file"].setText(Path(path).name)
         self.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
@@ -1023,6 +1124,7 @@ class WorkspaceWindow(QMainWindow):
     def _on_summary(self, summary) -> None:
         self.log(f"[세션 요약] {summary}")
         self.worker = None
+        self._no_dataset_session = False
         self.active_file_path = None
         self.active_episode_cache = None
         self._set_running(False)

@@ -585,6 +585,74 @@ def _mark_close_on_exec(f: h5py.File) -> None:
         pass
 
 
+class NullTaskWriter:
+    """A writer that records nothing -- for teleoperating without a dataset.
+
+    Setting a scene up, checking a camera angle, or letting someone try the
+    leader arm are all things done far more often than a recording session,
+    and all of them used to require inventing a throwaway task name and then
+    deleting the .hdf5 it left behind. Worse, that file lands in the data root
+    next to the real ones, where the next repack or conversion picks it up.
+
+    This stands in for LiberoTaskWriter so the worker's state machine (which
+    touches the writer in a dozen places) needs no branching: the episode
+    buffer still fills, so the pose gate, the frame counter and the live view
+    all behave exactly as they do in a real session -- only the file is
+    missing. Saving is accepted and dropped, which is the honest behaviour for
+    a mode whose whole point is that nothing is kept.
+    """
+
+    def __init__(self, schema: Optional[DatasetSchemaConfig] = None) -> None:
+        self.schema = schema or DatasetSchemaConfig()
+        # Not None: the worker emits str(writer.path) on connect, and a literal
+        # "None" in the GUI's file field reads as a bug rather than a mode.
+        self.path = "(기록 안 함)"
+        self._buffer = LiberoEpisodeBuffer(self.schema)
+
+    def record_session_config(self, **kwargs: Any) -> None:
+        pass
+
+    @property
+    def num_episodes(self) -> int:
+        return 0
+
+    def list_episodes(self) -> list[dict]:
+        return []
+
+    def delete_episode(self, name: str) -> None:
+        pass
+
+    def start_episode(self) -> None:
+        self._buffer.clear()
+
+    def add_frame(self, **kwargs: Any) -> None:
+        self._buffer.add_frame(**kwargs)
+
+    def discard_episode(self) -> None:
+        self._buffer.clear()
+
+    def detach_buffer(self) -> LiberoEpisodeBuffer:
+        buf = self._buffer
+        self._buffer = LiberoEpisodeBuffer(self.schema)
+        return buf
+
+    def save_episode(self, success: Optional[bool] = None) -> Optional[str]:
+        return self.save_buffer(self.detach_buffer(), success=success)
+
+    def save_buffer(self, buf: LiberoEpisodeBuffer, success: Optional[bool] = None) -> Optional[str]:
+        buf.clear()
+        return None
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self) -> "NullTaskWriter":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+
 class LiberoTaskWriter:
     """Owns one ``<task>_demo.hdf5`` file: one file per task, one ``demo_N`` per episode.
 
