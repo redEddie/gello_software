@@ -52,7 +52,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-from PyQt6.QtCore import QEvent, QProcess, Qt, QTimer, pyqtSlot
+from PyQt6.QtCore import QEvent, QProcess, Qt, QThread, QTimer, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup, QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -949,13 +949,45 @@ class WorkspaceWindow(QMainWindow):
         self.lights["camera"].set("ok" if (self.agent_preview or self.wrist_preview) else "off",
                                   tr("미리보기") if (self.agent_preview or self.wrist_preview) else "-")
 
-    def _stop_previews(self) -> None:
+    def _stop_previews(self, timeout_ms: int = 7000) -> list:
+        """Stops both preview threads. Returns the roles that did NOT stop.
+
+        A RealSense pipeline cannot be opened twice, so the session can only
+        have the cameras once these threads have run their `finally:
+        cam.disconnect()`. stop() is just a flag the loop checks between
+        reads, and the wrist D405's marginal USB 2 link can sit inside
+        read_latest for a second or more (librealsense's own frame timeout is
+        5 s), so the wait has to be generous.
+
+        The previous 2 s wait ignored its own return value and cleared the
+        handle regardless, so a thread that was still holding the device was
+        forgotten -- and the session's connect then failed with librealsense's
+        "Failed to open RealSenseCamera(...)", which names the camera but not
+        the reason. Report the truth instead and let the caller refuse to
+        connect.
+        """
+        stuck = []
         for role in ("agent", "wrist"):
             w = getattr(self, f"{role}_preview", None)
-            if w is not None:
-                w.stop()
-                w.wait(2000)
+            if w is None:
+                continue
+            w.stop()
+            if w.wait(timeout_ms):
                 setattr(self, f"{role}_preview", None)
+            else:
+                # Keep the handle: it still owns the device, and dropping the
+                # reference would only lose the ability to try again.
+                stuck.append(role)
+                self.log(f"[카메라] {role} 미리보기 스레드가 {timeout_ms / 1000:.0f}초 안에 "
+                         f"종료되지 않았습니다 (카메라를 아직 붙잡고 있음).")
+        if not stuck:
+            # librealsense needs a moment to actually release the USB device
+            # after disconnect() returns; connecting immediately can still hit
+            # a busy device.
+            QThread.msleep(300)
+        self.lights["camera"].set("off" if not stuck else "bad",
+                                  "-" if not stuck else tr("해제 실패"))
+        return stuck
 
     def _on_preview_frame(self, role: str, frame) -> None:
         self.live_views[role].set_frame(frame)
@@ -997,7 +1029,18 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("입력 오류"), tr("길이/대기는 숫자여야 합니다."))
             return
 
-        self._stop_previews()  # the worker opens both cameras itself
+        # The worker opens both cameras itself, and a RealSense pipeline cannot
+        # be opened twice -- so bail out here with the real reason rather than
+        # letting connect fail later with "Failed to open RealSenseCamera(...)".
+        stuck = self._stop_previews()
+        if stuck:
+            QMessageBox.warning(
+                self, tr("카메라 해제 실패"),
+                tr("{roles} 미리보기가 카메라를 아직 붙잡고 있어 연결할 수 없습니다.\n\n"
+                   "몇 초 뒤 다시 시도하거나, Camera 메뉴 > 미리보기 중지 후 연결하세요. "
+                   "계속되면 카메라를 뽑았다 꽂아야 합니다 (손목 D405는 USB 2 링크라 "
+                   "가끔 늦게 놓습니다).").format(roles=", ".join(stuck)))
+            return
         cfg = WorkerConfig(
             task_name=task,
             language_instruction=lang or task.replace("_", " "),
