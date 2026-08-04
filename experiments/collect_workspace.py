@@ -102,7 +102,11 @@ from gello.gui_widgets import (  # noqa: E402
     hf_account,
 )
 from gello.i18n import get_language, set_language, tr  # noqa: E402
-from gello.libero_format import describe_episode, hdf5_repack_status  # noqa: E402
+from gello.libero_format import (  # noqa: E402
+    describe_episode,
+    hdf5_repack_status,
+    renumber_episodes,
+)
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
 from gello.robots.franka_fr3 import FR3_RESET_POSES  # noqa: E402
 
@@ -523,13 +527,16 @@ class WorkspaceWindow(QMainWindow):
         col.addWidget(self.dataset_tree, 1)
         row = QHBoxLayout()
         for text, slot in ((tr("새로고침"), self._refresh_dataset_tree),
-                           (tr("선택 삭제"), self._on_delete_selected),
+                           (tr("에피소드 삭제"), self._on_delete_selected),
+                           (tr("파일 삭제"), self._on_delete_file),
                            (tr("구조 확인"), self._on_show_structure)):
             b = QPushButton(text)
             b.clicked.connect(slot)
             row.addWidget(b)
         col.addLayout(row)
-        self.dataset_hint = QLabel(tr("에피소드를 고르면 Playback 탭에서 재생됩니다."))
+        self.dataset_hint = QLabel(tr(
+            "에피소드를 고르면 Playback 탭에서 재생됩니다. 삭제는 수집 중이 아닌 "
+            "파일이면 세션 없이도 됩니다."))
         self.dataset_hint.setStyleSheet("color:#888;")
         self.dataset_hint.setWordWrap(True)
         col.addWidget(self.dataset_hint)
@@ -768,7 +775,8 @@ class WorkspaceWindow(QMainWindow):
 
         m = mb.addMenu(tr("Dataset"))
         m.addAction(tr("새로고침"), self._refresh_dataset_tree)
-        m.addAction(tr("선택 삭제"), self._on_delete_selected)
+        m.addAction(tr("에피소드 삭제"), self._on_delete_selected)
+        m.addAction(tr("파일 삭제"), self._on_delete_file)
         m.addAction(tr("구조 확인..."), self._on_show_structure)
         m.addSeparator()
         m.addAction(tr("용량 최적화 (재압축)..."), self._on_repack)
@@ -1313,20 +1321,96 @@ class WorkspaceWindow(QMainWindow):
         p = node.data(0, Qt.ItemDataRole.UserRole)
         return Path(p) if isinstance(p, str) else None
 
+    def _busy_reason(self) -> str:
+        """Anything that may currently hold an .hdf5 open, by name."""
+        for proc, label in ((self.repack_process, tr("재압축")),
+                            (self.convert_process, tr("LeRobot 변환")),
+                            (self.upload_process, tr("HDF5 업로드"))):
+            if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
+                return label
+        return ""
+
     def _on_delete_selected(self) -> None:
+        """Deletes the selected episode.
+
+        Two paths, because who owns the file decides who may touch it. h5py is
+        not thread-safe, so while a session has the file open, every
+        file-touching call goes through that session's saver thread -- deleting
+        behind its back would corrupt the file it is still writing into. When
+        no session owns the file, nothing else has it open and this window can
+        do it directly, which is the common case: curating yesterday's takes
+        should not require connecting a robot first.
+        """
         items = self.dataset_tree.selectedItems()
         if not items or items[0].parent() is None:
             QMessageBox.information(self, tr("선택 필요"), tr("삭제할 에피소드를 선택하세요."))
             return
         name = items[0].data(0, Qt.ItemDataRole.UserRole)
         path = self._selected_file()
-        if self.worker is None or path != self.active_file_path:
-            QMessageBox.warning(self, tr("삭제 불가"),
-                                tr("에피소드 삭제는 그 파일을 여는 세션에서만 가능합니다."))
+        if path is None:
             return
-        if QMessageBox.question(self, tr("삭제"), tr("{n}을(를) 삭제할까요?").format(n=name)) \
-                == QMessageBox.StandardButton.Yes:
+        busy = self._busy_reason()
+        if busy:
+            QMessageBox.warning(self, tr("삭제 불가"),
+                                tr("{job}이(가) 진행 중입니다. 끝난 뒤 삭제하세요.").format(job=busy))
+            return
+        owned = self.active_file_path is not None and path == self.active_file_path
+        if QMessageBox.question(
+                self, tr("에피소드 삭제"),
+                tr("{f}\n{n}을(를) 삭제할까요?\n\n남은 에피소드는 번호가 다시 매겨집니다. "
+                   "파일 크기는 줄지 않습니다 (재압축 필요).").format(f=path.name, n=name)
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        if owned:
             self.worker.cmd_delete_episode(name)
+            return
+        try:
+            with h5py.File(path, "a") as f:
+                data = f["data"]
+                if name not in data:
+                    raise KeyError(name)
+                del data[name]
+                renumber_episodes(data)
+            self.log(f"[삭제] {path.name}: {name}")
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, tr("삭제 실패"), f"{type(e).__name__}: {e}")
+            self.log(f"[삭제 실패] {path.name}: {type(e).__name__}: {e}")
+        self._refresh_dataset_tree()
+
+    def _on_delete_file(self) -> None:
+        """Deletes a whole <task>_demo.hdf5. Never offered for the file a
+        session is writing into -- that one is closed by ending the session."""
+        path = self._selected_file()
+        if path is None:
+            QMessageBox.information(self, tr("선택 필요"), tr("삭제할 파일을 선택하세요."))
+            return
+        if self.active_file_path is not None and path == self.active_file_path:
+            QMessageBox.warning(self, tr("삭제 불가"),
+                                tr("지금 수집 중인 파일입니다. 먼저 세션을 종료하세요."))
+            return
+        busy = self._busy_reason()
+        if busy:
+            QMessageBox.warning(self, tr("삭제 불가"),
+                                tr("{job}이(가) 진행 중입니다. 끝난 뒤 삭제하세요.").format(job=busy))
+            return
+        st = hdf5_repack_status(path)
+        confirm = QMessageBox.warning(
+            self, tr("파일 삭제"),
+            tr("{f}\n\n에피소드 {n}개, {mb:.1f} MB 를 통째로 지웁니다.\n"
+               "되돌릴 수 없습니다. Hub에 올린 사본은 영향받지 않습니다.").format(
+                   f=path.name, n=st["episodes"], mb=st["size"] / 1e6),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            path.unlink()
+            self.log(f"[파일 삭제] {path.name} ({st['episodes']}개 에피소드, "
+                     f"{st['size'] / 1e6:.1f} MB)")
+        except OSError as e:
+            QMessageBox.critical(self, tr("삭제 실패"), str(e))
+            self.log(f"[파일 삭제 실패] {path.name}: {e}")
+        self._refresh_dataset_tree()
 
     def _on_show_structure(self) -> None:
         path = self._selected_file()
