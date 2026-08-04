@@ -46,6 +46,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import json
+import os
 import shutil
 import traceback
 import sys
@@ -118,6 +119,15 @@ PYLIBFRANKA_PYTHON = str(Path.home() / "pylibfranka-venv" / "bin" / "python")
 LAUNCH_NODES_SCRIPT = str(Path(__file__).resolve().parent / "launch_nodes.py")
 CONVERT_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "convert_libero_to_lerobot.py")
 UPLOAD_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "upload_to_hub.py")
+RUNME_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "runme.sh")
+CHECK_CAMERAS = str(Path(__file__).resolve().parent.parent / "scripts" / "check_cameras.py")
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return ""
 
 # Activity bar entries: (key, icon, title, tooltip). Icons are emoji rather
 # than a theme lookup -- an icon theme that is missing on this machine would
@@ -211,6 +221,7 @@ class WorkspaceWindow(QMainWindow):
         self.repack_process: QProcess | None = None
         self.convert_process: QProcess | None = None
         self.upload_process: QProcess | None = None
+        self.runme_process: QProcess | None = None
         self._convert_out_state: dict = {}
         self._upload_out_state: dict = {}
 
@@ -269,6 +280,7 @@ class WorkspaceWindow(QMainWindow):
         if log_path is not None:
             self.log(f"[로그] 이 세션 로그: {log_path}")
         self.log("[준비] 로봇 노드를 먼저 띄운 뒤 Connect 를 누르세요.")
+        QTimer.singleShot(0, self._startup_tuning)
 
     # ------------------------------------------------------------- center
     def _build_center(self) -> None:
@@ -878,6 +890,9 @@ class WorkspaceWindow(QMainWindow):
         m.addAction(self.act_toggle_right)
 
         m = mb.addMenu(tr("Tools"))
+        m.addAction(tr("시스템 튜닝 실행 (runme.sh)"), self._run_runme)
+        m.addAction(tr("카메라 점검 (USB 속도·프레임)"), self._on_check_cameras)
+        m.addSeparator()
         m.addAction(tr("데이터셋 스키마..."), self._on_schema)
         m.addAction(tr("언어 전환"), self._toggle_language)
 
@@ -1812,6 +1827,110 @@ class WorkspaceWindow(QMainWindow):
                 view.set_frame(frames[i])
         self.play_pos.setText(f"{i + 1}/{self.play_slider.maximum() + 1}")
 
+    # ---------------------------------------------------------- 시스템 튜닝
+    @staticmethod
+    def check_tuning() -> list:
+        """What scripts/runme.sh would change, read without touching anything.
+
+        Both settings reset on reboot and on replugging the GELLO, and both
+        are invisible until they bite: a 16 ms FTDI latency timer drops the
+        Dynamixel sync-read from ~340 Hz to ~55 Hz, and the powersave governor
+        produces the latency spikes that end an FR3 session with
+        communication_constraints_violation.
+
+        Checking here rather than just running the script means the pkexec
+        password prompt only ever appears when something actually needs
+        changing -- a prompt on every launch trains people to dismiss it.
+        """
+        issues = []
+        ports = sorted(Path("/dev/serial/by-id").glob("*FTDI*")) \
+            if Path("/dev/serial/by-id").is_dir() else []
+        if not ports:
+            issues.append(("gello", "GELLO(FTDI)를 찾지 못했습니다 -- USB 연결 확인"))
+        else:
+            tty = Path(os.path.realpath(ports[0])).name
+            lat = Path(f"/sys/bus/usb-serial/devices/{tty}/latency_timer")
+            try:
+                value = lat.read_text().strip()
+                if value != "1":
+                    issues.append(("latency",
+                                   f"FTDI latency_timer={value} (1이어야 함, {tty})"))
+            except OSError:
+                issues.append(("latency", f"{lat} 를 읽을 수 없습니다"))
+        govs = sorted(Path("/sys/devices/system/cpu").glob("cpu[0-9]*/cpufreq/scaling_governor"))
+        if govs:
+            perf = sum(1 for g in govs if _read(g) == "performance")
+            if perf != len(govs):
+                issues.append(("governor",
+                               f"CPU governor performance {perf}/{len(govs)} 코어"))
+        return issues
+
+    def _startup_tuning(self) -> None:
+        issues = self.check_tuning()
+        if not issues:
+            self.log("[튜닝] FTDI latency_timer=1, CPU governor=performance — 이미 적용됨.")
+            return
+        self.log("[튜닝] 조정이 필요합니다:")
+        for _key, text in issues:
+            self.log(f"  - {text}")
+        if any(k == "gello" for k, _ in issues):
+            # 케이블 문제는 pkexec로 해결되지 않는다. 스크립트를 띄워봐야
+            # 비밀번호만 묻고 같은 경고를 낼 뿐이다.
+            self.log("[튜닝] GELLO가 연결되면 Tools > 시스템 튜닝 실행 을 눌러주세요.")
+            return
+        self.log("[튜닝] scripts/runme.sh 를 실행합니다 (관리자 비밀번호 창이 뜹니다).")
+        self._run_runme()
+
+    def _on_check_cameras(self) -> None:
+        """Runs scripts/check_cameras.py into the Validation tab.
+
+        No --stream: the previews (or a session) usually hold the cameras, and
+        the link-speed half is exactly the part that stays readable anyway.
+        """
+        proc = QProcess(self)
+        proc.setProgram(sys.executable)
+        proc.setArguments([CHECK_CAMERAS])
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(
+            lambda: [self.log(ln, "validation") for ln in
+                     bytes(proc.readAllStandardOutput()).decode(errors="replace").splitlines()])
+        proc.finished.connect(lambda c, _s: self.log(
+            {0: "카메라 점검: 모두 정상", 1: "카메라 점검: 문제 발견",
+             2: "카메라 점검: 일부 확인 못 함"}.get(c, f"카메라 점검 종료 (exit={c})"),
+            "validation"))
+        self._camera_check_process = proc
+        self.bottom_tabs.setCurrentWidget(self.validation_view)
+        self.log("=== 카메라 점검 ===", "validation")
+        proc.start()
+
+    def _run_runme(self) -> None:
+        if self.runme_process is not None and \
+                self.runme_process.state() != QProcess.ProcessState.NotRunning:
+            self.log("[튜닝] 이미 실행 중입니다.")
+            return
+        proc = QProcess(self)
+        proc.setProgram("/usr/bin/env")
+        proc.setArguments(["bash", RUNME_SCRIPT])
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(
+            lambda: [self.log(f"[튜닝] {ln}") for ln in
+                     bytes(proc.readAllStandardOutput()).decode(errors="replace").splitlines()
+                     if ln.strip()])
+        proc.finished.connect(self._on_runme_finished)
+        self.runme_process = proc
+        proc.start()
+
+    def _on_runme_finished(self, code: int, _status) -> None:
+        left = self.check_tuning()
+        if code == 0 and not left:
+            self.log("[튜닝] 완료 — 모두 적용되었습니다.")
+        else:
+            self.log(f"[튜닝] 종료 (exit={code}). 남은 항목: "
+                     + (", ".join(t for _k, t in left) if left else "없음"))
+            if left:
+                self.log("[튜닝] 취소했거나 실패했습니다. Tools > 시스템 튜닝 실행 으로 다시 할 수 있습니다.")
+        self.runme_process = None
+
     # ------------------------------------------------------------- node
     def _on_start_node(self) -> None:
         if self.node_process is not None and \
@@ -1994,7 +2113,8 @@ class WorkspaceWindow(QMainWindow):
             self.worker.cmd_quit()
             self.worker.wait(5000)
         self._on_stop_node()
-        for proc in (self.repack_process, self.convert_process, self.upload_process):
+        for proc in (self.repack_process, self.convert_process,
+                     self.upload_process, self.runme_process):
             if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
                 proc.terminate()
                 if not proc.waitForFinished(3000):
