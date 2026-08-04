@@ -22,6 +22,47 @@ hundred Hz to stay stiff without buzzing, far above the ~100 Hz teleop loop.  It
 *shares* a ``DynamixelDriver`` -- and that driver's bus lock -- with whoever else
 reads it (the teleop agent); it opens no port of its own.
 
+The same thread also drives an optional "pose-match assist" (see
+``set_match_target``): a two-sided current-mode spring-damper that pulls the
+arm servos onto an arbitrary target pose, e.g. the follower's reset pose, so
+the operator doesn't have to nudge the leader there by hand joint-by-joint.
+It lives here for the same reason the limit spring does -- ``set_current``
+sync-writes the whole servo vector, so a second control loop calling it
+concurrently would fight this one over the bus. While a match target is set
+the arm servos are force-armed regardless of limit slack (the limit spring
+alone only arms near a limit); once the caller clears the target (typically
+right after ``status()`` reports ``match_done``), arming reverts to the
+limit-only rule, which disarms torque again at a normal (not-near-a-limit)
+pose -- so the leader goes back to being freely back-drivable for teleop
+without any extra cleanup call. Gains/tolerances below are untuned defaults
+(no access to the real leader while writing this) -- expect to retune
+``match_kp``/``match_kd``/``match_max_current`` on hardware.
+
+The same thread also optionally drives a lightweight, *empirical* gravity
+compensation + stiction dither (see ``set_gravity_comp``, GitHub issue #3's
+"③"/"④") -- NOT the model-based RNEA-on-a-URDF approach FACTR uses
+(``gello/factr/gravity_compensation.py``), because there is no URDF (mass/
+inertia) for this leader and none is available to build one from. Instead
+each arm joint gets an independent single-pendulum approximation,
+``tau_g_i = gravity_gains[i] * sin(q_i - gravity_offsets[i])`` -- ignores
+cross-coupling between joints (a real chain's gravity load on joint i also
+depends on joints i+1..n's angles; this doesn't), but needs only two
+hand-tunable numbers per joint instead of a full dynamics model, and is
+tunable live on the real leader by feel ("does it float here?") via
+``set_gravity_comp`` -- see ``scripts/tune_gravity_comp.py``. Both arrays
+default to all-zero (every joint's compensation is simply off) until tuned.
+Unlike the limit spring and match assist, gravity comp is meant to be on
+essentially continuously while a human might be holding the leader, so a
+non-zero ``gravity_gains`` force-arms the arm servos unconditionally (like
+an active match target), not just near a limit.
+
+Stiction dither (``stiction_gain``) is a small square-wave added on top,
+proportional to that joint's own ``tau_g`` and flipping sign every tick
+while ``|dq| < stiction_vel_tol``, to nudge a joint through static friction
+right at the point gravity comp alone leaves it just barely not moving
+(FACTR's same rationale) -- meaningless while gravity comp is off (its own
+gain is zero everywhere), so there is nothing separate to tune first.
+
 Faults are deliberately blunt (see the teleop integration design): on any fault
 the thread stores the exception and exits without cleanup, and ``poll()``
 re-raises it so the caller dies.  The servos keep their last current; the
@@ -94,6 +135,25 @@ class JointLimitWall:
 
     Keyword tuning args mirror the standalone script's defaults, which were
     tuned by hand on the real leader (500 mA per servo, 2800 mA supply budget).
+
+    Pose-match assist args (see ``set_match_target``): ``match_kp``/``match_kd``
+    are the spring/damper gains (current per rad, current per rad/s) pulling
+    an armed joint toward the match target; ``match_max_current`` caps that
+    pull per joint. ``match_tol`` (rad) / ``match_vel_tol`` (rad/s) are the
+    per-joint error/speed a match must be under, continuously for
+    ``match_hold_s`` seconds, before ``status()["match_done"]`` goes True --
+    the hold window is there so a fast pass-through mid-swing can't look like
+    "done". None of these five are hand-tuned yet -- unlike the limit-wall
+    numbers above -- start conservative and retune on the real leader.
+
+    Gravity-comp args (see ``set_gravity_comp``, and the class docstring
+    above for why this is an empirical per-joint model rather than RNEA):
+    ``gravity_gains``/``gravity_offsets`` (length ``n_arm``, current / rad)
+    seed the initial per-joint ``tau_g_i = gravity_gains[i] *
+    sin(q_i - gravity_offsets[i])``; both default to all-zero (off).
+    ``stiction_gain`` seeds the friction-dither amplitude as a fraction of
+    each joint's own ``|tau_g_i|``; ``stiction_vel_tol`` (rad/s) is the speed
+    below which a joint is considered "stuck" and gets dithered.
     """
 
     def __init__(
@@ -123,6 +183,16 @@ class JointLimitWall:
         trigger_max_current: float = 300.0,
         trigger_curve: float = 3.0,
         trigger_kd: float = 5.0,
+        match_kp: float = 400.0,
+        match_kd: float = 20.0,
+        match_max_current: float = 350.0,
+        match_tol: float = 0.05,
+        match_vel_tol: float = 0.15,
+        match_hold_s: float = 0.3,
+        gravity_gains: Optional[np.ndarray] = None,
+        gravity_offsets: Optional[np.ndarray] = None,
+        stiction_gain: float = 0.0,
+        stiction_vel_tol: float = 0.05,
     ):
         if arm_margin <= wall_depth:
             raise ValueError(
@@ -179,13 +249,80 @@ class JointLimitWall:
         self._health_every = health_every
         self._min_voltage = min_voltage
 
+        self._match_kp = match_kp
+        self._match_kd = match_kd
+        self._match_max_current = match_max_current
+        self._match_tol = match_tol
+        self._match_vel_tol = match_vel_tol
+        self._match_hold_s = match_hold_s
+        # Set/cleared by set_match_target(), read once per tick in _run().
+        # Plain attribute swap, not lock-protected: CPython's GIL makes a
+        # single reference assignment atomic, and _run() only ever needs
+        # "the target as of the start of this tick" -- a target arriving
+        # mid-tick just takes effect one tick later.
+        self._match_target: Optional[np.ndarray] = None
+        self._match_done = False
+        self._match_hold_start: Optional[float] = None
+
+        # Set/read like _match_target -- plain attribute swaps, no lock.
+        self._gravity_gains = (
+            np.zeros(self._n_arm) if gravity_gains is None
+            else np.array(gravity_gains, dtype=float)
+        )
+        self._gravity_offsets = (
+            np.zeros(self._n_arm) if gravity_offsets is None
+            else np.array(gravity_offsets, dtype=float)
+        )
+        self._stiction_gain = float(stiction_gain)
+        self._stiction_vel_tol = float(stiction_vel_tol)
+        # +1/-1 per joint, flipped each tick a joint is dithered -- carries
+        # across ticks so the dither is a square wave, not noise.
+        self._stiction_sign = np.ones(self._n_arm)
+
         self._thread: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
         self._error: Optional[BaseException] = None
         self._armed = False
-        self._status: Dict = {"armed": False, "hz": 0.0, "slack": None}
+        self._status: Dict = {
+            "armed": False, "hz": 0.0, "slack": None,
+            "match_error": None, "match_done": False,
+        }
 
     # -------------------------------------------------------------- lifecycle
+    def set_gravity_comp(
+        self,
+        gains: Optional[np.ndarray] = None,
+        offsets: Optional[np.ndarray] = None,
+        stiction_gain: Optional[float] = None,
+    ) -> None:
+        """Live-adjust the empirical gravity-comp model (see class docstring)
+        -- meant to be called repeatedly from a tuning tool
+        (``scripts/tune_gravity_comp.py``) while watching the real leader,
+        not just once at startup. Any argument left ``None`` keeps its
+        current value; pass ``gains=np.zeros(n_arm)`` to fully disable
+        (this also un-force-arms the servos once away from a limit/match).
+        """
+        if gains is not None:
+            self._gravity_gains = np.array(gains, dtype=float)
+        if offsets is not None:
+            self._gravity_offsets = np.array(offsets, dtype=float)
+        if stiction_gain is not None:
+            self._stiction_gain = float(stiction_gain)
+
+    def set_match_target(self, target: Optional[np.ndarray]) -> None:
+        """Arm (target given) or release (``None``) the pose-match assist.
+
+        ``target`` is follower-joint-space radians, arm joints only (same
+        space/order as ``status()["q"]`` and this class's ``lower``/``upper``
+        args) -- typically a reset pose. Safe to call from any thread.
+        Setting a new target resets the convergence hold timer, so re-calling
+        this with a different target mid-match restarts convergence tracking
+        rather than carrying over stale progress.
+        """
+        self._match_target = None if target is None else np.array(target, dtype=float)
+        self._match_done = False
+        self._match_hold_start = None
+
     def start(self) -> None:
         """Switch the servos to current control and start the wall thread."""
         # Operating mode is EEPROM: it only takes while torque is disabled.
@@ -220,6 +357,7 @@ class JointLimitWall:
         This is the *normal* exit path.  Unlike a fault, it restores the servos
         so the leader is free and left in position mode.
         """
+        self._match_target = None
         self._stop_evt.set()
         if self._thread is not None:
             self._thread.join(timeout=1.0)
@@ -256,12 +394,21 @@ class JointLimitWall:
                 q = wrap_into_limits(q, self._lower, self._upper)
                 dq = raw_dq[: self._n_arm] * self._signs
 
+                match_target = self._match_target  # snapshot -- see set_match_target
+                gravity_gains = self._gravity_gains  # snapshot -- see set_gravity_comp
+                gravity_active = bool(np.any(gravity_gains != 0.0))
+
                 # Arm torque only near a limit: current-control-at-zero drags
                 # more than torque-off, so the rest of the workspace is left
                 # torque-off and feels exactly as it does without the wall.
                 # Arm servos only -- the trigger spring stays on throughout.
+                # A pose-match target or an active gravity-comp gain both
+                # force-arm regardless of slack -- neither is limited to
+                # near a limit (a reset pose / "anywhere the leader might
+                # be held" are typically nowhere near one), so the
+                # limit-only rule would otherwise rarely or never arm.
                 slack = float(np.minimum(self._hi - q, q - self._lo).min())
-                want = slack < (
+                want = (match_target is not None) or gravity_active or slack < (
                     self._arm_margin + self._arm_hyst if self._armed
                     else self._arm_margin
                 )
@@ -279,6 +426,53 @@ class JointLimitWall:
                 cur = (-self._kp * (q - self._hi) - self._kd * dq) * over_hi
                 cur += (-self._kp * (q - self._lo) - self._kd * dq) * over_lo
                 cur = np.clip(cur, -self._max_current, self._max_current)
+
+                # Pose-match assist: two-sided spring-damper toward
+                # match_target, summed with the (normally-zero-here, since a
+                # match target sits well inside the limits) limit spring
+                # above. "Done" requires the error AND speed to stay under
+                # tolerance for match_hold_s continuously, so a fast pass
+                # through the target mid-swing doesn't register as arrival.
+                match_err = None
+                if match_target is not None:
+                    terr = match_target - q
+                    match_err = float(np.abs(terr).max())
+                    cur_match = np.clip(
+                        self._match_kp * terr - self._match_kd * dq,
+                        -self._match_max_current, self._match_max_current,
+                    )
+                    cur = cur + cur_match
+                    if match_err < self._match_tol and float(np.abs(dq).max()) < self._match_vel_tol:
+                        if self._match_hold_start is None:
+                            self._match_hold_start = t0
+                        elif t0 - self._match_hold_start >= self._match_hold_s:
+                            self._match_done = True
+                    else:
+                        self._match_hold_start = None
+                else:
+                    self._match_done = False
+                    self._match_hold_start = None
+
+                # Empirical gravity comp (see class docstring for why this is
+                # a per-joint single-pendulum approximation, not RNEA): each
+                # joint independently offsets its own estimated weight,
+                # summed in with whatever the limit spring/match assist are
+                # already doing above.
+                tau_g = gravity_gains * np.sin(q - self._gravity_offsets)
+                cur = cur + tau_g
+
+                # Stiction dither: a joint that's supposed to be "floating"
+                # under tau_g but is actually stuck (near-zero speed) gets a
+                # small square wave added on top, proportional to its own
+                # |tau_g|, alternating sign every tick -- enough to break
+                # static friction without a net directional bias. No-op
+                # everywhere gravity comp itself is off (tau_g is zero there).
+                if self._stiction_gain > 0.0:
+                    stuck = np.abs(dq) < self._stiction_vel_tol
+                    self._stiction_sign = np.where(stuck, -self._stiction_sign, self._stiction_sign)
+                    cur = cur + np.where(
+                        stuck, self._stiction_gain * np.abs(tau_g) * self._stiction_sign, 0.0
+                    )
 
                 # Trigger spring (toward-open positive).  The base current is
                 # squeeze_current while squeezing or holding, blending up to
@@ -346,6 +540,10 @@ class JointLimitWall:
                     "hi": self._hi,
                     "health": health,
                     "trigger": {"g": g, "cur": i_trig} if self._trigger else None,
+                    "match_error": match_err,
+                    "match_done": self._match_done,
+                    "dq": dq,
+                    "tau_g": tau_g,
                 }
 
                 rest = self._dt - (time.time() - t0)

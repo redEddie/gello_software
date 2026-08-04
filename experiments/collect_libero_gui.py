@@ -583,6 +583,22 @@ class HdfUploadDialog(QDialog):
         self.path_in_repo_edit.setPlaceholderText(
             tr("예: <task>_demo_<이름>_<날짜>.hdf5 -- 비워두면 로컬 파일 이름 그대로")
         )
+        # Tracks whether the current text is still auto-derived from
+        # file_edit (True) or the operator typed something themselves
+        # (False, via textEdited -- only fires on actual keystrokes, not the
+        # setText() calls below). While True, _browse_file keeps this in
+        # sync with whichever local file is selected; once the operator
+        # edits it directly, autosync stops so a deliberate custom name
+        # (e.g. adding a date suffix) survives a later re-browse untouched.
+        #
+        # This existed as a real bug once: default_file (from the dataset
+        # tree's current selection) prefilled both fields together, so
+        # picking a *different* file via 찾아보기 left this field stuck on
+        # the old name while file_edit moved on -- silently uploading file
+        # A's content to file B's path on the Hub, overwriting it. Confirmed
+        # from a session log where exactly this happened.
+        self._path_in_repo_auto = True
+        self.path_in_repo_edit.textEdited.connect(self._on_path_in_repo_edited)
         grid.addWidget(self.path_in_repo_edit, 1, 1)
         layout.addLayout(grid)
 
@@ -617,13 +633,17 @@ class HdfUploadDialog(QDialog):
         self.old_path_label.setEnabled(on)
         self.old_path_in_repo_edit.setEnabled(on)
 
+    def _on_path_in_repo_edited(self, _text: str) -> None:
+        self._path_in_repo_auto = False
+
     def _browse_file(self) -> None:
         start = self.file_edit.text() or str(Path.home())
         path, _ = QFileDialog.getOpenFileName(self, tr("업로드할 .hdf5 파일"), start, "HDF5 (*.hdf5)")
         if path:
             self.file_edit.setText(path)
-            if not self.path_in_repo_edit.text().strip():
+            if self._path_in_repo_auto or not self.path_in_repo_edit.text().strip():
                 self.path_in_repo_edit.setText(Path(path).name)
+                self._path_in_repo_auto = True  # setText() above doesn't fire textEdited, but be explicit
 
     def build_args(self) -> "list[str] | None":
         """Returns the script's argv (sans program name), or None (with a
@@ -639,6 +659,25 @@ class HdfUploadDialog(QDialog):
         args = [local_file, "--repo-id", repo_id]
         path_in_repo = self.path_in_repo_edit.text().strip()
         if path_in_repo:
+            # Belt-and-suspenders on top of the auto-sync above: this only
+            # fires once the operator has actually typed a custom name
+            # (autosync keeps it matched otherwise), so a real mismatch here
+            # is either an intentional rename or a mistake -- ask, since the
+            # cost of the latter is a silent overwrite of whatever's already
+            # at that path on the Hub.
+            if path_in_repo != Path(local_file).name:
+                reply = QMessageBox.question(
+                    self,
+                    tr("이름이 다릅니다"),
+                    tr(
+                        "로컬 파일({local}) 내용을 저장소의 다른 이름({repo})으로 "
+                        "업로드합니다 -- 그 이름의 기존 파일이 있다면 덮어씁니다. 계속할까요?"
+                    ).format(local=Path(local_file).name, repo=path_in_repo),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return None
             args += ["--path-in-repo", path_in_repo]
         args.append("--private" if self.private_check.isChecked() else "--no-private")
         if self.delete_existing_check.isChecked():
@@ -673,6 +712,23 @@ class LiberoCollectorWindow(QMainWindow):
         self._node_restart_pending = False
         self._current_state = "idle"
         self._node_status_received = False
+        # "match": button reads "자세 매칭 자동화"/drives the GELLO leader's own
+        # motors onto the reset pose (issue #8); "start": auto-match already
+        # converged (or was skipped), button is the original "텔레옵 시작".
+        # Reset to "match" on every fresh 게이트 entry -- see _on_state_changed.
+        self._teleop_btn_mode = "match"
+        # Per-joint-tick "all matched" from _on_gate_status, not just "we're
+        # somewhere in the gate state" -- the motor-protection precondition
+        # for enabling 자세 매칭 자동화 (see _set_controls_enabled).
+        self._gate_all_ok = False
+        # True while _on_pose_match_status has seen a not-done progress tick
+        # more recently than a done one -- lets _on_gate_status's live
+        # gate_summary text step aside so it doesn't fight over the same
+        # label with the auto-align progress text (see _on_gate_status).
+        # Purely signal-derived (never set from the button click) so a
+        # request the worker silently rejects (precondition race) can't
+        # leave this stuck True.
+        self._auto_matching_active = False
         self.schema_cfg = load_schema_config()
 
         # Persistent log -- the on-screen log panel is in-memory only and
@@ -774,6 +830,7 @@ class LiberoCollectorWindow(QMainWindow):
         # string) -- re-derive each from the state that's already tracked
         # in instance attributes, rather than re-applying a stored string.
         self._update_schema_btn_label()
+        self._update_teleop_btn_label()
         self.state_label.setText(tr(STATE_LABELS_KO.get(self._current_state, self._current_state)))
         self.episode_label.setText(tr("에피소드: {n}").format(n=self.episodes_this_session))
         if self._node_status_received:
@@ -1029,7 +1086,15 @@ class LiberoCollectorWindow(QMainWindow):
         old = self.agent_preview_worker if role == "agent" else self.wrist_preview_worker
         if old is not None:
             old.stop()
-            old.wait(3000)
+            if not old.wait(3000):
+                # Still running (e.g. a blocked cam.read() from a USB
+                # hiccup) -- don't drop the reference (see _stop_previews'
+                # comment on why) and don't open a competing pipeline on the
+                # same camera, which would just fail. Bail out and leave it
+                # to the operator to retry the selection once it settles.
+                self._log(f"[카메라] {role} 미리보기 스레드가 3초 내에 종료되지 않았습니다 -- 잠시 후 다시 시도하세요")
+                view.setText(tr("카메라 해제 실패"))
+                return
             if role == "agent":
                 self.agent_preview_worker = None
             else:
@@ -1076,6 +1141,17 @@ class LiberoCollectorWindow(QMainWindow):
                 if not ok:
                     all_ok = False
                     self._log(f"[카메라] {role} 미리보기 스레드가 3초 내에 종료되지 않았습니다")
+                    # Keep the reference instead of dropping it here: w.stop()
+                    # only flips a flag the thread checks between reads, so a
+                    # blocked cam.read() (e.g. a USB hiccup) can leave it
+                    # genuinely still running past this timeout. Nulling the
+                    # attribute would drop the last Python reference to a
+                    # QThread whose run() is still executing -- undefined
+                    # behavior once GC'd, not just a leak. It'll finish and
+                    # release the camera on its own eventually; whoever
+                    # starts a new preview for this role will stop it (this
+                    # same wait) before opening the pipeline again.
+                    continue
                 if role == "agent":
                     self.agent_preview_worker = None
                 else:
@@ -1152,10 +1228,13 @@ class LiberoCollectorWindow(QMainWindow):
         self.connect_btn.clicked.connect(self._on_connect)
         layout.addWidget(self.connect_btn)
 
+        # Label/action depend on self._teleop_btn_mode ("match"/"start") --
+        # not registered via self._reg since its text is runtime-derived, same
+        # reasoning as state_label/node_label (see _update_teleop_btn_label).
         self.start_teleop_btn = QPushButton()
-        self._reg(self.start_teleop_btn.setText, "텔레옵 시작 (Space)")
-        self.start_teleop_btn.clicked.connect(self._on_start_teleop)
+        self.start_teleop_btn.clicked.connect(self._on_teleop_btn)
         layout.addWidget(self.start_teleop_btn)
+        self._update_teleop_btn_label()
 
         self.skip_reset_btn = QPushButton()
         self._reg(self.skip_reset_btn.setText, "리셋 대기 건너뛰기 (Enter)")
@@ -1560,7 +1639,17 @@ class LiberoCollectorWindow(QMainWindow):
             self.schema_btn,
         ):
             w.setEnabled(not connected)
-        self.start_teleop_btn.setEnabled(connected and not recording and self.node_ok)
+        # In "match" mode (자세 매칭 자동화, issue #8), motor protection requires
+        # the loose manual gate to already be satisfied (gate_ok, the actual
+        # per-joint all_ok -- not just "we're somewhere in the gate state").
+        # Clicking it flips to "start" mode right away (see _on_teleop_btn) --
+        # auto-align then runs in the background while the button, now
+        # meaning "start teleop", stays unconditionally clickable, so the
+        # operator isn't forced to wait it out.
+        self.start_teleop_btn.setEnabled(
+            connected and not recording and self.node_ok
+            and (self._teleop_btn_mode == "start" or gate_ok)
+        )
         self.skip_reset_btn.setEnabled(connected and reset_wait and self.node_ok)
         self.save_success_btn.setEnabled(connected and recording and self.node_ok)
         self.save_fail_btn.setEnabled(connected and recording and self.node_ok)
@@ -1638,6 +1727,7 @@ class LiberoCollectorWindow(QMainWindow):
         self.worker.state_changed.connect(self._on_state_changed)
         self.worker.frames_ready.connect(self._on_frames)
         self.worker.gate_status.connect(self._on_gate_status)
+        self.worker.pose_match_status.connect(self._on_pose_match_status)
         self.worker.episode_progress.connect(self._on_episode_progress)
         self.worker.episode_saved.connect(self._on_episode_saved)
         self.worker.episode_discarded.connect(self._on_episode_discarded)
@@ -1664,6 +1754,10 @@ class LiberoCollectorWindow(QMainWindow):
         self.episode_label.setText(tr("에피소드: {n}").format(n=start_count))
         self.active_file_path = Path(file_path)
         self._log(f"[연결 완료] 기존 {start_count}개 에피소드 ({file_path})")
+        self._gate_all_ok = False
+        self._teleop_btn_mode = "match"
+        self._auto_matching_active = False
+        self._update_teleop_btn_label()
         self._set_controls_enabled(connected=True, gate_ok=False, recording=False, reset_wait=False)
 
     @pyqtSlot(list)
@@ -1675,10 +1769,18 @@ class LiberoCollectorWindow(QMainWindow):
     def _on_state_changed(self, state: str) -> None:
         self._current_state = state
         self.state_label.setText(tr(STATE_LABELS_KO.get(state, state)))
+        if state == "gate":
+            # Fresh alignment phase (new episode, or back from go_home) --
+            # require auto-match again rather than carrying over a stale
+            # "already converged" from a previous pose (see issue #8).
+            self._gate_all_ok = False
+            self._teleop_btn_mode = "match"
+            self._auto_matching_active = False
+            self._update_teleop_btn_label()
         recording = state == "recording"
         reset_wait = state == "reset_wait"
         self._set_controls_enabled(
-            connected=True, gate_ok=(state == "gate"), recording=recording, reset_wait=reset_wait
+            connected=True, gate_ok=self._gate_all_ok, recording=recording, reset_wait=reset_wait
         )
         if state != "recording":
             self.progress_label.setText("")
@@ -1705,10 +1807,27 @@ class LiberoCollectorWindow(QMainWindow):
     @pyqtSlot(object, object, bool)
     def _on_gate_status(self, leader, follower, all_ok) -> None:
         deltas = np.asarray(leader) - np.asarray(follower)
+        # Delta bars stay live during auto-align too (see
+        # CollectionWorker._emit_gate_status) so the operator can watch the
+        # joints actually converge, not just before/after the pull.
         for bar, d in zip(self.delta_bars, deltas):
             bar.update_delta(float(d), GATE_RAD)
+        self._gate_all_ok = bool(all_ok)
+        self._set_controls_enabled(
+            connected=True,
+            gate_ok=self._gate_all_ok,
+            recording=(self._current_state == "recording"),
+            reset_wait=(self._current_state == "reset_wait"),
+        )
+        if self._auto_matching_active:
+            # _on_pose_match_status owns gate_summary's text while a pull is
+            # actually in progress -- don't fight it over the same label.
+            return
         if all_ok:
-            self.gate_summary.setText(tr("모든 조인트 일치 -- '텔레옵 시작'을 누르세요"))
+            if self._teleop_btn_mode == "match":
+                self.gate_summary.setText(tr("모든 조인트 일치 -- '자세 매칭 자동화'를 눌러 정밀 정렬하세요"))
+            else:
+                self.gate_summary.setText(tr("모든 조인트 일치 -- '텔레옵 시작'을 누르세요"))
             self.gate_summary.setStyleSheet("color: #2ecc71; font-weight: bold;")
         else:
             worst = int(np.argmax(np.abs(deltas)))
@@ -1751,7 +1870,7 @@ class LiberoCollectorWindow(QMainWindow):
         # has switched it to English.
         self._set_controls_enabled(
             connected=True,
-            gate_ok=(self._current_state == "gate"),
+            gate_ok=self._gate_all_ok,
             recording=(self._current_state == "recording"),
             reset_wait=(self._current_state == "reset_wait"),
         )
@@ -1784,6 +1903,10 @@ class LiberoCollectorWindow(QMainWindow):
         self.worker = None
         self.node_ok = True
         self._current_state = "idle"
+        self._gate_all_ok = False
+        self._teleop_btn_mode = "match"
+        self._auto_matching_active = False
+        self._update_teleop_btn_label()
         self.active_file_path = None  # file is no longer exclusively open; browser can read it directly
         self._set_controls_enabled(connected=False, gate_ok=False, recording=False, reset_wait=False)
         self.state_label.setText(tr("대기"))
@@ -1793,9 +1916,57 @@ class LiberoCollectorWindow(QMainWindow):
         self._on_camera_selection_changed("agent")
         self._on_camera_selection_changed("wrist")
 
-    def _on_start_teleop(self) -> None:
-        if self.worker:
+    def _update_teleop_btn_label(self) -> None:
+        """Re-derives start_teleop_btn's text/tooltip from
+        self._teleop_btn_mode -- called on construction, every mode change,
+        and language toggle (see _retranslate_ui)."""
+        if self._teleop_btn_mode == "match":
+            self.start_teleop_btn.setText(tr("자세 매칭 자동화 (Space)"))
+            self.start_teleop_btn.setToolTip(
+                tr("먼저 대략적으로 자세를 맞추면 활성화됩니다 (게이트 {gate} rad 이내)").format(gate=GATE_RAD)
+            )
+        else:
+            self.start_teleop_btn.setText(tr("텔레옵 시작 (Space)"))
+            self.start_teleop_btn.setToolTip("")
+
+    def _on_teleop_btn(self) -> None:
+        """Single button, two meanings depending on self._teleop_btn_mode
+        (see issue #8): "match" kicks off auto-align and immediately flips
+        to "start" mode -- the button stays enabled and clickable the whole
+        time auto-align runs in the background, so the operator doesn't have
+        to wait it out; clicking again (now "start teleop") sends
+        start_teleop, which the worker honors either way -- after
+        convergence (holds until this click, see CollectionWorker._pose_gate)
+        or mid-align (aborts the pull immediately, see
+        CollectionWorker._auto_match_pose). _on_pose_match_status's "done"
+        just relabels/re-affirms once auto-align itself finishes on its own.
+        """
+        if not self.worker:
+            return
+        if self._teleop_btn_mode == "match":
+            self._teleop_btn_mode = "start"
+            self._update_teleop_btn_label()
+            self.gate_summary.setText(tr("자동 정렬 중..."))
+            self.gate_summary.setStyleSheet("color: #3498db; font-weight: bold;")
+            self.worker.cmd_auto_match_pose()
+        else:
             self.worker.cmd_start_teleop()
+
+    @pyqtSlot(float, bool)
+    def _on_pose_match_status(self, err: float, done: bool) -> None:
+        # Signal-derived on purpose (see the attribute's own comment in
+        # __init__) -- self-corrects even if the worker silently rejected
+        # the request (precondition race), since then this never fires True.
+        self._auto_matching_active = not done
+        if not done:
+            self.gate_summary.setText(tr("자동 정렬 중... (최대 오차 {err} rad)").format(err=f"{err:.3f}"))
+            self.gate_summary.setStyleSheet("color: #3498db; font-weight: bold;")
+            return
+        self._teleop_btn_mode = "start"
+        self._update_teleop_btn_label()
+        self.gate_summary.setText(tr("자동 정렬 완료 -- '텔레옵 시작'을 누르세요"))
+        self.gate_summary.setStyleSheet("color: #2ecc71; font-weight: bold;")
+        self.start_teleop_btn.setEnabled(True)
 
     def _on_skip_reset(self) -> None:
         if self.worker:
@@ -2069,7 +2240,23 @@ class LiberoCollectorWindow(QMainWindow):
         self._stop_previews()
         if self.worker is not None and self.worker.isRunning():
             self.worker.stop()
-            self.worker.wait(5000)
+            # 15s, not 5s: CollectionWorker.run()'s own teardown can
+            # legitimately take close to 10s on its own (the final
+            # ramp-back-to-home is real physical motion, up to 200 ticks *
+            # 0.05s) even when nothing is wrong. A too-short wait here used
+            # to make the window disappear while that teardown was still
+            # genuinely in progress -- indistinguishable from an actual hang
+            # from the outside. If this still times out, something in the
+            # teardown chain is stuck despite its own bounded waits (see
+            # DynamixelDriver.close()'s comment for the one confirmed
+            # culprit found and fixed) -- logged so a repeat is diagnosable,
+            # since there's no safe way to force-kill a QThread from here.
+            if not self.worker.wait(15000):
+                self._log(
+                    "[종료] 워커 스레드가 15초 내에 종료되지 않았습니다 -- "
+                    "창은 닫히지만 백그라운드에서 계속 정리를 시도합니다. "
+                    "반복되면 로그 파일과 함께 알려주세요."
+                )
         self._on_stop_node()
         if self.convert_process is not None and self.convert_process.state() != QProcess.ProcessState.NotRunning:
             self.convert_process.terminate()
@@ -2101,7 +2288,8 @@ class LiberoCollectorWindow(QMainWindow):
         GELLO leader, not the mouse). Same key means different things
         depending on state, mirroring the corresponding button:
 
-            gate       + Space          -> 텔레옵 시작 (start teleop)
+            gate       + Space          -> 자세 매칭 자동화, then 텔레옵 시작
+                                            (see _on_teleop_btn / issue #8)
             recording  + Space          -> 저장 (성공)
             recording  + Esc            -> 저장 (실패)
             recording  + Delete/Backspace -> 폐기 (discard)
@@ -2119,7 +2307,7 @@ class LiberoCollectorWindow(QMainWindow):
             key = event.key()
             if key == Qt.Key.Key_Space:
                 if self._current_state == "gate":
-                    self._on_start_teleop()
+                    self._on_teleop_btn()
                     return True
                 if self._current_state == "recording":
                     self._on_save(True)

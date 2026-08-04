@@ -70,6 +70,7 @@ class CollectionWorker(QThread):
     state_changed = pyqtSignal(str)
     frames_ready = pyqtSignal(object, object)  # agentview_rgb, eye_in_hand_rgb (np.ndarray)
     gate_status = pyqtSignal(object, object, bool)  # leader(8,), follower(8,), all_ok
+    pose_match_status = pyqtSignal(float, bool)  # max joint error (rad), done
     episode_progress = pyqtSignal(int, float)  # n_frames, seconds
     episode_saved = pyqtSignal(str, int)  # demo_name, n_frames
     episode_discarded = pyqtSignal(int)  # n_frames
@@ -96,6 +97,9 @@ class CollectionWorker(QThread):
     # Called from the GUI (main) thread; safe because queue.Queue is thread-safe.
     def cmd_start_teleop(self) -> None:
         self._cmds.put(("start_teleop",))
+
+    def cmd_auto_match_pose(self) -> None:
+        self._cmds.put(("auto_match_pose",))
 
     def cmd_save_episode(self, success: Optional[bool]) -> None:
         self._cmds.put(("save_episode", success))
@@ -182,6 +186,38 @@ class CollectionWorker(QThread):
             return "quit"
         if go_home_seen and react_to_go_home:
             return "go_home"
+        return None
+
+    def _drain_match_interrupt(self) -> Optional[str]:
+        """Like ``_drain_interrupt``, but for ``_auto_match_pose``'s loop
+        specifically: a queued ``start_teleop`` there is NOT meaningless --
+        the operator is allowed to start teleop mid-align (see issue #8
+        follow-up), which aborts the pull rather than silently dropping the
+        click. ``quit``/``go_home`` still win over a same-batch
+        ``start_teleop`` (same precedence as ``_drain_interrupt``).
+        """
+        quit_seen = False
+        go_home_seen = False
+        start_seen = False
+        try:
+            while True:
+                cmd = self._cmds.get_nowait()
+                if cmd[0] == "delete_episode":
+                    self._handle_delete_episode(cmd[1])
+                elif cmd[0] == "quit":
+                    quit_seen = True
+                elif cmd[0] == "go_home":
+                    go_home_seen = True
+                elif cmd[0] == "start_teleop":
+                    start_seen = True
+        except queue.Empty:
+            pass
+        if quit_seen:
+            return "quit"
+        if go_home_seen:
+            return "go_home"
+        if start_seen:
+            return "start_teleop"
         return None
 
     def _emit_frames(self, obs: dict) -> None:
@@ -292,6 +328,22 @@ class CollectionWorker(QThread):
             time.sleep(0.05)
 
     # ------------------------------------------------------------------ gate
+    def _emit_gate_status(self) -> tuple[np.ndarray, bool]:
+        """Reads leader+follower, emits frames + gate_status (drives the
+        GUI's live per-joint delta bars), and returns (delta, all_ok) for the
+        caller's own branching. Shared by _pose_gate's main loop and
+        _auto_match_pose's loop -- the delta bars keep updating live during
+        auto-align too, not just manual matching (issue #8 follow-up)."""
+        act = self._teleop.get_action()
+        obs = self._get_obs()
+        self._emit_frames(obs)
+        q_led = np.array([act[k] for k in JOINT_KEYS[:7]])
+        q_rob = np.array([obs[k] for k in JOINT_KEYS[:7]])
+        delta = np.abs(q_led - q_rob)
+        all_ok = bool(delta.max() <= GATE_RAD)
+        self.gate_status.emit(self._joint_vec(act), self._joint_vec(obs), all_ok)
+        return delta, all_ok
+
     def _pose_gate(self, timeout: float = 3600.0) -> str:
         """Blocks (emitting live deltas + frames) until leader matches reset_q.
 
@@ -299,35 +351,118 @@ class CollectionWorker(QThread):
         """
         self.state_changed.emit("gate")
         deadline = time.monotonic() + timeout
+        try:
+            while True:
+                cmd = self._poll_cmd()
+                if cmd and cmd[0] == "quit":
+                    return "quit"
+                if cmd and cmd[0] == "go_home":
+                    return "go_home"
+                delta, all_ok = self._emit_gate_status()
+                # Auto-advance is disabled on purpose: matching alone never starts
+                # recording, only an explicit Start Teleop click does -- so a
+                # momentary match mid-motion can't silently kick things off.
+                if cmd and cmd[0] == "start_teleop":
+                    if all_ok:
+                        return "ok"
+                    self.log_message.emit(
+                        f"[GATE] 아직 자세가 맞지 않습니다 (최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
+                    )
+                if cmd and cmd[0] == "auto_match_pose":
+                    # Motor-protection precondition: only ever pull via the
+                    # leader's own motors once the loose manual gate already
+                    # passed, same all_ok this state already computes every
+                    # tick -- the GUI also gates the button on this, but re-check
+                    # here too in case a click and a pose drift raced.
+                    if not all_ok:
+                        self.log_message.emit(
+                            f"[자동정렬] 먼저 대략적으로 자세를 맞춰주세요 "
+                            f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
+                        )
+                    else:
+                        outcome = self._auto_match_pose()
+                        if outcome in ("quit", "go_home"):
+                            return outcome
+                        if outcome == "start_teleop":
+                            # Operator started teleop mid-align -- the pull
+                            # is already released (see _auto_match_pose), so
+                            # just honor it like a normal Start Teleop click.
+                            return "ok"
+                        # outcome == "ok": converged, and per _auto_match_pose's
+                        # contract the leader is left TORQUE-HELD at the target
+                        # (not released) -- the loop just keeps looping, still
+                        # in "gate", holding the matched pose until the operator
+                        # actually clicks Start Teleop (or quits/goes home). The
+                        # `finally` below releases it whichever way this
+                        # function ends up returning.
+                if time.monotonic() > deadline:
+                    self.log_message.emit(f"[GATE] {timeout:.0f}s 시간 초과")
+                    return "quit"
+                time.sleep(0.05)
+        finally:
+            # Single release point for every way out of the gate state:
+            # Start Teleop was clicked (leader must be free again for actual
+            # teleop), or we're heading home/quitting. No-op if nothing was
+            # being held (e.g. the operator never used auto-match, or
+            # _auto_match_pose already released it on its own timeout/abort
+            # path below).
+            self._teleop.cancel_pose_match()
+
+    def _auto_match_pose(self, timeout: float = 15.0) -> str:
+        """Drives the GELLO leader's own motors to pull it the rest of the
+        way onto ``self._reset_q`` -- an automated version of the manual
+        nudging the operator otherwise does by hand before every episode
+        (see GitHub issue #8). Only reachable once the loose manual gate
+        (GATE_RAD) already passed, so this only ever closes a <= GATE_RAD
+        gap, never drives across the leader's full range.
+
+        On convergence, deliberately does NOT release the hold -- the leader
+        stays torque-held at the target so it can't drift again before the
+        operator actually starts teleop (_pose_gate's `finally` is what
+        releases it, right as the gate state is left one way or another).
+        A timeout (never converged) does release here, falling back to
+        manual matching in the gate loop that's still running. Starting
+        teleop is also allowed mid-align (the operator doesn't have to wait
+        out the full pull): a queued ``start_teleop`` aborts it, releasing
+        the hold immediately -- once real teleop is about to take over,
+        holding the align force serves no purpose (_approach_ramp handles
+        whatever residual gap is left).
+
+        Returns "ok" (converged-and-held, timed-out-and-released, or the
+        assist isn't available so there's nothing to do -- all three just
+        resume the caller's gate loop), "start_teleop" (aborted-and-released,
+        caller should proceed to start teleop), "quit", or "go_home" (both
+        release before returning, since either leaves the gate state for
+        good).
+        """
+        try:
+            self._teleop.start_pose_match(self._reset_q)
+        except RuntimeError as e:
+            self.log_message.emit(f"[자동정렬] 사용 불가: {e}")
+            return "ok"
+        self.log_message.emit("[자동정렬] 시작...")
+        deadline = time.monotonic() + timeout
         while True:
-            cmd = self._poll_cmd()
-            if cmd and cmd[0] == "quit":
-                return "quit"
-            if cmd and cmd[0] == "go_home":
-                return "go_home"
-            act = self._teleop.get_action()
-            obs = self._get_obs()
-            self._emit_frames(obs)
-            q_led = np.array([act[k] for k in JOINT_KEYS[:7]])
-            q_rob = np.array([obs[k] for k in JOINT_KEYS[:7]])
-            delta = np.abs(q_led - q_rob)
-            all_ok = bool(delta.max() <= GATE_RAD)
-            self.gate_status.emit(
-                self._joint_vec(act), self._joint_vec(obs), all_ok
-            )
-            # Auto-advance is disabled on purpose: matching alone never starts
-            # recording, only an explicit Start Teleop click does -- so a
-            # momentary match mid-motion can't silently kick things off.
-            if cmd and cmd[0] == "start_teleop":
-                if all_ok:
-                    return "ok"
-                self.log_message.emit(
-                    f"[GATE] 아직 자세가 맞지 않습니다 (최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
-                )
+            interrupt = self._drain_match_interrupt()
+            if interrupt:
+                self._teleop.cancel_pose_match()
+                if interrupt == "start_teleop":
+                    self.log_message.emit("[자동정렬] 텔레옵 시작으로 중단")
+                return interrupt
+            self._emit_gate_status()  # keep the delta bars live during the pull
+            status = self._teleop.pose_match_status()
+            err = status["error"]
+            done = bool(status["done"])
+            self.pose_match_status.emit(float(err) if err is not None else 0.0, done)
+            if done:
+                self.log_message.emit("[자동정렬] 완료 -- 텔레옵 시작 전까지 자세를 유지합니다")
+                return "ok"
             if time.monotonic() > deadline:
-                self.log_message.emit(f"[GATE] {timeout:.0f}s 시간 초과")
-                return "quit"
-            time.sleep(0.05)
+                self.log_message.emit(f"[자동정렬] {timeout:.0f}s 시간 초과 -- 수동으로 조정하세요")
+                self.pose_match_status.emit(float(err) if err is not None else 0.0, True)
+                self._teleop.cancel_pose_match()
+                return "ok"
+            time.sleep(0.02)
 
     # -------------------------------------------------------------- episode
     def _record_episode(self) -> tuple[str, int]:

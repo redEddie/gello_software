@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass, replace
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -30,6 +30,28 @@ class DynamixelRobotConfig:
     """The follower's (lower, upper) joint limits (rad), arm joints only.  When
     set, GelloAgent puts a physical wall on the leader here (see JointLimitWall);
     None means no wall (the default for arms without published limits)."""
+
+    servo_types: Optional[Sequence[str]] = None
+    """One Dynamixel model name per servo actually on the bus -- joint_ids'
+    arm servos AND the gripper (len == len(joint_ids) + 1), e.g.
+    ("XL330_M288_T",) * 8.  Feeds DynamixelDriver's TORQUE_TO_CURRENT_MAPPING
+    / SERVO_CURRENT_LIMITS; None (the default) leaves per-servo current
+    clipping off entirely -- set_current() then trusts every caller (wall,
+    match, gravity comp, ...) to have already clipped its own contribution."""
+
+    gravity_gains: Optional[Sequence[float]] = None
+    """Empirical per-arm-joint gravity-comp gains (current per rad, see
+    JointLimitWall.set_gravity_comp) -- None/all-zero (the default) leaves
+    gravity comp off. Tune with scripts/tune_gravity_comp.py."""
+
+    gravity_offsets: Optional[Sequence[float]] = None
+    """Per-arm-joint angle (rad) where that joint's own gravity_gains term is
+    zero -- pairs with gravity_gains; None defaults to all-zero."""
+
+    stiction_gain: float = 0.0
+    """Friction-dither amplitude as a fraction of each joint's own |tau_g| --
+    see JointLimitWall.set_gravity_comp. Meaningless while gravity_gains is
+    all-zero."""
 
     def __post_init__(self):
         assert len(self.joint_ids) == len(self.joint_offsets)
@@ -64,6 +86,7 @@ class DynamixelRobotConfig:
             gripper_config=self.gripper_config,
             start_joints=start_joints,
             joint_limits=self.joint_limits,
+            servo_types=list(self.servo_types) if self.servo_types is not None else None,
         )
 
 
@@ -94,6 +117,23 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
         # least-open reading so a released trigger always maps to fully open
         gripper_config=(8, 174.0, 143.8),
         joint_limits=(FR3_Q_LOWER, FR3_Q_UPPER),
+        # All 8 servos (7 arm + gripper) are XL330-M288-T -- see driver.py's
+        # SERVO_CURRENT_LIMITS comment (read from this hardware's own Current
+        # Limit register). Enables per-servo current clipping in set_current();
+        # previously unset here, so that clipping was silently a no-op for
+        # this arm (see issue #3's "공통 선결 과제").
+        servo_types=("XL330_M288_T",) * 8,
+        # Empirical per-joint gravity comp (issue #3's "③"), all-zero/off.
+        # A first real-hardware tuning pass (gravity_gains=(0,70,0,0,70,0,0),
+        # gravity_offsets=(0.075,0,0,0,0,0,0)) did not actually behave right
+        # on the leader -- reverted (see issue #3, reopened) pending further
+        # investigation of the empirical single-pendulum-per-joint model
+        # itself (gello/robots/joint_limit_wall.py), not just more tuning.
+        # No GELLO-leader URDF exists to do this the FACTR/RNEA way (no CAD
+        # data available) -- see scripts/tune_gravity_comp.py either way.
+        gravity_gains=(0.0,) * 7,
+        gravity_offsets=(0.0,) * 7,
+        stiction_gain=0.0,
     ),
     # xArm
     "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT3M9NVB-if00-port0": DynamixelRobotConfig(
@@ -209,6 +249,9 @@ class GelloAgent(Agent):
                 # closes, so resistance onset == grasp.
                 gripper_open_close=self._robot.gripper_open_close,
                 trigger_start=GRIPPER_CLOSE_AT,
+                gravity_gains=config.gravity_gains,
+                gravity_offsets=config.gravity_offsets,
+                stiction_gain=config.stiction_gain,
             )
             self._wall.start()
         elif enable_wall:
@@ -218,6 +261,71 @@ class GelloAgent(Agent):
         if self._wall is not None:
             self._wall.poll()  # re-raises if the wall thread died -> teleop dies
         return self._robot.get_joint_state()
+
+    # ------------------------------------------------------- pose-match assist
+    def start_pose_match(self, target_q: np.ndarray) -> None:
+        """Begin auto-pulling the leader's arm joints onto ``target_q``
+        (follower joint space, arm joints only -- same space ``act()``
+        returns), via the joint-limit wall's current-writer thread. Raises if
+        there is no wall (``enable_wall=False``, or this port has no
+        ``joint_limits``): there is deliberately no separate control loop for
+        this, since a second thread calling ``set_current`` on the same bus
+        would fight the wall's.
+        """
+        if self._wall is None:
+            raise RuntimeError(
+                "pose-match assist requires the leader's joint-limit wall "
+                "(enable_wall=True and joint_limits configured for this port)"
+            )
+        self._wall.set_match_target(np.asarray(target_q, dtype=float))
+
+    def pose_match_status(self) -> Dict[str, Any]:
+        """``{"error": max abs rad or None, "done": bool}``. ``done`` is
+        always True (nothing to wait for) when there is no wall or no match
+        is in progress."""
+        if self._wall is None:
+            return {"error": None, "done": True}
+        s = self._wall.status()
+        return {"error": s.get("match_error"), "done": bool(s.get("match_done"))}
+
+    def cancel_pose_match(self) -> None:
+        """Release the match target early (abort/interrupt). No-op if there
+        is no wall or nothing was in progress."""
+        if self._wall is not None:
+            self._wall.set_match_target(None)
+
+    # --------------------------------------------------------- gravity comp
+    def set_gravity_comp(
+        self,
+        gains: Optional[np.ndarray] = None,
+        offsets: Optional[np.ndarray] = None,
+        stiction_gain: Optional[float] = None,
+    ) -> None:
+        """Live-adjust the empirical gravity-comp model (see
+        JointLimitWall's docstring / scripts/tune_gravity_comp.py). Raises if
+        there is no wall, same reasoning as start_pose_match."""
+        if self._wall is None:
+            raise RuntimeError(
+                "gravity comp requires the leader's joint-limit wall "
+                "(enable_wall=True and joint_limits configured for this port)"
+            )
+        self._wall.set_gravity_comp(gains=gains, offsets=offsets, stiction_gain=stiction_gain)
+
+    def gravity_status(self) -> Dict[str, Any]:
+        """``{"tau_g": per-joint current or None, "cur": total per-joint
+        current or None, "armed": bool, "q": ..., "dq": ...}`` straight from
+        the wall's latest tick; all-``None``/``False`` when there is no
+        wall."""
+        if self._wall is None:
+            return {"tau_g": None, "cur": None, "armed": False, "q": None, "dq": None}
+        s = self._wall.status()
+        return {
+            "tau_g": s.get("tau_g"),
+            "cur": s.get("cur"),
+            "armed": s.get("armed", False),
+            "q": s.get("q"),
+            "dq": s.get("dq"),
+        }
 
     def close(self) -> None:
         """Clean shutdown: stops the leader wall (no-op if there is none)
