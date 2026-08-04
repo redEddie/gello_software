@@ -97,6 +97,7 @@ from gello.gui_widgets import (  # noqa: E402
     DeltaBar,
     EpisodeLoadWorker,
     HdfUploadDialog,
+    HfAccountDialog,
     LerobotConvertDialog,
     Recents,
     RepackDialog,
@@ -601,6 +602,11 @@ class WorkspaceWindow(QMainWindow):
         self.hf_label.setStyleSheet(f"color:{acct_color}; font-weight:bold;")
         self.hf_label.setWordWrap(True)
         col.addWidget(self.hf_label)
+        # 이 PC는 공용이라 '누구로 올라가는가'가 매번 다를 수 있다. 확인과 전환을
+        # 업로드 버튼 바로 위에 둔다 -- 올린 뒤 커밋 기록에서 알게 되면 늦는다.
+        acct_btn = QPushButton(tr("계정 확인 / 전환..."))
+        acct_btn.clicked.connect(self._on_hf_accounts)
+        col.addWidget(acct_btn)
         for text, slot, style in (
             (tr("용량 최적화 (재압축)"), self._on_repack, "background-color:#9b59b6; color:white;"),
             (tr("HDF5 업로드..."), self._on_hdf5_upload, ""),
@@ -892,6 +898,7 @@ class WorkspaceWindow(QMainWindow):
         m = mb.addMenu(tr("Tools"))
         m.addAction(tr("시스템 튜닝 실행 (runme.sh)"), self._run_runme)
         m.addAction(tr("카메라 점검 (USB 속도·프레임)"), self._on_check_cameras)
+        m.addAction(tr("Hugging Face 계정..."), self._on_hf_accounts)
         m.addSeparator()
         m.addAction(tr("데이터셋 스키마..."), self._on_schema)
         m.addAction(tr("언어 전환"), self._toggle_language)
@@ -1923,6 +1930,15 @@ class WorkspaceWindow(QMainWindow):
             return
         self.log("[튜닝] scripts/runme.sh 를 실행합니다 (관리자 비밀번호 창이 뜹니다).")
         self._run_runme()
+
+    def _on_hf_accounts(self) -> None:
+        dlg = HfAccountDialog(self)
+        dlg.exec()
+        text, color = hf_account()
+        self.hf_label.setText(text)
+        self.hf_label.setStyleSheet(f"color:{color}; font-weight:bold;")
+        if dlg.switched_to():
+            self.log(f"[HF] 이제 {dlg.switched_to()} 계정으로 업로드합니다.")
 
     def _on_check_cameras(self) -> None:
         """Runs scripts/check_cameras.py into the Validation tab.
