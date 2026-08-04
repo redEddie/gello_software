@@ -52,7 +52,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-from PyQt6.QtCore import QProcess, Qt, QTimer, pyqtSlot
+from PyQt6.QtCore import QEvent, QProcess, Qt, QTimer, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup, QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -133,6 +133,24 @@ _DOT = {"ok": "#2ecc71", "busy": "#f39c12", "off": "#7f8c8d", "bad": "#e74c3c"}
 TODO_STYLE = "color:#6b6b6b; font-style:italic;"
 TODO_MARK = "미개발"
 
+# The worker's state names, and what the operator can do from each. Both the
+# 진행 label and the shortcut hint read from these, so the hint can never drift
+# out of sync with what eventFilter() actually accepts.
+STATE_LABELS = {
+    "connecting": "연결 중...",
+    "idle": "대기",
+    "homing": "홈 복귀 중",
+    "reset_wait": "리셋 대기 — 물체를 다시 놓으세요",
+    "gate": "자세 정렬 — 리더를 팔로워에 맞추세요",
+    "approach": "접근 중",
+    "recording": "기록 중",
+}
+SHORTCUT_HINTS = {
+    "reset_wait": "Enter: 대기 건너뛰고 바로 진행",
+    "gate": "Space: 텔레옵 시작",
+    "recording": "Space: 저장(성공)   Esc: 저장(실패)   Del: 폐기",
+}
+
 
 def mark_todo(widget: QWidget, note: str = "") -> QWidget:
     widget.setEnabled(False)
@@ -185,6 +203,7 @@ class WorkspaceWindow(QMainWindow):
         self._fps_value = 0.0
         self._pending_success: bool | None = None
         self._no_dataset_session = False
+        self._current_state = "idle"
         self._recents = Recents()
         self._log_file = None
         if log_path is not None:
@@ -208,6 +227,10 @@ class WorkspaceWindow(QMainWindow):
         self._play_timer = QTimer(self)
         self._play_timer.setInterval(int(1000 / PLAYBACK_FPS))
         self._play_timer.timeout.connect(self._on_play_tick)
+
+        # App-wide, not window-scoped: the operator's hands are on the leader,
+        # so whichever widget happens to hold focus must not swallow the keys.
+        QApplication.instance().installEventFilter(self)
 
         self._set_activity("configure")
         self._set_running(False)
@@ -466,6 +489,11 @@ class WorkspaceWindow(QMainWindow):
         self.save_status_label = QLabel("")
         self.save_status_label.setStyleSheet("color:#888;")
         pcol.addWidget(self.save_status_label)
+        self.shortcut_hint = QLabel("")
+        self.shortcut_hint.setStyleSheet(
+            "color:#2ecc71; font-family:monospace; font-weight:bold;")
+        self.shortcut_hint.setWordWrap(True)
+        pcol.addWidget(self.shortcut_hint)
         col.addWidget(prog)
         col.addStretch()
         return w
@@ -764,6 +792,17 @@ class WorkspaceWindow(QMainWindow):
         m.addAction(tr("언어 전환"), self._toggle_language)
 
         m = mb.addMenu(tr("Help"))
+        m.addAction(tr("단축키..."), lambda: QMessageBox.information(
+            self, tr("단축키"),
+            tr("양손이 GELLO 리더 위에 있으므로 마우스 없이 조작합니다.\n"
+               "같은 키가 상태에 따라 다르게 동작합니다.\n\n"
+               "  자세 정렬 중   Space        텔레옵 시작\n"
+               "  기록 중        Space        저장 (성공)\n"
+               "  기록 중        Esc          저장 (실패)\n"
+               "  기록 중        Delete       폐기\n"
+               "  리셋 대기 중   Enter        대기 건너뛰기\n\n"
+               "지금 쓸 수 있는 키는 Collect 패널 아래에 초록색으로 표시됩니다.")))
+        m.addSeparator()
         m.addAction(tr("정보"), lambda: QMessageBox.information(
             self, tr("정보"),
             tr("FR3 GELLO 데이터 수집 워크스페이스\n\n"
@@ -1034,7 +1073,9 @@ class WorkspaceWindow(QMainWindow):
     # ------------------------------------------------------ worker slots
     @pyqtSlot(str)
     def _on_state(self, state: str) -> None:
-        self.state_label.setText(state)
+        self._current_state = state
+        self.state_label.setText(STATE_LABELS.get(state, state))
+        self.shortcut_hint.setText(SHORTCUT_HINTS.get(state, ""))
         self.right_fields["state"].setText(state)
         recording = "기록" in state or "record" in state.lower()
         self.lights["recording"].set("bad" if recording else "off",
@@ -1421,6 +1462,51 @@ class WorkspaceWindow(QMainWindow):
         self.bottom_tabs.setCurrentWidget(self.upload_view)
         self.log(f"[HDF5 업로드] 시작: {' '.join(args)}", "upload")
         proc.start()
+
+    # --------------------------------------------------------- shortcuts
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt override
+        """One-handed shortcuts for solo collection: both hands are on the
+        GELLO leader, not the mouse. The same key means different things per
+        state, mirroring the button that is live at that moment:
+
+            gate       + Space            -> 텔레옵 시작
+            recording  + Space            -> 저장 (성공)
+            recording  + Esc              -> 저장 (실패)
+            recording  + Delete/Backspace -> 폐기
+            reset_wait + Enter/Return     -> 리셋 대기 건너뛰기
+
+        Installed app-wide rather than on this window, so it fires no matter
+        which widget has focus -- the operator is not managing GUI focus while
+        teleoperating. Skipped while a modal dialog is open so Esc still
+        closes dialogs normally.
+        """
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and self.worker is not None
+            and QApplication.activeModalWidget() is None
+        ):
+            key = event.key()
+            state = self._current_state
+            if key == Qt.Key.Key_Space:
+                if state == "gate":
+                    self._cmd("cmd_start_teleop")
+                    return True
+                if state == "recording" and not self._no_dataset_session:
+                    self._save(True)
+                    return True
+            elif key == Qt.Key.Key_Escape:
+                if state == "recording" and not self._no_dataset_session:
+                    self._save(False)
+                    return True
+            elif key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                if state == "recording":
+                    self._cmd("cmd_discard_episode")
+                    return True
+            elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if state == "reset_wait":
+                    self._cmd("cmd_skip_reset_wait")
+                    return True
+        return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------- close
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
