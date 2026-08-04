@@ -1,3 +1,6 @@
+import ctypes
+import signal
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -6,12 +9,37 @@ import tyro
 from gello.robots.robot import BimanualRobot, PrintRobot
 from gello.zmq_core.robot_node import ZMQServerRobot
 
+_PR_SET_PDEATHSIG = 1
+
+
+def die_with_parent(sig: int = signal.SIGTERM) -> None:
+    """Ask the kernel to signal this process when its parent goes away.
+
+    The GUI stops this node in closeEvent, but that only runs on an orderly
+    quit. A hard exit (PyQt aborts the process on an unhandled exception in a
+    slot) leaves the node running and holding the robot's FCI connection, so
+    the next GUI cannot start one -- and nothing on screen explains why.
+    PDEATHSIG survives execve and does not depend on the parent running any
+    cleanup code, which is exactly the case that was failing.
+
+    Opt-in via --die-with-parent so a node started by hand in a terminal is
+    unaffected.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(_PR_SET_PDEATHSIG, sig, 0, 0, 0)
+    except Exception as e:  # noqa: BLE001
+        print(f"[node] PDEATHSIG 설정 실패 (계속 진행): {e}", flush=True)
+
 
 @dataclass
 class Args:
     robot: str = "xarm"
     robot_port: int = 6001
     hostname: str = "127.0.0.1"
+    # GUI가 켜줄 때 붙인다. 부모가 죽으면 커널이 이 프로세스를 종료시킨다.
+    die_with_parent: bool = False
     # 로봇 팔의 IP (정책 서버 주소가 아니다). FR3는 172.16.0.2 --
     # 192.168.1.10은 상류 GELLO 저장소의 xArm/UR 기본값이라 FR3에선 항상 타임아웃난다.
     robot_ip: str = "172.16.0.2"
@@ -137,6 +165,8 @@ def launch_robot_server(args: Args):
 
 
 def main(args):
+    if args.die_with_parent:
+        die_with_parent()
     launch_robot_server(args)
 
 

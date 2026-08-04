@@ -47,6 +47,7 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import json
 import shutil
+import traceback
 import sys
 import time
 from pathlib import Path
@@ -1740,7 +1741,10 @@ class WorkspaceWindow(QMainWindow):
             return
         proc = QProcess(self)
         proc.setProgram(PYLIBFRANKA_PYTHON)
-        proc.setArguments([LAUNCH_NODES_SCRIPT, "--robot", "fr3"])
+        # --die-with-parent: closeEvent가 노드를 정리하지만 그건 정상 종료일
+        # 때뿐이다. GUI가 갑자기 죽으면 노드가 FCI 연결을 쥔 채 남아 다음 실행이
+        # 노드를 못 띄운다. 커널이 대신 정리하게 한다.
+        proc.setArguments([LAUNCH_NODES_SCRIPT, "--robot", "fr3", "--die-with-parent"])
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.readyReadStandardOutput.connect(self._on_node_output)
         proc.finished.connect(lambda c, _s: self.log(f"[노드] 종료 (exit={c})"))
@@ -1922,12 +1926,49 @@ class WorkspaceWindow(QMainWindow):
         super().closeEvent(event)
 
 
+def _install_excepthook(log_path: Path, window_ref: dict) -> None:
+    """Logs unhandled exceptions instead of letting PyQt kill the process.
+
+    PyQt calls qFatal() -- i.e. abort() -- when a Python exception escapes a
+    slot, so the window vanishes with no message: the traceback goes to stderr,
+    and stderr goes nowhere when the app is launched from a desktop icon. That
+    is the 'GUI가 이유도 안 보여주고 꺼진다'. An installed excepthook takes
+    precedence over that abort, so the app survives a non-fatal slot error and,
+    either way, the traceback lands in the session log where it can be read
+    afterwards.
+    """
+    def hook(exc_type, exc, tb) -> None:
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        try:
+            with open(log_path, "a", buffering=1) as f:
+                f.write(f"\n[{time.strftime('%H:%M:%S')}] [예외] 처리되지 않은 오류\n{text}\n")
+        except OSError:
+            pass
+        print(text, file=sys.stderr, flush=True)
+        win = window_ref.get("win")
+        if win is not None:
+            try:
+                win.log(f"[예외] {exc_type.__name__}: {exc} — 자세한 내용은 로그 파일에")
+                win._alert(tr("내부 오류"),
+                           tr("{t}: {e}\n\n작업은 계속할 수 있지만, 이 상태가 이상하면 "
+                              "저장 후 다시 시작하세요.\n로그: {p}").format(
+                                  t=exc_type.__name__, e=exc, p=log_path),
+                           QMessageBox.Icon.Critical)
+            except Exception:  # noqa: BLE001
+                pass
+
+    sys.excepthook = hook
+
+
 def main() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"workspace_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    window_ref: dict = {}
+    _install_excepthook(log_path, window_ref)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     win = WorkspaceWindow(log_path)
+    window_ref["win"] = win
     win.show()
     sys.exit(app.exec())
 
