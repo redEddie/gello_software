@@ -233,6 +233,7 @@ class WorkspaceWindow(QMainWindow):
         self._fail_marked = False
         self._dying_previews: list = []
         self._connect_wait_since = None
+        self._episodes_at_connect = 0
         self._recents = Recents()
         self._log_file = None
         if log_path is not None:
@@ -1357,6 +1358,7 @@ class WorkspaceWindow(QMainWindow):
         self._refresh_fail_mark()
         self.log(f"[저장] {name} ({n_frames} frames)")
         self.right_fields["episode"].setText(name)
+        self._update_dataset_panel()
         self._refresh_stats()
 
     @pyqtSlot(int)
@@ -1388,6 +1390,7 @@ class WorkspaceWindow(QMainWindow):
             self.log("[연결] 연습 모드로 연결되었습니다.")
             return
         self.active_file_path = Path(path)
+        self._episodes_at_connect = int(n_episodes)
         self._update_dataset_panel()
         self.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
         self._refresh_dataset_tree()
@@ -1413,9 +1416,15 @@ class WorkspaceWindow(QMainWindow):
         self._fps_value = self._fps_count
         self._fps_count = 0
         self.right_fields["fps"].setText(f"{self._fps_value:.0f}")
+        if self.worker is not None and not self._no_dataset_session:
+            total = max(len(self.active_episode_cache or []),
+                        self._episodes_at_connect + self._session["saved"])
+            count = tr("에피소드 {t}개 (이번 세션 +{s})").format(
+                t=total, s=self._session["saved"])
+        else:
+            count = tr("저장 {s}").format(s=self._session["saved"])
         self.sb_right.setText(
-            f"{self._fps_value:.0f} fps   |   "
-            f"{tr('저장')} {self._session['saved']}   |   {self.root_edit.text()}")
+            f"{self._fps_value:.0f} fps   |   {count}   |   {self.root_edit.text()}")
 
     def _refresh_stats(self) -> None:
         s = self._session
@@ -1453,7 +1462,15 @@ class WorkspaceWindow(QMainWindow):
             task_text = cfg.language_instruction or cfg.task_name
             f["ds_task"].setText(task_text)
             f["ds_task"].setToolTip(task_text)
-            f["ds_episodes"].setText(str(len(self.active_episode_cache or [])))
+            # 저장은 백그라운드라 episode_list_changed가 몇 초 늦게 온다. 그걸
+            # 기다리면 방금 저장한 것이 한동안 안 세어져 "지금 몇 개째인지"를
+            # 알 수 없다. 연결 시점 개수 + 이번 세션 저장 수로 즉시 계산하고,
+            # 목록이 도착하면 그 값이 더 정확하므로 그쪽을 쓴다.
+            listed = len(self.active_episode_cache or [])
+            counted = self._episodes_at_connect + self._session["saved"]
+            total = max(listed, counted)
+            f["ds_episodes"].setText(
+                tr("{t}개  (이번 세션 +{s})").format(t=total, s=self._session["saved"]))
             f["ds_action"].setText(cfg.schema.action_space)
             f["ds_gripper"].setText(
                 "0/1 (obs와 동일)" if cfg.schema.gripper_action_match_obs else "-1/+1")
