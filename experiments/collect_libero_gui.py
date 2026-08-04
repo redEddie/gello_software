@@ -1183,7 +1183,7 @@ class LiberoCollectorWindow(QMainWindow):
         vsplit.setStretchFactor(0, 1)
         vsplit.setStretchFactor(1, 0)
         vsplit.setSizes([820, 160])
-        vsplit.setHandleWidth(8)
+        vsplit.setHandleWidth(4)
         vsplit.setChildrenCollapsible(False)
         vsplit.setStyleSheet(
             "QSplitter::handle:vertical {"
@@ -1951,8 +1951,9 @@ class LiberoCollectorWindow(QMainWindow):
         split.addWidget(self._build_player_panel())
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 0)
-        # 기본 핸들은 4px이라 사실상 못 잡는다. 넓히고 보이게 칠한다.
-        split.setHandleWidth(8)
+        # 잡기 어려웠던 건 폭보다 가동 범위가 없어서였다(setMaximumWidth(400)).
+        # 그건 없앴으므로 폭은 기본값 4px로 두고, 어디를 잡는지는 색으로 알린다.
+        split.setHandleWidth(4)
         split.setChildrenCollapsible(False)
         split.setStyleSheet(
             "QSplitter::handle:horizontal {"
