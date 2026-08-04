@@ -114,10 +114,11 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import h5py
 import numpy as np
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION, LeRobotDataset
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.dataset_schema import ACTION_SPACE_EE_DELTA  # noqa: E402
@@ -385,9 +386,22 @@ def main() -> None:
         root = Path(args.root)
         if not (root / "meta" / "info.json").exists():
             raise SystemExit(f"{root}에 변환된 LeRobot 데이터셋이 없습니다 (meta/info.json 없음)")
-        ds = LeRobotDataset(repo_id=args.repo_id, root=root)
-        print(f"업로드만 진행: {ds.meta.total_episodes}개 에피소드, "
-              f"{ds.meta.total_frames} 프레임 -> {args.repo_id}", flush=True)
+        # LeRobotDataset(repo_id=..., root=...) 를 여기서 쓰면 안 된다. 그 생성자는
+        # Hub 사본을 root로 먼저 동기화하면서, 방금 변환이 써놓은 meta/info.json과
+        # meta/stats.json을 Hub의 더 오래된 것으로 덮어쓴다. 그 뒤 push_to_hub는
+        # 새 data/·videos/ 청크는 올리지만 메타데이터는 낡은 채로 두므로, 실제
+        # 담긴 것보다 적은 에피소드를 선언하는 데이터셋이 게시된다 -- 새 에피소드는
+        # 파일로는 존재하나 어떤 리더에도 보이지 않는다.
+        # (실제로 발생: 121개를 올려놓고 total_episodes=117로 게시됨.)
+        # push_to_hub 자체는 repo_id / root / revision / meta.info 만 쓴다.
+        info = json.loads((root / "meta" / "info.json").read_text())
+        ds = LeRobotDataset.__new__(LeRobotDataset)
+        ds.repo_id = args.repo_id
+        ds.root = root
+        ds.revision = CODEBASE_VERSION
+        ds.meta = SimpleNamespace(info=info)
+        print(f"업로드만 진행: {info['total_episodes']}개 에피소드, "
+              f"{info['total_frames']} 프레임 -> {args.repo_id}", flush=True)
         ds.push_to_hub(private=args.private)
         print(f"완료: https://huggingface.co/datasets/{args.repo_id}", flush=True)
         return 0
