@@ -46,10 +46,9 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import json
-import os
 import shutil
-import traceback
 import sys
+import traceback
 import time
 from pathlib import Path
 
