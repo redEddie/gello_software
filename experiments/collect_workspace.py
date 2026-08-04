@@ -147,7 +147,7 @@ STATE_LABELS = {
 }
 SHORTCUT_HINTS = {
     "reset_wait": "Enter: 대기 건너뛰고 바로 진행",
-    "gate": "Space: 텔레옵 시작",
+    "gate": "Space: 텔레옵 시작   Enter: 자동 정렬 다시",
     "recording": "Space: 저장(성공)   Esc: 저장(실패)   Del: 폐기",
 }
 
@@ -204,6 +204,7 @@ class WorkspaceWindow(QMainWindow):
         self._pending_success: bool | None = None
         self._no_dataset_session = False
         self._current_state = "idle"
+        self._gate_ok = False
         self._recents = Recents()
         self._log_file = None
         if log_path is not None:
@@ -461,6 +462,13 @@ class WorkspaceWindow(QMainWindow):
         ccol = QVBoxLayout(ctl)
         self.start_btn = QPushButton(tr("Start Teleop (기록 시작)"))
         self.start_btn.clicked.connect(lambda: self._cmd("cmd_start_teleop"))
+        # 자동 정렬은 한 번 시간 초과되면 끝이었고, 다시 걸 방법이 없어 남은 길은
+        # 손으로 맞추는 것뿐이었다. 워커는 재요청을 받을 수 있으므로 버튼과 Enter
+        # 둘 다 연결한다. all_ok 전에는 잠근다 -- 리더 모터로 끌어당기는 동작이라
+        # 크게 어긋난 상태에서 걸면 모터에 무리가 간다(워커도 같은 조건을 재검사).
+        self.match_btn = QPushButton(tr("자동 정렬 다시 (Enter)"))
+        self.match_btn.setEnabled(False)
+        self.match_btn.clicked.connect(lambda: self._cmd("cmd_auto_match_pose"))
         self.skip_btn = QPushButton(tr("리셋 대기 건너뛰기"))
         self.skip_btn.clicked.connect(lambda: self._cmd("cmd_skip_reset_wait"))
         self.save_ok_btn = QPushButton(tr("저장 (성공)"))
@@ -473,7 +481,7 @@ class WorkspaceWindow(QMainWindow):
         self.discard_btn.clicked.connect(lambda: self._cmd("cmd_discard_episode"))
         self.home_btn = QPushButton(tr("홈으로"))
         self.home_btn.clicked.connect(lambda: self._cmd("cmd_go_home"))
-        for b in (self.start_btn, self.skip_btn, self.save_ok_btn,
+        for b in (self.start_btn, self.match_btn, self.skip_btn, self.save_ok_btn,
                   self.save_ng_btn, self.discard_btn, self.home_btn):
             ccol.addWidget(b)
         col.addWidget(ctl)
@@ -805,6 +813,7 @@ class WorkspaceWindow(QMainWindow):
                "  기록 중        Space        저장 (성공)\n"
                "  기록 중        Esc          저장 (실패)\n"
                "  기록 중        Delete       폐기\n"
+               "  자세 정렬 중   Enter        자동 정렬 다시 (대략 맞춘 뒤에만)\n"
                "  리셋 대기 중   Enter        대기 건너뛰기\n\n"
                "지금 쓸 수 있는 키는 Collect 패널 아래에 초록색으로 표시됩니다.")))
         m.addSeparator()
@@ -1155,6 +1164,14 @@ class WorkspaceWindow(QMainWindow):
         self.gate_label.setText(tr("자세 일치 — 시작 가능") if all_ok
                                 else tr("리더를 팔로워 자세에 맞추세요"))
         self.gate_label.setStyleSheet("color:#2ecc71;" if all_ok else "color:#e67e22;")
+        # Enter/버튼은 워커와 같은 조건에서만 열린다. 잠겨 있는 이유가 보이도록
+        # 게이트 상태의 힌트도 all_ok에 따라 바꾼다.
+        self._gate_ok = all_ok
+        self.match_btn.setEnabled(all_ok)
+        if self._current_state == "gate":
+            self.shortcut_hint.setText(
+                "Space: 텔레옵 시작   Enter: 자동 정렬 다시" if all_ok
+                else "Space: 텔레옵 시작   (Enter: 자세를 더 맞춰야 자동 정렬 가능)")
 
     @pyqtSlot(float, bool)
     def _on_pose_match(self, err, done) -> None:
@@ -1559,6 +1576,15 @@ class WorkspaceWindow(QMainWindow):
             elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 if state == "reset_wait":
                     self._cmd("cmd_skip_reset_wait")
+                    return True
+                if state == "gate":
+                    # 자동 정렬 재시도. 시간 초과로 꺼진 뒤 손으로 대충 맞춰놓고
+                    # 나머지를 다시 기계에 맡기는 흐름이 자연스럽다.
+                    if self._gate_ok:
+                        self._cmd("cmd_auto_match_pose")
+                    else:
+                        self.log("[자동정렬] 먼저 리더를 대략 맞춰주세요 "
+                                 "(자동 정렬은 큰 오차에서 걸면 모터에 무리).")
                     return True
         return super().eventFilter(obj, event)
 
