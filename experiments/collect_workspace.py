@@ -55,7 +55,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 from PyQt6.QtCore import QEvent, QProcess, Qt, QThread, QTimer, pyqtSlot
-from PyQt6.QtGui import QAction, QActionGroup, QFont
+from PyQt6.QtGui import QAction, QActionGroup, QFont, QTextCursor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -103,6 +103,7 @@ from gello.gui_widgets import (  # noqa: E402
     VideoView,
     clean_stream_lines,
     hf_account,
+    is_progress_line,
 )
 from gello.i18n import get_language, set_language, tr  # noqa: E402
 from gello.libero_format import (  # noqa: E402
@@ -221,8 +222,8 @@ class WorkspaceWindow(QMainWindow):
         self.convert_process: QProcess | None = None
         self.upload_process: QProcess | None = None
         self.runme_process: QProcess | None = None
-        self._convert_out_state: dict = {}
-        self._upload_out_state: dict = {}
+        self._stream_states: dict = {}
+        self._progress_line: dict = {}
 
         self.active_file_path: Path | None = None
         self.active_episode_cache: list | None = None
@@ -943,12 +944,38 @@ class WorkspaceWindow(QMainWindow):
             self.hf_label.setStyleSheet(f"color:{color}; font-weight:bold;")
 
     # -------------------------------------------------------------- utils
+    def _view(self, view: str) -> QPlainTextEdit:
+        return {"log": self.log_view, "upload": self.upload_view,
+                "validation": self.validation_view}[view]
+
     def log(self, msg: str, view: str = "log") -> None:
-        target = {"log": self.log_view, "upload": self.upload_view,
-                  "validation": self.validation_view}[view]
+        self._progress_line.pop(view, None)  # 다음 진행률은 새 줄에서 시작
+        target = self._view(view)
         target.appendPlainText(msg)
         if self._log_file is not None:
             self._log_file.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+
+    def _log_progress(self, msg: str, view: str) -> None:
+        """Progress that overwrites its own last line instead of stacking.
+
+        A 1.3 GB upload prints a bar every second; appended, that buries every
+        other message in the tab and makes the log useless exactly while a long
+        job is running. Replacing the previous progress line keeps one live line
+        and leaves the surrounding log readable.
+
+        Deliberately not written to the log file -- the file is what gets read
+        after a crash, and hundreds of superseded percentages help nobody there.
+        """
+        target = self._view(view)
+        if self._progress_line.get(view):
+            cursor = target.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+            cursor.removeSelectedText()
+            cursor.insertText(msg)
+        else:
+            target.appendPlainText(msg)
+            self._progress_line[view] = True
 
     def _cmd(self, name: str, *args) -> None:
         if self.worker is None:
@@ -2019,9 +2046,14 @@ class WorkspaceWindow(QMainWindow):
 
     def _pipe(self, proc: QProcess, prefix: str, view: str) -> None:
         data = bytes(proc.readAllStandardOutput()).decode(errors="replace")
-        state = self._convert_out_state if view == "upload" else self._upload_out_state
-        for line in clean_stream_lines(data, state):
-            self.log(f"{prefix} {line}", view)
+        state = self._stream_states.setdefault(prefix, {})
+        # 진행률은 1초마다 받아 한 줄을 덮어쓴다. 3초로 줄여도 1.3GB 업로드가
+        # 몇 분이면 수십 줄이 쌓여, 그 사이 지나간 다른 로그를 밀어낸다.
+        for line in clean_stream_lines(data, state, every_s=1.0):
+            if is_progress_line(line):
+                self._log_progress(f"{prefix} {line}", view)
+            else:
+                self.log(f"{prefix} {line}", view)
 
     def _on_lerobot(self) -> None:
         dlg = LerobotConvertDialog(self, self.root_edit.text().strip())

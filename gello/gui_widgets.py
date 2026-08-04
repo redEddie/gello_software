@@ -192,6 +192,11 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\r")
 _PROGRESS_RE = re.compile(r"\d+%\|")
 
 
+def is_progress_line(line: str) -> bool:
+    """tqdm 진행률 줄인가. 로그에 쌓지 않고 한 줄을 갱신하는 데 쓴다."""
+    return bool(_PROGRESS_RE.search(line))
+
+
 def clean_stream_lines(data: str, state: dict, every_s: float = 3.0) -> list[str]:
     """Split subprocess output into log-worthy lines, de-spamming progress."""
     out = []
