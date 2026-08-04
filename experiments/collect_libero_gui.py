@@ -66,6 +66,7 @@ from PyQt6.QtWidgets import (
     QRadioButton,
     QHeaderView,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QSplitter,
     QStackedWidget,
@@ -227,6 +228,70 @@ def np_to_pixmap(arr: np.ndarray) -> QPixmap:
     h, w, ch = arr.shape
     img = QImage(arr.data, w, h, ch * w, QImage.Format.Format_RGB888)
     return QPixmap.fromImage(img.copy())
+
+
+class VideoView(QLabel):
+    """Shows frames at their own aspect ratio without letting them drive layout.
+
+    Two things go wrong with a plain QLabel here. Its sizeHint *is* its
+    pixmap's size, so scaling each frame to the label's current size inside a
+    layout is a feedback loop -- the pixmap grows the label, the bigger label
+    grows the next pixmap. An Ignored size policy breaks it: the layout decides
+    the box, the frame fits inside it.
+
+    The other is a fixed 4:3 minimum, which wastes width on the 256x256 square
+    frames the collector records (LIBERO/OpenVLA convention) -- the minimum is
+    square here, and KeepAspectRatio handles a 640x480 "원본 해상도 유지" file
+    just as well.
+
+    Keeping the source frame also means dragging the splitter rescales what is
+    on screen, instead of leaving a stale pixmap until the next tick -- which
+    never comes while paused.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._frame = None
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setScaledContents(False)
+        self.setMinimumSize(160, 160)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.setStyleSheet("background-color: #111; color: #666;")
+
+    def set_frame(self, arr) -> None:
+        self._frame = arr
+        self._rescale()
+
+    def clear_frame(self, text: str = "") -> None:
+        self._frame = None
+        self.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX -- 다음 영상 전까지 해제
+        self.setPixmap(QPixmap())
+        if text:
+            self.setText(text)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._rescale()
+
+    def _rescale(self) -> None:
+        if self._frame is None:
+            return
+        h, w = self._frame.shape[:2]
+        # Height is what's scarce (two views stacked), so the frame's width is
+        # decided by it. Shrinking the label to exactly that width means the
+        # leftover is normal panel background rather than a black letterbox
+        # around a small square -- which is what a 256x256 source in a wide box
+        # looks like. Guarded because setMaximumWidth relayouts and re-enters
+        # here; the height it depends on is set by the splitter, not by this
+        # width, so it settles after one pass.
+        want = max(1, round(self.height() * w / h))
+        if self.maximumWidth() != want:
+            self.setMaximumWidth(want)
+        self.setPixmap(np_to_pixmap(self._frame).scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        ))
 
 
 class DeltaBar(QWidget):
@@ -1691,6 +1756,10 @@ class LiberoCollectorWindow(QMainWindow):
         left would each be smaller than the source.
         """
         panel = QWidget()
+        # 두 칸을 위아래로 쌓으므로 한 칸의 높이가 곧 영상 한 변의 상한이고,
+        # 그보다 넓은 폭은 전부 좌우 여백이 된다. 폭에 상한을 두어 남는 가로를
+        # 트리에 넘긴다 -- 트리 첫 컬럼이 560px라 그쪽이 폭을 훨씬 잘 쓴다.
+        panel.setMaximumWidth(400)
         col = QVBoxLayout(panel)
         col.setContentsMargins(0, 0, 0, 0)
 
@@ -1699,12 +1768,8 @@ class LiberoCollectorWindow(QMainWindow):
             box = QGroupBox()
             self._reg(box.setTitle, title)
             inner = QVBoxLayout(box)
-            view = QLabel()
-            view.setMinimumSize(320, 240)
-            view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            view.setStyleSheet("background-color: #111; color: #666;")
+            view = VideoView()
             self._reg(view.setText, "에피소드를 선택하세요")
-            view.setScaledContents(False)
             inner.addWidget(view)
             col.addWidget(box, 1)
             self.play_views[key] = view
@@ -1803,8 +1868,7 @@ class LiberoCollectorWindow(QMainWindow):
         self.play_slider.setEnabled(False)
         self.play_frame_label.setText("-/-")
         for view in self.play_views.values():
-            view.setPixmap(QPixmap())
-            view.setText(tr("에피소드를 선택하세요"))
+            view.clear_frame(tr("에피소드를 선택하세요"))
         if message:
             self.play_label.setText(message)
 
@@ -1830,9 +1894,7 @@ class LiberoCollectorWindow(QMainWindow):
             frames = self._play_frames.get(key)
             if frames is None or i >= len(frames):
                 continue
-            pm = np_to_pixmap(frames[i])
-            view.setPixmap(pm.scaled(view.size(), Qt.AspectRatioMode.KeepAspectRatio,
-                                     Qt.TransformationMode.SmoothTransformation))
+            view.set_frame(frames[i])
         total = self.play_slider.maximum() + 1
         self.play_frame_label.setText(f"{i + 1}/{total}")
 
@@ -1861,10 +1923,13 @@ class LiberoCollectorWindow(QMainWindow):
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(self.dataset_tree)
         split.addWidget(self._build_player_panel())
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
-        split.setSizes([760, 460])
-        split.setMinimumHeight(560)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 0)
+        # 정사각 프레임 2개를 위아래로 쌓으므로, 오른쪽 폭이 높이보다 넓어봐야
+        # 좌우 여백만 늘어난다. 폭은 한 칸 높이에 맞춰 좁게 주고 남는 가로는
+        # 트리에 넘긴다 (트리 첫 컬럼이 560px라 그쪽이 폭을 더 쓴다).
+        split.setSizes([740, 380])
+        split.setMinimumHeight(620)
         layout.addWidget(split, 1)
 
         btn_row = QHBoxLayout()
@@ -2599,19 +2664,23 @@ class LiberoCollectorWindow(QMainWindow):
 
     # ------------------------------------------------------- LeRobot convert
     # --------------------------------------------------- 용량 최적화 (재압축)
-    def _selected_hdf5_paths(self) -> list:
-        """The .hdf5 files implied by the tree selection (episode rows resolve
-        to their parent file). Falls back to every file under the data root."""
-        paths = []
-        for item in self.dataset_tree.selectedItems():
-            node = item if item.parent() is None else item.parent()
-            p = node.data(0, Qt.ItemDataRole.UserRole)
-            if isinstance(p, str) and p.endswith(".hdf5") and p not in paths:
-                paths.append(p)
-        if not paths:
-            root = Path(self.root_edit.text().strip() or str(Path.home()))
-            paths = [str(p) for p in sorted(root.glob("**/*_demo.hdf5"))]
-        return paths
+    def _repack_candidates(self) -> list:
+        """Every .hdf5 under the data root -- the repack dialog picks from these.
+
+        This deliberately ignores the tree selection. It used to narrow to the
+        selected file, which was harmless only while selecting a row was rare;
+        now that selecting an episode plays it, the operator almost always has
+        one selected, and the dialog would silently offer that single file
+        instead of the whole working set.
+
+        Narrowing was redundant anyway: the dialog has a checkbox per file and
+        pre-checks exactly the ones that still need it (see hdf5_repack_status).
+
+        Non-recursive, matching _refresh_dataset_tree() -- a nested folder may
+        hold archived data that isn't part of the current working set.
+        """
+        root = Path(self.root_edit.text().strip() or str(Path.home()))
+        return [str(p) for p in sorted(root.glob("*_demo.hdf5"))]
 
     def _on_repack(self) -> None:
         if self.repack_process is not None and self.repack_process.state() != QProcess.ProcessState.NotRunning:
@@ -2623,7 +2692,7 @@ class LiberoCollectorWindow(QMainWindow):
                 tr("수집 중에는 재압축할 수 없습니다. 먼저 세션을 종료하세요."),
             )
             return
-        paths = self._selected_hdf5_paths()
+        paths = self._repack_candidates()
         if not paths:
             QMessageBox.warning(self, tr("파일 없음"), tr("재압축할 .hdf5 파일이 없습니다."))
             return
