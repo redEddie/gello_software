@@ -840,9 +840,10 @@ class HdfUploadDialog(QDialog):
         self.setWindowTitle(tr("HDF5 원본 업로드"))
         layout = QVBoxLayout(self)
 
-        layout.addWidget(QLabel(tr("업로드할 .hdf5 파일 (이미 큐레이션 끝난 파일):")))
+        layout.addWidget(QLabel(tr("업로드할 .hdf5 파일 (여러 개 선택 가능, 이미 큐레이션 끝난 파일):")))
         file_row = QHBoxLayout()
         self.file_edit = QLineEdit(default_file)
+        self.file_edit.textChanged.connect(lambda: self._on_files_changed())
         file_row.addWidget(self.file_edit, 1)
         browse_btn = QPushButton(tr("찾아보기..."))
         browse_btn.clicked.connect(self._browse_file)
@@ -870,7 +871,8 @@ class HdfUploadDialog(QDialog):
 
         ex_name = QLabel(tr("예)  ****_demo.hdf5"))
         ex_name.setStyleSheet("color: #888; font-family: monospace;")
-        grid.addWidget(QLabel(tr("Repo 안 파일 이름:")), 1, 0)
+        self.path_in_repo_label = QLabel(tr("Repo 안 파일 이름:"))
+        grid.addWidget(self.path_in_repo_label, 1, 0)
         grid.addWidget(ex_name, 1, 2)
         self.path_in_repo_edit = QLineEdit(Path(default_file).name if default_file else "")
         self.path_in_repo_edit.setPlaceholderText(
@@ -878,6 +880,10 @@ class HdfUploadDialog(QDialog):
         )
         grid.addWidget(self.path_in_repo_edit, 1, 1)
         layout.addLayout(grid)
+
+        self.file_count_label = QLabel("")
+        self.file_count_label.setStyleSheet("color: #888;")
+        layout.addWidget(self.file_count_label)
 
         self.private_check = QCheckBox(tr("비공개 데이터셋으로 업로드 (--private)"))
         layout.addWidget(self.private_check)
@@ -910,32 +916,62 @@ class HdfUploadDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._on_files_changed()
 
     def _on_delete_existing_toggled(self, on: bool) -> None:
         self.old_path_label.setEnabled(on)
         self.old_path_in_repo_edit.setEnabled(on)
 
     def _browse_file(self) -> None:
-        start = self.file_edit.text() or str(Path.home())
-        path, _ = QFileDialog.getOpenFileName(self, tr("업로드할 .hdf5 파일"), start, "HDF5 (*.hdf5)")
-        if path:
-            self.file_edit.setText(path)
-            if not self.path_in_repo_edit.text().strip():
-                self.path_in_repo_edit.setText(Path(path).name)
+        first = self.file_edit.text().split()[0] if self.file_edit.text().strip() else ""
+        start = str(Path(first).parent) if first else str(Path.home())
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, tr("업로드할 .hdf5 파일 (여러 개 선택 가능)"), start, "HDF5 (*.hdf5)")
+        if not paths:
+            return
+        self.file_edit.setText(" ".join(paths))
+        self._on_files_changed()
+
+    def _on_files_changed(self) -> None:
+        """Keeps the repo-name field honest about what it will do.
+
+        With one file it renames; with several it can only be a folder, since
+        one name for many uploads would leave just the last one. Saying so here
+        is cheaper than discovering it on the Hub afterwards.
+        """
+        files = self.file_edit.text().split()
+        multi = len(files) > 1
+        if multi:
+            self.path_in_repo_label.setText(tr("Repo 안 폴더:"))
+            self.path_in_repo_edit.setPlaceholderText(
+                tr("비워두면 repo 최상위. 파일 이름은 각자 그대로 유지됩니다"))
+            if self.path_in_repo_edit.text().strip() in {Path(f).name for f in files}:
+                self.path_in_repo_edit.clear()
+            self.file_count_label.setText(
+                tr("파일 {n}개 선택됨").format(n=len(files)))
+        else:
+            self.path_in_repo_label.setText(tr("Repo 안 파일 이름:"))
+            self.path_in_repo_edit.setPlaceholderText(tr("비워두면 로컬 파일 이름 그대로"))
+            if files and not self.path_in_repo_edit.text().strip():
+                self.path_in_repo_edit.setText(Path(files[0]).name)
+            self.file_count_label.setText("")
+        # 여러 개일 때 '기존 파일 삭제'의 다른 이름 지정은 의미가 없다.
+        self.old_path_label.setVisible(not multi)
+        self.old_path_in_repo_edit.setVisible(not multi)
 
     def build_args(self) -> "list[str] | None":
         """Returns the script's argv (sans program name), or None (with a
         warning dialog already shown) if required fields are missing."""
-        local_file = self.file_edit.text().strip()
-        if not local_file:
-            QMessageBox.warning(self, tr("파일 필요"), tr(".hdf5 파일을 선택하세요."))
+        files = self.file_edit.text().split()
+        if not files:
+            QMessageBox.warning(self, tr("파일 필요"), tr(".hdf5 파일을 하나 이상 선택하세요."))
             return None
         repo_id = self.repo_id_edit.currentText().strip()
         if not repo_id:
             QMessageBox.warning(self, tr("Repo ID 필요"), tr("Repo ID를 입력하세요."))
             return None
         self._recents.add("hdf5_repo_id", repo_id)
-        args = [local_file, "--repo-id", repo_id]
+        args = [*files, "--repo-id", repo_id]
         path_in_repo = self.path_in_repo_edit.text().strip()
         if path_in_repo:
             args += ["--path-in-repo", path_in_repo]
@@ -943,7 +979,7 @@ class HdfUploadDialog(QDialog):
         if self.delete_existing_check.isChecked():
             args.append("--delete-existing")
             old_path_in_repo = self.old_path_in_repo_edit.text().strip()
-            if old_path_in_repo:
+            if old_path_in_repo and len(files) == 1:
                 args += ["--old-path-in-repo", old_path_in_repo]
         return args
 
