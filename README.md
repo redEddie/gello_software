@@ -28,6 +28,56 @@
   - flange→EE 변환은 가정하지 않고 파일별로 자가 캘리브레이션 (FK(joint_states) vs 기록된 `ee_pos_quat` 평균) 후 잔차 검증 -- median 잔차가 `--max-fk-residual-mm`(기본 5mm) 초과 시 중단. `--dry-run`으로 통계만 확인 가능. 기존 데이터셋은 수정하지 않음.
 - **LeRobot 변환/시각화**: `convert_libero_to_lerobot.py`가 위 필드들을 자동 감지해 함께 내보냄 -- `observation.commanded_state` (차원 이름을 `observation.state`와 동일하게 `joint1.pos`..`gripper.pos`로 통일 → 데이터셋 시각화에서 실측 vs 명령이 같은 이름으로 나란히 비교됨), `actions_ee`가 유도돼 있으면 `action_ee` 피처로 추가. 일부 파일만 유도된 상태로 섞어 변환하면 스키마 불일치 에러로 사전에 차단.
 
+## 학습된 정책 실행 (policy client)
+
+`experiments/fr3_policy_client.py` — GPU 머신의 정책 서버(mamba-embeddingvla
+`real_deploy/fr3_policy_server.py`)에 관측을 보내고 8-dim 절대 관절각 청크를 받아
+실행한다. 이 컴퓨터에서는 모델 연산 없음.
+
+**프로토콜** (HTTP POST JSON, lehome/so101 구조):
+- `POST /reset {"instruction": str}` — 에피소드 시작 시 1회 (텍스트 인코딩 + 상태 초기화)
+- `POST /infer {observation}` → `{"actions": [[8 floats] × 10]}` (joint1-7 rad + gripper 0..1, 절대값)
+  - `observation.state`: `[8]` (관절 rad 7 + gripper 0..1 — `get_observation()` 그대로)
+  - `observation.images.agent`/`.wrist`: `{"base64","shape":[256,256,3],"dtype":"uint8"}` —
+    **수집과 동일한 `resize_rgb`(center-crop→256², INTER_AREA)를 클라이언트에서 적용** 후 raw base64.
+    학습/배포 픽셀 파이프라인이 동일해야 하므로 이 전처리를 생략하면 안 됨 (640×480 raw를
+    보내면 서버가 근사 처리하지만 비권장).
+
+**실행 순서** (FR3 컨트롤러 컴퓨터):
+```bash
+# 0) 통신 테스트 (로봇/카메라 불필요 — 합성 관측으로 서버 왕복 확인)
+(lerobot-venv) PYTHONPATH=$PWD python experiments/fr3_policy_client.py --dry-run
+
+# 1) 로봇 노드 (robot_ip 기본값은 FR3의 172.16.0.2 — 정책 서버 주소가 아니다)
+(pylibfranka-venv) python experiments/launch_nodes.py --robot fr3
+
+# 2) 클라이언트
+(lerobot-venv) PYTHONPATH=$PWD python experiments/fr3_policy_client.py \
+    --instruction "pick up the white cup and place it on the yellow bowl" --max-seconds 60
+```
+
+`PYTHONPATH=$PWD`가 필요한 이유: `python experiments/xxx.py`로 실행하면 `sys.path[0]`이
+`experiments/`라 저장소 루트가 경로에 안 들어가고, `gello`가 editable 설치를 따라 다른
+체크아웃으로 해석될 수 있다.
+
+`--instruction`은 학습된 문장이어야 한다 (그 외는 분포 밖):
+`pick up the {blue|white} cup and place it on the {blue|yellow} bowl`.
+
+안전장치: 시작 시 수집기와 동일한 램프로 `libero` reset pose 복귀 후 시작, 매 스텝
+목표 관절각을 측정치 ±`MAX_STEP_RAD`(0.50)로 클램프. Ctrl-C 안전 종료.
+
+이 클램프는 **속도 제한이 아니다** — 속도/가속/저크 한계는 로봇 노드의 레퍼런스
+필터(1 kHz, v_max 1.0 rad/s)가 이 값과 무관하게 항상 건다. 여기서 정하는 건 "명령이
+실측보다 얼마나 앞서 나갈 수 있는가"이고, 리더 명령 액션 공간에서는 그 앞섬 자체가
+팔로워를 끌고 가는 신호다. 수집 117 에피소드 실측이 p95 0.254 / p99 0.395 rad라
+예전 값 0.15면 프레임의 20%가 잘려 지연 버그를 클라이언트에서 재현한다.
+
+**알려진 잔여 이슈**: 청크 10스텝을 전부 쏜 뒤에야 관측·추론을 하는 순차 구조라
+경계마다 39 ms(추론 34.9 + 인코딩 4.2) 동안 새 명령이 없다. 정상 틱 50 ms 대비
+89 ms → 0.5 s 주기의 약한 2 Hz 흔들림. 해결은 "청크 끝 K틱 전에 미리 추론하고
+도착한 청크의 앞 K개는 버리기"이며 재학습은 필요 없다(앞 K개는 이미 지나간 시각의
+목표라 그대로 쏘면 후퇴가 된다). 청크 길이를 늘리는 다음 학습과 함께 적용 예정.
+
 ---
 
 ## Fork notes (`fr3-real-teleop`)

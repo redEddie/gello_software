@@ -12,7 +12,9 @@ class Args:
     robot: str = "xarm"
     robot_port: int = 6001
     hostname: str = "127.0.0.1"
-    robot_ip: str = "192.168.1.10"
+    # 로봇 팔의 IP (정책 서버 주소가 아니다). FR3는 172.16.0.2 --
+    # 192.168.1.10은 상류 GELLO 저장소의 xArm/UR 기본값이라 FR3에선 항상 타임아웃난다.
+    robot_ip: str = "172.16.0.2"
     # FR3 (pylibfranka) hardware options; only used when robot == "fr3".
     fr3_read_only: bool = False
     fr3_use_gripper: bool = True
