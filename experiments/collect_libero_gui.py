@@ -651,6 +651,28 @@ class LerobotConvertDialog(QDialog):
         self.setWindowTitle(tr("LeRobot 변환 / 업로드"))
         layout = QVBoxLayout(self)
 
+        # 모드가 맨 위에 온다. 아래 항목 중 무엇이 보이고 무엇이 쓰이는지를
+        # 이 선택이 결정하므로, 다 읽은 뒤에 고르게 두면 순서가 거꾸로다.
+        # Conversion and upload are separate jobs: conversion is minutes of
+        # AV1 encoding, upload is seconds. Bundling them meant "I already
+        # converted, just upload it" had no answer -- re-running re-encoded
+        # everything. Two explicit modes instead of one ambiguous checkbox.
+        mode_box = QGroupBox(tr("실행 모드"))
+        mode_col = QVBoxLayout(mode_box)
+        # Deliberately NO "convert and upload in one go": an episode pushed
+        # to the Hub stays there even after it is deleted locally, so the
+        # local result must be reviewed before anything is uploaded. A
+        # combined mode exists only to skip that review.
+        self.mode_convert = QRadioButton(tr("변환만 (로컬에 만들고 결과를 확인)"))
+        self.mode_push_only = QRadioButton(
+            tr("업로드만 (확인 끝난 '로컬 출력 경로'를 그대로 올림 -- 재변환 없음)")
+        )
+        self.mode_convert.setChecked(True)
+        for b in (self.mode_convert, self.mode_push_only):
+            mode_col.addWidget(b)
+            b.toggled.connect(self._on_mode_changed)
+        layout.addWidget(mode_box)
+
         layout.addWidget(QLabel(tr("변환할 .hdf5 파일 (여러 개 선택 가능, 이미 큐레이션 끝난 파일):")))
         file_row = QHBoxLayout()
         self.files_edit = QLineEdit()
@@ -730,26 +752,6 @@ class LerobotConvertDialog(QDialog):
 
         self.upload_opts = QGroupBox(tr("업로드 옵션"))
         up_col = QVBoxLayout(self.upload_opts)
-
-        # Conversion and upload are separate jobs: conversion is minutes of
-        # AV1 encoding, upload is seconds. Bundling them meant "I already
-        # converted, just upload it" had no answer -- re-running re-encoded
-        # everything. Three explicit modes instead of one ambiguous checkbox.
-        mode_box = QGroupBox(tr("실행 모드"))
-        mode_col = QVBoxLayout(mode_box)
-        # Deliberately NO "convert and upload in one go": an episode pushed
-        # to the Hub stays there even after it is deleted locally, so the
-        # local result must be reviewed before anything is uploaded. A
-        # combined mode exists only to skip that review.
-        self.mode_convert = QRadioButton(tr("변환만 (로컬에 만들고 결과를 확인)"))
-        self.mode_push_only = QRadioButton(
-            tr("업로드만 (확인 끝난 '로컬 출력 경로'를 그대로 올림 -- 재변환 없음)")
-        )
-        self.mode_convert.setChecked(True)
-        for b in (self.mode_convert, self.mode_push_only):
-            mode_col.addWidget(b)
-            b.toggled.connect(self._on_mode_changed)
-        layout.addWidget(mode_box)
 
         # Which account a --push actually uploads as. This machine is shared,
         # so "whose token is cached right now" is not something to assume.
