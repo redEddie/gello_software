@@ -77,6 +77,7 @@ from gello.dataset_schema import (  # noqa: E402
 )
 from gello.i18n import get_language, set_language, tr  # noqa: E402
 from gello.libero_format import (  # noqa: E402
+    DEAD_SPACE_RATIO,
     action_column_names,
     describe_episode,
     describe_schema,
@@ -1246,13 +1247,20 @@ class RepackDialog(QDialog):
         n_todo = 0
         for path in paths:
             st = hdf5_repack_status(path)
+            # 왜 다시 필요한지를 근거별로 모은다. 추가와 삭제는 원인이 다르고
+            # (lzf가 섞임 / 지운 자리가 남음) 둘 다 동시에 성립할 수 있다.
+            reasons = []
             if st["mixed"]:
-                # Repacked once, then collected into again. The marker is stale
-                # and naming it alone would read as "already done" -- say what
-                # actually changed instead.
-                history = tr("{m} 이후 {n}개 추가됨 — 다시 필요").format(
-                    m=st["marker"] or tr("이전 재압축"),
-                    n=st["new_since"] or "?")
+                reasons.append(tr("{n}개 추가됨").format(n=st["new_since"] or "?"))
+            if st["deleted_since"]:
+                reasons.append(tr("{n}개 삭제됨").format(n=st["deleted_since"]))
+            if st["dead_ratio"] >= DEAD_SPACE_RATIO:
+                # 삭제분이 차지하던 자리. 개수 비교만으로는 '두 개 지우고 두 개
+                # 더 찍은' 흔한 경우를 놓치므로, 이쪽이 결정적인 근거다.
+                reasons.append(tr("빈 공간 {mb:,.0f} MB ({p:.0f}%)").format(
+                    mb=st["dead_bytes"] / 1e6, p=st["dead_ratio"] * 100))
+            if reasons:
+                history = ", ".join(reasons) + tr(" — 다시 필요")
             elif st["marker"]:
                 history = st["marker"]
             elif st["repacked"]:
@@ -1272,7 +1280,7 @@ class RepackDialog(QDialog):
             if st["error"]:
                 item.setText(4, st["error"])
                 item.setDisabled(True)
-            elif st["mixed"]:
+            elif reasons:
                 for c in range(5):
                     item.setForeground(c, Qt.GlobalColor.darkYellow)
             elif st["repacked"]:

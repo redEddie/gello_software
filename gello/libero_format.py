@@ -974,6 +974,32 @@ class LiberoTaskWriter:
 
 
 # ---------------------------------------------------------------- repack state
+# 재압축 직후 파일도 메타데이터 오버헤드로 0.3~0.4%는 남는다(실측). 3%를 넘으면
+# 지운 에피소드가 차지하던 자리로 보는 게 안전하다 -- 실측에서 삭제가 있었던
+# 파일들은 4.1 / 8.3 / 17.3% 였다.
+DEAD_SPACE_RATIO = 0.03
+
+
+def _stored_bytes(group) -> int:
+    """Bytes every dataset in this file actually occupies on disk.
+
+    get_storage_size() is the compressed, on-disk size -- not the logical
+    array size -- so this stays meaningful for gzip'd images. Metadata only:
+    no chunk is read.
+    """
+    total = 0
+    stack = [group]
+    while stack:
+        g = stack.pop()
+        for key in g:
+            item = g[key]
+            if isinstance(item, h5py.Group):
+                stack.append(item)
+            else:
+                total += item.id.get_storage_size()
+    return total
+
+
 REPACK_MARKER_ATTR = "repacked"
 # Episode count at the moment of repack, so a later run can say how many were
 # appended since rather than only that the file changed.
@@ -1004,7 +1030,8 @@ def hdf5_repack_status(path) -> dict:
     instead of dying.
     """
     out = {"repacked": False, "compression": None, "mixed": False,
-           "marker": None, "new_since": 0, "size": 0, "episodes": 0,
+           "marker": None, "new_since": 0, "deleted_since": 0,
+           "dead_bytes": 0, "dead_ratio": 0.0, "size": 0, "episodes": 0,
            "error": None}
     try:
         out["size"] = Path(path).stat().st_size
@@ -1017,6 +1044,17 @@ def hdf5_repack_status(path) -> dict:
             at_repack = data.attrs.get(REPACK_COUNT_ATTR)
             if at_repack is not None:
                 out["new_since"] = max(0, out["episodes"] - int(at_repack))
+                out["deleted_since"] = max(0, int(at_repack) - out["episodes"])
+            # Dead space: HDF5 never returns a deleted group's bytes to the OS,
+            # it only makes them reusable inside the same file. So a curated
+            # file keeps paying for takes that are gone, and nothing about the
+            # remaining episodes shows it -- they are all still gzip, the
+            # marker is still there, and an episode-count comparison misses
+            # the common "delete two, record two more" case entirely.
+            # Comparing the file's size against what its datasets actually
+            # occupy catches all of it, and costs only metadata reads.
+            out["dead_bytes"] = max(0, out["size"] - _stored_bytes(f))
+            out["dead_ratio"] = out["dead_bytes"] / out["size"] if out["size"] else 0.0
             comps = set()
             for name in data.keys():
                 obs = data[name].get("obs")
@@ -1030,7 +1068,10 @@ def hdf5_repack_status(path) -> dict:
             out["mixed"] = len(comps) > 1
             if comps:
                 out["compression"] = "+".join(sorted(c or "없음" for c in comps))
-        out["repacked"] = (comps == {"gzip"}) or (bool(out["marker"]) and not out["mixed"])
+        fully_gzip = comps == {"gzip"}
+        marked = bool(out["marker"]) and not out["mixed"]
+        # 죽은 공간이 크면 압축 방식과 무관하게 재압축 대상이다.
+        out["repacked"] = (fully_gzip or marked) and out["dead_ratio"] < DEAD_SPACE_RATIO
     except Exception as e:  # noqa: BLE001
         out["error"] = f"{type(e).__name__}: {e}"
     return out
