@@ -212,6 +212,8 @@ class WorkspaceWindow(QMainWindow):
         self._current_state = "idle"
         self._gate_ok = False
         self._fail_marked = False
+        self._dying_previews: list = []
+        self._connect_wait_since = None
         self._recents = Recents()
         self._log_file = None
         if log_path is not None:
@@ -818,7 +820,7 @@ class WorkspaceWindow(QMainWindow):
 
         m = mb.addMenu(tr("Camera"))
         m.addAction(tr("새로고침"), self._refresh_cameras)
-        m.addAction(tr("미리보기 중지"), self._stop_previews)
+        m.addAction(tr("미리보기 중지"), self._stop_previews_async)
 
         m = mb.addMenu(tr("View"))
         for key, _icon, title, _tip in ACTIVITIES:
@@ -1006,7 +1008,7 @@ class WorkspaceWindow(QMainWindow):
         self._restart_previews()
 
     def _restart_previews(self) -> None:
-        self._stop_previews()
+        self._stop_previews_async()
         for role, combo in (("agent", self.agent_combo), ("wrist", self.wrist_combo)):
             serial = self._combo_serial(combo)
             if not serial:
@@ -1022,45 +1024,80 @@ class WorkspaceWindow(QMainWindow):
         self.lights["camera"].set("ok" if (self.agent_preview or self.wrist_preview) else "off",
                                   tr("미리보기") if (self.agent_preview or self.wrist_preview) else "-")
 
-    def _stop_previews(self, timeout_ms: int = 7000) -> list:
-        """Stops both preview threads. Returns the roles that did NOT stop.
+    def _alert(self, title: str, text: str, icon=None) -> None:
+        """Non-modal notice.
 
-        A RealSense pipeline cannot be opened twice, so the session can only
-        have the cameras once these threads have run their `finally:
-        cam.disconnect()`. stop() is just a flag the loop checks between
-        reads, and the wrist D405's marginal USB 2 link can sit inside
-        read_latest for a second or more (librealsense's own frame timeout is
-        5 s), so the wait has to be generous.
-
-        The previous 2 s wait ignored its own return value and cleared the
-        handle regardless, so a thread that was still holding the device was
-        forgotten -- and the session's connect then failed with librealsense's
-        "Failed to open RealSenseCamera(...)", which names the camera but not
-        the reason. Report the truth instead and let the caller refuse to
-        connect.
+        A modal QMessageBox runs its own event loop, so anything the app does
+        while it is up runs *nested inside* it -- and if that work blocks, the
+        dialog itself stops responding and cannot even be dismissed. That is
+        what happened when a fatal camera error and a session teardown landed
+        together. Non-modal has neither problem: the dialog is always
+        closeable, and the window behind it keeps drawing.
         """
-        stuck = []
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setIcon(icon if icon is not None else QMessageBox.Icon.Warning)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.setModal(False)
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.show()
+        box.raise_()
+
+    def connect_progress(self, waited: float) -> None:
+        self.statusBar().showMessage(
+            tr("카메라 정리 중... {s:.0f}초 (정리되면 자동으로 연결합니다)").format(s=waited),
+            1000)
+        self.lights["camera"].set("busy", tr("정리 중"))
+
+    def _previews_busy(self) -> bool:
+        self._dying_previews = [w for w in self._dying_previews if w.isRunning()]
+        return bool(self._dying_previews)
+
+    def _release_preview(self, role: str) -> None:
+        """Asks one preview thread to stop, and cuts it off from the UI now.
+
+        Disconnecting before waiting is the important half. A thread that is
+        slow to notice the stop flag (the wrist D405 can sit inside a read for
+        a second) used to keep emitting frames into the GUI thread the whole
+        time, and if a restart replaced the handle while it was still alive the
+        old one was orphaned but still connected -- so every retry added
+        another 30 fps of scaling work to the UI thread. Once disconnected an
+        orphan is harmless: it only still owns the camera, which is what
+        _previews_busy() reports.
+        """
+        w = getattr(self, f"{role}_preview", None)
+        if w is None:
+            return
+        for sig in (w.frame_ready, w.error):
+            try:
+                sig.disconnect()
+            except TypeError:
+                pass  # already disconnected
+        w.stop()
+        setattr(self, f"{role}_preview", None)
+        if w.isRunning():
+            self._dying_previews.append(w)
+            w.finished.connect(w.deleteLater)
+
+    def _stop_previews_async(self) -> None:
+        """Non-blocking stop. The GUI thread never waits on a camera here --
+        that wait was up to 7 s per thread and read as a hang."""
         for role in ("agent", "wrist"):
-            w = getattr(self, f"{role}_preview", None)
-            if w is None:
-                continue
-            w.stop()
-            if w.wait(timeout_ms):
-                setattr(self, f"{role}_preview", None)
-            else:
-                # Keep the handle: it still owns the device, and dropping the
-                # reference would only lose the ability to try again.
-                stuck.append(role)
-                self.log(f"[카메라] {role} 미리보기 스레드가 {timeout_ms / 1000:.0f}초 안에 "
-                         f"종료되지 않았습니다 (카메라를 아직 붙잡고 있음).")
-        if not stuck:
-            # librealsense needs a moment to actually release the USB device
-            # after disconnect() returns; connecting immediately can still hit
-            # a busy device.
-            QThread.msleep(300)
-        self.lights["camera"].set("off" if not stuck else "bad",
-                                  "-" if not stuck else tr("해제 실패"))
-        return stuck
+            self._release_preview(role)
+        self.lights["camera"].set("busy" if self._previews_busy() else "off",
+                                  tr("정리 중") if self._previews_busy() else "-")
+
+    def _stop_previews_blocking(self, timeout_ms: int = 4000) -> None:
+        """Only for shutdown: wait so the cameras are released before exit.
+
+        Blocking is acceptable here and nowhere else -- the window is closing,
+        so there is no interaction left to make unresponsive.
+        """
+        self._stop_previews_async()
+        for w in self._dying_previews:
+            w.wait(timeout_ms)
+        self._dying_previews = []
 
     def _on_preview_frame(self, role: str, frame) -> None:
         self.live_views[role].set_frame(frame)
@@ -1102,18 +1139,33 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("입력 오류"), tr("길이/대기는 숫자여야 합니다."))
             return
 
-        # The worker opens both cameras itself, and a RealSense pipeline cannot
-        # be opened twice -- so bail out here with the real reason rather than
-        # letting connect fail later with "Failed to open RealSenseCamera(...)".
-        stuck = self._stop_previews()
-        if stuck:
-            QMessageBox.warning(
-                self, tr("카메라 해제 실패"),
-                tr("{roles} 미리보기가 카메라를 아직 붙잡고 있어 연결할 수 없습니다.\n\n"
-                   "몇 초 뒤 다시 시도하거나, Camera 메뉴 > 미리보기 중지 후 연결하세요. "
-                   "계속되면 카메라를 뽑았다 꽂아야 합니다 (손목 D405는 USB 2 링크라 "
-                   "가끔 늦게 놓습니다).").format(roles=", ".join(stuck)))
+        # The worker opens both cameras itself and a RealSense pipeline cannot
+        # be opened twice, so the previews have to let go first. That release
+        # can take a second or two on a flaky link -- waited for inline it just
+        # looked like the app had died. Ask them to stop, then keep the UI
+        # alive and retry on a timer until they are actually gone.
+        self._stop_previews_async()
+        if self._previews_busy():
+            if self._connect_wait_since is None:
+                self._connect_wait_since = time.monotonic()
+                self.log("[카메라] 미리보기 정리를 기다리는 중 — 정리되면 자동으로 연결합니다.")
+            waited = time.monotonic() - self._connect_wait_since
+            if waited < 12.0:
+                self.tb_actions["connect"].setEnabled(False)
+                self.connect_progress(waited)
+                QTimer.singleShot(200, self._on_connect)
+                return
+            self._connect_wait_since = None
+            self.tb_actions["connect"].setEnabled(True)
+            self.statusBar().clearMessage()
+            self._alert(tr("카메라 해제 지연"),
+                        tr("미리보기가 카메라를 12초 넘게 붙잡고 있습니다.\n\n"
+                           "Camera 메뉴 > 미리보기 중지 후 다시 시도하세요. 계속되면 "
+                           "USB 케이블을 다시 꽂아야 합니다 -- 손목 D405는 USB 2 링크라 "
+                           "접촉이 나쁘면 이렇게 됩니다."))
             return
+        self._connect_wait_since = None
+        self.statusBar().clearMessage()
         cfg = WorkerConfig(
             task_name=task,
             language_instruction=lang or task.replace("_", " "),
@@ -1284,7 +1336,7 @@ class WorkspaceWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_fatal(self, msg) -> None:
         self.log(f"[치명적 오류] {msg}")
-        QMessageBox.critical(self, tr("오류"), msg)
+        self._alert(tr("오류"), msg, QMessageBox.Icon.Critical)
 
     @pyqtSlot(int, str)
     def _on_connected(self, n_episodes, path) -> None:
@@ -1854,7 +1906,7 @@ class WorkspaceWindow(QMainWindow):
         self._play_timer.stop()
         if self._play_loader is not None:
             self._play_loader.wait(3000)
-        self._stop_previews()
+        self._stop_previews_blocking()
         if self.worker is not None and self.worker.isRunning():
             self.worker.cmd_quit()
             self.worker.wait(5000)
