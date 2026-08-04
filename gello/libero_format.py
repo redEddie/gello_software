@@ -763,6 +763,20 @@ class LiberoTaskWriter:
         renumber_episodes(self._data)
         self._file.flush()
 
+    def set_episode_success(self, name: str, success: bool) -> None:
+        """Re-labels an already-saved episode as success/failure.
+
+        The verdict is worth more a few seconds after the take than during it:
+        the operator has stopped moving, the arm is going home, and they can
+        actually look at what happened. Only the attribute changes -- frames,
+        images and numbering are untouched -- so this stays cheap no matter how
+        big the episode was.
+        """
+        if name not in self._data:
+            raise KeyError(f"{name!r} not found in {self.path}")
+        self._data[name].attrs["success"] = bool(success)
+        self._file.flush()
+
     def start_episode(self) -> None:
         self._buffer.clear()
 

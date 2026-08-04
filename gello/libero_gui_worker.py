@@ -80,6 +80,12 @@ class EpisodeSaver(QThread):
     def enqueue_delete(self, name: str) -> None:
         self._q.put(("delete", name))
 
+    def enqueue_set_success(self, name: str, success: bool) -> None:
+        """Re-label an already-saved episode. Goes through the same queue as
+        the save itself, so a toggle sent while that save is still running is
+        applied after it rather than racing it."""
+        self._q.put(("set_success", name, success))
+
     def finish(self) -> None:
         """Drain the queue, then exit run(). Caller must wait() afterwards."""
         self._q.put(("stop",))
@@ -108,6 +114,12 @@ class EpisodeSaver(QThread):
                     name = item[1]
                     self._writer.delete_episode(name)
                     self.log_message.emit(f"[삭제] {name}")
+                    self.episode_list_changed.emit(self._writer.list_episodes())
+                elif item[0] == "set_success":
+                    _, name, success = item
+                    self._writer.set_episode_success(name, success)
+                    self.log_message.emit(
+                        f"[판정] {name} -> {'성공' if success else '실패'}")
                     self.episode_list_changed.emit(self._writer.list_episodes())
             except Exception as e:  # noqa: BLE001
                 self.log_message.emit(f"[저장 스레드 오류] {type(e).__name__}: {e}")
@@ -200,6 +212,9 @@ class CollectionWorker(QThread):
 
     def cmd_go_home(self) -> None:
         self._cmds.put(("go_home",))
+
+    def cmd_set_episode_success(self, name: str, success: bool) -> None:
+        self.saver.enqueue_set_success(name, success)
 
     def cmd_delete_episode(self, name: str) -> None:
         self._cmds.put(("delete_episode", name))

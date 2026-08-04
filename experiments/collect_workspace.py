@@ -180,9 +180,9 @@ STATE_LABELS = {
     "recording": "기록 중",
 }
 SHORTCUT_HINTS = {
-    "reset_wait": "Enter: 대기 건너뛰고 바로 진행",
+    "reset_wait": "Enter: 대기 건너뛰기   Esc: 직전 에피소드 판정 뒤집기",
     "gate": "Space: 텔레옵 시작   Enter: 자동 정렬 다시",
-    "recording": "Space: 저장(성공)   Esc: 실패로 표시   Del: 폐기",
+    "recording": "Space: 성공으로 끝내기   Esc: 실패로 끝내기   Del: 폐기",
 }
 
 
@@ -240,7 +240,9 @@ class WorkspaceWindow(QMainWindow):
         self._no_dataset_session = False
         self._current_state = "idle"
         self._gate_ok = False
-        self._fail_marked = False
+        self._last_saved_name = None
+        self._last_saved_success = True
+        self._pending_verdict_toggle = False
         self._dying_previews: list = []
         self._connect_wait_since = None
         self._episodes_at_connect = 0
@@ -513,12 +515,11 @@ class WorkspaceWindow(QMainWindow):
         self.skip_btn.clicked.connect(lambda: self._cmd("cmd_skip_reset_wait"))
         self.save_ok_btn = QPushButton(tr("저장 (성공)"))
         self.save_ok_btn.setStyleSheet("background-color:#2ecc71; color:white; font-weight:bold;")
-        self.save_ok_btn.clicked.connect(lambda: self._save(not self._fail_marked))
-        # '저장(실패)'가 아니라 표시 토글. 저장은 Space/저장 버튼 하나뿐이고
-        # 성공 여부는 이 표시가 정한다.
-        self.save_ng_btn = QPushButton(tr("실패로 표시 (Esc)"))
-        self.save_ng_btn.setCheckable(True)
-        self.save_ng_btn.clicked.connect(lambda: self._toggle_fail_mark())
+        self.save_ok_btn.clicked.connect(lambda: self._save(True))
+        # 두 버튼 모두 에피소드를 끝낸다. 판정을 되돌리는 건 리셋 구간의
+        # Esc(_toggle_last_verdict)이고, 여기서는 끝내는 순간의 첫 판단만 한다.
+        self.save_ng_btn = QPushButton(tr("실패로 끝내기 (Esc)"))
+        self.save_ng_btn.clicked.connect(lambda: self._save(False))
         self.discard_btn = QPushButton(tr("버리기"))
         self.discard_btn.setStyleSheet("background-color:#e74c3c; color:white;")
         self.discard_btn.clicked.connect(lambda: self._cmd("cmd_discard_episode"))
@@ -540,9 +541,9 @@ class WorkspaceWindow(QMainWindow):
         self.save_status_label = QLabel("")
         self.save_status_label.setStyleSheet("color:#888;")
         pcol.addWidget(self.save_status_label)
-        self.fail_mark_label = QLabel("")
-        self.fail_mark_label.setWordWrap(True)
-        pcol.addWidget(self.fail_mark_label)
+        self.verdict_label = QLabel("")
+        self.verdict_label.setWordWrap(True)
+        pcol.addWidget(self.verdict_label)
         self.shortcut_hint = QLabel("")
         self.shortcut_hint.setStyleSheet(
             "color:#2ecc71; font-family:monospace; font-weight:bold;")
@@ -832,10 +833,9 @@ class WorkspaceWindow(QMainWindow):
         # _save, not _cmd -- the success flag has to be recorded for the stats
         # panel, and a toolbar button that counts differently from the side
         # panel button next to it is a bug waiting to be blamed on the stats.
-        add("save", tr("✔ Save"), lambda: self._save(not self._fail_marked),
-            tr("표시된 대로 저장 (기본 성공)"))
-        add("savefail", tr("✖ Mark fail"), self._toggle_fail_mark,
-            tr("이번 에피소드를 실패로 표시 / 해제 (Esc)"))
+        add("save", tr("✔ Save"), lambda: self._save(True), tr("성공으로 끝내기"))
+        add("savefail", tr("✖ Save (fail)"), lambda: self._save(False),
+            tr("실패로 끝내기 (Esc). 판정은 리셋 구간에서 Esc로 뒤집을 수 있습니다"))
         add("discard", tr("🗑 Discard"), lambda: self._cmd("cmd_discard_episode"))
         tb.addSeparator()
         add("home", tr("⌂ Home"), lambda: self._cmd("cmd_go_home"))
@@ -901,10 +901,11 @@ class WorkspaceWindow(QMainWindow):
             tr("양손이 GELLO 리더 위에 있으므로 마우스 없이 조작합니다.\n"
                "같은 키가 상태에 따라 다르게 동작합니다.\n\n"
                "  자세 정렬 중   Space        텔레옵 시작\n"
-               "  기록 중        Space        저장 (표시된 대로)\n"
-               "  기록 중        Esc          실패로 표시 / 해제 (토글)\n"
+               "  기록 중        Space        성공으로 끝내기\n"
+               "  기록 중        Esc          실패로 끝내기\n"
                "  기록 중        Delete       폐기\n"
                "  자세 정렬 중   Enter        자동 정렬 다시 (대략 맞춘 뒤에만)\n"
+               "  리셋 대기 중   Esc          직전 에피소드 판정 뒤집기\n"
                "  리셋 대기 중   Enter        대기 건너뛰기\n\n"
                "지금 쓸 수 있는 키는 Collect 패널 아래에 초록색으로 표시됩니다.")))
         m.addSeparator()
@@ -955,36 +956,44 @@ class WorkspaceWindow(QMainWindow):
             return
         getattr(self.worker, name)(*args)
 
-    def _toggle_fail_mark(self) -> None:
-        """Flips the pending episode's success flag while it is still being
-        recorded.
+    def _toggle_last_verdict(self) -> None:
+        """Flips the success flag of the episode that was just saved.
 
-        Esc used to save-as-failure immediately, which made a mis-press final:
-        the take was committed with the wrong verdict and the only remedy was
-        deleting it afterwards. Marking is reversible -- press again to clear
-        -- and the single save action (Space) then commits whatever the mark
-        says. Cleared at the start of every episode.
+        Pressing save *is* the judgement that the take is over; whether it
+        succeeded is a separate question, and one the operator can answer
+        better a few seconds later while the arm homes than in the instant
+        they let go. The re-label goes through the saver queue, so a toggle
+        sent while that episode is still being written lands after it.
         """
-        self._fail_marked = not self._fail_marked
-        self._refresh_fail_mark()
-        self.log("[표시] 이번 에피소드를 실패로 표시했습니다 (Esc로 해제)."
-                 if self._fail_marked else "[표시] 실패 표시를 해제했습니다.")
+        if self.worker is None or self._no_dataset_session:
+            return
+        if self._last_saved_name is None:
+            # 저장이 아직 백그라운드에서 돌고 있어 이름을 모른다. 의사만 적어
+            # 두고 episode_saved가 오면 그때 반영한다.
+            self._pending_verdict_toggle = not self._pending_verdict_toggle
+            self.log("[판정] 저장이 끝나면 직전 에피소드 판정을 뒤집습니다."
+                     if self._pending_verdict_toggle else "[판정] 뒤집기를 취소했습니다.")
+            self._refresh_verdict_label()
+            return
+        self._last_saved_success = not self._last_saved_success
+        self.worker.cmd_set_episode_success(self._last_saved_name, self._last_saved_success)
+        self._session["success"] += 1 if self._last_saved_success else -1
+        self._session["failed"] += -1 if self._last_saved_success else 1
+        self._refresh_verdict_label()
+        self._refresh_stats()
 
-    def _refresh_fail_mark(self) -> None:
-        marked = self._fail_marked
-        self.fail_mark_label.setText(
-            tr("● 실패로 표시됨 — Esc로 해제") if marked else "")
-        self.fail_mark_label.setStyleSheet(
-            "color:#e74c3c; font-weight:bold;" if marked else "")
-        self.save_ok_btn.setText(
-            tr("저장 (실패로 표시됨)") if marked else tr("저장 (성공)"))
-        self.save_ok_btn.setStyleSheet(
-            "background-color:#e74c3c; color:white; font-weight:bold;" if marked
-            else "background-color:#2ecc71; color:white; font-weight:bold;")
-        if self._current_state == "recording":
-            self.shortcut_hint.setText(
-                ("Space: 저장(실패로)   Esc: 실패 표시 해제   Del: 폐기" if marked
-                 else "Space: 저장(성공)   Esc: 실패로 표시   Del: 폐기"))
+    def _refresh_verdict_label(self) -> None:
+        if self._last_saved_name is None:
+            self.verdict_label.setText(
+                tr("판정 뒤집기 예약됨 (Esc로 취소)") if self._pending_verdict_toggle else "")
+            self.verdict_label.setStyleSheet("color:#f39c12;")
+            return
+        ok = self._last_saved_success
+        self.verdict_label.setText(
+            tr("직전 {n}: {v}   —   Esc로 뒤집기").format(
+                n=self._last_saved_name, v=tr("성공") if ok else tr("실패")))
+        self.verdict_label.setStyleSheet(
+            "color:#2ecc71; font-weight:bold;" if ok else "color:#e74c3c; font-weight:bold;")
 
     def _save(self, success: bool) -> None:
         """episode_saved carries only (name, n_frames), so the success flag has
@@ -1319,12 +1328,14 @@ class WorkspaceWindow(QMainWindow):
     def _on_state(self, state: str) -> None:
         if state == "recording" and self._current_state != "recording":
             # 표시는 에피소드 단위다. 새 기록이 시작되면 항상 성공에서 출발한다.
-            self._fail_marked = False
+            # 직전 에피소드 판정은 이 시점부터 더 이상 뒤집을 수 없다 -- 리셋
+            # 구간이 끝났고, 이제 '직전'이 무엇인지 헷갈릴 수 있다.
+            self._last_saved_name = None
+            self._pending_verdict_toggle = False
+            self.verdict_label.setText("")
         self._current_state = state
         self.state_label.setText(STATE_LABELS.get(state, state))
         self.shortcut_hint.setText(SHORTCUT_HINTS.get(state, ""))
-        self.save_ng_btn.setChecked(self._fail_marked)
-        self._refresh_fail_mark()
         self.right_fields["state"].setText(state)
         recording = "기록" in state or "record" in state.lower()
         self.lights["recording"].set("bad" if recording else "off",
@@ -1376,9 +1387,15 @@ class WorkspaceWindow(QMainWindow):
         if self._pending_success is not None:
             self._session["success" if self._pending_success else "failed"] += 1
             self._pending_success = None
-        self._fail_marked = False
-        self.save_ng_btn.setChecked(False)
-        self._refresh_fail_mark()
+        self._last_saved_name = name
+        if self._pending_success is not None:
+            self._last_saved_success = self._pending_success
+        if self._pending_verdict_toggle:
+            # 저장 전에 눌러 둔 뒤집기를 이제 반영한다.
+            self._pending_verdict_toggle = False
+            self._last_saved_success = not self._last_saved_success
+            self.worker.cmd_set_episode_success(name, self._last_saved_success)
+        self._refresh_verdict_label()
         self.log(f"[저장] {name} ({n_frames} frames)")
         self.right_fields["episode"].setText(name)
         self._update_dataset_panel()
@@ -2075,13 +2092,18 @@ class WorkspaceWindow(QMainWindow):
                     self._cmd("cmd_start_teleop")
                     return True
                 if state == "recording" and not self._no_dataset_session:
-                    # 표시해 둔 대로 저장한다. 성공/실패가 각각 다른 키였을 때는
-                    # 잘못 누른 순간 그대로 확정됐다.
-                    self._save(not self._fail_marked)
+                    self._save(True)
                     return True
             elif key == Qt.Key.Key_Escape:
+                # 기록 중이면 '실패로 끝내기', 리셋 대기 중이면 방금 것의 판정
+                # 번복. 버튼을 누르는 행위 자체가 "이 에피소드는 끝났다"는
+                # 판단이므로, 두 키 모두 에피소드를 끝낸다. 성공이었는지는
+                # 팔이 홈으로 가는 동안 다시 보고 정하는 게 자연스럽다.
                 if state == "recording" and not self._no_dataset_session:
-                    self._toggle_fail_mark()
+                    self._save(False)
+                    return True
+                if state in ("reset_wait", "homing") and not self._no_dataset_session:
+                    self._toggle_last_verdict()
                     return True
             elif key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 if state == "recording":
