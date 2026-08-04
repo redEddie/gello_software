@@ -365,6 +365,10 @@ def main() -> None:
                    help="--resume에서 이미 들어간 에피소드 건너뛰기를 끄고 파일 전체를 "
                         "다시 추가함. 중복이 생기고 되돌릴 수 없으니 거의 항상 쓰지 말 것")
     p.add_argument("--push", action="store_true", help="변환 후 바로 Hugging Face Hub에 업로드")
+    p.add_argument("--replace", action="store_true",
+                   help="--push-only와 함께: 로컬에 없는 원격 파일을 지우며 통째로 교체. "
+                        "큐레이션에서 에피소드를 삭제해 재빌드한 결과를 올릴 때 쓴다 "
+                        "(그냥 push하면 지운 에피소드의 청크가 원격에 남는다)")
     p.add_argument("--push-only", action="store_true",
                    help="변환하지 않고 --root의 기존 LeRobot 데이터셋만 업로드 "
                         "(hdf5 인자는 무시됨). 이미 변환해둔 결과를 올릴 때 사용")
@@ -402,7 +406,25 @@ def main() -> None:
         ds.meta = SimpleNamespace(info=info)
         print(f"업로드만 진행: {info['total_episodes']}개 에피소드, "
               f"{info['total_frames']} 프레임 -> {args.repo_id}", flush=True)
-        ds.push_to_hub(private=args.private)
+        if args.replace:
+            # 재빌드한 결과로 Hub을 통째로 교체한다. push_to_hub는 새/바뀐 파일만
+            # 올리고 사라진 파일은 지우지 않으므로, 그것만으로는 지운 에피소드의
+            # 청크가 원격에 남는다 -- 선언은 줄었는데 파일은 남은 상태.
+            # delete_patterns 로 로컬에 없는 원격 파일을 함께 정리한다.
+            from huggingface_hub import HfApi
+
+            api = HfApi()
+            api.create_repo(repo_id=args.repo_id, repo_type="dataset",
+                            private=bool(args.private), exist_ok=True)
+            print("교체 업로드: 로컬에 없는 원격 파일도 함께 정리합니다...", flush=True)
+            api.upload_folder(
+                repo_id=args.repo_id, folder_path=str(root), repo_type="dataset",
+                ignore_patterns=["images/", ".cache/**"],
+                delete_patterns=["data/**", "videos/**", "meta/**"],
+                commit_message="rebuild: 큐레이션 반영 (삭제 포함)",
+            )
+        else:
+            ds.push_to_hub(private=args.private)
         print(f"완료: https://huggingface.co/datasets/{args.repo_id}", flush=True)
         return 0
 

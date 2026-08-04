@@ -62,8 +62,10 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -74,6 +76,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSizePolicy,
     QSlider,
     QSplitter,
@@ -89,6 +92,7 @@ from PyQt6.QtWidgets import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.dataset_schema import load_schema_config, save_schema_config  # noqa: E402
+from gello.dataset_sync import plan_sync  # noqa: E402
 from gello.gui_widgets import (  # noqa: E402
     PLAYBACK_FPS,
     REPACK_SCRIPT,
@@ -203,6 +207,190 @@ def _dot(state: str, text: str) -> str:
     return f'<span style="color:{_DOT[state]};">●</span> {text}'
 
 
+class PipelineDialog(QDialog):
+    """Decide once, then walk away: compares Hub against the curated files and
+    proposes the run that makes them match.
+
+    The decision it exists to surface is which of two very different runs is
+    correct. Appending is cheap but only valid while no already-pushed task has
+    lost episodes; once one has, the Hub copy holds takes the operator deleted
+    and nothing short of a rebuild removes them (LeRobot has no episode delete).
+    Choosing wrong is invisible afterwards -- the dataset simply contains bad
+    demonstrations -- so the comparison is done for the operator and the
+    recommendation is pre-selected, but the button is theirs to press.
+    """
+
+    def __init__(self, parent: QWidget, data_root: str, plan: dict,
+                 lerobot_repo: str, hdf5_repo: str, lerobot_root: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("전체 처리 (재압축 → 변환 → 업로드)"))
+        self.setMinimumWidth(820)
+        self.plan = plan
+        self.data_root = data_root
+        layout = QVBoxLayout(self)
+        self._recents = Recents()
+
+        head = QLabel()
+        head.setWordWrap(True)
+        action = plan["action"]
+        if action == "blocked":
+            head.setText(tr("Hub 상태를 읽지 못했습니다: {e}\n\n확실하지 않은 채로 올리지 "
+                            "않습니다. 네트워크나 계정을 확인한 뒤 다시 여세요.").format(
+                                e=plan["error"]))
+            head.setStyleSheet("color:#e74c3c; font-weight:bold;")
+        elif action == "up_to_date":
+            head.setText(tr("Hub이 이미 로컬과 같습니다 ({n}개). 변환/업로드할 것이 "
+                            "없습니다.").format(n=plan["local_total"]))
+            head.setStyleSheet("color:#27ae60; font-weight:bold;")
+        elif action == "rebuild":
+            head.setText(tr(
+                "이미 올라간 task에서 에피소드 {n}개가 삭제되었습니다. LeRobot은 게시된 "
+                "에피소드를 지울 수 없으므로, 전체를 다시 만들어 Hub을 교체해야 합니다 "
+                "(오래 걸립니다).").format(n=plan["shrunk"]))
+            head.setStyleSheet("color:#e67e22; font-weight:bold;")
+        else:
+            head.setText(tr("새 에피소드 {n}개를 이어붙이면 됩니다 (Hub {h} → {l}). "
+                            "이미 올라간 task에서 삭제된 것은 없습니다.").format(
+                                n=plan["added"], h=plan["hub_total"], l=plan["local_total"]))
+            head.setStyleSheet("color:#27ae60; font-weight:bold;")
+        layout.addWidget(head)
+
+        tree = QTreeWidget()
+        tree.setColumnCount(4)
+        tree.setHeaderLabels([tr("task"), tr("Hub"), tr("로컬"), tr("비고")])
+        tree.setRootIsDecorated(False)
+        tree.setColumnWidth(0, 420)
+        tree.setMinimumHeight(200)
+        for r in plan["rows"]:
+            item = QTreeWidgetItem([r["task"], str(r["hub"]), str(r["local"]), r["note"]])
+            if r["delta"] < 0:
+                for c in range(4):
+                    item.setForeground(c, Qt.GlobalColor.red)
+            elif r["delta"] > 0:
+                for c in range(4):
+                    item.setForeground(c, Qt.GlobalColor.darkGreen)
+            elif "편집" in r["note"]:
+                for c in range(4):
+                    item.setForeground(c, Qt.GlobalColor.darkYellow)
+            tree.addTopLevelItem(item)
+        layout.addWidget(tree)
+
+        if plan["ambiguous"]:
+            warn = QLabel(tr(
+                "개수는 같지만 재압축 이후 편집된 흔적이 있는 task가 있습니다: {t}\n"
+                "지우고 다시 찍었다면 이어붙이기로는 옛 에피소드가 Hub에 남습니다. "
+                "확실하지 않으면 '전체 재빌드'를 고르세요.").format(
+                    t=", ".join(x[:40] for x in plan["ambiguous"])))
+            warn.setWordWrap(True)
+            warn.setStyleSheet("color:#e67e22;")
+            layout.addWidget(warn)
+
+        mode = QGroupBox(tr("LeRobot 처리 방식"))
+        mcol = QVBoxLayout(mode)
+        self.mode_resume = QRadioButton(tr("이어붙이기 — 새 에피소드만 변환/업로드 (빠름)"))
+        self.mode_rebuild = QRadioButton(tr("전체 재빌드 — 처음부터 만들어 Hub 교체 (삭제 반영, 느림)"))
+        self.mode_resume.setChecked(action == "resume")
+        self.mode_rebuild.setChecked(action == "rebuild")
+        self.mode_resume.setEnabled(action in ("resume", "up_to_date"))
+        mcol.addWidget(self.mode_resume)
+        mcol.addWidget(self.mode_rebuild)
+        layout.addWidget(mode)
+
+        opts = QGroupBox(tr("함께 할 일"))
+        ocol = QVBoxLayout(opts)
+        n_repack = sum(1 for p in plan["paths"] if not hdf5_repack_status(p)["repacked"])
+        self.repack_check = QCheckBox(
+            tr("재압축 — 필요한 파일 {n}개").format(n=n_repack))
+        self.repack_check.setChecked(n_repack > 0)
+        self.repack_check.setEnabled(n_repack > 0)
+        ocol.addWidget(self.repack_check)
+        self.hdf5_check = QCheckBox(tr("원본 HDF5도 Hub에 업로드 (9GB 기준 약 15분)"))
+        ocol.addWidget(self.hdf5_check)
+        self.only_success_check = QCheckBox(tr("성공한 에피소드만 변환 (--only-success)"))
+        ocol.addWidget(self.only_success_check)
+        layout.addWidget(opts)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel(tr("LeRobot Repo ID:")), 0, 0)
+        self.lerobot_repo_edit = QLineEdit(lerobot_repo)
+        grid.addWidget(self.lerobot_repo_edit, 0, 1)
+        grid.addWidget(QLabel(tr("HDF5 Repo ID:")), 1, 0)
+        self.hdf5_repo_edit = QLineEdit(hdf5_repo)
+        grid.addWidget(self.hdf5_repo_edit, 1, 1)
+        grid.addWidget(QLabel(tr("로컬 변환 폴더:")), 2, 0)
+        self.root_edit = QLineEdit(lerobot_root)
+        grid.addWidget(self.root_edit, 2, 1)
+        layout.addLayout(grid)
+
+        note = QLabel(tr(
+            "시작할 때 로컬 변환 폴더를 비웁니다. 그래야 이어붙이기가 Hub의 현재 상태를 "
+            "기준으로 삼습니다 — 그 폴더의 내용은 HDF5에서 언제든 다시 만들 수 있습니다."))
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#888;")
+        layout.addWidget(note)
+
+        acct_row = QHBoxLayout()
+        acct_text, acct_color = hf_account()
+        self.acct_label = QLabel(acct_text)
+        self.acct_label.setStyleSheet(f"color:{acct_color}; font-weight:bold;")
+        self.acct_label.setWordWrap(True)
+        acct_row.addWidget(self.acct_label, 1)
+        acct_btn = QPushButton(tr("계정 전환..."))
+        acct_btn.clicked.connect(self._on_account)
+        acct_row.addWidget(acct_btn)
+        layout.addLayout(acct_row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self._ok.setText(tr("시작하고 퇴근"))
+        self._ok.setEnabled(action != "blocked")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_account(self) -> None:
+        HfAccountDialog(self).exec()
+        text, color = hf_account()
+        self.acct_label.setText(text)
+        self.acct_label.setStyleSheet(f"color:{color}; font-weight:bold;")
+
+    def steps(self) -> list:
+        """The ordered subprocess steps this run will execute."""
+        rebuild = self.mode_rebuild.isChecked()
+        lerobot_repo = self.lerobot_repo_edit.text().strip()
+        hdf5_repo = self.hdf5_repo_edit.text().strip()
+        root = self.root_edit.text().strip()
+        paths = self.plan["paths"]
+        self._recents.add("repo_id", lerobot_repo)
+        self._recents.add("hdf5_repo_id", hdf5_repo)
+        self._recents.add("lerobot_root", root)
+
+        steps = []
+        if self.repack_check.isChecked():
+            todo = [p for p in paths if not hdf5_repack_status(p)["repacked"]]
+            if todo:
+                steps.append({"name": tr("재압축"), "program": sys.executable,
+                              "args": [REPACK_SCRIPT, *todo]})
+        convert = [CONVERT_SCRIPT, *paths, "--repo-id", lerobot_repo, "--root", root]
+        if self.only_success_check.isChecked():
+            convert.append("--only-success")
+        if not rebuild:
+            convert.append("--resume")
+        steps.append({"name": tr("LeRobot 변환") + ("" if not rebuild else tr(" (전체 재빌드)")),
+                      "program": sys.executable, "args": convert, "clear_root": root})
+        push = [CONVERT_SCRIPT, "--repo-id", lerobot_repo, "--root", root,
+                "--push-only", "--no-private"]
+        if rebuild:
+            push.append("--replace")
+        steps.append({"name": tr("LeRobot 업로드"), "program": sys.executable, "args": push})
+        if self.hdf5_check.isChecked():
+            steps.append({"name": tr("HDF5 원본 업로드"), "program": sys.executable,
+                          "args": [UPLOAD_SCRIPT, *paths, "--repo-id", hdf5_repo,
+                                   "--no-private"]})
+        return steps
+
+
 class StatusLight(QLabel):
     """One status-bar indicator: a colored dot plus a short label."""
 
@@ -227,6 +415,11 @@ class WorkspaceWindow(QMainWindow):
         self.convert_process: QProcess | None = None
         self.upload_process: QProcess | None = None
         self.runme_process: QProcess | None = None
+        self._pipeline_steps: list = []
+        self._pipeline_results: list = []
+        self._pipeline_proc: QProcess | None = None
+        self._pipeline_t0 = 0.0
+        self._pipeline_step_t0 = 0.0
         self._stream_states: dict = {}
         self._progress_line: dict = {}
 
@@ -622,6 +815,12 @@ class WorkspaceWindow(QMainWindow):
         acct_btn = QPushButton(tr("계정 확인 / 전환..."))
         acct_btn.clicked.connect(self._on_hf_accounts)
         col.addWidget(acct_btn)
+        pipe_btn = QPushButton(tr("전체 처리 (재압축 → 변환 → 업로드)"))
+        pipe_btn.setStyleSheet("background-color:#2ecc71; color:white; font-weight:bold; padding:8px;")
+        pipe_btn.setToolTip(tr("Hub과 로컬을 대조해 필요한 것만 순서대로 실행합니다. "
+                               "확인 창에서 시작을 누르면 끝까지 무인으로 진행합니다."))
+        pipe_btn.clicked.connect(self._on_pipeline)
+        col.addWidget(pipe_btn)
         for text, slot, style in (
             (tr("용량 최적화 (재압축)"), self._on_repack, "background-color:#9b59b6; color:white;"),
             (tr("HDF5 업로드..."), self._on_hdf5_upload, ""),
@@ -883,6 +1082,8 @@ class WorkspaceWindow(QMainWindow):
         m.addSeparator()
         m.addAction(tr("용량 최적화 (재압축)..."), self._on_repack)
         m.addAction(tr("LeRobot 변환/업로드..."), self._on_lerobot)
+        m.addSeparator()
+        m.addAction(tr("전체 처리 (재압축 → 변환 → 업로드)..."), self._on_pipeline)
         m.addAction(tr("HDF5 업로드..."), self._on_hdf5_upload)
 
         m = mb.addMenu(tr("Robot"))
@@ -1971,6 +2172,113 @@ class WorkspaceWindow(QMainWindow):
         self.log("[튜닝] scripts/runme.sh 를 실행합니다 (관리자 비밀번호 창이 뜹니다).")
         self._run_runme()
 
+    # ------------------------------------------------------------ 전체 처리
+    def _on_pipeline(self) -> None:
+        if self.worker is not None:
+            QMessageBox.warning(self, tr("수집 중"),
+                                tr("수집 중에는 실행할 수 없습니다. 먼저 세션을 종료하세요."))
+            return
+        if self._pipeline_steps:
+            QMessageBox.information(self, tr("이미 실행 중"),
+                                    tr("전체 처리가 이미 진행 중입니다. 로그를 확인하세요."))
+            return
+        data_root = self.root_edit.text().strip()
+        repo = self._recents.most_recent("repo_id", "")
+        self.log("[전체 처리] Hub 상태를 확인하는 중...", "upload")
+        self.bottom_tabs.setCurrentWidget(self.upload_view)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            plan = plan_sync(data_root, repo) if repo else {
+                "action": "blocked", "error": "LeRobot Repo ID가 없습니다 (먼저 한 번 지정하세요)",
+                "rows": [], "added": 0, "shrunk": 0, "ambiguous": [],
+                "local_total": 0, "hub_total": 0,
+                "paths": sorted(str(p) for p in Path(data_root).glob("*_demo.hdf5"))}
+        finally:
+            QApplication.restoreOverrideCursor()
+        dlg = PipelineDialog(self, data_root, plan, repo,
+                             self._recents.most_recent("hdf5_repo_id", ""),
+                             self._recents.most_recent(
+                                 "lerobot_root", str(Path.home() / "lerobot_upload")))
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            self.log("[전체 처리] 취소했습니다.", "upload")
+            return
+        steps = dlg.steps()
+        if not steps:
+            self.log("[전체 처리] 할 일이 없습니다.", "upload")
+            return
+        self._pipeline_steps = steps
+        self._pipeline_results = []
+        self._pipeline_t0 = time.monotonic()
+        self.log(f"[전체 처리] {len(steps)}단계 시작 — "
+                 + " → ".join(s["name"] for s in steps), "upload")
+        self._run_next_pipeline_step()
+
+    def _run_next_pipeline_step(self) -> None:
+        if not self._pipeline_steps:
+            self._finish_pipeline(True)
+            return
+        step = self._pipeline_steps[0]
+        if step.get("clear_root"):
+            # 이어붙이기는 로컬 메타가 있으면 그걸 기준으로 삼는다. 비워야 Hub의
+            # 현재 상태를 받아오고, 재빌드는 애초에 빈 폴더가 필요하다.
+            root = Path(step["clear_root"])
+            if root.exists():
+                try:
+                    shutil.rmtree(root)
+                    self.log(f"[전체 처리] 로컬 변환 폴더를 비웠습니다: {root}", "upload")
+                except OSError as e:
+                    self.log(f"[전체 처리] 폴더를 비우지 못했습니다: {e}", "upload")
+                    self._finish_pipeline(False)
+                    return
+        proc = QProcess(self)
+        proc.setProgram(step["program"])
+        proc.setArguments(step["args"])
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        prefix = f"[{step['name']}]"
+        proc.readyReadStandardOutput.connect(lambda: self._pipe(proc, prefix, "upload"))
+        proc.finished.connect(self._on_pipeline_step_finished)
+        self._pipeline_proc = proc
+        self._pipeline_step_t0 = time.monotonic()
+        self.log(f"\n[전체 처리] ▶ {step['name']} 시작", "upload")
+        self.statusBar().showMessage(tr("전체 처리: {n}").format(n=step["name"]))
+        proc.start()
+
+    def _on_pipeline_step_finished(self, code: int, _status) -> None:
+        step = self._pipeline_steps.pop(0)
+        dt = time.monotonic() - self._pipeline_step_t0
+        self._pipeline_results.append((step["name"], code, dt))
+        self.log(f"[전체 처리] {'✔' if code == 0 else '✖'} {step['name']} "
+                 f"종료 (exit={code}, {dt / 60:.1f}분)", "upload")
+        self._pipeline_proc = None
+        if code != 0:
+            # 뒤 단계가 앞 결과에 의존하므로(변환 -> 업로드) 잘못된 것을 올리지
+            # 않는다. 아침에 로그만 보면 어디서 멈췄는지 알 수 있게 남긴다.
+            self._finish_pipeline(False)
+            return
+        self._run_next_pipeline_step()
+
+    def _finish_pipeline(self, ok: bool) -> None:
+        remaining = [s["name"] for s in self._pipeline_steps]
+        self._pipeline_steps = []
+        total = time.monotonic() - self._pipeline_t0
+        lines = ["", "=" * 56,
+                 tr("전체 처리 요약 — {r} (총 {m:.1f}분)").format(
+                     r=tr("완료") if ok else tr("중단됨"), m=total / 60)]
+        for name, code, dt in self._pipeline_results:
+            lines.append(f"  {'✔' if code == 0 else '✖'} {name:24s} "
+                         f"exit={code}  {dt / 60:.1f}분")
+        for name in remaining:
+            lines.append(f"  · {name:24s} " + tr("실행 안 함"))
+        lines.append("=" * 56)
+        for ln in lines:
+            self.log(ln, "upload")
+        self.statusBar().showMessage(
+            tr("전체 처리 완료") if ok else tr("전체 처리 중단 — 로그 확인"), 0)
+        if not ok:
+            self._alert(tr("전체 처리 중단"),
+                        tr("한 단계가 실패해 이후 단계를 실행하지 않았습니다.\n"
+                           "Upload 탭과 로그 파일에 자세한 내용이 있습니다."))
+
     def _on_hf_accounts(self) -> None:
         dlg = HfAccountDialog(self)
         dlg.exec()
@@ -2224,7 +2532,8 @@ class WorkspaceWindow(QMainWindow):
             self.worker.wait(5000)
         self._on_stop_node()
         for proc in (self.repack_process, self.convert_process,
-                     self.upload_process, self.runme_process):
+                     self.upload_process, self.runme_process,
+                     self._pipeline_proc):
             if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
                 proc.terminate()
                 if not proc.waitForFinished(3000):
