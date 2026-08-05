@@ -201,7 +201,51 @@ def repair_metadata(root: Path) -> str:
             f"{n_ep}개/{n_frames}프레임{detail}")
 
 
-def _verify_tag(repo_id: str) -> None:
+def check_integrity(root: Path) -> list[str]:
+    """Structural problems that no amount of metadata patching can fix.
+
+    A wrong seed does more than miscount. resume() numbers the episodes it
+    appends starting from the total it inherited, so a total that is short by
+    four makes the next four episodes reuse indices 117-120 that already exist
+    -- two different episodes answering to the same index. Recomputing
+    total_episodes afterwards hides that (the count becomes right) while the
+    collision stays, which is worse than the honest miscount.
+
+    So this is checked separately from repair_metadata, and it is fatal: the
+    only fix is a rebuild.
+    """
+    import glob as _glob
+
+    import pandas as pd
+
+    problems = []
+    files = sorted(_glob.glob(str(root / "meta/episodes/**/*.parquet"), recursive=True))
+    if not files:
+        return ["meta/episodes 가 없습니다"]
+    eps = pd.concat([pd.read_parquet(f) for f in files])
+    idx = eps["episode_index"].tolist()
+    dup = sorted({i for i in idx if idx.count(i) > 1})
+    if dup:
+        problems.append(
+            f"episode_index 중복 {len(dup)}개 {dup[:8]}{'...' if len(dup) > 8 else ''} "
+            f"-- 서로 다른 에피소드가 같은 번호를 씁니다")
+    if sorted(idx) != list(range(len(idx))):
+        problems.append(
+            f"episode_index 가 0..{len(idx) - 1} 연속이 아닙니다 "
+            f"(범위 {min(idx)}~{max(idx)}, {len(idx)}개)")
+    return problems
+
+
+def _fail_integrity(root: Path, problems: list) -> None:
+    raise SystemExit(
+        "데이터셋이 구조적으로 깨져 있어 중단합니다:\n"
+        + "\n".join(f"  - {p}" for p in problems)
+        + f"\n\n{root} 를 지우고 --resume 없이 전체를 다시 만드세요.\n"
+          "  (원인은 대개 Hub 메타데이터가 낡아 이어붙이기 시작 번호가 어긋난 것입니다.)"
+    )
+
+
+def _verify_tag(repo_id: str) -> bool:
     """Check that the version tag lerobot reads actually points at what we pushed.
 
     lerobot resolves everything at ``revision=CODEBASE_VERSION`` (a git *tag*),
@@ -219,17 +263,20 @@ def _verify_tag(repo_id: str) -> None:
         tag = next((t.target_commit for t in refs.tags if t.name == CODEBASE_VERSION), None)
     except Exception as e:  # noqa: BLE001
         print(f"[경고] 태그 확인 실패: {type(e).__name__}: {e}", flush=True)
-        return
+        return True
     if tag is None:
         print(f"[경고] {CODEBASE_VERSION} 태그가 없습니다. lerobot이 이 데이터셋을 "
               f"읽지 못할 수 있습니다.", flush=True)
+        return False
     elif tag != main:
         print(f"[경고] {CODEBASE_VERSION} 태그가 main과 다른 커밋을 가리킵니다 "
               f"(tag {tag[:8]} vs main {main[:8]}).\n"
               f"        lerobot은 태그 쪽을 읽으므로 방금 올린 내용이 보이지 "
               f"않습니다. 업로드를 다시 실행하세요.", flush=True)
+        return False
     else:
         print(f"[검증] {CODEBASE_VERSION} 태그가 방금 커밋을 가리킵니다.", flush=True)
+    return True
 
 
 def _language_instruction(f: h5py.File) -> str:
@@ -505,6 +552,9 @@ def main() -> None:
         # 파일로는 존재하나 어떤 리더에도 보이지 않는다.
         # (실제로 발생: 121개를 올려놓고 total_episodes=117로 게시됨.)
         # push_to_hub 자체는 repo_id / root / revision / meta.info 만 쓴다.
+        broken = check_integrity(root)
+        if broken:
+            _fail_integrity(root, broken)
         fixed = repair_metadata(root)
         if fixed:
             # 낡은 메타데이터를 그대로 게시하면 새 에피소드가 어떤 리더에도
@@ -541,11 +591,22 @@ def main() -> None:
                 delete_patterns=["data/**", "videos/**", "meta/**"],
                 commit_message="rebuild: 큐레이션 반영 (삭제 포함)",
             )
+            # upload_folder는 태그를 건드리지 않는다. lerobot이 읽는 건 태그이므로
+            # 여기서 옮기지 않으면 교체한 내용이 보이지 않는다.
+            from huggingface_hub.errors import RevisionNotFoundError
+
+            try:
+                api.delete_tag(args.repo_id, tag=CODEBASE_VERSION, repo_type="dataset")
+            except RevisionNotFoundError:
+                pass
+            api.create_tag(args.repo_id, tag=CODEBASE_VERSION, repo_type="dataset")
         else:
             ds.push_to_hub(private=args.private)
-        _verify_tag(args.repo_id)
+        ok_tag = _verify_tag(args.repo_id)
         print(f"완료: https://huggingface.co/datasets/{args.repo_id}", flush=True)
-        return 0
+        # 태그가 안 따라왔으면 성공이 아니다. lerobot은 태그를 읽으므로 올린
+        # 내용이 보이지 않는다 -- 파이프라인이 이 단계를 실패로 처리해야 한다.
+        return 0 if ok_tag else 1
 
     schema = _scan_schema(args.hdf5_paths, args.only_success)
     features, state_parts, cmd_parts = _build_features(schema)
@@ -651,6 +712,9 @@ def main() -> None:
                 print(f"  {name} ({n} frames, success={success}) converted")
 
     ds.finalize()
+    broken = check_integrity(Path(args.root))
+    if broken:
+        _fail_integrity(Path(args.root), broken)
     fixed = repair_metadata(Path(args.root))
     if fixed:
         print(f"[검증] {fixed}", flush=True)
