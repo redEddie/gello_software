@@ -93,6 +93,13 @@ from PyQt6.QtWidgets import (
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.dataset_schema import load_schema_config, save_schema_config  # noqa: E402
 from gello.dataset_sync import plan_sync  # noqa: E402
+from gello.episode_stats import (  # noqa: E402
+    hdf5_files,
+    load_series,
+    scan_dataset,
+    summarize,
+)
+from gello.plot_widgets import BarStrip, Histogram, SeriesPlot  # noqa: E402
 from gello.gui_widgets import (  # noqa: E402
     PLAYBACK_FPS,
     REPACK_SCRIPT,
@@ -420,6 +427,8 @@ class WorkspaceWindow(QMainWindow):
         self._pipeline_proc: QProcess | None = None
         self._pipeline_t0 = 0.0
         self._pipeline_step_t0 = 0.0
+        self._stats: list = []
+        self._summary: dict = {}
         self._stream_states: dict = {}
         self._progress_line: dict = {}
 
@@ -553,6 +562,7 @@ class WorkspaceWindow(QMainWindow):
         self.play_caption.setStyleSheet("color:#888;")
         play_col.addWidget(self.play_caption)
         self.center_tabs.addTab(play, tr("Playback"))
+        self.center_tabs.addTab(self._build_analysis_tab(), tr("Analysis"))
         for title, why in ((tr("Depth"), tr("깊이 스트림을 아직 수집하지 않습니다.")),
                            (tr("Point Cloud"), tr("포인트클라우드 렌더러가 없습니다."))):
             ph = QLabel(tr("{t} — {m}\n\n{w}").format(t=title, m=TODO_MARK, w=why))
@@ -866,8 +876,139 @@ class WorkspaceWindow(QMainWindow):
         self.disk_label = QLabel("-")
         dform.addRow(tr("저장 경로 여유"), self.disk_label)
         col.addWidget(self.disk_box)
+
+        files = QGroupBox(tr("파일"))
+        fcol = QVBoxLayout(files)
+        self.stats_tree = QTreeWidget()
+        self.stats_tree.setColumnCount(3)
+        self.stats_tree.setHeaderLabels([tr("파일"), tr("에피소드"), tr("평균 |Δa|")])
+        self.stats_tree.setRootIsDecorated(False)
+        self.stats_tree.setColumnWidth(0, 190)
+        self.stats_tree.setMaximumHeight(190)
+        self.stats_tree.itemSelectionChanged.connect(self._on_stats_file_selected)
+        fcol.addWidget(self.stats_tree)
+        rescan = QPushButton(tr("다시 분석"))
+        rescan.clicked.connect(lambda: self._refresh_analysis(force=True))
+        fcol.addWidget(rescan)
+        self.stats_hint = QLabel(tr("파일을 고르면 Analysis 탭에서 자세히 볼 수 있습니다."))
+        self.stats_hint.setStyleSheet("color:#888;")
+        self.stats_hint.setWordWrap(True)
+        fcol.addWidget(self.stats_hint)
+        col.addWidget(files)
         col.addStretch()
         return w
+
+    # ------------------------------------------------------------- 분석 탭
+    def _build_analysis_tab(self) -> QWidget:
+        """Center-tab analysis: the curve view plus the curation list.
+
+        It lives in the center, next to Live/Playback, because judging a take
+        means looking at its curves and its video together -- putting the plots
+        in a side panel would have made them too narrow to read.
+        """
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(4, 4, 4, 4)
+        split = QSplitter(Qt.Orientation.Horizontal)
+
+        left = QWidget()
+        lcol = QVBoxLayout(left)
+        lcol.setContentsMargins(0, 0, 0, 0)
+        self.analysis_summary = QLabel(tr("Statistics 패널에서 '다시 분석'을 누르세요."))
+        self.analysis_summary.setWordWrap(True)
+        self.analysis_summary.setStyleSheet("font-weight:bold;")
+        lcol.addWidget(self.analysis_summary)
+
+        self.plot_grid = QGridLayout()
+        self.series_plots = {}
+        # LeRobot 뷰어와 같은 묶음: 인접 관절끼리 스케일이 비슷해 같은 축에 얹힌다.
+        for i, (title, dims) in enumerate((
+            ("joint1.pos, joint2.pos", [(0, "joint1.pos"), (1, "joint2.pos")]),
+            ("joint4.pos, joint5.pos", [(3, "joint4.pos"), (4, "joint5.pos")]),
+            ("joint6.pos, joint7.pos", [(5, "joint6.pos"), (6, "joint7.pos")]),
+            ("joint3.pos", [(2, "joint3.pos")]),
+            ("gripper.pos", [(7, "gripper.pos")]),
+        )):
+            plot = SeriesPlot(title)
+            self.series_plots[title] = (plot, dims)
+            self.plot_grid.addWidget(plot, i // 2, i % 2)
+        lcol.addLayout(self.plot_grid, 1)
+        legend = QLabel(tr("실선 observation.state   ┄ 파선 observation.commanded_state"
+                           "   ┈ 점선 action"))
+        legend.setStyleSheet("color:#888;")
+        lcol.addWidget(legend)
+        split.addWidget(left)
+
+        right = QWidget()
+        rcol = QVBoxLayout(right)
+        rcol.setContentsMargins(0, 0, 0, 0)
+
+        self.dim_bars = BarStrip()
+        dim_box = QGroupBox(tr("차원별 σ(Δa) — 전체 평균"))
+        QVBoxLayout(dim_box).addWidget(self.dim_bars)
+        rcol.addWidget(dim_box)
+
+        self.da_hist = Histogram(tr("에피소드 평균 |Δa| 분포"))
+        rcol.addWidget(self.da_hist)
+
+        filt = QGroupBox(tr("큐레이션 후보"))
+        fcol = QVBoxLayout(filt)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr("기준")))
+        self.rank_combo = QComboBox()
+        # 전역 평균은 품질이 아니라 task의 속도를 재므로 기본이 아니다 -- 실측에서
+        # 전역 상위 10개가 거의 한 task였다.
+        for label, key in (("task 내 z-score (권장)", "z"), ("스파이크 횟수", "spikes"),
+                           ("전역 평균 |Δa|", "mean"), ("길이 (짧은 순)", "short"),
+                           ("움직임 적은 순", "still")):
+            self.rank_combo.addItem(tr(label), key)
+        self.rank_combo.currentIndexChanged.connect(self._refresh_rank_list)
+        row.addWidget(self.rank_combo, 1)
+        fcol.addLayout(row)
+
+        len_row = QHBoxLayout()
+        len_row.addWidget(QLabel(tr("길이(초)")))
+        self.len_min_spin = QSlider(Qt.Orientation.Horizontal)
+        self.len_max_spin = QSlider(Qt.Orientation.Horizontal)
+        for s in (self.len_min_spin, self.len_max_spin):
+            s.setRange(0, 300)
+            s.valueChanged.connect(self._refresh_rank_list)
+        self.len_min_spin.setValue(0)
+        self.len_max_spin.setValue(300)
+        len_row.addWidget(self.len_min_spin, 1)
+        len_row.addWidget(self.len_max_spin, 1)
+        self.len_label = QLabel("-")
+        self.len_label.setMinimumWidth(96)
+        len_row.addWidget(self.len_label)
+        fcol.addLayout(len_row)
+
+        self.rank_tree = QTreeWidget()
+        self.rank_tree.setColumnCount(5)
+        self.rank_tree.setHeaderLabels([tr("에피소드"), tr("점수"), tr("길이"),
+                                        tr("스파이크"), tr("task")])
+        self.rank_tree.setRootIsDecorated(False)
+        self.rank_tree.setColumnWidth(0, 150)
+        self.rank_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.rank_tree.itemSelectionChanged.connect(self._on_rank_selected)
+        self.rank_tree.setMinimumHeight(220)
+        fcol.addWidget(self.rank_tree, 1)
+
+        btns = QHBoxLayout()
+        for text, slot in ((tr("재생해서 확인"), self._on_rank_play),
+                           (tr("선택 삭제"), self._on_rank_delete)):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            btns.addWidget(b)
+        fcol.addLayout(btns)
+        warn = QLabel(tr("자동으로 지우지 않습니다. 목록에서 고른 것만 삭제합니다."))
+        warn.setStyleSheet("color:#888;")
+        warn.setWordWrap(True)
+        fcol.addWidget(warn)
+        rcol.addWidget(filt, 1)
+        split.addWidget(right)
+        split.setSizes([700, 430])
+        outer.addWidget(split)
+        return page
 
     def _page_settings(self) -> QWidget:
         w = QWidget()
@@ -1159,6 +1300,8 @@ class WorkspaceWindow(QMainWindow):
             act.setChecked(True)
         if key == "stats":
             self._refresh_stats()
+            if not self._stats:
+                self._refresh_analysis()
         elif key == "dataset":
             self._refresh_dataset_tree()
         elif key == "upload":
@@ -1819,6 +1962,139 @@ class WorkspaceWindow(QMainWindow):
         f["ds_image"].setText(image)
         f["ds_fps"].setText("-")
 
+    # --------------------------------------------------------------- 분석
+    def _refresh_analysis(self, force: bool = False) -> None:
+        """Rescans every .hdf5's actions. Only a few KB per episode, so this is
+        rebuilt from disk rather than cached -- a cache would go stale the
+        moment a session records another take."""
+        root = self.root_edit.text().strip()
+        files = hdf5_files(root)
+        if not files:
+            self.analysis_summary.setText(tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=root))
+            return
+        t0 = time.monotonic()
+        self._stats = scan_dataset(files)
+        self._summary = summarize(self._stats)
+        dt = time.monotonic() - t0
+        s = self._summary
+        self.analysis_summary.setText(
+            tr("에피소드 {n}개 · {f:,}프레임 · task {t}개 · 길이 {a}~{b}프레임\n{v}").format(
+                n=s["n"], f=s["frames"], t=s["tasks"],
+                a=s["len_min"], b=s["len_max"], v=s["verdict"]))
+        self.log(f"[분석] {len(files)}개 파일 / {s['n']}개 에피소드 ({dt:.2f}s) — {s['verdict']}")
+
+        self.dim_bars.set_rows(
+            [(f"joint{i + 1}", float(s["per_dim_sigma"][i]), "") for i in range(7)])
+        means = [e.mean_da for e in self._stats]
+        self.da_hist.set_values(means, [(s["p50"], tr("중앙값")), (s["p99"], "p99")])
+
+        self.stats_tree.clear()
+        by_file: dict = {}
+        for e in self._stats:
+            by_file.setdefault(e.path, []).append(e)
+        for path, group in sorted(by_file.items()):
+            mean = sum(e.mean_da for e in group) / len(group)
+            item = QTreeWidgetItem([Path(path).name, str(len(group)), f"{mean:.5f}"])
+            item.setData(0, Qt.ItemDataRole.UserRole, path)
+            self.stats_tree.addTopLevelItem(item)
+
+        lens = [e.seconds for e in self._stats]
+        self.len_min_spin.blockSignals(True)
+        self.len_max_spin.blockSignals(True)
+        self.len_min_spin.setRange(0, int(max(lens) * 10) + 5)
+        self.len_max_spin.setRange(0, int(max(lens) * 10) + 5)
+        self.len_min_spin.setValue(0)
+        self.len_max_spin.setValue(int(max(lens) * 10) + 5)
+        self.len_min_spin.blockSignals(False)
+        self.len_max_spin.blockSignals(False)
+        self._refresh_rank_list()
+
+    def _filtered_stats(self) -> list:
+        lo = self.len_min_spin.value() / 10.0
+        hi = self.len_max_spin.value() / 10.0
+        if lo > hi:
+            lo, hi = hi, lo
+        self.len_label.setText(f"{lo:.1f}~{hi:.1f}s")
+        sel = self.stats_tree.selectedItems()
+        path = sel[0].data(0, Qt.ItemDataRole.UserRole) if sel else None
+        out = [e for e in self._stats if lo <= e.seconds <= hi]
+        return [e for e in out if path is None or e.path == path]
+
+    def _refresh_rank_list(self) -> None:
+        if not self._stats:
+            return
+        key = self.rank_combo.currentData()
+        rows = self._filtered_stats()
+        score, fmt = {
+            "z": (lambda e: -e.z_in_task, lambda e: f"z {e.z_in_task:+.2f}"),
+            "spikes": (lambda e: -e.spikes, lambda e: f"{e.spikes}회"),
+            "mean": (lambda e: -e.mean_da, lambda e: f"{e.mean_da:.5f}"),
+            "short": (lambda e: e.n_frames, lambda e: f"{e.seconds:.1f}s"),
+            "still": (lambda e: e.mean_da, lambda e: f"{e.mean_da:.5f}"),
+        }[key]
+        rows = sorted(rows, key=score)[:60]
+        self.rank_tree.clear()
+        for e in rows:
+            item = QTreeWidgetItem([
+                f"{Path(e.path).stem[:22]} · {e.demo}", fmt(e),
+                f"{e.seconds:.1f}s", str(e.spikes), e.task[:34]])
+            item.setData(0, Qt.ItemDataRole.UserRole, (e.path, e.demo))
+            if e.success is False:
+                item.setForeground(0, Qt.GlobalColor.red)
+            self.rank_tree.addTopLevelItem(item)
+        self.stats_hint.setText(
+            tr("{n}개 중 상위 {m}개 표시").format(n=len(self._filtered_stats()), m=len(rows)))
+
+    def _on_stats_file_selected(self) -> None:
+        self._refresh_rank_list()
+
+    def _on_rank_selected(self) -> None:
+        """Selecting a row draws its curves -- the point of the panel is that a
+        number never decides on its own whether a take is bad."""
+        items = self.rank_tree.selectedItems()
+        if not items:
+            return
+        path, demo = items[0].data(0, Qt.ItemDataRole.UserRole)
+        try:
+            series = load_series(path, demo)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"[분석] 시계열 로드 실패: {type(e).__name__}: {e}")
+            return
+        for plot, dims in self.series_plots.values():
+            plot.set_data(series, dims)
+            plot.set_cursor(None)
+        stat = next((e for e in self._stats if e.key == (path, demo)), None)
+        if stat is not None:
+            self.analysis_summary.setText(
+                tr("{d} · {n}프레임 ({s:.1f}s) · 평균 |Δa| {m:.5f} · task 내 z {z:+.2f} "
+                   "· 스파이크 {k}회\n{t}").format(
+                       d=demo, n=stat.n_frames, s=stat.seconds, m=stat.mean_da,
+                       z=stat.z_in_task, k=stat.spikes, t=stat.task))
+            self.da_hist.set_values(
+                [e.mean_da for e in self._stats],
+                [(self._summary["p50"], tr("중앙값")), (stat.mean_da, tr("이 에피소드"))])
+
+    def _on_rank_play(self) -> None:
+        items = self.rank_tree.selectedItems()
+        if not items:
+            return
+        path, demo = items[0].data(0, Qt.ItemDataRole.UserRole)
+        self._play_episode(path, demo)
+
+    def _on_rank_delete(self) -> None:
+        """Hands the selection to the same delete path the Dataset panel uses --
+        including its session-ownership and busy checks."""
+        picks = [i.data(0, Qt.ItemDataRole.UserRole) for i in self.rank_tree.selectedItems()]
+        if not picks:
+            QMessageBox.information(self, tr("선택 필요"),
+                                    tr("삭제할 에피소드를 선택하세요 (Ctrl/Shift로 여러 개)."))
+            return
+        by_file: dict = {}
+        for path, demo in picks:
+            by_file.setdefault(Path(path), []).append(demo)
+        if self._delete_episodes(by_file):
+            self._refresh_analysis()
+
     # ------------------------------------------------------------ dataset
     def _refresh_dataset_tree(self) -> None:
         self.dataset_tree.clear()
@@ -1897,11 +2173,17 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.information(self, tr("선택 필요"),
                                     tr("삭제할 에피소드를 선택하세요 (Ctrl/Shift로 여러 개)."))
             return
+        if self._delete_episodes(by_file):
+            self._refresh_dataset_tree()
+
+    def _delete_episodes(self, by_file: dict) -> bool:
+        """공용 삭제 경로. Dataset 패널과 Analysis 순위표가 같은 것을 쓴다 --
+        세션 소유 검사와 실행 중 작업 검사를 두 벌로 두면 반드시 갈라진다."""
         busy = self._busy_reason()
         if busy:
             QMessageBox.warning(self, tr("삭제 불가"),
                                 tr("{job}이(가) 진행 중입니다. 끝난 뒤 삭제하세요.").format(job=busy))
-            return
+            return False
 
         total = sum(len(v) for v in by_file.values())
         detail = "\n".join(f"  {p.name}: {len(v)}개" for p, v in by_file.items())
@@ -1911,7 +2193,7 @@ class WorkspaceWindow(QMainWindow):
                    "매겨집니다. 파일 크기는 줄지 않습니다 (재압축 필요).").format(
                        n=total, d=detail)
         ) != QMessageBox.StandardButton.Yes:
-            return
+            return False
 
         for path, names in by_file.items():
             owned = self.active_file_path is not None and path == self.active_file_path
@@ -1935,7 +2217,7 @@ class WorkspaceWindow(QMainWindow):
             except Exception as e:  # noqa: BLE001
                 QMessageBox.critical(self, tr("삭제 실패"), f"{path.name}\n{type(e).__name__}: {e}")
                 self.log(f"[삭제 실패] {path.name}: {type(e).__name__}: {e}")
-        self._refresh_dataset_tree()
+        return True
 
     def _on_select_failed(self) -> None:
         """Selects every episode marked failed, across all files.
@@ -2028,7 +2310,14 @@ class WorkspaceWindow(QMainWindow):
             return
         path = item.parent().data(0, Qt.ItemDataRole.UserRole)
         demo = item.data(0, Qt.ItemDataRole.UserRole)
-        if not path or not demo or self._play_key == (path, demo):
+        if not path or not demo:
+            return
+        self._play_episode(path, demo)
+
+    def _play_episode(self, path: str, demo: str) -> None:
+        """Dataset 트리와 Analysis 순위표가 공유하는 재생 진입점."""
+        if self._play_key == (path, demo):
+            self.center_tabs.setCurrentIndex(1)
             return
         if self.active_file_path is not None and Path(path) == self.active_file_path:
             self.play_caption.setText(tr("수집 중인 파일은 재생할 수 없습니다."))
