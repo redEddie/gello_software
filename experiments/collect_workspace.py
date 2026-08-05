@@ -169,6 +169,10 @@ WIDE_FIELDS = {"ds_file", "ds_task"}
 # 3배면 60Hz라 프레임을 건너뛰지 않고도 타이머만으로 낼 수 있다.
 PLAYBACK_SPEEDS = (("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("3x", 3.0))
 
+# task 안에서 2σ. 전역 절대값이 아닌 이유는 gello/episode_stats.py 참고 --
+# 전역 순위는 품질이 아니라 task의 속도를 잰다.
+JERKY_Z = 2.0
+
 
 def soft_wrap(text: str) -> str:
     """Lets a long filename wrap.
@@ -797,6 +801,7 @@ class WorkspaceWindow(QMainWindow):
         # 한 단계 더 들어가야 닿도록 Dataset 메뉴에만 둔다.
         for text, slot in ((tr("새로고침"), self._refresh_dataset_tree),
                            (tr("실패만 선택"), self._on_select_failed),
+                           (tr("튀는 것만 선택"), self._on_select_jerky),
                            (tr("에피소드 삭제"), self._on_delete_selected),
                            (tr("구조 확인"), self._on_show_structure)):
             b = QPushButton(text)
@@ -877,24 +882,20 @@ class WorkspaceWindow(QMainWindow):
         dform.addRow(tr("저장 경로 여유"), self.disk_label)
         col.addWidget(self.disk_box)
 
-        files = QGroupBox(tr("파일"))
-        fcol = QVBoxLayout(files)
-        self.stats_tree = QTreeWidget()
-        self.stats_tree.setColumnCount(3)
-        self.stats_tree.setHeaderLabels([tr("파일"), tr("에피소드"), tr("평균 |Δa|")])
-        self.stats_tree.setRootIsDecorated(False)
-        self.stats_tree.setColumnWidth(0, 190)
-        self.stats_tree.setMaximumHeight(190)
-        self.stats_tree.itemSelectionChanged.connect(self._on_stats_file_selected)
-        fcol.addWidget(self.stats_tree)
-        rescan = QPushButton(tr("다시 분석"))
-        rescan.clicked.connect(lambda: self._refresh_analysis(force=True))
-        fcol.addWidget(rescan)
-        self.stats_hint = QLabel(tr("파일을 고르면 Analysis 탭에서 자세히 볼 수 있습니다."))
+        # 파일 목록은 여기 없다. Dataset 패널의 트리가 이미 파일과 에피소드를
+        # 모두 들고 있어서, 같은 목록을 두 군데 두면 어느 쪽 선택이 분석에
+        # 반영되는지가 매번 헷갈린다. 선택은 Dataset 하나로 모은다.
+        motion = QGroupBox(tr("움직임 분석"))
+        mcol = QVBoxLayout(motion)
+        self.stats_hint = QLabel(tr("Dataset 패널에서 파일이나 에피소드를 고르면 "
+                                    "Analysis 탭에 반영됩니다."))
         self.stats_hint.setStyleSheet("color:#888;")
         self.stats_hint.setWordWrap(True)
-        fcol.addWidget(self.stats_hint)
-        col.addWidget(files)
+        mcol.addWidget(self.stats_hint)
+        rescan = QPushButton(tr("다시 분석"))
+        rescan.clicked.connect(lambda: self._refresh_analysis(force=True))
+        mcol.addWidget(rescan)
+        col.addWidget(motion)
         col.addStretch()
         return w
 
@@ -1217,6 +1218,7 @@ class WorkspaceWindow(QMainWindow):
         m = mb.addMenu(tr("Dataset"))
         m.addAction(tr("새로고침"), self._refresh_dataset_tree)
         m.addAction(tr("실패만 선택"), self._on_select_failed)
+        m.addAction(tr("튀는 것만 선택 (task 내 z ≥ 2)"), self._on_select_jerky)
         m.addAction(tr("에피소드 삭제"), self._on_delete_selected)
         m.addAction(tr("파일 삭제"), self._on_delete_file)
         m.addAction(tr("구조 확인..."), self._on_show_structure)
@@ -1988,16 +1990,6 @@ class WorkspaceWindow(QMainWindow):
         means = [e.mean_da for e in self._stats]
         self.da_hist.set_values(means, [(s["p50"], tr("중앙값")), (s["p99"], "p99")])
 
-        self.stats_tree.clear()
-        by_file: dict = {}
-        for e in self._stats:
-            by_file.setdefault(e.path, []).append(e)
-        for path, group in sorted(by_file.items()):
-            mean = sum(e.mean_da for e in group) / len(group)
-            item = QTreeWidgetItem([Path(path).name, str(len(group)), f"{mean:.5f}"])
-            item.setData(0, Qt.ItemDataRole.UserRole, path)
-            self.stats_tree.addTopLevelItem(item)
-
         lens = [e.seconds for e in self._stats]
         self.len_min_spin.blockSignals(True)
         self.len_max_spin.blockSignals(True)
@@ -2015,8 +2007,14 @@ class WorkspaceWindow(QMainWindow):
         if lo > hi:
             lo, hi = hi, lo
         self.len_label.setText(f"{lo:.1f}~{hi:.1f}s")
-        sel = self.stats_tree.selectedItems()
-        path = sel[0].data(0, Qt.ItemDataRole.UserRole) if sel else None
+        # 선택 출처는 Dataset 트리 하나뿐이다. 파일 행을 고르면 그 파일만,
+        # 에피소드 행을 고르면 그 부모 파일만 남긴다.
+        path = None
+        sel = self.dataset_tree.selectedItems() if hasattr(self, "dataset_tree") else []
+        if sel:
+            node = sel[0] if sel[0].parent() is None else sel[0].parent()
+            v = node.data(0, Qt.ItemDataRole.UserRole)
+            path = v if isinstance(v, str) and v.endswith(".hdf5") else None
         out = [e for e in self._stats if lo <= e.seconds <= hi]
         return [e for e in out if path is None or e.path == path]
 
@@ -2045,9 +2043,6 @@ class WorkspaceWindow(QMainWindow):
         self.stats_hint.setText(
             tr("{n}개 중 상위 {m}개 표시").format(n=len(self._filtered_stats()), m=len(rows)))
 
-    def _on_stats_file_selected(self) -> None:
-        self._refresh_rank_list()
-
     def _on_rank_selected(self) -> None:
         """Selecting a row draws its curves -- the point of the panel is that a
         number never decides on its own whether a take is bad."""
@@ -2055,6 +2050,12 @@ class WorkspaceWindow(QMainWindow):
         if not items:
             return
         path, demo = items[0].data(0, Qt.ItemDataRole.UserRole)
+        self._show_analysis_for(path, demo)
+
+    def _show_analysis_for(self, path: str, demo: str) -> None:
+        """Dataset 트리와 순위표가 공유하는 곡선 표시 경로."""
+        if not path or not demo:
+            return
         try:
             series = load_series(path, demo)
         except Exception as e:  # noqa: BLE001
@@ -2219,6 +2220,41 @@ class WorkspaceWindow(QMainWindow):
                 self.log(f"[삭제 실패] {path.name}: {type(e).__name__}: {e}")
         return True
 
+    def _on_select_jerky(self) -> None:
+        """Selects the episodes that stand out *within their own task*.
+
+        z >= 2 rather than a fixed |Δa|: measured over 273 episodes the spread
+        is narrow (p99/p50 = 1.67) and the global ranking mostly reflects how
+        fast a task is, not how bad a take is -- a global cut would have
+        selected one task wholesale. Two sigma inside a task is a claim that
+        survives a task being naturally quick or slow.
+
+        Nothing is deleted here. The selection lands in the same tree the
+        operator deletes from, so they can play the takes first.
+        """
+        if not self._stats:
+            self._refresh_analysis()
+        if not self._stats:
+            return
+        flagged = {(e.path, e.demo) for e in self._stats if e.z_in_task >= JERKY_Z}
+        self.dataset_tree.clearSelection()
+        n = 0
+        for i in range(self.dataset_tree.topLevelItemCount()):
+            parent = self.dataset_tree.topLevelItem(i)
+            path = parent.data(0, Qt.ItemDataRole.UserRole)
+            for j in range(parent.childCount()):
+                child = parent.child(j)
+                if (path, child.data(0, Qt.ItemDataRole.UserRole)) in flagged:
+                    child.setSelected(True)
+                    n += 1
+        self.log(f"[큐레이션] task 내 z ≥ {JERKY_Z} 인 에피소드 {n}개를 선택했습니다."
+                 + ("" if n else " (없음)"))
+        self.dataset_hint.setText(
+            tr("튀는 에피소드 {n}개 선택됨 — 재생으로 확인한 뒤 '에피소드 삭제'로 지웁니다.")
+            .format(n=n) if n else
+            tr("task 내 z ≥ {z} 인 에피소드가 없습니다 (이 데이터셋은 균일합니다).")
+            .format(z=JERKY_Z))
+
     def _on_select_failed(self) -> None:
         """Selects every episode marked failed, across all files.
 
@@ -2306,6 +2342,12 @@ class WorkspaceWindow(QMainWindow):
         item = items[0] if items else None
         # 파일 행을 골라도 오른쪽 Dataset 칸은 갱신된다 -- 재생은 에피소드 행에서만.
         self._update_dataset_panel(self._selected_file())
+        if self._stats:
+            self._refresh_rank_list()
+            if item is not None and item.parent() is not None:
+                self._show_analysis_for(
+                    item.parent().data(0, Qt.ItemDataRole.UserRole),
+                    item.data(0, Qt.ItemDataRole.UserRole))
         if item is None or item.parent() is None:
             return
         path = item.parent().data(0, Qt.ItemDataRole.UserRole)
