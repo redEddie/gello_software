@@ -56,6 +56,7 @@ import h5py
 import numpy as np
 from PyQt6.QtCore import QEvent, QProcess, Qt, QThread, QTimer, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup, QFont, QTextCursor
+from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -65,6 +66,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -82,6 +84,7 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QTabWidget,
+    QTextBrowser,
     QToolBar,
     QToolButton,
     QTreeWidget,
@@ -94,11 +97,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.dataset_schema import load_schema_config, save_schema_config  # noqa: E402
 from gello.dataset_sync import plan_sync  # noqa: E402
 from gello.episode_stats import (  # noqa: E402
+    STILL_VEL,
+    TASK_DEV_LIMIT,
     hdf5_files,
     load_series,
     scan_dataset,
     summarize,
 )
+from gello.episode_trim import plan_trim, suggest_trim, tail_speed, trim_tail  # noqa: E402
 from gello.plot_widgets import BarStrip, Histogram, SeriesPlot  # noqa: E402
 from gello.gui_widgets import (  # noqa: E402
     PLAYBACK_FPS,
@@ -169,9 +175,9 @@ WIDE_FIELDS = {"ds_file", "ds_task"}
 # 3배면 60Hz라 프레임을 건너뛰지 않고도 타이머만으로 낼 수 있다.
 PLAYBACK_SPEEDS = (("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("3x", 3.0))
 
-# task 안에서 2σ. 전역 절대값이 아닌 이유는 gello/episode_stats.py 참고 --
-# 전역 순위는 품질이 아니라 task의 속도를 잰다.
-JERKY_Z = 2.0
+# 큐레이션 기준값은 전부 gello/episode_stats.py 에 있다 (TASK_DEV_LIMIT /
+# STILL_VEL). 여기서 다시 정의하지 않는 이유는, 화면에 찍히는 수와
+# 판정에 쓰이는 수가 갈라지면 조작자가 둘 중 뭘 믿어야 할지 알 수 없기 때문이다.
 
 
 def soft_wrap(text: str) -> str:
@@ -298,13 +304,24 @@ class PipelineDialog(QDialog):
 
         mode = QGroupBox(tr("LeRobot 처리 방식"))
         mcol = QVBoxLayout(mode)
-        self.mode_resume = QRadioButton(tr("이어붙이기 — 새 에피소드만 변환/업로드 (빠름)"))
-        self.mode_rebuild = QRadioButton(tr("전체 재빌드 — 처음부터 만들어 Hub 교체 (삭제 반영, 느림)"))
-        self.mode_resume.setChecked(action == "resume")
-        self.mode_rebuild.setChecked(action == "rebuild")
+        # 기본값은 언제나 전체 재빌드다. 큐레이션이 이미 올라간 에피소드를 지우는
+        # 일이 잦은데, --resume 은 append 만 하므로 지운 에피소드의 청크가 Hub에
+        # 남는다 -- 선언된 개수는 줄었는데 파일은 남은 상태가 된다. 빠른 쪽을
+        # 기본으로 두면 그 상태가 기본이 된다.
+        self.mode_rebuild = QRadioButton(
+            tr("전체 재빌드 — 처음부터 만들어 Hub 교체 (삭제 반영, 권장)"))
+        self.mode_resume = QRadioButton(
+            tr("이어붙이기 — 새 에피소드만 추가 (빠르지만 지운 에피소드가 Hub에 남음)"))
+        self.mode_rebuild.setChecked(True)
+        self.mode_resume.setChecked(False)
         self.mode_resume.setEnabled(action in ("resume", "up_to_date"))
-        mcol.addWidget(self.mode_resume)
         mcol.addWidget(self.mode_rebuild)
+        mcol.addWidget(self.mode_resume)
+        resume_note = QLabel(tr(
+            "이어붙이기는 에피소드를 하나도 지우지 않았을 때만 안전합니다."))
+        resume_note.setStyleSheet("color:#e67e22;")
+        resume_note.setWordWrap(True)
+        mcol.addWidget(resume_note)
         layout.addWidget(mode)
 
         opts = QGroupBox(tr("함께 할 일"))
@@ -456,6 +473,13 @@ class WorkspaceWindow(QMainWindow):
         self._last_saved_success = True
         self._pending_verdict_toggle = False
         self._dying_previews: list = []
+        # 확정 전까지의 트림 상태. 누른 만큼 오르내리는 정수 하나면 충분하다 --
+        # +/- 가 양쪽으로 있으므로 되돌리기용 이력을 따로 들 이유가 없다.
+        self._trim_key: tuple | None = None
+        self._trim_n_pending: int = 0
+        self._trim_frames: dict = {"agent": None, "wrist": None}
+        self._trim_n: int = 0
+        self._trim_loader = None
         self._connect_wait_since = None
         self._episodes_at_connect = 0
         self._recents = Recents()
@@ -567,6 +591,7 @@ class WorkspaceWindow(QMainWindow):
         play_col.addWidget(self.play_caption)
         self.center_tabs.addTab(play, tr("Playback"))
         self.center_tabs.addTab(self._build_analysis_tab(), tr("Analysis"))
+        self._trim_tab_index = self.center_tabs.addTab(self._build_trim_tab(), tr("Trim"))
         for title, why in ((tr("Depth"), tr("깊이 스트림을 아직 수집하지 않습니다.")),
                            (tr("Point Cloud"), tr("포인트클라우드 렌더러가 없습니다."))):
             ph = QLabel(tr("{t} — {m}\n\n{w}").format(t=title, m=TODO_MARK, w=why))
@@ -795,22 +820,57 @@ class WorkspaceWindow(QMainWindow):
         self.dataset_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         self.dataset_tree.itemSelectionChanged.connect(self._on_dataset_selection)
         col.addWidget(self.dataset_tree, 1)
-        row = QHBoxLayout()
         # 파일 삭제는 여기 없다. 에피소드 삭제 바로 옆에 두었더니 실제로 오클릭이
         # 났고, 한 번에 태스크 하나가 통째로 날아간다. 되돌릴 수 없는 조작은
         # 한 단계 더 들어가야 닿도록 Dataset 메뉴에만 둔다.
-        for text, slot in ((tr("새로고침"), self._refresh_dataset_tree),
-                           (tr("실패만 선택"), self._on_select_failed),
-                           (tr("튀는 것만 선택"), self._on_select_jerky),
-                           (tr("에피소드 삭제"), self._on_delete_selected),
-                           (tr("구조 확인"), self._on_show_structure)):
-            b = QPushButton(text)
-            b.clicked.connect(slot)
-            row.addWidget(b)
-        col.addLayout(row)
-        self.dataset_hint = QLabel(tr(
-            "에피소드를 고르면 Playback 탭에서 재생됩니다. 삭제는 수집 중이 아닌 "
-            "파일이면 세션 없이도 됩니다."))
+        #
+        # 두 줄로 나누고 삭제만 떼어놓는 이유는 폭이 아니라 종류다. 위 네 개는
+        # 읽거나 고르기만 하고, 아래 하나만 파일을 바꾼다 -- 한 줄에 다섯 개가
+        # 나란히 있으면 그 차이가 라벨 글자에만 남는다.
+        for pair in ((("새로고침", self._refresh_dataset_tree,
+                       "데이터 폴더를 다시 읽어 목록을 새로 그립니다."),
+                      ("구조 확인", self._on_show_structure,
+                       "선택한 *파일*의 에피소드 수·용량·이미지 압축·재압축 이력과\n"
+                       "첫 에피소드의 데이터 구조를 보여줍니다.")),
+                     (("실패만 선택", self._on_select_failed,
+                       "success=False 로 표시된 에피소드를 모두 선택합니다.\n"
+                       "선택만 하고 지우지 않습니다."),
+                      ("튀는 것만 선택", self._on_select_jerky,
+                       "같은 task 평균과 ±{d} 넘게 차이 나는 에피소드를 모두 선택합니다.\n"
+                       "선택만 하고 지우지 않습니다. (Analysis 탭과 같은 기준)"))):
+            row = QHBoxLayout()
+            for text, slot, tip in pair:
+                b = QPushButton(tr(text))
+                b.setToolTip(tr(tip).format(d=TASK_DEV_LIMIT))
+                b.clicked.connect(slot)
+                row.addWidget(b)
+            col.addLayout(row)
+
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        line.setStyleSheet("color:#444;")
+        col.addWidget(line)
+
+        trim_btn = QPushButton(tr("끝 다듬기 (Trim 탭에서)"))
+        trim_btn.setToolTip(tr(
+            "선택한 에피소드를 Trim 탭에서 엽니다.\n"
+            "저장 키를 누를 때 흔들린 마지막 몇 프레임을 잘라냅니다."))
+        trim_btn.clicked.connect(self._on_open_trim)
+        col.addWidget(trim_btn)
+
+        del_btn = QPushButton(tr("선택한 에피소드 삭제"))
+        del_btn.setToolTip(tr(
+            "위에서 선택한 에피소드를 .hdf5 에서 실제로 지우고 번호를 다시 매깁니다.\n"
+            "되돌릴 수 없습니다. 수집 중이 아닌 파일이면 세션 없이도 삭제됩니다.\n"
+            "파일 통째 삭제는 Dataset 메뉴에 있습니다."))
+        del_btn.setStyleSheet("background-color:#c0392b; color:white; padding:6px;")
+        del_btn.clicked.connect(self._on_delete_selected)
+        col.addWidget(del_btn)
+
+        # 빈 채로 시작한다. 고정 안내문은 매번 같은 말을 차지하기만 했고, 정작
+        # 알아야 할 것("N개 선택됨")은 누른 뒤에만 생긴다.
+        self.dataset_hint = QLabel("")
         self.dataset_hint.setStyleSheet("color:#888;")
         self.dataset_hint.setWordWrap(True)
         col.addWidget(self.dataset_hint)
@@ -828,27 +888,70 @@ class WorkspaceWindow(QMainWindow):
         # 이 PC는 공용이라 '누구로 올라가는가'가 매번 다를 수 있다. 확인과 전환을
         # 업로드 버튼 바로 위에 둔다 -- 올린 뒤 커밋 기록에서 알게 되면 늦는다.
         acct_btn = QPushButton(tr("계정 확인 / 전환..."))
+        acct_btn.setToolTip(tr("이 PC는 공용입니다. 지금 어떤 토큰으로 올라가는지 "
+                               "확인하고, 다른 사람 계정으로 바꿉니다."))
         acct_btn.clicked.connect(self._on_hf_accounts)
         col.addWidget(acct_btn)
-        pipe_btn = QPushButton(tr("전체 처리 (재압축 → 변환 → 업로드)"))
-        pipe_btn.setStyleSheet("background-color:#2ecc71; color:white; font-weight:bold; padding:8px;")
-        pipe_btn.setToolTip(tr("Hub과 로컬을 대조해 필요한 것만 순서대로 실행합니다. "
-                               "확인 창에서 시작을 누르면 끝까지 무인으로 진행합니다."))
-        pipe_btn.clicked.connect(self._on_pipeline)
-        col.addWidget(pipe_btn)
-        for text, slot, style in (
-            (tr("용량 최적화 (재압축)"), self._on_repack, "background-color:#9b59b6; color:white;"),
-            (tr("HDF5 업로드..."), self._on_hdf5_upload, ""),
-            (tr("LeRobot 변환/업로드..."), self._on_lerobot, ""),
-        ):
-            b = QPushButton(text)
-            b.clicked.connect(slot)
-            if style:
-                b.setStyleSheet(style)
-            col.addWidget(b)
+
+        # 세 묶음으로 나눈다. 위에서 아래로 갈수록 범위가 좁아진다 --
+        # 전부 / 원본(HDF5)만 / 변환본(LeRobot)만. 묶음마다 첫 줄이 "자동"이고
+        # 그 아래가 같은 일을 쪼갠 수동 단계라, 어느 버튼이 어느 버튼을 포함하는지
+        # 위치만 봐도 읽힌다.
+        pipe_btn = self._upload_button(
+            col, tr("전체 처리 (재압축 → 변환 → 업로드)"),
+            tr("Hub과 로컬을 대조해 필요한 것만 순서대로 실행합니다.\n"
+               "재압축 → LeRobot 변환 → LeRobot 업로드까지 한 번에.\n"
+               "확인 창에서 시작을 누르면 끝까지 무인으로 진행합니다."),
+            self._on_pipeline, primary=True, color="#2ecc71")
+
+        col.addSpacing(14)
+        hdf5_box = QGroupBox(tr("HDF5 원본"))
+        hcol = QVBoxLayout(hdf5_box)
+        hcol.setSpacing(6)
+        self._upload_button(
+            hcol, tr("재압축 + 업로드 (자동)"),
+            tr("아래 두 단계를 순서대로 실행합니다.\n"
+               "재압축이 필요한 파일만 골라 줄인 뒤, 원본 .hdf5 를 Hub에 올립니다."),
+            self._on_hdf5_auto, primary=True, color="#9b59b6")
+        self._upload_button(
+            hcol, tr("용량 최적화 (재압축)"),
+            tr("lzf 압축으로 .hdf5 크기를 줄입니다. 내용은 그대로입니다.\n"
+               "이미 재압축된 파일은 건너뜁니다."),
+            self._on_repack)
+        self._upload_button(
+            hcol, tr("원본 업로드..."),
+            tr("큐레이션이 끝난 .hdf5 를 그대로 Hub에 올립니다.\n"
+               "변환본(LeRobot)과는 별개의 저장소입니다."),
+            self._on_hdf5_upload)
+        col.addWidget(hdf5_box)
+
+        col.addSpacing(14)
+        lerobot_box = QGroupBox(tr("LeRobot 변환본"))
+        lcol = QVBoxLayout(lerobot_box)
+        lcol.setSpacing(6)
+        self._upload_button(
+            lcol, tr("변환 + 업로드 (자동)"),
+            tr("전체를 처음부터 다시 만들어 Hub을 통째로 교체합니다.\n"
+               "이어붙이기(resume)를 쓰지 않으므로, 큐레이션에서 지운 에피소드가 "
+               "Hub에서도 사라집니다.\n실행 전에 항상 확인 창을 띄웁니다."),
+            self._on_lerobot_auto, primary=True, color="#3498db")
+        self._upload_button(
+            lcol, tr("HDF5 골라서 변환만..."),
+            tr("올리지 않고 로컬에만 변환합니다.\n"
+               "결과를 눈으로 확인한 뒤 아래 버튼으로 올리세요."),
+            self._on_lerobot)
+        self._upload_button(
+            lcol, tr("전체 task 다시 업로드..."),
+            tr("이미 변환해둔 로컬 결과를 Hub에 통째로 교체 업로드합니다 "
+               "(재변환 없음).\n로컬에 없는 원격 파일도 함께 지우므로, 큐레이션으로 "
+               "삭제한 에피소드가 Hub에 남지 않습니다."),
+            self._on_lerobot_reupload)
+        col.addWidget(lerobot_box)
+
+        col.addSpacing(10)
         note = QLabel(tr(
-            "변환과 업로드는 분리되어 있습니다. Hub에 올라간 에피소드는 지울 수 "
-            "없으므로, 변환 결과를 확인한 뒤 업로드하세요."))
+            "LeRobot 업로드는 항상 전체를 새로 올립니다. 큐레이션으로 지운 "
+            "에피소드를 Hub에서도 없애려면 이어붙이기로는 안 되기 때문입니다."))
         note.setStyleSheet("color:#888;")
         note.setWordWrap(True)
         col.addWidget(note)
@@ -859,6 +962,23 @@ class WorkspaceWindow(QMainWindow):
         col.addWidget(qbox)
         col.addStretch()
         return w
+
+    def _upload_button(self, layout, text: str, tip: str, slot,
+                       primary: bool = False, color: str = "") -> QPushButton:
+        """One Upload-panel button. `primary` marks the automatic one in a group.
+
+        Only the group's automatic button is coloured. Colouring every button
+        made the panel read as five equally urgent actions, when in fact each
+        group is one recommended path plus the manual steps it is made of.
+        """
+        b = QPushButton(text)
+        b.setToolTip(tip)
+        b.clicked.connect(slot)
+        if primary:
+            b.setStyleSheet(f"background-color:{color}; color:white; "
+                            "font-weight:bold; padding:7px;")
+        layout.addWidget(b)
+        return b
 
     def _page_stats(self) -> QWidget:
         w = QWidget()
@@ -900,6 +1020,327 @@ class WorkspaceWindow(QMainWindow):
         return w
 
     # ------------------------------------------------------------- 분석 탭
+    def _on_open_trim(self) -> None:
+        items = [i for i in self.dataset_tree.selectedItems() if i.parent() is not None]
+        if not items:
+            QMessageBox.information(self, tr("선택 필요"),
+                                    tr("에피소드를 하나 선택하세요 (파일이 아니라)."))
+            return
+        it = items[0]
+        path = it.parent().data(0, Qt.ItemDataRole.UserRole)
+        self._show_trim_for(path, it.data(0, Qt.ItemDataRole.UserRole))
+        self.center_tabs.setCurrentIndex(self._trim_tab_index)
+
+    # ------------------------------------------------------------------ Trim
+    def _show_trim_for(self, path: str, demo: str) -> None:
+        """Dataset 트리와 Analysis 순위표가 공유하는 트림 진입점."""
+        if not path or not demo:
+            return
+        if self.active_file_path is not None and Path(path) == self.active_file_path:
+            self.trim_summary.setText(tr("수집 중인 파일은 편집할 수 없습니다."))
+            return
+        self._trim_key = (path, demo)
+        self._trim_n_pending = 0
+        try:
+            series = load_series(path, demo)
+        except Exception as e:  # noqa: BLE001
+            self.trim_summary.setText(tr("불러오기 실패: {e}").format(e=e))
+            return
+        self._trim_series = series
+        self._trim_n = int(series["n"])
+        for plot, dims in self.trim_plots.values():
+            plot.set_data(series, dims)
+        self._trim_frames = {"agent": None, "wrist": None}
+        for v in self.trim_views.values():
+            v.clear_frame(tr("영상 불러오는 중..."))
+        if self._trim_loader is not None:
+            self._trim_loader.wait()
+        self._trim_loader = EpisodeLoadWorker(path, demo)
+        self._trim_loader.loaded.connect(self._on_trim_loaded)
+        self._trim_loader.failed.connect(
+            lambda m: [v.clear_frame(tr("영상 없음")) for v in self.trim_views.values()])
+        self._trim_loader.start()
+        self._trim_update()
+
+    @pyqtSlot(str, str, object, object)
+    def _on_trim_loaded(self, path, demo, agent, wrist) -> None:
+        if self._trim_key != (path, demo):
+            return
+        self._trim_frames = {"agent": agent, "wrist": wrist}
+        self._trim_update()
+        self._trim_seek(self._trim_keep() - 1)
+
+    def _trim_pending(self) -> int:
+        return self._trim_n_pending
+
+    def _trim_keep(self) -> int:
+        return max(0, self._trim_n - self._trim_pending())
+
+    def _trim_add(self, n: int) -> None:
+        """+/- 를 누른 만큼 옮긴다. 0 아래로는 못 간다 -- 원본보다 길어질 수 없다."""
+        if self._trim_key is None:
+            return
+        self._trim_n_pending = max(0, self._trim_n_pending + n)
+        self._trim_update()
+        self._trim_seek(self._trim_keep() - 1)
+
+    def _trim_reset(self) -> None:
+        """정정 -- 고른 것을 통째로 0으로. 한 단계씩 물리는 것보다, 잘못 짚었을 때
+        처음부터 다시 보는 쪽이 실제 흐름에 맞는다."""
+        if self._trim_key is None:
+            return
+        self._trim_n_pending = 0
+        self._trim_update()
+        self._trim_seek(self._trim_keep() - 1)
+
+    def _trim_suggest(self) -> None:
+        if self._trim_key is None:
+            return
+        n = suggest_trim(*self._trim_key)
+        self._trim_n_pending = n
+        self.log(f"[트림] 추천 {n}프레임" + ("" if n else " (이미 조용하게 끝납니다)"))
+        self._trim_update()
+        self._trim_seek(self._trim_keep() - 1)
+
+    def _trim_seek(self, i: int) -> None:
+        n = self._trim_n
+        if n <= 0:
+            return
+        i = max(0, min(n - 1, i))
+        self.trim_slider.blockSignals(True)
+        self.trim_slider.setRange(0, n - 1)
+        self.trim_slider.setValue(i)
+        self.trim_slider.blockSignals(False)
+        self._trim_show_frame(i)
+
+    def _trim_show_frame(self, i: int) -> None:
+        keep = self._trim_keep()
+        for role, v in self.trim_views.items():
+            arr = self._trim_frames.get(role)
+            if arr is None or len(arr) == 0:
+                continue
+            v.set_frame(arr[min(i, len(arr) - 1)])
+        mark = tr(" ← 잘린 뒤 마지막") if i == keep - 1 else (
+            tr("  (잘려나갈 구간)") if i >= keep else "")
+        self.trim_pos.setText(f"{i + 1}/{self._trim_n}{mark}")
+        for plot, _ in self.trim_plots.values():
+            plot.set_cursor(i)
+
+    def _on_trim_scrub(self, i: int) -> None:
+        self._trim_show_frame(i)
+
+    def _on_trim_play(self) -> None:
+        """잘린 뒤 구간만 훑는다 -- 확인하려는 것이 '새 끝'이기 때문이다."""
+        if self._trim_key is None:
+            return
+        keep = self._trim_keep()
+        self._trim_seek(max(0, keep - 40))
+        if not hasattr(self, "_trim_timer"):
+            self._trim_timer = QTimer(self)
+            self._trim_timer.setInterval(50)
+            self._trim_timer.timeout.connect(self._trim_tick)
+        self._trim_timer.start()
+        self.trim_play_btn.setText(tr("정지"))
+
+    def _trim_tick(self) -> None:
+        i = self.trim_slider.value() + 1
+        if i >= self._trim_keep():
+            self._trim_timer.stop()
+            self.trim_play_btn.setText(tr("재생"))
+            return
+        self._trim_seek(i)
+
+    def _trim_update(self) -> None:
+        """Recomputes every label, guard and shading from the pending count."""
+        has = self._trim_key is not None
+        self.trim_play_btn.setEnabled(has and self._trim_frames.get("agent") is not None)
+        self.trim_slider.setEnabled(has)
+        self.trim_reset_btn.setEnabled(bool(self._trim_n_pending))
+        if not has:
+            self.trim_count.setText(tr("에피소드를 고르세요"))
+            self.trim_apply_btn.setEnabled(False)
+            self.trim_warn.setText("")
+            for plot, _ in self.trim_plots.values():
+                plot.set_cut(None)
+            return
+        path, demo = self._trim_key
+        n_trim, keep = self._trim_pending(), self._trim_keep()
+        plan = plan_trim(path, [demo], max(n_trim, 1))[0]
+        self.trim_summary.setText(
+            tr("{d} · {n}프레임 ({s:.1f}s) · 마지막 그리퍼 동작 −{g}프레임").format(
+                d=demo, n=self._trim_n, s=self._trim_n / 20.0,
+                g=plan.gripper_tail if plan.gripper_tail is not None else "?"))
+        self.trim_count.setText(
+            tr("{a} → {b} 프레임   (−{n})").format(a=self._trim_n, b=keep, n=n_trim)
+            if n_trim else tr("{a} 프레임 — 자를 구간 없음").format(a=self._trim_n))
+        for plot, _ in self.trim_plots.values():
+            plot.set_cut(keep if n_trim else None)
+        blocked = plan_trim(path, [demo], n_trim)[0].blocked if n_trim else None
+        self.trim_apply_btn.setEnabled(bool(n_trim) and not blocked)
+        if blocked:
+            self.trim_warn.setText(tr("⚠ {b}").format(b=blocked))
+        elif plan.already:
+            self.trim_warn.setText(tr("이미 다듬은 이력: {a}").format(a=plan.already))
+        else:
+            self.trim_warn.setText("")
+
+    def _trim_apply(self) -> None:
+        if self._trim_key is None or not self._trim_pending():
+            return
+        path, demo = self._trim_key
+        n_trim, keep = self._trim_pending(), self._trim_keep()
+        if QMessageBox.question(
+                self, tr("끝 다듬기 확정"),
+                tr("{f}\n{d}\n\n{a} → {b} 프레임 (뒤에서 {n}개 삭제)\n\n"
+                   "되돌릴 수 없습니다. 진행할까요?").format(
+                       f=Path(path).name, d=demo, a=self._trim_n, b=keep, n=n_trim),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            new_n = trim_tail(path, demo, n_trim)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, tr("다듬기 실패"), f"{type(e).__name__}: {e}")
+            self.log(f"[트림 실패] {Path(path).name} {demo}: {type(e).__name__}: {e}")
+            return
+        self.log(f"[트림] {Path(path).name} {demo}: {self._trim_n} → {new_n}프레임 "
+                 f"(−{n_trim})")
+        self._refresh_dataset_tree()
+        self._refresh_analysis(force=True)
+        self._show_trim_for(path, demo)
+
+    def _build_trim_tab(self) -> QWidget:
+        """Analysis's layout, aimed at one question: where should this take end.
+
+        The plots are the same five as Analysis -- the tail wobble is visible
+        there as clearly as anywhere -- but the right column is the episode's
+        own video instead of dataset-wide statistics, because the check that
+        actually matters ("did I cut the release?") is a thing you look at, not
+        a number. Nothing is written until 확정; every button before that only
+        moves a pending count.
+        """
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(4, 4, 4, 4)
+        split = QSplitter(Qt.Orientation.Horizontal)
+
+        left = QWidget()
+        lcol = QVBoxLayout(left)
+        lcol.setContentsMargins(0, 0, 0, 0)
+        self.trim_summary = QLabel(tr("Dataset 트리나 Analysis 순위표에서 에피소드를 고르세요."))
+        self.trim_summary.setWordWrap(True)
+        self.trim_summary.setStyleSheet("font-weight:bold;")
+        lcol.addWidget(self.trim_summary)
+
+        grid = QGridLayout()
+        self.trim_plots = {}
+        for i, (title, dims) in enumerate((
+            ("joint1.pos, joint2.pos", [(0, "joint1.pos"), (1, "joint2.pos")]),
+            ("joint4.pos, joint5.pos", [(3, "joint4.pos"), (4, "joint5.pos")]),
+            ("joint6.pos, joint7.pos", [(5, "joint6.pos"), (6, "joint7.pos")]),
+            ("joint3.pos", [(2, "joint3.pos")]),
+            ("gripper.pos", [(7, "gripper.pos")]),
+        )):
+            plot = SeriesPlot(title)
+            self.trim_plots[title] = (plot, dims)
+            grid.addWidget(plot, i // 2, i % 2)
+        lcol.addLayout(grid, 1)
+        legend = QLabel(tr("실선 observation.state   ┄ 파선 observation.commanded_state"
+                           "   ┈ 점선 action     ▨ 빨간 음영 = 잘려나갈 구간"))
+        legend.setStyleSheet("color:#888;")
+        lcol.addWidget(legend)
+        split.addWidget(left)
+
+        right = QWidget()
+        rcol = QVBoxLayout(right)
+        rcol.setContentsMargins(0, 0, 0, 0)
+
+        vids = QHBoxLayout()
+        self.trim_views = {}
+        for role, cap in (("agent", tr("agent")), ("wrist", tr("wrist"))):
+            box = QVBoxLayout()
+            v = VideoView()
+            v.clear_frame(tr("에피소드를 선택하세요"))
+            self.trim_views[role] = v
+            box.addWidget(v, 1)
+            lab = QLabel(cap)
+            lab.setStyleSheet("color:#888;")
+            lab.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            box.addWidget(lab)
+            vids.addLayout(box, 1)
+        rcol.addLayout(vids, 1)
+
+        # 슬라이더는 '지금 몇 번째 프레임을 보고 있나'다. 자를 지점을 정하는
+        # 것과 별개로, 잘린 뒤 마지막 프레임이 어떤 장면인지 눈으로 확인해야
+        # 하기 때문에 재생/스크럽을 그대로 둔다.
+        srow = QHBoxLayout()
+        self.trim_play_btn = QPushButton(tr("재생"))
+        self.trim_play_btn.setEnabled(False)
+        self.trim_play_btn.clicked.connect(self._on_trim_play)
+        srow.addWidget(self.trim_play_btn)
+        self.trim_slider = QSlider(Qt.Orientation.Horizontal)
+        self.trim_slider.setEnabled(False)
+        self.trim_slider.valueChanged.connect(self._on_trim_scrub)
+        srow.addWidget(self.trim_slider, 1)
+        self.trim_pos = QLabel("-/-")
+        self.trim_pos.setMinimumWidth(72)
+        srow.addWidget(self.trim_pos)
+        rcol.addLayout(srow)
+
+        box = QGroupBox(tr("끝 다듬기"))
+        bcol = QVBoxLayout(box)
+        self.trim_count = QLabel(tr("에피소드를 고르세요"))
+        self.trim_count.setStyleSheet("font-size:15px; font-weight:bold;")
+        self.trim_count.setWordWrap(True)
+        bcol.addWidget(self.trim_count)
+
+        # 누른 만큼 쌓이고, + 로 되물린다. -1..-20 을 늘어놓는 대신 네 개만 두면
+        # 한 자리에서 오르내릴 수 있어 "몇 번 눌렀더라"를 셀 필요가 없다.
+        step_row = QHBoxLayout()
+        # 라벨의 부호는 *에피소드 길이* 기준이다: "−5" 는 5프레임 짧아진다는 뜻이라
+        # 자를 양(pending)은 +5 만큼 는다. 둘을 같은 부호로 두면 −5 가 되돌리기가
+        # 되어 버린다.
+        for label, n in ((tr("−5"), 5), (tr("−1"), 1), (tr("+1"), -1), (tr("+5"), -5)):
+            b = QPushButton(label)
+            b.setToolTip(
+                tr("누를 때마다 {n}프레임씩 더 자릅니다 (아직 파일은 그대로)")
+                .format(n=n) if n > 0 else
+                tr("누를 때마다 {n}프레임씩 되돌립니다 (원본 길이 이상으로는 안 갑니다)")
+                .format(n=-n))
+            b.clicked.connect(lambda _=False, k=n: self._trim_add(k))
+            step_row.addWidget(b)
+        bcol.addLayout(step_row)
+
+        act_row = QHBoxLayout()
+        sug = QPushButton(tr("추천"))
+        sug.setToolTip(tr("끝에서부터 속도가 그 에피소드 중앙값 아래로 떨어지는 "
+                          "지점까지를 제안합니다 (최대 15프레임)"))
+        sug.clicked.connect(self._trim_suggest)
+        act_row.addWidget(sug)
+        self.trim_reset_btn = QPushButton(tr("정정"))
+        self.trim_reset_btn.setToolTip(tr("고른 프레임 수를 0으로 되돌립니다. "
+                                          "확정 전에는 파일이 바뀌지 않습니다."))
+        self.trim_reset_btn.clicked.connect(self._trim_reset)
+        act_row.addWidget(self.trim_reset_btn)
+        self.trim_apply_btn = QPushButton(tr("확정 (파일에 적용)"))
+        self.trim_apply_btn.setStyleSheet("background-color:#c0392b; color:white; padding:6px;")
+        self.trim_apply_btn.setToolTip(tr("여기서부터 .hdf5 가 실제로 바뀝니다. "
+                                          "되돌릴 수 없습니다."))
+        self.trim_apply_btn.clicked.connect(self._trim_apply)
+        act_row.addWidget(self.trim_apply_btn, 1)
+        bcol.addLayout(act_row)
+
+        self.trim_warn = QLabel("")
+        self.trim_warn.setWordWrap(True)
+        self.trim_warn.setStyleSheet("color:#e67e22;")
+        bcol.addWidget(self.trim_warn)
+        rcol.addWidget(box)
+        split.addWidget(right)
+        split.setSizes([640, 490])
+        outer.addWidget(split)
+        self._trim_update()
+        return page
+
     def _build_analysis_tab(self) -> QWidget:
         """Center-tab analysis: the curve view plus the curation list.
 
@@ -957,11 +1398,13 @@ class WorkspaceWindow(QMainWindow):
         row = QHBoxLayout()
         row.addWidget(QLabel(tr("기준")))
         self.rank_combo = QComboBox()
-        # 전역 평균은 품질이 아니라 task의 속도를 재므로 기본이 아니다 -- 실측에서
-        # 전역 상위 10개가 거의 한 task였다.
-        for label, key in (("task 내 z-score (권장)", "z"), ("스파이크 횟수", "spikes"),
-                           ("전역 평균 |Δa|", "mean"), ("길이 (짧은 순)", "short"),
-                           ("움직임 적은 순", "still")):
+        # 정렬 키는 전부 아래 표에 칼럼으로도 나온다 -- 정렬 기준을 바꿔야만
+        # 보이는 "점수" 칸이 있으면 지금 무슨 수를 보고 있는지 알 수 없다.
+        for label, key in (("평균과 차이 큰 순 = 급한 순 (권장)", "fast"),
+                           ("평균과 차이 작은 순 = 느린 순", "slow"),
+                           ("멈춤 비율 높은 순", "still"),
+                           ("길이 짧은 순", "short"),
+                           ("길이 긴 순", "long")):
             self.rank_combo.addItem(tr(label), key)
         self.rank_combo.currentIndexChanged.connect(self._refresh_rank_list)
         row.addWidget(self.rank_combo, 1)
@@ -985,14 +1428,39 @@ class WorkspaceWindow(QMainWindow):
 
         self.rank_tree = QTreeWidget()
         self.rank_tree.setColumnCount(5)
-        self.rank_tree.setHeaderLabels([tr("에피소드"), tr("점수"), tr("길이"),
-                                        tr("스파이크"), tr("task")])
+        self.rank_tree.setHeaderLabels([tr("에피소드"), tr("평균과 차이"), tr("멈춤%"),
+                                        tr("길이"), tr("task")])
         self.rank_tree.setRootIsDecorated(False)
         self.rank_tree.setColumnWidth(0, 150)
+        for c in range(1, 4):
+            self.rank_tree.setColumnWidth(c, 76)
+        for c, tip in enumerate((
+                tr("파일 · 에피소드"),
+                tr("이 에피소드의 평균 |Δa| 에서 같은 task 평균을 뺀 값 (rad/frame).\n"
+                   "+ 는 그 작업의 보통 테이크보다 급하게, - 는 느리게 움직인 것.\n"
+                   "±{d} 를 넘으면 빨강/파랑").format(d=TASK_DEV_LIMIT),
+                tr("속도가 {v} rad/frame 미만이던 프레임 비율 — 망설임").format(v=STILL_VEL),
+                tr("에피소드 길이 (초)"),
+                tr("language instruction"))):
+            self.rank_tree.headerItem().setToolTip(c, tip)
         self.rank_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.rank_tree.itemSelectionChanged.connect(self._on_rank_selected)
         self.rank_tree.setMinimumHeight(220)
         fcol.addWidget(self.rank_tree, 1)
+        # 판정선만 한 줄로 남긴다. 나머지 정의는 헤더 툴팁 -- 조작자가 코드를
+        # 열지 않고도 "몇이면 이상한가"를 알아야 하지만, 그게 목록을 밀어내면
+        # 정작 봐야 할 후보가 안 보인다.
+        cols_row = QHBoxLayout()
+        cols = QLabel(tr("같은 task 평균과의 차 — ±{d} 밖이면 급함(빨강)/느림(파랑)")
+                      .format(d=TASK_DEV_LIMIT))
+        cols.setStyleSheet("color:#888;")
+        cols_row.addWidget(cols, 1)
+        helpb = QPushButton("?")
+        helpb.setFixedWidth(24)
+        helpb.setToolTip(tr("칼럼 정의와 판정 기준 (docs/curation-metrics.md)"))
+        helpb.clicked.connect(self._on_metric_help)
+        cols_row.addWidget(helpb)
+        fcol.addLayout(cols_row)
 
         btns = QHBoxLayout()
         for text, slot in ((tr("재생해서 확인"), self._on_rank_play),
@@ -1001,10 +1469,6 @@ class WorkspaceWindow(QMainWindow):
             b.clicked.connect(slot)
             btns.addWidget(b)
         fcol.addLayout(btns)
-        warn = QLabel(tr("자동으로 지우지 않습니다. 목록에서 고른 것만 삭제합니다."))
-        warn.setStyleSheet("color:#888;")
-        warn.setWordWrap(True)
-        fcol.addWidget(warn)
         rcol.addWidget(filt, 1)
         split.addWidget(right)
         split.setSizes([700, 430])
@@ -1218,7 +1682,8 @@ class WorkspaceWindow(QMainWindow):
         m = mb.addMenu(tr("Dataset"))
         m.addAction(tr("새로고침"), self._refresh_dataset_tree)
         m.addAction(tr("실패만 선택"), self._on_select_failed)
-        m.addAction(tr("튀는 것만 선택 (task 내 z ≥ 2)"), self._on_select_jerky)
+        m.addAction(tr("튀는 것만 선택 (task 평균과 ±0.0026 밖)"),
+                    self._on_select_jerky)
         m.addAction(tr("에피소드 삭제"), self._on_delete_selected)
         m.addAction(tr("파일 삭제"), self._on_delete_file)
         m.addAction(tr("구조 확인..."), self._on_show_structure)
@@ -1317,11 +1782,21 @@ class WorkspaceWindow(QMainWindow):
                 "validation": self.validation_view}[view]
 
     def log(self, msg: str, view: str = "log") -> None:
+        """Writes to the file even when the widget is gone.
+
+        Signals outlive the window: QProcess.finished for the robot node
+        arrives after closeEvent has torn the tabs down, and appending to a
+        destroyed QPlainTextEdit raised "wrapped C/C++ object ... has been
+        deleted" -- during shutdown, where an unhandled exception is most
+        likely to lose the very message explaining why we are shutting down.
+        The file is what matters at that point, so it is written first.
+        """
         self._progress_line.pop(view, None)  # 다음 진행률은 새 줄에서 시작
-        target = self._view(view)
-        target.appendPlainText(msg)
         if self._log_file is not None:
             self._log_file.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        target = self._view(view)
+        if target is not None and not sip.isdeleted(target):
+            target.appendPlainText(msg)
 
     def _log_progress(self, msg: str, view: str) -> None:
         """Progress that overwrites its own last line instead of stacking.
@@ -1511,7 +1986,16 @@ class WorkspaceWindow(QMainWindow):
         self.lights["camera"].set("busy", tr("정리 중"))
 
     def _previews_busy(self) -> bool:
-        self._dying_previews = [w for w in self._dying_previews if w.isRunning()]
+        """Prunes finished previews, skipping any whose C++ side is already gone.
+
+        `sip.isdeleted` must come first and cannot be dropped: a QThread that
+        Qt has destroyed leaves its Python wrapper behind, and *any* call on
+        it -- isRunning() included -- raises "wrapped C/C++ object ... has been
+        deleted". That was this list's normal end state, so the exception fired
+        on the next stop/restart and again from closeEvent.
+        """
+        self._dying_previews = [w for w in self._dying_previews
+                                if not sip.isdeleted(w) and w.isRunning()]
         return bool(self._dying_previews)
 
     def _release_preview(self, role: str) -> None:
@@ -1537,8 +2021,12 @@ class WorkspaceWindow(QMainWindow):
         w.stop()
         setattr(self, f"{role}_preview", None)
         if w.isRunning():
+            # No deleteLater: this list is the owner. Having both meant Qt
+            # could free the thread while the list still held the wrapper,
+            # which is exactly what _previews_busy() then tripped over. The
+            # entry is dropped once the thread reports finished, and the last
+            # Python reference goes with it.
             self._dying_previews.append(w)
-            w.finished.connect(w.deleteLater)
 
     def _stop_previews_async(self) -> None:
         """Non-blocking stop. The GUI thread never waits on a camera here --
@@ -1556,7 +2044,8 @@ class WorkspaceWindow(QMainWindow):
         """
         self._stop_previews_async()
         for w in self._dying_previews:
-            w.wait(timeout_ms)
+            if not sip.isdeleted(w):
+                w.wait(timeout_ms)
         self._dying_previews = []
 
     def _on_preview_frame(self, role: str, frame) -> None:
@@ -2023,20 +2512,27 @@ class WorkspaceWindow(QMainWindow):
             return
         key = self.rank_combo.currentData()
         rows = self._filtered_stats()
-        score, fmt = {
-            "z": (lambda e: -e.z_in_task, lambda e: f"z {e.z_in_task:+.2f}"),
-            "spikes": (lambda e: -e.spikes, lambda e: f"{e.spikes}회"),
-            "mean": (lambda e: -e.mean_da, lambda e: f"{e.mean_da:.5f}"),
-            "short": (lambda e: e.n_frames, lambda e: f"{e.seconds:.1f}s"),
-            "still": (lambda e: e.mean_da, lambda e: f"{e.mean_da:.5f}"),
+        score = {
+            "fast": lambda e: -e.task_dev,
+            "slow": lambda e: e.task_dev,
+            "still": lambda e: -e.still_frac,
+            "short": lambda e: e.n_frames,
+            "long": lambda e: -e.n_frames,
         }[key]
         rows = sorted(rows, key=score)[:60]
         self.rank_tree.clear()
         for e in rows:
             item = QTreeWidgetItem([
-                f"{Path(e.path).stem[:22]} · {e.demo}", fmt(e),
-                f"{e.seconds:.1f}s", str(e.spikes), e.task[:34]])
+                f"{Path(e.path).stem[:22]} · {e.demo}",
+                f"{e.task_dev:+.4f}", f"{100 * e.still_frac:.0f}%",
+                f"{e.seconds:.1f}s", e.task[:34]])
             item.setData(0, Qt.ItemDataRole.UserRole, (e.path, e.demo))
+            # 밴드 밖은 차이 칸만 물들인다 -- 행 전체를 칠하면 실패(빨강)와
+            # 겹쳐서 둘 다 안 읽힌다.
+            if e.task_dev > TASK_DEV_LIMIT:
+                item.setForeground(1, Qt.GlobalColor.red)
+            elif e.task_dev < -TASK_DEV_LIMIT:
+                item.setForeground(1, Qt.GlobalColor.blue)
             if e.success is False:
                 item.setForeground(0, Qt.GlobalColor.red)
             self.rank_tree.addTopLevelItem(item)
@@ -2051,6 +2547,7 @@ class WorkspaceWindow(QMainWindow):
             return
         path, demo = items[0].data(0, Qt.ItemDataRole.UserRole)
         self._show_analysis_for(path, demo)
+        self._show_trim_for(path, demo)
 
     def _show_analysis_for(self, path: str, demo: str) -> None:
         """Dataset 트리와 순위표가 공유하는 곡선 표시 경로."""
@@ -2067,10 +2564,13 @@ class WorkspaceWindow(QMainWindow):
         stat = next((e for e in self._stats if e.key == (path, demo)), None)
         if stat is not None:
             self.analysis_summary.setText(
-                tr("{d} · {n}프레임 ({s:.1f}s) · 평균 |Δa| {m:.5f} · task 내 z {z:+.2f} "
-                   "· 스파이크 {k}회\n{t}").format(
+                tr("{d} · {n}프레임 ({s:.1f}s) · 평균 |Δa| {m:.5f} · 같은 task 평균과 "
+                   "{v:+.4f}{mark} · 멈춤 {p:.0f}%\n{t}").format(
                        d=demo, n=stat.n_frames, s=stat.seconds, m=stat.mean_da,
-                       z=stat.z_in_task, k=stat.spikes, t=stat.task))
+                       v=stat.task_dev,
+                       mark=" (급함)" if stat.task_dev > TASK_DEV_LIMIT else (
+                           " (느림)" if stat.task_dev < -TASK_DEV_LIMIT else ""),
+                       p=100 * stat.still_frac, t=stat.task))
             self.da_hist.set_values(
                 [e.mean_da for e in self._stats],
                 [(self._summary["p50"], tr("중앙값")), (stat.mean_da, tr("이 에피소드"))])
@@ -2220,14 +2720,46 @@ class WorkspaceWindow(QMainWindow):
                 self.log(f"[삭제 실패] {path.name}: {type(e).__name__}: {e}")
         return True
 
+    def _on_metric_help(self) -> None:
+        """Shows docs/curation-metrics.md rather than a copy of it.
+
+        The thresholds in that file are the ones episode_stats.py actually
+        uses; a second prose copy inside the GUI would be the version that
+        goes stale first, and the operator would have no way to tell which of
+        the two was lying.
+        """
+        doc = Path(__file__).resolve().parent.parent / "docs" / "curation-metrics.md"
+        try:
+            body = doc.read_text(encoding="utf-8")
+        except OSError as e:
+            QMessageBox.warning(self, tr("지표 설명"),
+                                tr("{p} 를 읽을 수 없습니다: {e}").format(p=doc, e=e))
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("지표 정의 — curation-metrics.md"))
+        dlg.resize(900, 680)
+        lay = QVBoxLayout(dlg)
+        view = QTextBrowser()
+        view.setMarkdown(body)
+        view.setOpenExternalLinks(True)
+        lay.addWidget(view)
+        path_lbl = QLabel(str(doc))
+        path_lbl.setStyleSheet("color:#888;")
+        path_lbl.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(path_lbl)
+        btn = QPushButton(tr("닫기"))
+        btn.clicked.connect(dlg.accept)
+        lay.addWidget(btn)
+        dlg.exec()
+
     def _on_select_jerky(self) -> None:
         """Selects the episodes that stand out *within their own task*.
 
-        z >= 2 rather than a fixed |Δa|: measured over 273 episodes the spread
-        is narrow (p99/p50 = 1.67) and the global ranking mostly reflects how
-        fast a task is, not how bad a take is -- a global cut would have
-        selected one task wholesale. Two sigma inside a task is a claim that
-        survives a task being naturally quick or slow.
+        Both ends: rushing and dawdling are different mistakes but both are
+        "not how this task is usually done". Compared within the task because
+        mean_da is distance over time, so between tasks it ranks how far the
+        arm must reach rather than how well it was driven.
 
         Nothing is deleted here. The selection lands in the same tree the
         operator deletes from, so they can play the takes first.
@@ -2236,7 +2768,7 @@ class WorkspaceWindow(QMainWindow):
             self._refresh_analysis()
         if not self._stats:
             return
-        flagged = {(e.path, e.demo) for e in self._stats if e.z_in_task >= JERKY_Z}
+        flagged = {(e.path, e.demo) for e in self._stats if e.flagged}
         self.dataset_tree.clearSelection()
         n = 0
         for i in range(self.dataset_tree.topLevelItemCount()):
@@ -2247,13 +2779,13 @@ class WorkspaceWindow(QMainWindow):
                 if (path, child.data(0, Qt.ItemDataRole.UserRole)) in flagged:
                     child.setSelected(True)
                     n += 1
-        self.log(f"[큐레이션] task 내 z ≥ {JERKY_Z} 인 에피소드 {n}개를 선택했습니다."
-                 + ("" if n else " (없음)"))
+        self.log(f"[큐레이션] 같은 task 평균과 {TASK_DEV_LIMIT} 넘게 차이 나는 "
+                 f"에피소드 {n}개를 선택했습니다." + ("" if n else " (없음)"))
         self.dataset_hint.setText(
             tr("튀는 에피소드 {n}개 선택됨 — 재생으로 확인한 뒤 '에피소드 삭제'로 지웁니다.")
             .format(n=n) if n else
-            tr("task 내 z ≥ {z} 인 에피소드가 없습니다 (이 데이터셋은 균일합니다).")
-            .format(z=JERKY_Z))
+            tr("같은 task 평균과 {d} 넘게 차이 나는 에피소드가 없습니다 "
+               "(이 데이터셋은 균일합니다).").format(d=TASK_DEV_LIMIT))
 
     def _on_select_failed(self) -> None:
         """Selects every episode marked failed, across all files.
@@ -2503,6 +3035,176 @@ class WorkspaceWindow(QMainWindow):
         self.log("[튜닝] scripts/runme.sh 를 실행합니다 (관리자 비밀번호 창이 뜹니다).")
         self._run_runme()
 
+    # ------------------------------------------------- 묶음 자동 실행 (HDF5/LeRobot)
+    def _pipeline_guard(self, what: str) -> bool:
+        """Shared preconditions for every automatic button."""
+        if self.worker is not None:
+            QMessageBox.warning(self, tr("수집 중"),
+                                tr("수집 중에는 실행할 수 없습니다. 먼저 세션을 종료하세요."))
+            return False
+        if self._pipeline_steps:
+            QMessageBox.information(self, tr("이미 실행 중"),
+                                    tr("{w}이(가) 이미 진행 중입니다. 로그를 확인하세요.")
+                                    .format(w=what))
+            return False
+        return True
+
+    def _start_pipeline(self, steps: list, tag: str) -> None:
+        self._pipeline_steps = steps
+        self._pipeline_results = []
+        self._pipeline_t0 = time.monotonic()
+        self.bottom_tabs.setCurrentWidget(self.upload_view)
+        self.log(f"[{tag}] {len(steps)}단계 시작 — "
+                 + " → ".join(st["name"] for st in steps), "upload")
+        self._run_next_pipeline_step()
+
+    def _on_hdf5_auto(self) -> None:
+        """재압축 -> 원본 HDF5 업로드."""
+        if not self._pipeline_guard(tr("HDF5 자동 처리")):
+            return
+        data_root = self.root_edit.text().strip()
+        paths = sorted(str(x) for x in Path(data_root).glob("*_demo.hdf5"))
+        if not paths:
+            QMessageBox.warning(self, tr("파일 없음"),
+                                tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=data_root))
+            return
+        repo = self._recents.most_recent("hdf5_repo_id", "")
+        if not repo:
+            QMessageBox.warning(self, tr("Repo ID 필요"),
+                                tr("HDF5 Repo ID가 없습니다. 'HDF5 원본 업로드...'에서 "
+                                   "한 번 지정한 뒤 다시 시도하세요."))
+            return
+        todo = [x for x in paths if not hdf5_repack_status(x)["repacked"]]
+        if QMessageBox.question(
+                self, tr("HDF5 재압축 + 업로드"),
+                tr("파일 {n}개 중 재압축이 필요한 것 {m}개.\n"
+                   "재압축 후 {r} 에 원본을 업로드합니다.\n\n진행할까요?")
+                .format(n=len(paths), m=len(todo), r=repo),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes) != QMessageBox.StandardButton.Yes:
+            self.log("[HDF5 자동] 취소했습니다.", "upload")
+            return
+        steps = []
+        if todo:
+            steps.append({"name": tr("재압축"), "program": sys.executable,
+                          "args": [REPACK_SCRIPT, *todo]})
+        steps.append({"name": tr("HDF5 원본 업로드"), "program": sys.executable,
+                      "args": [UPLOAD_SCRIPT, *paths, "--repo-id", repo, "--no-private"]})
+        self._start_pipeline(steps, tr("HDF5 자동"))
+
+    def _on_lerobot_auto(self) -> None:
+        """전체 재빌드 -> 교체 업로드. resume 경로는 여기에 없다.
+
+        Curation deletes episodes from .hdf5 files that were already pushed,
+        and --resume only ever appends: the deleted episodes' chunks stay on
+        the Hub while the declared count drops. Rebuilding from scratch and
+        pushing with --replace is the only combination that makes the Hub
+        match what is actually on disk, so this button offers nothing else.
+        """
+        if not self._pipeline_guard(tr("LeRobot 자동 처리")):
+            return
+        data_root = self.root_edit.text().strip()
+        paths = sorted(str(x) for x in Path(data_root).glob("*_demo.hdf5"))
+        if not paths:
+            QMessageBox.warning(self, tr("파일 없음"),
+                                tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=data_root))
+            return
+        repo = self._recents.most_recent("repo_id", "")
+        root = self._recents.most_recent("lerobot_root", str(Path.home() / "lerobot_upload"))
+        if not repo:
+            QMessageBox.warning(self, tr("Repo ID 필요"),
+                                tr("LeRobot Repo ID가 없습니다. 'HDF5 골라서 변환만...'에서 "
+                                   "한 번 지정한 뒤 다시 시도하세요."))
+            return
+        if QMessageBox.question(
+                self, tr("LeRobot 변환 + 업로드"),
+                tr("task {n}개를 처음부터 다시 변환하고, {r} 을(를) 통째로 "
+                   "교체합니다.\n\n"
+                   "· 로컬 변환 폴더를 비웁니다: {o}\n"
+                   "· 이어붙이기(resume)를 쓰지 않으므로 큐레이션에서 지운 "
+                   "에피소드가 Hub에서도 사라집니다\n"
+                   "· 전체 재변환이라 시간이 걸립니다\n\n진행할까요?")
+                .format(n=len(paths), r=repo, o=root),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            self.log("[LeRobot 자동] 취소했습니다.", "upload")
+            return
+        self._recents.add("repo_id", repo)
+        self._recents.add("lerobot_root", root)
+        steps = [
+            {"name": tr("LeRobot 변환 (전체 재빌드)"), "program": sys.executable,
+             "args": [CONVERT_SCRIPT, *paths, "--repo-id", repo, "--root", root],
+             "clear_root": root},
+            {"name": tr("LeRobot 교체 업로드"), "program": sys.executable,
+             "args": [CONVERT_SCRIPT, "--repo-id", repo, "--root", root,
+                      "--push-only", "--replace", "--no-private"]},
+        ]
+        self._start_pipeline(steps, tr("LeRobot 자동"))
+
+    def _count_hdf5_episodes(self) -> "int | None":
+        """Episodes currently in the .hdf5 files. Metadata only -- no images."""
+        try:
+            import h5py
+            total = 0
+            for f in hdf5_files(self.root_edit.text().strip()):
+                with h5py.File(f, "r") as h:
+                    total += len(h["data"].keys())
+            return total
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _on_lerobot_reupload(self) -> None:
+        """재변환 없이, 이미 만들어둔 로컬 결과로 Hub을 교체."""
+        if not self._pipeline_guard(tr("LeRobot 재업로드")):
+            return
+        repo = self._recents.most_recent("repo_id", "")
+        root = self._recents.most_recent("lerobot_root", str(Path.home() / "lerobot_upload"))
+        if not repo:
+            QMessageBox.warning(self, tr("Repo ID 필요"), tr("LeRobot Repo ID가 없습니다."))
+            return
+        info = Path(root) / "meta" / "info.json"
+        if not info.exists():
+            QMessageBox.warning(
+                self, tr("변환 결과 없음"),
+                tr("{o} 에 변환 결과가 없습니다 ({i} 없음).\n"
+                   "'변환 + 업로드 (자동)' 또는 'HDF5 골라서 변환만...'을 먼저 "
+                   "실행하세요.").format(o=root, i=info.name))
+            return
+        try:
+            meta = json.loads(info.read_text())
+            n_ep, n_fr = meta.get("total_episodes", "?"), meta.get("total_frames", "?")
+        except Exception:  # noqa: BLE001
+            n_ep = n_fr = "?"
+        # 변환 결과와 현재 .hdf5 의 개수를 맞춰본다. 큐레이션으로 에피소드를
+        # 지운 뒤 재변환을 잊으면, 이 버튼은 삭제 이전 결과를 그대로 Hub에
+        # 올려 큐레이션을 통째로 되돌린다 -- 그리고 개수만 보고는 눈치채기
+        # 어렵다. 지금 세는 값과 나란히 놓으면 그 자리에서 보인다.
+        n_local = self._count_hdf5_episodes()
+        stale = isinstance(n_ep, int) and n_local is not None and n_ep != n_local
+        head = (tr("⚠ 변환 결과가 최신이 아닙니다 — 변환본 {e}개 vs 현재 HDF5 {l}개\n"
+                   "   지금 올리면 큐레이션으로 지운 에피소드가 되살아납니다.\n"
+                   "   '변환 + 업로드 (자동)'으로 다시 만드세요.\n\n").format(e=n_ep, l=n_local)
+                if stale else "")
+        if QMessageBox.question(
+                self, tr("전체 task 다시 업로드"),
+                head + tr("{o} 의 변환 결과를 {r} 에 통째로 올립니다.\n\n"
+                          "· 변환본 에피소드 {e}개 / 프레임 {f}\n"
+                          "· 현재 HDF5 에피소드 {l}개\n"
+                          "· 재변환은 하지 않습니다\n"
+                          "· 로컬에 없는 원격 파일은 지웁니다 (큐레이션 삭제 반영)\n\n"
+                          "이 로컬 결과가 최신인지 확인하셨나요?")
+                .format(o=root, r=repo, e=n_ep, f=n_fr,
+                        l=n_local if n_local is not None else "?"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            self.log("[LeRobot 재업로드] 취소했습니다.", "upload")
+            return
+        self._start_pipeline([
+            {"name": tr("LeRobot 교체 업로드"), "program": sys.executable,
+             "args": [CONVERT_SCRIPT, "--repo-id", repo, "--root", root,
+                      "--push-only", "--replace", "--no-private"]}],
+            tr("LeRobot 재업로드"))
+
     # ------------------------------------------------------------ 전체 처리
     def _on_pipeline(self) -> None:
         if self.worker is not None:
@@ -2630,8 +3332,8 @@ class WorkspaceWindow(QMainWindow):
         proc.setArguments([CHECK_CAMERAS])
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.readyReadStandardOutput.connect(
-            lambda: [self.log(ln, "validation") for ln in
-                     bytes(proc.readAllStandardOutput()).decode(errors="replace").splitlines()])
+            lambda: [self.log(ln, "validation")
+                     for ln in self._proc_text(proc).splitlines()])
         proc.finished.connect(lambda c, _s: self.log(
             {0: "카메라 점검: 모두 정상", 1: "카메라 점검: 문제 발견",
              2: "카메라 점검: 일부 확인 못 함"}.get(c, f"카메라 점검 종료 (exit={c})"),
@@ -2651,9 +3353,8 @@ class WorkspaceWindow(QMainWindow):
         proc.setArguments(["bash", RUNME_SCRIPT])
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.readyReadStandardOutput.connect(
-            lambda: [self.log(f"[튜닝] {ln}") for ln in
-                     bytes(proc.readAllStandardOutput()).decode(errors="replace").splitlines()
-                     if ln.strip()])
+            lambda: [self.log(f"[튜닝] {ln}")
+                     for ln in self._proc_text(proc).splitlines() if ln.strip()])
         proc.finished.connect(self._on_runme_finished)
         self.runme_process = proc
         proc.start()
@@ -2691,7 +3392,7 @@ class WorkspaceWindow(QMainWindow):
     def _on_node_output(self) -> None:
         if self.node_process is None:
             return
-        data = bytes(self.node_process.readAllStandardOutput()).decode(errors="replace")
+        data = self._proc_text(self.node_process)
         for line in data.splitlines():
             if line.strip():
                 self.log(f"[노드] {line}")
@@ -2739,8 +3440,21 @@ class WorkspaceWindow(QMainWindow):
         self.log(f"[재압축] 시작: {len(selected)}개 파일", "upload")
         proc.start()
 
+    @staticmethod
+    def _proc_text(proc: QProcess) -> str:
+        """Reads a child's stdout, or "" once Qt has destroyed the QProcess.
+
+        readyReadStandardOutput can still be delivered after the window (the
+        QProcess's parent) is torn down, and reading a destroyed QProcess
+        raises "wrapped C/C++ object ... has been deleted" -- during shutdown,
+        where it surfaces as a crash dialog instead of a clean exit.
+        """
+        if proc is None or sip.isdeleted(proc):
+            return ""
+        return bytes(proc.readAllStandardOutput()).decode(errors="replace")
+
     def _pipe(self, proc: QProcess, prefix: str, view: str) -> None:
-        data = bytes(proc.readAllStandardOutput()).decode(errors="replace")
+        data = self._proc_text(proc)
         state = self._stream_states.setdefault(prefix, {})
         # 진행률은 1초마다 받아 한 줄을 덮어쓴다. 3초로 줄여도 1.3GB 업로드가
         # 몇 분이면 수십 줄이 쌓여, 그 사이 지나간 다른 로그를 밀어낸다.

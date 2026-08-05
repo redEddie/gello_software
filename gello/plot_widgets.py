@@ -50,6 +50,7 @@ class SeriesPlot(QWidget):
         self._dims: list[tuple[int, str]] = []
         self._series: dict = {}
         self._cursor: float | None = None
+        self._cut: int | None = None
         self.setMinimumHeight(150)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -67,8 +68,20 @@ class SeriesPlot(QWidget):
         self._cursor = frame
         self.update()
 
+    def set_cut(self, frame: int | None) -> None:
+        """Shades everything from `frame` on as "about to be removed".
+
+        Shown behind the traces rather than as a line at the cut point: the
+        question the operator is answering is "is anything I still need inside
+        the shaded part", and a bare marker does not put the two halves side
+        by side.
+        """
+        self._cut = frame
+        self.update()
+
     def clear(self) -> None:
         self._series, self._dims = {}, []
+        self._cut = self._cursor = None
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
@@ -121,6 +134,15 @@ class SeriesPlot(QWidget):
                    Qt.AlignmentFlag.AlignLeft, "0.0s")
         p.drawText(QRectF(plot.right() - 44, plot.bottom() + 2, 44, 14),
                    Qt.AlignmentFlag.AlignRight, f"{n / 20:.1f}s")
+
+        if self._cut is not None and 0 <= self._cut < n:
+            cut = QColor(220, 70, 70); cut.setAlpha(46)
+            p.fillRect(QRectF(X(self._cut), plot.top(),
+                              max(1.0, plot.right() - X(self._cut)), plot.height()), cut)
+            edge = QColor(220, 70, 70); edge.setAlpha(190)
+            p.setPen(QPen(edge, 1))
+            p.drawLine(QPointF(X(self._cut), plot.top()),
+                       QPointF(X(self._cut), plot.bottom()))
 
         # 점이 픽셀보다 많으면 화면 열마다 min/max 두 점만 찍는다. 250프레임짜리를
         # 매 재생 틱마다 다시 그리므로, 안 그러면 커서 이동이 눈에 띄게 느려진다.
