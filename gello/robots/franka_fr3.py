@@ -36,7 +36,7 @@ hand exposes an *active control* interface that has to be serviced at 1 kHz
   against a ``kMaxJointJerk`` of 5000, which aborts with
   ``joint_motion_generator_acceleration_discontinuity``.
 * A second thread services the (blocking) gripper API as a binary
-  grasp/release state machine with hysteresis (see ``_gripper_loop`` for why
+  grasp/release state machine with hysteresis (see ``_gripper_cmd_loop`` for why
   ``move()`` alone cannot hold objects).
 
 Safety
@@ -85,6 +85,9 @@ MAX_GRIPPER_WIDTH = 0.08
 # exponential squeeze resistance at this same value, so the moment resistance is
 # felt under the finger is the moment the hand grasps.
 GRIPPER_CLOSE_AT = 0.6
+# 폭 읽기 주기. 기록이 20Hz라 그보다 빠를 이유가 없고, read_once() 한 번이
+# 30ms 안쪽이라 이 주기를 지킬 수 있다(scripts/check_gripper_concurrent_read.py).
+GRIPPER_READ_HZ = 20.0
 
 # Conservative default joint impedance (N*m/rad), same order as libfranka docs.
 DEFAULT_JOINT_IMPEDANCE = [3000.0, 3000.0, 3000.0, 2500.0, 2500.0, 2000.0, 2000.0]
@@ -271,6 +274,14 @@ class FrankaFR3Robot(Robot):
         # Background threads.
         self._control_thread: Optional[threading.Thread] = None
         self._gripper_thread: Optional[threading.Thread] = None
+        self._gripper_read_thread: Optional[threading.Thread] = None
+        # 읽기 스레드는 두 모드 모두에서 돈다. read_only 는 "상태만 스트리밍"인데
+        # 그리퍼 폭만 갱신되지 않아, 관측의 8번째 열이 연결 시점 값에 멈춰 있었다.
+        if use_gripper:
+            self._gripper_read_thread = threading.Thread(
+                target=self._gripper_read_loop, daemon=True
+            )
+            self._gripper_read_thread.start()
         if read_only:
             # Stream measured state only; never command motion.
             self._control_thread = threading.Thread(
@@ -285,7 +296,7 @@ class FrankaFR3Robot(Robot):
             self._control_thread.start()
             if use_gripper:
                 self._gripper_thread = threading.Thread(
-                    target=self._gripper_loop, daemon=True
+                    target=self._gripper_cmd_loop, daemon=True
                 )
                 self._gripper_thread.start()
             # Give the control loop a moment to establish the 1 kHz stream.
@@ -473,7 +484,41 @@ class FrankaFR3Robot(Robot):
             self._control_error = str(e)
             print(f"[FR3] CONTROL LOOP ABORTED: {e}")
 
-    def _gripper_loop(self) -> None:
+    def _gripper_read_loop(self) -> None:
+        """Samples the measured finger width, and does nothing else.
+
+        This is a separate thread from the one that commands the hand, and that
+        separation is the whole point. ``grasp``/``move`` block until the
+        fingers stop -- 1.39 s for a full stroke, measured -- so a thread that
+        both commands and reads stops reading for the entire motion. What
+        reached the .hdf5 files was therefore not a width trajectory but a
+        frozen value that jumped once: over 254 episodes the reading held for 37
+        frames (1.85 s at 20 Hz) after the close command and then moved 100% of
+        its range in a *single* frame. The delay is real physics and a policy
+        has to learn it; a step function standing in for the ramp is not.
+
+        Two threads sharing one ``franka::Gripper`` is not something libfranka
+        documents as safe, so it was measured before being relied on
+        (``scripts/check_gripper_concurrent_read.py``): 0 exceptions and a clean
+        ramp through both a grasp and a move, at the full 20 Hz.
+
+        Exceptions are swallowed rather than latched into ``_control_error``:
+        a missed width sample is a gap in an observation channel, not a reason
+        to tear down a running session.
+        """
+        period = 1.0 / GRIPPER_READ_HZ
+        while not self._stop.is_set():
+            t0 = time.monotonic()
+            try:
+                gs = self._gripper.read_once()
+                with self._lock:
+                    self._gripper_state_width = float(gs.width)
+            except Exception:  # noqa: BLE001
+                pass
+            # sleep 이 아니라 wait: stop() 이 걸리면 주기를 기다리지 않고 나간다.
+            self._stop.wait(max(0.0, period - (time.monotonic() - t0)))
+
+    def _gripper_cmd_loop(self) -> None:
         """Drive the Franka Hand as a binary grasp/release state machine.
 
         ``move(width, speed)`` must not be used to close on objects: when the
@@ -510,12 +555,6 @@ class FrankaFR3Robot(Robot):
             with self._lock:
                 target = self._gripper_target
             try:
-                gs = self._gripper.read_once()
-                with self._lock:
-                    self._gripper_state_width = float(gs.width)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
                 if not closed and target >= close_at:
                     ok = self._gripper.grasp(
                         0.0, speed, grasp_force,
@@ -531,7 +570,7 @@ class FrankaFR3Robot(Robot):
                     closed = False
             except Exception as e:  # noqa: BLE001
                 print(f"[FR3] gripper {'grasp' if not closed else 'move'} failed: {e}")
-            time.sleep(0.05)
+            self._stop.wait(0.05)
 
     # ------------------------------------------------------------------ misc
     @property
@@ -545,6 +584,8 @@ class FrankaFR3Robot(Robot):
             self._control_thread.join(timeout=1.0)
         if self._gripper_thread is not None:
             self._gripper_thread.join(timeout=1.0)
+        if self._gripper_read_thread is not None:
+            self._gripper_read_thread.join(timeout=1.0)
         try:
             self.robot.stop()
         except Exception:  # noqa: BLE001
