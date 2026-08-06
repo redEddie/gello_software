@@ -5,4 +5,4 @@
 set -e
 cd "$(dirname "${BASH_SOURCE[0]}")"
 source /home/franka/lerobot-venv/bin/activate
-exec python experiments/collect_libero_gui.py
+exec python experiments/collect_workspace.py

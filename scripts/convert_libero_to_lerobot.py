@@ -119,10 +119,164 @@ from types import SimpleNamespace
 import h5py
 import numpy as np
 from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION, LeRobotDataset
+from lerobot.datasets.utils import DatasetInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.dataset_schema import ACTION_SPACE_EE_DELTA  # noqa: E402
 from gello.libero_format import IMAGE_SIZE, action_column_names  # noqa: E402
+
+
+_STAT_KEYS = ("min", "max", "mean", "std", "count", "q01", "q10", "q50", "q90", "q99")
+
+
+def repair_metadata(root: Path) -> str:
+    """Make meta/info.json and meta/stats.json agree with meta/episodes/.
+
+    resume() seeds its running totals from the metadata it downloaded, so a Hub
+    copy whose info.json is stale hands that error to every future run: the
+    episode records accumulate correctly while total_episodes/total_frames stay
+    short, and the newest episodes become invisible to readers. It happened
+    twice -- once from an interrupted push, then again when the next resume
+    inherited the bad numbers (117 -> 269 instead of 121 -> 273).
+
+    meta/episodes/*.parquet is the authority: one row per episode, each with
+    its own length and per-feature stats. Everything here is recomputed from
+    it, so a wrong seed cannot survive a conversion.
+
+    Returns a human-readable description of what changed ("" if nothing did).
+    """
+    import glob as _glob
+
+    import pandas as pd
+
+    files = sorted(_glob.glob(str(root / "meta/episodes/**/*.parquet"), recursive=True))
+    if not files:
+        return ""
+    eps = pd.concat([pd.read_parquet(f) for f in files])
+    n_ep, n_frames = len(eps), int(eps["length"].sum())
+
+    info_path = root / "meta/info.json"
+    info = json.loads(info_path.read_text())
+    before = (info.get("total_episodes"), info.get("total_frames"))
+    if before == (n_ep, n_frames):
+        return ""
+    info["total_episodes"] = n_ep
+    info["total_frames"] = n_frames
+    info["splits"] = {"train": f"0:{n_ep}"}
+    info_path.write_text(json.dumps(info, indent=4))
+
+    # stats는 에피소드별 통계를 집계해 다시 만든다. 형태(이미지의 (3,1,1) 등)는
+    # 기존 stats.json이 권위이므로 그걸 본떠 되돌린다.
+    stats_path = root / "meta/stats.json"
+    detail = ""
+    try:
+        from lerobot.datasets.compute_stats import aggregate_stats
+
+        old = json.loads(stats_path.read_text())
+        shapes = {f: {k: np.asarray(v).shape for k, v in d.items()} for f, d in old.items()}
+        feats = sorted({c.split("/")[1] for c in eps.columns if c.startswith("stats/")})
+        per_ep = []
+        for _, row in eps.iterrows():
+            entry = {}
+            for feat in feats:
+                d = {}
+                for key in _STAT_KEYS:
+                    col = f"stats/{feat}/{key}"
+                    if col not in row or row[col] is None:
+                        continue
+                    v = np.asarray(row[col], dtype=np.float64).ravel()
+                    want = shapes.get(feat, {}).get(key)
+                    d[key] = v.reshape(want) if want and v.size == int(np.prod(want)) else v
+                if d:
+                    entry[feat] = d
+            per_ep.append(entry)
+        agg = aggregate_stats(per_ep)
+        stats_path.write_text(json.dumps(
+            {k: {kk: np.asarray(vv).tolist() for kk, vv in v.items()} for k, v in agg.items()},
+            indent=4))
+        detail = ", stats.json 재계산"
+    except Exception as e:  # noqa: BLE001
+        detail = f", stats.json 재계산 실패({type(e).__name__}) -- 정규화 통계가 낡을 수 있음"
+    return (f"메타데이터 보정: {before[0]}개/{before[1]}프레임 -> "
+            f"{n_ep}개/{n_frames}프레임{detail}")
+
+
+def check_integrity(root: Path) -> list[str]:
+    """Structural problems that no amount of metadata patching can fix.
+
+    A wrong seed does more than miscount. resume() numbers the episodes it
+    appends starting from the total it inherited, so a total that is short by
+    four makes the next four episodes reuse indices 117-120 that already exist
+    -- two different episodes answering to the same index. Recomputing
+    total_episodes afterwards hides that (the count becomes right) while the
+    collision stays, which is worse than the honest miscount.
+
+    So this is checked separately from repair_metadata, and it is fatal: the
+    only fix is a rebuild.
+    """
+    import glob as _glob
+
+    import pandas as pd
+
+    problems = []
+    files = sorted(_glob.glob(str(root / "meta/episodes/**/*.parquet"), recursive=True))
+    if not files:
+        return ["meta/episodes 가 없습니다"]
+    eps = pd.concat([pd.read_parquet(f) for f in files])
+    idx = eps["episode_index"].tolist()
+    dup = sorted({i for i in idx if idx.count(i) > 1})
+    if dup:
+        problems.append(
+            f"episode_index 중복 {len(dup)}개 {dup[:8]}{'...' if len(dup) > 8 else ''} "
+            f"-- 서로 다른 에피소드가 같은 번호를 씁니다")
+    if sorted(idx) != list(range(len(idx))):
+        problems.append(
+            f"episode_index 가 0..{len(idx) - 1} 연속이 아닙니다 "
+            f"(범위 {min(idx)}~{max(idx)}, {len(idx)}개)")
+    return problems
+
+
+def _fail_integrity(root: Path, problems: list) -> None:
+    raise SystemExit(
+        "데이터셋이 구조적으로 깨져 있어 중단합니다:\n"
+        + "\n".join(f"  - {p}" for p in problems)
+        + f"\n\n{root} 를 지우고 --resume 없이 전체를 다시 만드세요.\n"
+          "  (원인은 대개 Hub 메타데이터가 낡아 이어붙이기 시작 번호가 어긋난 것입니다.)"
+    )
+
+
+def _verify_tag(repo_id: str) -> bool:
+    """Check that the version tag lerobot reads actually points at what we pushed.
+
+    lerobot resolves everything at ``revision=CODEBASE_VERSION`` (a git *tag*),
+    and push_to_hub moves that tag only as its final step. A push that dies
+    anywhere earlier -- as one did, in card generation -- leaves main updated
+    and the tag frozen on an older commit, so the next resume() seeds its
+    totals from stale metadata and silently produces wrong counts. Nothing
+    about the Hub page shows this; the tag has to be asked about directly.
+    """
+    try:
+        from huggingface_hub import HfApi
+
+        refs = HfApi().list_repo_refs(repo_id, repo_type="dataset")
+        main = next((b.target_commit for b in refs.branches if b.name == "main"), None)
+        tag = next((t.target_commit for t in refs.tags if t.name == CODEBASE_VERSION), None)
+    except Exception as e:  # noqa: BLE001
+        print(f"[경고] 태그 확인 실패: {type(e).__name__}: {e}", flush=True)
+        return True
+    if tag is None:
+        print(f"[경고] {CODEBASE_VERSION} 태그가 없습니다. lerobot이 이 데이터셋을 "
+              f"읽지 못할 수 있습니다.", flush=True)
+        return False
+    elif tag != main:
+        print(f"[경고] {CODEBASE_VERSION} 태그가 main과 다른 커밋을 가리킵니다 "
+              f"(tag {tag[:8]} vs main {main[:8]}).\n"
+              f"        lerobot은 태그 쪽을 읽으므로 방금 올린 내용이 보이지 "
+              f"않습니다. 업로드를 다시 실행하세요.", flush=True)
+        return False
+    else:
+        print(f"[검증] {CODEBASE_VERSION} 태그가 방금 커밋을 가리킵니다.", flush=True)
+    return True
 
 
 def _language_instruction(f: h5py.File) -> str:
@@ -365,6 +519,10 @@ def main() -> None:
                    help="--resume에서 이미 들어간 에피소드 건너뛰기를 끄고 파일 전체를 "
                         "다시 추가함. 중복이 생기고 되돌릴 수 없으니 거의 항상 쓰지 말 것")
     p.add_argument("--push", action="store_true", help="변환 후 바로 Hugging Face Hub에 업로드")
+    p.add_argument("--replace", action="store_true",
+                   help="--push-only와 함께: 로컬에 없는 원격 파일을 지우며 통째로 교체. "
+                        "큐레이션에서 에피소드를 삭제해 재빌드한 결과를 올릴 때 쓴다 "
+                        "(그냥 push하면 지운 에피소드의 청크가 원격에 남는다)")
     p.add_argument("--push-only", action="store_true",
                    help="변환하지 않고 --root의 기존 LeRobot 데이터셋만 업로드 "
                         "(hdf5 인자는 무시됨). 이미 변환해둔 결과를 올릴 때 사용")
@@ -394,17 +552,61 @@ def main() -> None:
         # 파일로는 존재하나 어떤 리더에도 보이지 않는다.
         # (실제로 발생: 121개를 올려놓고 total_episodes=117로 게시됨.)
         # push_to_hub 자체는 repo_id / root / revision / meta.info 만 쓴다.
-        info = json.loads((root / "meta" / "info.json").read_text())
+        broken = check_integrity(root)
+        if broken:
+            _fail_integrity(root, broken)
+        fixed = repair_metadata(root)
+        if fixed:
+            # 낡은 메타데이터를 그대로 게시하면 새 에피소드가 어떤 리더에도
+            # 보이지 않는다. 올리기 직전이 마지막으로 막을 수 있는 지점이다.
+            print(f"[검증] {fixed}", flush=True)
+        info_dict = json.loads((root / "meta" / "info.json").read_text())
+        # 카드 생성기가 dataset_info.to_dict()를 부르므로 평범한 dict를 넘기면
+        # AttributeError로 죽는다. 그것도 upload_folder가 끝난 *뒤*에 -- 즉 데이터는
+        # 올라갔는데 카드도 없고, 더 중요하게는 그 다음의 create_tag가 실행되지
+        # 않아 lerobot이 읽는 v3.0 태그가 옛 커밋에 멈춘다. 다음 resume이 그
+        # 낡은 메타데이터를 씨앗으로 삼아 틀린 개수를 만들어낸다.
+        info = DatasetInfo.from_dict(info_dict)
         ds = LeRobotDataset.__new__(LeRobotDataset)
         ds.repo_id = args.repo_id
         ds.root = root
         ds.revision = CODEBASE_VERSION
         ds.meta = SimpleNamespace(info=info)
-        print(f"업로드만 진행: {info['total_episodes']}개 에피소드, "
-              f"{info['total_frames']} 프레임 -> {args.repo_id}", flush=True)
-        ds.push_to_hub(private=args.private)
+        print(f"업로드만 진행: {info_dict['total_episodes']}개 에피소드, "
+              f"{info_dict['total_frames']} 프레임 -> {args.repo_id}", flush=True)
+        if args.replace:
+            # 재빌드한 결과로 Hub을 통째로 교체한다. push_to_hub는 새/바뀐 파일만
+            # 올리고 사라진 파일은 지우지 않으므로, 그것만으로는 지운 에피소드의
+            # 청크가 원격에 남는다 -- 선언은 줄었는데 파일은 남은 상태.
+            # delete_patterns 로 로컬에 없는 원격 파일을 함께 정리한다.
+            from huggingface_hub import HfApi
+
+            api = HfApi()
+            api.create_repo(repo_id=args.repo_id, repo_type="dataset",
+                            private=bool(args.private), exist_ok=True)
+            print("교체 업로드: 로컬에 없는 원격 파일도 함께 정리합니다...", flush=True)
+            api.upload_folder(
+                repo_id=args.repo_id, folder_path=str(root), repo_type="dataset",
+                ignore_patterns=["images/", ".cache/**"],
+                delete_patterns=["data/**", "videos/**", "meta/**"],
+                commit_message="rebuild: 큐레이션 반영 (삭제 포함)",
+            )
+            # upload_folder는 태그를 건드리지 않는다. lerobot이 읽는 건 태그이므로
+            # 여기서 옮기지 않으면 교체한 내용이 보이지 않는다.
+            from huggingface_hub.errors import RevisionNotFoundError
+
+            try:
+                api.delete_tag(args.repo_id, tag=CODEBASE_VERSION, repo_type="dataset")
+            except RevisionNotFoundError:
+                pass
+            api.create_tag(args.repo_id, tag=CODEBASE_VERSION, repo_type="dataset")
+        else:
+            ds.push_to_hub(private=args.private)
+        ok_tag = _verify_tag(args.repo_id)
         print(f"완료: https://huggingface.co/datasets/{args.repo_id}", flush=True)
-        return 0
+        # 태그가 안 따라왔으면 성공이 아니다. lerobot은 태그를 읽으므로 올린
+        # 내용이 보이지 않는다 -- 파이프라인이 이 단계를 실패로 처리해야 한다.
+        return 0 if ok_tag else 1
 
     schema = _scan_schema(args.hdf5_paths, args.only_success)
     features, state_parts, cmd_parts = _build_features(schema)
@@ -510,6 +712,12 @@ def main() -> None:
                 print(f"  {name} ({n} frames, success={success}) converted")
 
     ds.finalize()
+    broken = check_integrity(Path(args.root))
+    if broken:
+        _fail_integrity(Path(args.root), broken)
+    fixed = repair_metadata(Path(args.root))
+    if fixed:
+        print(f"[검증] {fixed}", flush=True)
     print(f"\n완료: {n_episodes}개 에피소드 변환, {n_skipped}개 건너뜀 (--only-success)"
           + (f", {n_already}개는 이미 데이터셋에 있어 제외" if n_already else "")
           + f" -> {args.root}")

@@ -1,4 +1,4 @@
-"""Upload a single raw LIBERO-format .hdf5 file to a Hugging Face Hub dataset repo.
+"""Upload raw LIBERO-format .hdf5 files to a Hugging Face Hub dataset repo.
 
 Thin wrapper around huggingface_hub.HfApi so the GUI's "HDF5 업로드..." button
 (see experiments/collect_libero_gui.py's HdfUploadDialog/_open_hdf5_upload)
@@ -38,16 +38,18 @@ import argparse
 from pathlib import Path
 
 from huggingface_hub import HfApi
-from huggingface_hub.errors import EntryNotFoundError
+from huggingface_hub.errors import BadRequestError, EntryNotFoundError
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("local_file", type=Path, help="업로드할 .hdf5 파일")
+    p.add_argument("local_file", type=Path, nargs="+", help="업로드할 .hdf5 파일 (여러 개 가능)")
     p.add_argument("--repo-id", required=True, help="예: knu-physical-ai/fr3-libero-teleop")
     p.add_argument(
         "--path-in-repo", default=None,
-        help="repo 안에서의 파일 이름 (기본: 로컬 파일 이름 그대로)",
+        help="repo 안에서의 파일 이름 (기본: 로컬 파일 이름 그대로). 파일을 여러 개 준 "
+             "경우에는 이름이 아니라 폴더로 취급한다 -- 이름 하나로 여러 파일을 "
+             "올리면 마지막 것만 남기 때문",
     )
     p.add_argument("--private", action=argparse.BooleanOptionalAction, default=None)
     p.add_argument(
@@ -62,31 +64,66 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    if not args.local_file.is_file():
-        raise SystemExit(f"파일 없음: {args.local_file}")
+    missing = [f for f in args.local_file if not f.is_file()]
+    if missing:
+        raise SystemExit("파일 없음: " + ", ".join(str(f) for f in missing))
+    multi = len(args.local_file) > 1
+    if multi and args.old_path_in_repo:
+        raise SystemExit("--old-path-in-repo 는 파일 하나일 때만 쓸 수 있습니다.")
 
-    path_in_repo = args.path_in_repo or args.local_file.name
     api = HfApi()
     # exist_ok=True: repeat uploads to an already-existing repo (e.g. a
     # second task file for the same dataset) shouldn't fail here.
     api.create_repo(repo_id=args.repo_id, repo_type="dataset", private=bool(args.private), exist_ok=True)
 
-    if args.delete_existing:
-        old_path = args.old_path_in_repo or path_in_repo
-        try:
-            api.delete_file(path_in_repo=old_path, repo_id=args.repo_id, repo_type="dataset")
-            print(f"기존 파일 삭제: {args.repo_id}/{old_path}")
-        except EntryNotFoundError:
-            print(f"기존 파일 없음 (건너뜀): {args.repo_id}/{old_path}")
+    total = len(args.local_file)
+    for i, local in enumerate(args.local_file, 1):
+        if multi:
+            # 여러 개일 때 --path-in-repo 는 폴더다. 이름으로 쓰면 전부 같은
+            # 경로에 덮어써져 마지막 하나만 남는다.
+            prefix = args.path_in_repo.rstrip("/") + "/" if args.path_in_repo else ""
+            path_in_repo = prefix + local.name
+        else:
+            path_in_repo = args.path_in_repo or local.name
 
-    print(f"업로드 중: {args.local_file} -> {args.repo_id}/{path_in_repo}")
-    api.upload_file(
-        path_or_fileobj=str(args.local_file),
-        path_in_repo=path_in_repo,
-        repo_id=args.repo_id,
-        repo_type="dataset",
-    )
-    print(f"완료: https://huggingface.co/datasets/{args.repo_id}")
+        if args.delete_existing:
+            old_path = (args.old_path_in_repo or path_in_repo) if not multi else path_in_repo
+            try:
+                api.delete_file(path_in_repo=old_path, repo_id=args.repo_id, repo_type="dataset")
+                print(f"기존 파일 삭제: {args.repo_id}/{old_path}", flush=True)
+            except EntryNotFoundError:
+                print(f"기존 파일 없음 (건너뜀): {args.repo_id}/{old_path}", flush=True)
+
+        size_mb = local.stat().st_size / 1e6
+        print(f"[{i}/{total}] 업로드 중: {local.name} ({size_mb:,.0f} MB) "
+              f"-> {args.repo_id}/{path_in_repo}", flush=True)
+        try:
+            api.upload_file(
+                path_or_fileobj=str(local),
+                path_in_repo=path_in_repo,
+                repo_id=args.repo_id,
+                repo_type="dataset",
+            )
+        except BadRequestError as e:
+            # 'Invalid file change' 의 대표적인 원인: 만들려는 폴더와 같은 이름의
+            # 파일이 이미 repo에 있다. Hub은 이유를 말해주지 않으므로 여기서
+            # 확인해 알려준다 -- 1.3GB를 다 올린 뒤 원인 모를 400을 보는 것보다
+            # 낫다.
+            if "Invalid file change" in str(e) and "/" in path_in_repo:
+                folder = path_in_repo.split("/", 1)[0]
+                clash = any(s.rfilename == folder
+                            for s in api.dataset_info(args.repo_id).siblings)
+                if clash:
+                    raise SystemExit(
+                        f"업로드 거절됨: repo에 '{folder}' 라는 이름의 **파일**이 이미 있어서\n"
+                        f"같은 이름의 폴더('{path_in_repo}')를 만들 수 없습니다.\n"
+                        f"  - 그 파일을 지우거나(Hub 웹에서 삭제), \n"
+                        f"  - 'Repo 안 폴더'를 비우거나 다른 이름으로 바꾸세요."
+                    ) from e
+            raise
+        print(f"[{i}/{total}] 완료: {local.name}", flush=True)
+
+    print(f"전체 완료 ({total}개): https://huggingface.co/datasets/{args.repo_id}", flush=True)
 
 
 if __name__ == "__main__":

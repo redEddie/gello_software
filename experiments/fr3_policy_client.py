@@ -4,12 +4,17 @@ Streams observations to the GPU policy server (mamba-embeddingvla
 real_deploy/fr3_policy_server.py) and executes the returned 8-dim absolute
 joint-angle chunks on the robot. No model compute on this machine.
 
-Data path per replan cycle (default 0.50 s = 10 steps @ 20 Hz):
+Data path per replan cycle (default 0.40 s = 8 executed steps @ 20 Hz):
   FR3ZMQRobot.get_observation()             joints 7 rad + gripper 0..1, 2x 640x480 RGB
     -> resize_rgb (libero_format)           center-crop 480^2 -> 256^2  (train-identical)
-    -> base64 JSON POST /infer              ~0.4 MB/request
+    -> base64 JSON POST /infer              ~0.4 MB/request, on a background thread
     <- {"actions": [[8] x 10]}              joint1-7 rad + gripper 0..1 (absolute)
     -> send_action at 20 Hz                 with per-step |dq| safety clamp
+
+Chunk boundaries do not stall the arm.  Inference for the next chunk is fired
+CHUNK_LEAD ticks before the current one runs out, and the arriving chunk's
+leading indices -- whose timestamps have already passed -- are dropped rather
+than commanded.  See CHUNK_LEAD.
 
 Prerequisites:
   * robot node running:  (pylibfranka-venv) python experiments/launch_nodes.py --robot fr3
@@ -27,6 +32,7 @@ from __future__ import annotations
 import argparse
 import base64
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import requests
@@ -38,7 +44,19 @@ HOSTNAME = "127.0.0.1"
 AGENT_CAMERA_SERIAL = "338122300664"       # RealSense serials (수집 GUI와 동일)
 WRIST_CAMERA_SERIAL = "230422272249"
 FPS = 20                                   # 학습 데이터와 동일 (20 Hz)
-EXEC_HORIZON = 10                          # 청크 중 실행 개수 (10=full=0.50s 재계획)
+EXEC_HORIZON = 10                          # 청크 중 쓸 최대 개수 (10=full, 서버 청크와 동일)
+# 청크 경계 정지를 없애는 겹치기 실행. 정책은 "인덱스 i = 관측시각 + i·dt"로 학습돼
+# 있으므로, 그 약속을 벽시계와 맞추기만 하면 된다 — 재학습 불필요한 클라이언트 장부 정리다.
+#   청크 끝 K틱 전에 관측을 떠서 백그라운드 추론 → 도착한 청크의 앞 K개는 버리고 K번째부터 실행
+# 앞 K개를 버리는 게 핵심이다. 미리 뜬 관측으로 만든 인덱스 0..K-1은 *이미 지나간 시각*의
+# 목표라, 그대로 쏘면 과거 목표를 명령하는 꼴이고 이는 데이터 쪽에서 잡아낸 후퇴(지연)
+# 메커니즘을 타이밍 층에서 그대로 재현한다.
+# K·50ms가 추론 예산이다 (2026-08-04 실측: 평균 34.9 / p95 64.4 / 최대 98.8 ms):
+#   K=2 → 100ms 예산(p95 커버), 10개 중 8개 실행, 재계획 0.40s
+#   K=3 → 150ms 예산(최대치 커버), 7개 실행, 0.35s
+# 비용은 반응 지연 — 정책이 K틱 오래된 장면을 보므로 돌발 상황에 그만큼 늦게 반응한다.
+# K=0이면 예전 순차 동작(경계에서 팔이 89ms 정지 → 0.5s 주기 2Hz 흔들림)으로 돌아간다.
+CHUNK_LEAD = 2
 RESET_POSE = "libero"                      # FR3_RESET_POSES key (수집 세션과 동일해야 함)
 # 학습된 4개 태스크 (다른 문장을 주면 분포 밖 — 2026-08-03 수집분 117 에피소드):
 #   pick up the {blue|white} cup and place it on the {blue|yellow} bowl
@@ -94,7 +112,11 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true",
                     help="server comm test with synthetic obs (no robot needed)")
     ap.add_argument("--max-seconds", type=float, default=30.0)
-    ap.add_argument("--exec-horizon", type=int, default=EXEC_HORIZON)
+    ap.add_argument("--exec-horizon", type=int, default=EXEC_HORIZON,
+                    help="청크 중 쓸 최대 개수 (긴 청크를 더 자주 재계획하고 싶을 때만 줄인다)")
+    ap.add_argument("--lead-ticks", type=int, default=CHUNK_LEAD, metavar="K",
+                    help="청크 끝 K틱 전에 미리 추론하고 도착 청크의 앞 K개를 버린다 "
+                         "(0=예전 순차 동작, 경계 정지 발생)")
     args = ap.parse_args()
 
     if args.dry_run:
@@ -124,6 +146,31 @@ def main() -> None:
     def command(q7: np.ndarray, grip: float) -> None:
         robot.send_action(dict(zip(JOINT_KEYS, np.append(q7, grip).tolist())))
 
+    session = requests.Session()   # keep-alive — 매 요청 TCP 핸드셰이크 제거
+    infer_ms: list[float] = []
+
+    def infer(obs: dict) -> np.ndarray:
+        """POST /infer. 워커 스레드에서 돈다 — ZMQ 소켓도 카메라도 만지지 않는다.
+
+        관측 읽기(get_observation)는 반드시 제어 스레드에 남겨야 한다: ZMQ 소켓은
+        스레드 안전하지 않다. 여기서는 이미 읽어둔 obs만 다룬다.
+        resize+base64(실측 4.2ms)도 여기서 하므로 제어 틱 예산 50ms를 쓰지 않는다.
+        obs의 이미지는 카메라 스레드가 매 프레임 새 배열로 갈아끼우므로(rebind이지
+        in-place 쓰기가 아니다) 참조를 그대로 넘겨도 프레임이 찢어지지 않는다.
+        """
+        payload = {
+            "observation.state": [float(obs[k]) for k in JOINT_KEYS],
+            "observation.images.agent": _b64(resize_rgb(obs["agent"])),
+            "observation.images.wrist": _b64(resize_rgb(obs["wrist"])),
+        }
+        t0 = time.perf_counter()
+        r = session.post(f"{args.server}/infer", json=payload, timeout=60)
+        r.raise_for_status()
+        infer_ms.append((time.perf_counter() - t0) * 1000)
+        return np.asarray(r.json()["actions"], dtype=float)  # [10,8]
+
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infer")
+
     try:
         # ── 홈 복귀 램프 (수집기 _ramp_to와 동일 상수) ──
         print(f"[client] ramping to reset pose '{RESET_POSE}' ...")
@@ -145,45 +192,84 @@ def main() -> None:
         print(f"[client] /reset ok: {r.json()['instruction']!r}")
 
         dt = 1.0 / FPS
-        deadline = time.monotonic() + args.max_seconds
-        n_replans = 0
-        while time.monotonic() < deadline:
-            obs = robot.get_observation()
-            state = [float(obs[k]) for k in JOINT_KEYS]  # 7 rad + gripper 0..1
-            payload = {
-                "observation.state": state,
-                "observation.images.agent": _b64(resize_rgb(obs["agent"])),
-                "observation.images.wrist": _b64(resize_rgb(obs["wrist"])),
-            }
-            t0 = time.perf_counter()
-            r = requests.post(f"{args.server}/infer", json=payload, timeout=60)
-            r.raise_for_status()
-            chunk = np.asarray(r.json()["actions"], dtype=float)  # [10,8]
-            n_replans += 1
-            if n_replans == 1 and len(chunk) < args.exec_horizon:
-                # 서버 청크가 요청보다 짧으면 슬라이스가 조용히 잘린다 -- 실제
-                # 재계획 주기가 의도와 달라지므로 한 번은 눈에 보이게 알린다.
-                print(f"[client] 주의: 서버 청크 {len(chunk)}개 < exec-horizon "
-                      f"{args.exec_horizon} — 실제 실행은 {len(chunk)}개"
-                      f"({len(chunk)/FPS:.2f}s 주기)")
-            if n_replans % 4 == 1:
-                print(f"[client] replan #{n_replans}: infer "
-                      f"{1000*(time.perf_counter()-t0):.0f} ms, chunk {chunk.shape}")
+        K = max(0, args.lead_ticks)
+        pending = None      # 진행 중인 백그라운드 추론 (Future)
+        t_obs = 0.0         # pending을 만든 관측을 뜬 시각 — 청크 인덱스 0의 기준 시각
+        n_replans = n_late = 0
 
-            t_next = time.monotonic()
-            for a in chunk[: args.exec_horizon]:
-                q_meas = joints(robot.get_observation())
-                # 안전 클램프: 목표가 측정치에서 MAX_STEP_RAD 이상 벗어나지 않게
-                q_tgt = q_meas + np.clip(a[:7] - q_meas, -MAX_STEP_RAD, MAX_STEP_RAD)
-                command(q_tgt, float(np.clip(a[7], 0.0, 1.0)))
-                t_next += dt
-                time.sleep(max(0.0, t_next - time.monotonic()))
-                if time.monotonic() >= deadline:
-                    break
-        print(f"[client] done ({n_replans} replans).")
+        # 부트스트랩: 첫 청크는 겹칠 이전 청크가 없어 블로킹으로 받는다.
+        # 팔이 홈 자세에서 정지 중이라 이 한 번의 정지는 무해하다.
+        chunk = infer(robot.get_observation())
+        idx = 0
+        n_replans = 1
+        if len(chunk) < args.exec_horizon:
+            # 서버 청크가 요청보다 짧으면 슬라이스가 조용히 잘린다 -- 실제 재계획
+            # 주기가 의도와 달라지므로 한 번은 눈에 보이게 알린다.
+            print(f"[client] 주의: 서버 청크 {len(chunk)}개 < exec-horizon "
+                  f"{args.exec_horizon} — 실제로 쓰는 건 {len(chunk)}개")
+        print(f"[client] chunk {chunk.shape}, lead {K}틱(추론 예산 {K*1000//FPS} ms), "
+              f"재계획 {(min(len(chunk), args.exec_horizon) - K) / FPS:.2f}s")
+
+        deadline = time.monotonic() + args.max_seconds
+        t_next = time.monotonic()
+        while time.monotonic() < deadline:
+            horizon = min(len(chunk), args.exec_horizon)
+
+            # (1) 청크 소진 → 교체. 관측시각으로부터 실제로 흐른 틱 수만큼 앞을 버린다.
+            #     nominal이면 skip == K지만, 추론이 예산을 넘겼으면 그만큼 더 버린다 —
+            #     "인덱스 i = 관측시각 + i·dt"를 벽시계에 맞추는 것이 규칙이고 K는 그 결과일 뿐.
+            if idx >= horizon:
+                if pending is None:                 # K=0 또는 예외 경로 — 예전 순차 동작
+                    t_obs = time.monotonic()
+                    chunk = infer(robot.get_observation())
+                else:
+                    if not pending.done():
+                        n_late += 1                 # 예산 초과 — 여기서 경계 정지가 난다
+                    chunk = pending.result()
+                    pending = None
+                n_replans += 1
+                horizon = min(len(chunk), args.exec_horizon)
+                skip = round((time.monotonic() - t_obs) / dt)
+                if skip >= horizon:
+                    print(f"[client] 경고: 추론({infer_ms[-1]:.0f} ms)이 청크 길이를 넘겼다 "
+                          f"(skip {skip} >= {horizon}) — 마지막 액션만 실행한다. "
+                          f"--lead-ticks를 올리거나 --exec-horizon을 늘려라.")
+                idx = min(max(skip, 0), horizon - 1)
+                if n_replans % 4 == 1:
+                    print(f"[client] replan #{n_replans}: infer {infer_ms[-1]:.0f} ms, "
+                          f"chunk {chunk.shape}, skip {skip}")
+
+            # (2) 끝 K틱 전 → 다음 추론을 미리 띄운다. 추론이 도는 동안 남은 K틱이
+            #     계속 팔을 먹이므로 경계에서 명령이 끊기지 않는다.
+            if pending is None and K > 0 and idx >= horizon - K:
+                t_obs = time.monotonic()
+                obs = robot.get_observation()       # ZMQ는 제어 스레드에서만
+                pending = pool.submit(infer, obs)
+
+            # (3) 한 틱 실행
+            a = chunk[idx]
+            idx += 1
+            q_meas = joints(robot.get_observation())
+            # 안전 클램프: 목표가 측정치에서 MAX_STEP_RAD 이상 벗어나지 않게
+            q_tgt = q_meas + np.clip(a[:7] - q_meas, -MAX_STEP_RAD, MAX_STEP_RAD)
+            command(q_tgt, float(np.clip(a[7], 0.0, 1.0)))
+
+            t_next += dt
+            sleep_s = t_next - time.monotonic()
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+            elif sleep_s < -dt:
+                t_next = time.monotonic()   # 크게 밀림 — 몰아치기 방지로 틱 시계 재동기
+
+        print(f"[client] done ({n_replans} replans, 예산 초과 {n_late}회).")
+        if infer_ms:
+            p50, p95 = np.percentile(infer_ms, [50, 95])
+            print(f"[client] /infer {p50:.0f} / p95 {p95:.0f} / max {max(infer_ms):.0f} ms "
+                  f"(예산 {K*1000//FPS} ms)")
     except KeyboardInterrupt:
         print("\n[client] interrupted.")
     finally:
+        pool.shutdown(wait=True, cancel_futures=True)
         robot.disconnect()
         print("[client] disconnected.")
 

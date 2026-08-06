@@ -31,7 +31,7 @@ from gello.lerobot_plugin import (
     GelloFR3Teleop,
     GelloFR3TeleopConfig,
 )
-from gello.libero_format import LiberoTaskWriter
+from gello.libero_format import LiberoTaskWriter, NullTaskWriter
 from gello.robots.franka_fr3 import FR3_RESET_POSES
 
 GATE_RAD = 0.5  # run_env.py / gello_match_pose.py's start-gate threshold
@@ -80,6 +80,12 @@ class EpisodeSaver(QThread):
     def enqueue_delete(self, name: str) -> None:
         self._q.put(("delete", name))
 
+    def enqueue_set_success(self, name: str, success: bool) -> None:
+        """Re-label an already-saved episode. Goes through the same queue as
+        the save itself, so a toggle sent while that save is still running is
+        applied after it rather than racing it."""
+        self._q.put(("set_success", name, success))
+
     def finish(self) -> None:
         """Drain the queue, then exit run(). Caller must wait() afterwards."""
         self._q.put(("stop",))
@@ -109,6 +115,12 @@ class EpisodeSaver(QThread):
                     self._writer.delete_episode(name)
                     self.log_message.emit(f"[삭제] {name}")
                     self.episode_list_changed.emit(self._writer.list_episodes())
+                elif item[0] == "set_success":
+                    _, name, success = item
+                    self._writer.set_episode_success(name, success)
+                    self.log_message.emit(
+                        f"[판정] {name} -> {'성공' if success else '실패'}")
+                    self.episode_list_changed.emit(self._writer.list_episodes())
             except Exception as e:  # noqa: BLE001
                 self.log_message.emit(f"[저장 스레드 오류] {type(e).__name__}: {e}")
                 self.save_status.emit("")
@@ -127,6 +139,11 @@ class WorkerConfig:
     max_episode_seconds: float = 20.0
     reset_wait_seconds: float = 10.0
     enable_wall: bool = True
+    # True: teleoperate without creating any .hdf5 at all -- scene setup,
+    # camera framing, letting someone try the leader. Everything else behaves
+    # identically (pose gate, live view, frame counter); saving is accepted
+    # and dropped. See gello/libero_format.py's NullTaskWriter.
+    no_dataset: bool = False
     # True: pull the leader onto the follower's reset pose at the start of
     # every episode, so each one begins from an identical joint configuration.
     # False: the operator aligns by hand, so the starting pose varies
@@ -195,6 +212,9 @@ class CollectionWorker(QThread):
 
     def cmd_go_home(self) -> None:
         self._cmds.put(("go_home",))
+
+    def cmd_set_episode_success(self, name: str, success: bool) -> None:
+        self.saver.enqueue_set_success(name, success)
 
     def cmd_delete_episode(self, name: str) -> None:
         self._cmds.put(("delete_episode", name))
@@ -690,13 +710,16 @@ class CollectionWorker(QThread):
         try:
             self.state_changed.emit("connecting")
             self._connect()
-            self._writer = LiberoTaskWriter(
-                root=self.cfg.data_root,
-                task_name=self.cfg.task_name,
-                language_instruction=self.cfg.language_instruction,
-                resume=self.cfg.resume,
-                schema=self.cfg.schema,
-            )
+            if self.cfg.no_dataset:
+                self._writer = NullTaskWriter(schema=self.cfg.schema)
+            else:
+                self._writer = LiberoTaskWriter(
+                    root=self.cfg.data_root,
+                    task_name=self.cfg.task_name,
+                    language_instruction=self.cfg.language_instruction,
+                    resume=self.cfg.resume,
+                    schema=self.cfg.schema,
+                )
             self._writer.record_session_config(
                 reset_pose=self.cfg.reset_pose,
                 grip=self.cfg.grip,

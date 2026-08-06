@@ -585,6 +585,74 @@ def _mark_close_on_exec(f: h5py.File) -> None:
         pass
 
 
+class NullTaskWriter:
+    """A writer that records nothing -- for teleoperating without a dataset.
+
+    Setting a scene up, checking a camera angle, or letting someone try the
+    leader arm are all things done far more often than a recording session,
+    and all of them used to require inventing a throwaway task name and then
+    deleting the .hdf5 it left behind. Worse, that file lands in the data root
+    next to the real ones, where the next repack or conversion picks it up.
+
+    This stands in for LiberoTaskWriter so the worker's state machine (which
+    touches the writer in a dozen places) needs no branching: the episode
+    buffer still fills, so the pose gate, the frame counter and the live view
+    all behave exactly as they do in a real session -- only the file is
+    missing. Saving is accepted and dropped, which is the honest behaviour for
+    a mode whose whole point is that nothing is kept.
+    """
+
+    def __init__(self, schema: Optional[DatasetSchemaConfig] = None) -> None:
+        self.schema = schema or DatasetSchemaConfig()
+        # Not None: the worker emits str(writer.path) on connect, and a literal
+        # "None" in the GUI's file field reads as a bug rather than a mode.
+        self.path = "(기록 안 함)"
+        self._buffer = LiberoEpisodeBuffer(self.schema)
+
+    def record_session_config(self, **kwargs: Any) -> None:
+        pass
+
+    @property
+    def num_episodes(self) -> int:
+        return 0
+
+    def list_episodes(self) -> list[dict]:
+        return []
+
+    def delete_episode(self, name: str) -> None:
+        pass
+
+    def start_episode(self) -> None:
+        self._buffer.clear()
+
+    def add_frame(self, **kwargs: Any) -> None:
+        self._buffer.add_frame(**kwargs)
+
+    def discard_episode(self) -> None:
+        self._buffer.clear()
+
+    def detach_buffer(self) -> LiberoEpisodeBuffer:
+        buf = self._buffer
+        self._buffer = LiberoEpisodeBuffer(self.schema)
+        return buf
+
+    def save_episode(self, success: Optional[bool] = None) -> Optional[str]:
+        return self.save_buffer(self.detach_buffer(), success=success)
+
+    def save_buffer(self, buf: LiberoEpisodeBuffer, success: Optional[bool] = None) -> Optional[str]:
+        buf.clear()
+        return None
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self) -> "NullTaskWriter":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+
 class LiberoTaskWriter:
     """Owns one ``<task>_demo.hdf5`` file: one file per task, one ``demo_N`` per episode.
 
@@ -693,6 +761,20 @@ class LiberoTaskWriter:
             raise KeyError(f"{name!r} not found in {self.path}")
         del self._data[name]
         renumber_episodes(self._data)
+        self._file.flush()
+
+    def set_episode_success(self, name: str, success: bool) -> None:
+        """Re-labels an already-saved episode as success/failure.
+
+        The verdict is worth more a few seconds after the take than during it:
+        the operator has stopped moving, the arm is going home, and they can
+        actually look at what happened. Only the attribute changes -- frames,
+        images and numbering are untouched -- so this stays cheap no matter how
+        big the episode was.
+        """
+        if name not in self._data:
+            raise KeyError(f"{name!r} not found in {self.path}")
+        self._data[name].attrs["success"] = bool(success)
         self._file.flush()
 
     def start_episode(self) -> None:
@@ -892,6 +974,32 @@ class LiberoTaskWriter:
 
 
 # ---------------------------------------------------------------- repack state
+# 재압축 직후 파일도 메타데이터 오버헤드로 0.3~0.4%는 남는다(실측). 3%를 넘으면
+# 지운 에피소드가 차지하던 자리로 보는 게 안전하다 -- 실측에서 삭제가 있었던
+# 파일들은 4.1 / 8.3 / 17.3% 였다.
+DEAD_SPACE_RATIO = 0.03
+
+
+def _stored_bytes(group) -> int:
+    """Bytes every dataset in this file actually occupies on disk.
+
+    get_storage_size() is the compressed, on-disk size -- not the logical
+    array size -- so this stays meaningful for gzip'd images. Metadata only:
+    no chunk is read.
+    """
+    total = 0
+    stack = [group]
+    while stack:
+        g = stack.pop()
+        for key in g:
+            item = g[key]
+            if isinstance(item, h5py.Group):
+                stack.append(item)
+            else:
+                total += item.id.get_storage_size()
+    return total
+
+
 REPACK_MARKER_ATTR = "repacked"
 # Episode count at the moment of repack, so a later run can say how many were
 # appended since rather than only that the file changed.
@@ -922,7 +1030,8 @@ def hdf5_repack_status(path) -> dict:
     instead of dying.
     """
     out = {"repacked": False, "compression": None, "mixed": False,
-           "marker": None, "new_since": 0, "size": 0, "episodes": 0,
+           "marker": None, "new_since": 0, "deleted_since": 0,
+           "dead_bytes": 0, "dead_ratio": 0.0, "size": 0, "episodes": 0,
            "error": None}
     try:
         out["size"] = Path(path).stat().st_size
@@ -935,6 +1044,17 @@ def hdf5_repack_status(path) -> dict:
             at_repack = data.attrs.get(REPACK_COUNT_ATTR)
             if at_repack is not None:
                 out["new_since"] = max(0, out["episodes"] - int(at_repack))
+                out["deleted_since"] = max(0, int(at_repack) - out["episodes"])
+            # Dead space: HDF5 never returns a deleted group's bytes to the OS,
+            # it only makes them reusable inside the same file. So a curated
+            # file keeps paying for takes that are gone, and nothing about the
+            # remaining episodes shows it -- they are all still gzip, the
+            # marker is still there, and an episode-count comparison misses
+            # the common "delete two, record two more" case entirely.
+            # Comparing the file's size against what its datasets actually
+            # occupy catches all of it, and costs only metadata reads.
+            out["dead_bytes"] = max(0, out["size"] - _stored_bytes(f))
+            out["dead_ratio"] = out["dead_bytes"] / out["size"] if out["size"] else 0.0
             comps = set()
             for name in data.keys():
                 obs = data[name].get("obs")
@@ -948,7 +1068,10 @@ def hdf5_repack_status(path) -> dict:
             out["mixed"] = len(comps) > 1
             if comps:
                 out["compression"] = "+".join(sorted(c or "없음" for c in comps))
-        out["repacked"] = (comps == {"gzip"}) or (bool(out["marker"]) and not out["mixed"])
+        fully_gzip = comps == {"gzip"}
+        marked = bool(out["marker"]) and not out["mixed"]
+        # 죽은 공간이 크면 압축 방식과 무관하게 재압축 대상이다.
+        out["repacked"] = (fully_gzip or marked) and out["dead_ratio"] < DEAD_SPACE_RATIO
     except Exception as e:  # noqa: BLE001
         out["error"] = f"{type(e).__name__}: {e}"
     return out
