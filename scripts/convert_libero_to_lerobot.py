@@ -33,7 +33,7 @@ are present (skipped entirely if neither is). Other optional obs fields
 propagated into the LeRobotDataset -- only images, joint/gripper state, and
 actions are.
 
-Images are assumed IMAGE_SIZE x IMAGE_SIZE (LIBERO/OpenVLA's 256x256
+Images are centre-cropped square and resized to --image-size (LEROBOT_IMAGE_SIZE
 convention, see gello/libero_format.py). The GUI's schema dialog can record
 at native camera resolution instead (image_size="원본 해상도 유지") -- this
 script does not support converting those files yet; it fails loudly with a
@@ -123,7 +123,11 @@ from lerobot.datasets.utils import DatasetInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.dataset_schema import ACTION_SPACE_EE_DELTA  # noqa: E402
-from gello.libero_format import IMAGE_SIZE, action_column_names  # noqa: E402
+from gello.libero_format import action_column_names  # noqa: E402
+
+# 학습 파이프라인이 DINOv3 를 쓰고 그 입력이 224x224 다. .hdf5 쪽 기본값
+# (원본 640x480)과 일부러 다르다 -- 원본은 보관, 이쪽은 실사용 크기.
+LEROBOT_IMAGE_SIZE = 224
 
 
 _STAT_KEYS = ("min", "max", "mean", "std", "count", "q01", "q10", "q50", "q90", "q99")
@@ -312,7 +316,7 @@ def _episode_schema(grp: h5py.Group) -> dict:
             f"actions has {action_dim} columns, expected {len(base_cols)} or "
             f"{len(base_cols) + 1} for action_space={action_space!r}"
         )
-    # Images are assumed IMAGE_SIZE x IMAGE_SIZE here (LIBERO/OpenVLA
+    # Images are reduced to --image-size here (see _to_target); the .hdf5 (LIBERO/OpenVLA
     # convention) -- the GUI's "사용자 지정" dialog can record at native
     # camera resolution instead (DatasetSchemaConfig.image_size=None), but
     # this script does not support converting those; check_image_shapes()
@@ -338,14 +342,33 @@ def _episode_schema(grp: h5py.Group) -> dict:
     }
 
 
-def _check_image_shape(path: Path, name: str, obs: h5py.Group, key: str) -> None:
+def _check_image_shape(path: Path, name: str, obs: h5py.Group, key: str,
+                       target: int) -> None:
+    """The .hdf5 may be larger than what goes to the Hub -- only reject what
+    cannot be reduced to `target`."""
     shape = obs[key].shape[1:]
-    if shape != (IMAGE_SIZE, IMAGE_SIZE, 3):
+    if len(shape) != 3 or shape[2] != 3:
+        raise SystemExit(f"{path.name}/{name}의 {key} shape={shape} -- (H, W, 3) 이 아닙니다.")
+    h, w = shape[0], shape[1]
+    if min(h, w) < target:
         raise SystemExit(
-            f"{path.name}/{name}의 {key} shape={shape}인데 {(IMAGE_SIZE, IMAGE_SIZE, 3)}가 아닙니다.\n"
-            "이 스크립트는 256x256(LIBERO 기본) 해상도만 지원합니다 -- GUI의 \"데이터셋 구조 "
-            "사용자 지정\"에서 이미지 해상도를 \"원본 해상도 유지\"로 수집한 파일은 지금 변환할 수 없습니다."
-        )
+            f"{path.name}/{name}의 {key} shape={shape} 인데 --image-size={target} 로 "
+            f"줄이려 합니다. 원본보다 크게 만들 수 없습니다.")
+
+
+def _to_target(img: np.ndarray, target: int) -> np.ndarray:
+    """Center-crops to square then resizes to `target` -- the same operation
+    the collector applies, so a 480x480 .hdf5 and a 256x256 one converted from
+    it differ only in how much detail survived, not in framing."""
+    if img.shape[0] == target and img.shape[1] == target:
+        return img
+    import cv2
+
+    h, w = img.shape[:2]
+    side = min(h, w)
+    y0, x0 = (h - side) // 2, (w - side) // 2
+    return cv2.resize(img[y0:y0 + side, x0:x0 + side], (target, target),
+                      interpolation=cv2.INTER_AREA)
 
 
 def _scan_schema(hdf5_paths: list, only_success: bool) -> dict:
@@ -378,7 +401,7 @@ def _scan_schema(hdf5_paths: list, only_success: bool) -> dict:
     return reference
 
 
-def _build_features(schema: dict) -> tuple[dict, list[str]]:
+def _build_features(schema: dict, image_size: int) -> tuple[dict, list[str]]:
     obs_keys = schema["obs_keys"]
     features = {}
 
@@ -397,11 +420,11 @@ def _build_features(schema: dict) -> tuple[dict, list[str]]:
 
     if "agentview_rgb" in obs_keys:
         features["observation.images.agent"] = {
-            "dtype": "video", "shape": (IMAGE_SIZE, IMAGE_SIZE, 3), "names": ["height", "width", "channel"],
+            "dtype": "video", "shape": (image_size, image_size, 3), "names": ["height", "width", "channel"],
         }
     if "eye_in_hand_rgb" in obs_keys:
         features["observation.images.wrist"] = {
-            "dtype": "video", "shape": (IMAGE_SIZE, IMAGE_SIZE, 3), "names": ["height", "width", "channel"],
+            "dtype": "video", "shape": (image_size, image_size, 3), "names": ["height", "width", "channel"],
         }
 
     # GELLO leader 명령 스트림 (commanded-ee-actions 브랜치 수집분).
@@ -518,6 +541,10 @@ def main() -> None:
     p.add_argument("--force-all", action="store_true",
                    help="--resume에서 이미 들어간 에피소드 건너뛰기를 끄고 파일 전체를 "
                         "다시 추가함. 중복이 생기고 되돌릴 수 없으니 거의 항상 쓰지 말 것")
+    p.add_argument("--image-size", type=int, default=LEROBOT_IMAGE_SIZE,
+                   help=f"LeRobot 쪽 이미지 한 변(px, 기본 {LEROBOT_IMAGE_SIZE}). .hdf5 가 더 크면 "
+                        "정사각 크롭 후 이 크기로 줄인다 -- 원본은 그대로 둔 채 "
+                        "학습용 사본만 가볍게 만들 때 쓴다. 원본보다 크게는 못 만든다.")
     p.add_argument("--push", action="store_true", help="변환 후 바로 Hugging Face Hub에 업로드")
     p.add_argument("--replace", action="store_true",
                    help="--push-only와 함께: 로컬에 없는 원격 파일을 지우며 통째로 교체. "
@@ -608,8 +635,11 @@ def main() -> None:
         # 내용이 보이지 않는다 -- 파이프라인이 이 단계를 실패로 처리해야 한다.
         return 0 if ok_tag else 1
 
+    # .hdf5 는 견고한 원본, LeRobot 사본은 실사용 크기 -- 둘을 갈라두면 원본을
+    # 다시 찍지 않고도 학습용 해상도를 바꿀 수 있다.
+    image_size = args.image_size
     schema = _scan_schema(args.hdf5_paths, args.only_success)
-    features, state_parts, cmd_parts = _build_features(schema)
+    features, state_parts, cmd_parts = _build_features(schema, image_size)
     print(
         f"감지된 스키마: action_space={schema['action_space']!r} "
         f"(gripper {'포함' if schema['has_gripper'] else '제외'}), "
@@ -680,9 +710,9 @@ def main() -> None:
                     continue
                 obs = grp["obs"]
                 if has_agent:
-                    _check_image_shape(path, name, obs, "agentview_rgb")
+                    _check_image_shape(path, name, obs, "agentview_rgb", image_size)
                 if has_wrist:
-                    _check_image_shape(path, name, obs, "eye_in_hand_rgb")
+                    _check_image_shape(path, name, obs, "eye_in_hand_rgb", image_size)
                 state_arrays = [obs[part][:] for part in state_parts]
                 cmd_arrays = [obs[part][:] for part in cmd_parts]
                 agent_rgb = obs["agentview_rgb"][:] if has_agent else None
@@ -703,9 +733,9 @@ def main() -> None:
                     if actions_ee is not None:
                         frame["action_ee"] = actions_ee[t].astype("float32")
                     if has_agent:
-                        frame["observation.images.agent"] = agent_rgb[t]
+                        frame["observation.images.agent"] = _to_target(agent_rgb[t], image_size)
                     if has_wrist:
-                        frame["observation.images.wrist"] = wrist_rgb[t]
+                        frame["observation.images.wrist"] = _to_target(wrist_rgb[t], image_size)
                     ds.add_frame(frame)
                 ds.save_episode()
                 n_episodes += 1

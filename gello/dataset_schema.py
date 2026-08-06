@@ -65,10 +65,14 @@ class DatasetSchemaConfig:
     # 그 간격이 정책이 학습해야 할 그리퍼 지연이다.
     gripper_action_match_obs: bool = True
 
-    # 정사각 크롭 후 리사이즈할 한 변(px). None 이면 크롭도 리사이즈도 하지 않고
-    # 카메라가 준 프레임을 그대로 쓴다(현재 640x480, 비정사각).
-    # 256 은 LIBERO/OpenVLA 규약이라 그 규약으로 사전학습된 모델과 맞는다.
-    image_size: int | None = 256
+    # 정사각 크롭 후 리사이즈할 한 변(px). 기본 None = 크롭도 리사이즈도 하지
+    # 않고 카메라가 준 프레임을 그대로 쓴다(현재 640x480).
+    #
+    # .hdf5 는 원본 보관소라 최대한 남기고, 줄이는 것은 LeRobot 변환에서 한다
+    # (scripts/convert_libero_to_lerobot.py --image-size). 그래야 학습 해상도를
+    # 바꿀 때 다시 찍지 않아도 된다. 대신 정사각이 아니므로, 무엇이 크롭되어
+    # 살아남는지는 Live 탭의 정사각 가이드로 본다.
+    image_size: int | None = None
 
     save_agentview_rgb: bool = True
     save_eye_in_hand_rgb: bool = True

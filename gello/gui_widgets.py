@@ -37,7 +37,7 @@ import cv2
 import h5py
 import numpy as np
 from PyQt6.QtCore import QEvent, QProcess, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QFont, QImage, QPixmap
+from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -335,9 +335,14 @@ class VideoView(QLabel):
     never comes while paused.
     """
 
+    # 정사각 밖을 얼마나 어둡게 덮을지. 완전히 가리지 않는 이유는 그 바깥에도
+    # 조작자가 봐야 할 것(팔이 프레임에 들어오는 순간, 사람 손)이 있기 때문이다.
+    _VIGNETTE_ALPHA = 150
+
     def __init__(self) -> None:
         super().__init__()
         self._frame = None
+        self._square_guide = True
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setScaledContents(False)
         self.setMinimumSize(160, 160)
@@ -348,12 +353,45 @@ class VideoView(QLabel):
         self._frame = arr
         self._rescale()
 
+    def set_square_guide(self, on: bool) -> None:
+        """Dims everything outside the centre square.
+
+        The .hdf5 keeps the camera's full 640x480, but the LeRobot copy is
+        centre-cropped square before training. Without this the operator frames
+        against a 4:3 view and only finds out at conversion that the edges were
+        never going to survive.
+        """
+        self._square_guide = bool(on)
+        self._rescale()
+
     def clear_frame(self, text: str = "") -> None:
         self._frame = None
         self.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX -- 다음 영상 전까지 해제
         self.setPixmap(QPixmap())
         if text:
             self.setText(text)
+
+    def _decorate(self, pix: QPixmap) -> QPixmap:
+        """Draws the crop guide onto a copy -- the stored frame is untouched, so
+        toggling the guide never changes what gets recorded."""
+        w, h = pix.width(), pix.height()
+        if not self._square_guide or w == h:
+            return pix
+        side = min(w, h)
+        x0, y0 = (w - side) // 2, (h - side) // 2
+        out = QPixmap(pix)
+        p = QPainter(out)
+        shade = QColor(0, 0, 0, self._VIGNETTE_ALPHA)
+        if w > side:
+            p.fillRect(0, 0, x0, h, shade)
+            p.fillRect(x0 + side, 0, w - x0 - side, h, shade)
+        if h > side:
+            p.fillRect(0, 0, w, y0, shade)
+            p.fillRect(0, y0 + side, w, h - y0 - side, shade)
+        p.setPen(QPen(QColor(255, 255, 255, 120), 1))
+        p.drawRect(x0, y0, side - 1, side - 1)
+        p.end()
+        return out
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().resizeEvent(event)
@@ -373,7 +411,7 @@ class VideoView(QLabel):
         want = max(1, round(self.height() * w / h))
         if self.maximumWidth() != want:
             self.setMaximumWidth(want)
-        self.setPixmap(np_to_pixmap(self._frame).scaled(
+        self.setPixmap(self._decorate(np_to_pixmap(self._frame)).scaled(
             self.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,

@@ -544,6 +544,12 @@ class WorkspaceWindow(QMainWindow):
             self.live_split.addWidget(box)
         self.live_split.setSizes([600, 600])
         live_col.addWidget(self.live_split, 1)
+        self.square_guide_check = QCheckBox(tr("정사각 크롭 가이드"))
+        self.square_guide_check.setChecked(True)
+        self.square_guide_check.setToolTip(tr(
+            "LeRobot 변환은 가운데 정사각만 남깁니다. 켜면 그 바깥이 어둡게 표시됩니다."))
+        self.square_guide_check.toggled.connect(self._on_square_guide)
+        live.layout().addWidget(self.square_guide_check)
         self._live_tab_index = self.center_tabs.addTab(live, tr("Live"))
 
         play = QWidget()
@@ -2121,6 +2127,11 @@ class WorkspaceWindow(QMainWindow):
             return str(data)
         text = combo.currentText().strip()
         return "" if text.startswith("(") else text
+
+    def _on_square_guide(self, on: bool) -> None:
+        for v in list(self.live_views.values()) + list(self.play_views.values()) \
+                + list(getattr(self, "trim_views", {}).values()):
+            v.set_square_guide(on)
 
     def _on_camera_changed(self) -> None:
         if self.worker is not None:
