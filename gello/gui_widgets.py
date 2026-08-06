@@ -1,8 +1,9 @@
 """Widgets and dialogs shared by the collector GUIs.
 
-Split out of experiments/collect_libero_gui.py so the workspace UI can reuse
-them without importing a module that also defines a whole competing main
-window. Nothing here knows about the window it lives in -- these are the
+Split out of the old wizard GUI (experiments/collect_libero_gui.py, replaced
+by experiments/collect_workspace.py in 62cad92) so the workspace UI could
+reuse them without importing a module that also defined a whole competing
+main window. Nothing here knows about the window it lives in -- these are the
 pieces that were already independent of the 3-phase wizard: the video view,
 the episode loader, the camera preview thread, and the four dialogs
 (schema / LeRobot convert / HDF5 upload / repack).

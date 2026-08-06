@@ -1,7 +1,8 @@
 """Upload raw LIBERO-format .hdf5 files to a Hugging Face Hub dataset repo.
 
 Thin wrapper around huggingface_hub.HfApi so the GUI's "HDF5 업로드..." button
-(see experiments/collect_libero_gui.py's HdfUploadDialog/_open_hdf5_upload)
+(gello/gui_widgets.py's HdfUploadDialog, wired up by
+experiments/collect_workspace.py's _on_hdf5_upload)
 can run this as a subprocess instead of blocking the Qt event loop on the
 upload. This is the raw-format half of the dual upload described in
 ~/huggingface_upload_process.md -- the converted half is

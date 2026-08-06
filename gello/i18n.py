@@ -1,5 +1,6 @@
 """Tiny two-language (ko/en) string table backing the LIBERO collector GUI's
-language toggle button (see experiments/collect_libero_gui.py).
+language toggle button (see experiments/collect_workspace.py's
+"언어 전환" button and Settings menu action).
 
 Not a general i18n framework -- just enough for a foreign collaborator to
 read button/dialog/status text. Deliberately NOT covering:

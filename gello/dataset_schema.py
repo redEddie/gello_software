@@ -2,7 +2,7 @@
 ``actions`` from, and which observation fields actually get written.
 
 Persisted as JSON so a custom configuration chosen in the GUI (see
-collect_libero_gui.py's "사용자 지정" dialog) survives across restarts.
+gello/gui_widgets.py's DatasetSchemaDialog) survives across restarts.
 """
 
 from __future__ import annotations

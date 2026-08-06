@@ -44,7 +44,8 @@ GRIPPER_OPEN = 0.0  # GELLO/franka_fr3 convention: 0=open, 1=closed
 # Fallback defaults, used only if the GUI doesn't supply a serial (e.g. a
 # script driving CollectionWorker directly). The GUI itself always populates
 # WorkerConfig.agent_camera_serial / wrist_camera_serial from a live device
-# scan (see collect_libero_gui.py's camera combo boxes), since serials change
+# scan (see experiments/collect_workspace.py's agent_combo/wrist_combo),
+# since serials change
 # whenever a camera is swapped.
 AGENT_CAMERA_SERIAL = "338122300664"
 WRIST_CAMERA_SERIAL = "230422272249"

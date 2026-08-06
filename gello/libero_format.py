@@ -407,12 +407,16 @@ def describe_episode(grp: Any) -> str:
 def schema_from_episode(grp: Any) -> DatasetSchemaConfig:
     """Reconstructs the ``DatasetSchemaConfig`` that (as best as can be
     recovered from what's actually on disk) matches an already-saved
-    ``demo_N`` group -- used to prefill the GUI's schema when an operator
-    resumes an existing task from the Task 이름 dropdown (see
-    collect_libero_gui.py's ``_on_task_selected``), so continuing a file
-    doesn't silently start recording under a different schema than what's
-    already in it. Like :func:`describe_episode`, reads real attrs/shapes,
-    not whatever the GUI happens to be configured with right now.
+    ``demo_N`` group, so continuing a file cannot silently start recording
+    under a different schema than what is already in it. Like
+    :func:`describe_episode`, reads real attrs/shapes, not whatever the GUI
+    happens to be configured with right now.
+
+    Currently imported but never called: the wizard GUI prefilled the schema
+    from a Task 이름 *dropdown* selection, and the workspace UI that replaced
+    it (62cad92) takes the task as free text with no such hook. Kept because
+    the mismatch it guards against is still possible -- wire it to whatever
+    signals "operator is resuming this file" before that bites.
     """
     obs = grp["obs"]
     obs_keys = set(obs.keys())
@@ -720,10 +724,10 @@ class LiberoTaskWriter:
         """Overwrites the file-level ``session_config`` attr with whatever
         non-camera session settings (reset_pose, grip, enable_wall,
         max_episode_seconds, reset_wait_seconds) this session was started
-        with -- lets the GUI restore them when an operator picks this task
-        again from the Task 이름 dropdown (see collect_libero_gui.py's
-        ``_on_task_selected``). Always reflects the LATEST session, not the
-        first-ever one: intentionally overwritten every time, since this is
+        with, so a later session can restore them for the same task. Written
+        by gello/libero_gui_worker.py; the wizard GUI's dropdown used to read
+        it back, and the workspace UI that replaced it (62cad92) does not yet.
+        Always reflects the LATEST session, not the first-ever one: intentionally overwritten every time, since this is
         "how to continue this task", not a history log.
         """
         self._data.attrs["session_config"] = json.dumps(kwargs)
