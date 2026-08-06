@@ -154,6 +154,9 @@ class WorkerConfig:
     agent_camera_serial: str = AGENT_CAMERA_SERIAL
     wrist_camera_serial: str = WRIST_CAMERA_SERIAL
     schema: DatasetSchemaConfig = field(default_factory=DatasetSchemaConfig)
+    # 카메라별 정사각 크롭 정렬 (GUI Layout 페이지에서 조정). None 이면 기본값.
+    # 에피소드마다 attrs["crop_params"] 로 찍힌다.
+    crop_params: dict | None = None
 
 
 class CollectionWorker(QThread):
@@ -720,6 +723,7 @@ class CollectionWorker(QThread):
                     language_instruction=self.cfg.language_instruction,
                     resume=self.cfg.resume,
                     schema=self.cfg.schema,
+                    crop_params=self.cfg.crop_params,
                 )
             self._writer.record_session_config(
                 reset_pose=self.cfg.reset_pose,

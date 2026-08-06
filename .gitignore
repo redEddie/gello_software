@@ -9,6 +9,8 @@
 *.DS_Store
 
 # misc
+# zip 만 커밋한다 -- GUI 가 뜰 때 여기로 푼다 (collect_workspace._ensure_layout_refs)
+assets/libero_init_layouts/
 *logs*
 *runs*
 *tb_logs*

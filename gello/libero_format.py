@@ -492,15 +492,93 @@ def renumber_episodes(data: Any) -> None:
     data.attrs["next_demo_idx"] = len(names)
 
 
-def resize_rgb(img: np.ndarray, size: int = IMAGE_SIZE) -> np.ndarray:
-    """Resize an (H, W, 3) uint8 RGB image to (size, size, 3), center-cropped square first."""
-    import cv2
+# 손목 카메라(D405)의 정사각 크롭을 오른쪽으로 미는 양. 640x480 원본 기준 px.
+#
+# D405 의 RGB 는 좌측 이미저에서 나온다(베이스라인 18.2mm). 모듈 중심이 그리퍼
+# 축에 정렬돼 있으므로 광축은 축보다 9.1mm 왼쪽이고, 그리퍼 축은 화면 중앙보다
+# 오른쪽에 찍힌다. 수집된 247개 첫 프레임에서 손가락 패드 두 개의 중점을 재면
+# 중앙에서 +16.6px(256 기준, σ1.9) = 640 기준 +31px. 물리 검산: fx·d/Z =
+# 337 × 9.1mm / 31px → Z ≈ 9.8cm, 손끝 패드까지의 실거리와 일치한다.
+#
+# 시차 때문에 한 깊이에서만 정확히 가운데가 된다. 파지 평면(손끝 깊이)을
+# 기준으로 잡았다 -- 조작 대상이 놓이는 깊이라서다. 더 먼 배경(탁자)은 이보다
+# 덜 밀리지만(예: 25cm 에서 ~12px) 조작에는 영향이 없다.
+EYE_IN_HAND_CROP_X_SHIFT = 31
 
+
+def default_crop_params() -> dict:
+    """Per-camera square-crop alignment, adjusted in the GUI's Layout page and
+    stamped into each episode's attrs (``crop_params``) so the conversion can
+    reproduce exactly the framing the operator saw.
+
+    ``x``/``y`` move the crop window (px at 640 source width; +x right,
+    +y down). ``zoom`` divides the crop side (1.0 = full square, 2.0 = half).
+    Agent 1.2 는 LIBERO 초기 배치와 실기 화각을 맞춰본 실측값, wrist 는
+    측정된 D405 좌측 이미저 오프셋."""
+    return {"agent": {"zoom": 1.2, "x": 0, "y": 0},
+            "wrist": {"zoom": 1.0, "x": EYE_IN_HAND_CROP_X_SHIFT, "y": 0}}
+
+
+# dataset_schema.json / recent_inputs.json 과 같은 자리. GUI 재시작 간 유지용
+# 환경설정이고, 에피소드의 진실은 각 demo attrs["crop_params"] 쪽이다.
+CROP_PARAMS_PATH = Path.home() / "libero_gui_logs" / "crop_params.json"
+
+
+def load_crop_params(path: Path = CROP_PARAMS_PATH) -> dict:
+    """Never raises -- missing/corrupt file just means defaults."""
+    base = default_crop_params()
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        for role, defaults in base.items():
+            got = data.get(role)
+            if not isinstance(got, dict):
+                continue
+            for key, dflt in defaults.items():
+                v = got.get(key)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    defaults[key] = type(dflt)(v)
+    except (OSError, ValueError, TypeError):
+        pass
+    return base
+
+
+def save_crop_params(params: dict, path: Path = CROP_PARAMS_PATH) -> None:
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(params, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def square_crop(img: np.ndarray, zoom: float = 1.0, x_shift: int = 0,
+                y_shift: int = 0) -> np.ndarray:
+    """Square window into ``img``: shifted, optionally zoomed, always clamped.
+
+    Shifts are in pixels *at 640 source width* (scaled for other widths), so
+    the same numbers mean the same framing at every capture resolution."""
     h, w = img.shape[:2]
     s = min(h, w)
-    y0, x0 = (h - s) // 2, (w - s) // 2
-    cropped = img[y0 : y0 + s, x0 : x0 + s]
-    return cv2.resize(cropped, (size, size), interpolation=cv2.INTER_AREA)
+    if zoom > 1.0:
+        s = max(16, round(s / zoom))
+    sc = w / 640
+    x0 = (w - s) // 2 + round(x_shift * sc)
+    y0 = (h - s) // 2 + round(y_shift * sc)
+    x0 = min(max(x0, 0), w - s)
+    y0 = min(max(y0, 0), h - s)
+    return img[y0 : y0 + s, x0 : x0 + s]
+
+
+def resize_rgb(img: np.ndarray, size: int = IMAGE_SIZE, zoom: float = 1.0,
+               x_shift: int = 0, y_shift: int = 0) -> np.ndarray:
+    """Resize an (H, W, 3) uint8 RGB image to (size, size, 3), square-cropped
+    first (see ``square_crop``). Defaults keep the historical center crop."""
+    import cv2
+
+    cropped = square_crop(img, zoom=zoom, x_shift=x_shift, y_shift=y_shift)
+    # INTER_AREA 는 축소용이다. zoom 이 크면 확대가 되는데 그때는 LINEAR.
+    interp = cv2.INTER_AREA if cropped.shape[0] >= size else cv2.INTER_LINEAR
+    return cv2.resize(cropped, (size, size), interpolation=interp)
 
 
 class LiberoEpisodeBuffer:
@@ -515,8 +593,10 @@ class LiberoEpisodeBuffer:
     (the GUI worker always does) and likewise bypass the schema.
     """
 
-    def __init__(self, schema: Optional[DatasetSchemaConfig] = None) -> None:
+    def __init__(self, schema: Optional[DatasetSchemaConfig] = None,
+                 crop_params: Optional[dict] = None) -> None:
         self.schema = schema or DatasetSchemaConfig()
+        self.crop_params = crop_params or default_crop_params()
         self._reset_lists()
 
     def _reset_lists(self) -> None:
@@ -560,13 +640,14 @@ class LiberoEpisodeBuffer:
         if self.schema.save_agentview_rgb:
             self.agentview_rgb.append(self._process_image(agentview_rgb))
         if self.schema.save_eye_in_hand_rgb:
-            self.eye_in_hand_rgb.append(self._process_image(eye_in_hand_rgb))
+            self.eye_in_hand_rgb.append(self._process_image(
+                eye_in_hand_rgb, role="wrist"))
         if self.schema.save_joint_velocities and joint_velocities is not None:
             self.joint_velocities.append(np.asarray(joint_velocities, dtype=np.float32))
         if self.schema.save_timestamp and timestamp is not None:
             self.timestamps.append(float(timestamp))
 
-    def _process_image(self, img: np.ndarray) -> np.ndarray:
+    def _process_image(self, img: np.ndarray, role: str = "agent") -> np.ndarray:
         """Returns a frame this buffer owns, resized if the schema asks for it.
 
         The copy is the point, and it is deliberate rather than a side effect.
@@ -589,7 +670,10 @@ class LiberoEpisodeBuffer:
         """
         if self.schema.image_size is None:
             return img.copy()
-        return resize_rgb(img, size=self.schema.image_size)
+        p = self.crop_params.get(role, {})
+        return resize_rgb(img, size=self.schema.image_size,
+                          zoom=p.get("zoom", 1.0), x_shift=p.get("x", 0),
+                          y_shift=p.get("y", 0))
 
     def clear(self) -> None:
         self._reset_lists()
@@ -698,6 +782,7 @@ class LiberoTaskWriter:
         robot_name: str = "fr3_gello_real",
         resume: bool = False,
         schema: Optional[DatasetSchemaConfig] = None,
+        crop_params: Optional[dict] = None,
     ) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -705,7 +790,10 @@ class LiberoTaskWriter:
         self.path = self.root / f"{safe_name}_demo.hdf5"
         self.language_instruction = language_instruction
         self.schema = schema or DatasetSchemaConfig()
-        self._buffer = LiberoEpisodeBuffer(self.schema)
+        # Connect 시점의 스냅샷. 매 에피소드 attrs 에 그대로 찍힌다 -- 변환이
+        # 파일만 보고 조작자가 맞춘 프레이밍을 재현할 수 있도록.
+        self.crop_params = crop_params or default_crop_params()
+        self._buffer = LiberoEpisodeBuffer(self.schema, self.crop_params)
 
         if self.path.exists() and not resume:
             raise FileExistsError(
@@ -822,7 +910,7 @@ class LiberoTaskWriter:
         next episode can start recording while the detached buffer is being
         written by a background thread (see libero_gui_worker.EpisodeSaver)."""
         buf = self._buffer
-        self._buffer = LiberoEpisodeBuffer(self.schema)
+        self._buffer = LiberoEpisodeBuffer(self.schema, self.crop_params)
         return buf
 
     def save_episode(self, success: Optional[bool] = None) -> Optional[str]:
@@ -927,6 +1015,10 @@ class LiberoTaskWriter:
         grp.attrs["action_space"] = schema.action_space
         grp.attrs["gripper_action_convention"] = "01" if schema.gripper_action_match_obs else "pm1"
         grp.attrs["action_column_names"] = json.dumps(resolved_action_column_names(schema))
+        # 이 에피소드의 이미지에 (원본 저장이면 변환 시점에) 적용할/된 정사각
+        # 크롭 정렬. buf 의 것을 쓴다 -- 백그라운드 저장 중 writer 쪽 값이
+        # 바뀌어도 찍히는 값은 그 에피소드가 실제로 쓰던 것이어야 한다.
+        grp.attrs["crop_params"] = json.dumps(buf.crop_params)
 
         obs = grp.create_group("obs")
         if schema.save_agentview_rgb:

@@ -343,6 +343,11 @@ class VideoView(QLabel):
         super().__init__()
         self._frame = None
         self._square_guide = True
+        # 640 폭 기준. 파이프라인의 크롭 정렬(libero_format.square_crop)과
+        # 같은 규약이라 가이드가 곧 저장/변환 프레이밍이다.
+        self._crop_zoom = 1.0
+        self._crop_x = 0
+        self._crop_y = 0
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setScaledContents(False)
         self.setMinimumSize(160, 160)
@@ -364,6 +369,14 @@ class VideoView(QLabel):
         self._square_guide = bool(on)
         self._rescale()
 
+    def set_crop_guide(self, zoom: float = 1.0, x: int = 0, y: int = 0) -> None:
+        """Aligns the crop guide with the pipeline's square_crop for this
+        camera (zoom divides the side; x/y are px at 640 source width)."""
+        self._crop_zoom = float(zoom)
+        self._crop_x = int(x)
+        self._crop_y = int(y)
+        self._rescale()
+
     def clear_frame(self, text: str = "") -> None:
         self._frame = None
         self.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX -- 다음 영상 전까지 해제
@@ -375,19 +388,24 @@ class VideoView(QLabel):
         """Draws the crop guide onto a copy -- the stored frame is untouched, so
         toggling the guide never changes what gets recorded."""
         w, h = pix.width(), pix.height()
-        if not self._square_guide or w == h:
+        if not self._square_guide:
             return pix
         side = min(w, h)
-        x0, y0 = (w - side) // 2, (h - side) // 2
+        if self._crop_zoom > 1.0:
+            side = max(16, round(side / self._crop_zoom))
+        if side == w and side == h:
+            return pix          # 크롭이 프레임 전체라 그릴 게 없다
+        sc = w / 640
+        x0 = min(max((w - side) // 2 + round(self._crop_x * sc), 0), w - side)
+        y0 = min(max((h - side) // 2 + round(self._crop_y * sc), 0), h - side)
         out = QPixmap(pix)
         p = QPainter(out)
         shade = QColor(0, 0, 0, self._VIGNETTE_ALPHA)
-        if w > side:
-            p.fillRect(0, 0, x0, h, shade)
-            p.fillRect(x0 + side, 0, w - x0 - side, h, shade)
-        if h > side:
-            p.fillRect(0, 0, w, y0, shade)
-            p.fillRect(0, y0 + side, w, h - y0 - side, shade)
+        # 겹치지 않는 4개 밴드 -- 모서리에 음영이 두 번 깔리지 않게.
+        p.fillRect(0, 0, w, y0, shade)
+        p.fillRect(0, y0 + side, w, h - y0 - side, shade)
+        p.fillRect(0, y0, x0, side, shade)
+        p.fillRect(x0 + side, y0, w - x0 - side, side, shade)
         p.setPen(QPen(QColor(255, 255, 255, 120), 1))
         p.drawRect(x0, y0, side - 1, side - 1)
         p.end()

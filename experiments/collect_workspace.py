@@ -127,9 +127,13 @@ from gello.gui_widgets import (  # noqa: E402
 )
 from gello.i18n import tr  # noqa: E402
 from gello.libero_format import (  # noqa: E402
+    default_crop_params,
     describe_episode,
     hdf5_repack_status,
+    load_crop_params,
     renumber_episodes,
+    resize_rgb,
+    save_crop_params,
 )
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
 from gello.robots.franka_fr3 import FR3_RESET_POSES  # noqa: E402
@@ -140,6 +144,23 @@ LAUNCH_NODES_SCRIPT = str(Path(__file__).resolve().parent / "launch_nodes.py")
 CONVERT_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "convert_libero_to_lerobot.py")
 UPLOAD_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "upload_to_hub.py")
 RUNME_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "runme.sh")
+# LIBERO 초기 배치 참조 이미지. 리모트에는 zip 만 올라가고(3.9MB), 풀린
+# png 들은 .gitignore 의 *.png 에 걸린다. GUI 가 뜰 때 zip 이 바뀌었으면 다시
+# 푼다 -- _ensure_layout_refs().
+LAYOUT_ZIP = Path(__file__).resolve().parent.parent / "assets" / "libero_init_layouts.zip"
+LAYOUT_DIR = Path(__file__).resolve().parent.parent / "assets" / "libero_init_layouts"
+
+
+def _grid_overlay(img):
+    """1/8 간격 격자를 절반 밝기로 덧그린다 -- 수평/중앙 확인용. 사본에만."""
+    out = img.copy()
+    h, w = out.shape[:2]
+    for i in range(1, 8):
+        y, x = h * i // 8, w * i // 8
+        c = 255 if i == 4 else 190        # 중앙선만 조금 더 밝게
+        out[y, :] = out[y, :] // 2 + c // 2
+        out[:, x] = out[:, x] // 2 + c // 2
+    return out
 CHECK_CAMERAS = str(Path(__file__).resolve().parent.parent / "scripts" / "check_cameras.py")
 
 
@@ -158,6 +179,7 @@ ACTIVITIES = (
     ("dataset", "📂", "Dataset", "에피소드 목록·재생·삭제"),
     ("upload", "☁", "Upload", "재압축·LeRobot 변환·업로드"),
     ("stats", "📊", "Statistics", "세션 통계"),
+    ("layout", "🎯", "Layout", "LIBERO 초기 배치와 카메라 비교"),
     ("settings", "🛠", "Settings", "언어·스키마"),
 )
 
@@ -523,6 +545,10 @@ class WorkspaceWindow(QMainWindow):
 
     # ------------------------------------------------------------- center
     def _build_center(self) -> None:
+        # 카메라별 크롭 정렬 -- 뷰 가이드·레이아웃 겹침·수집·변환이 전부 이
+        # 값을 쓴다. 파일(~/libero_gui_logs/crop_params.json)에서 복원하고,
+        # Layout 페이지 슬라이더가 바꾸면 저장한다.
+        self._crop_params = load_crop_params()
         """Camera views. This widget is created once and never replaced --
         every other panel changes around it."""
         self.center_tabs = QTabWidget()
@@ -539,6 +565,7 @@ class WorkspaceWindow(QMainWindow):
             inner.setContentsMargins(4, 4, 4, 4)
             view = VideoView()
             view.setText(tr("카메라를 선택하세요"))
+            view.set_crop_guide(**self._crop_params[key])
             inner.addWidget(view)
             self.live_views[key] = view
             self.live_split.addWidget(box)
@@ -563,6 +590,7 @@ class WorkspaceWindow(QMainWindow):
             inner.setContentsMargins(4, 4, 4, 4)
             view = VideoView()
             view.setText(tr("에피소드를 선택하세요"))
+            view.set_crop_guide(**self._crop_params[key])
             inner.addWidget(view)
             self.play_views[key] = view
             self.play_split.addWidget(box)
@@ -600,6 +628,9 @@ class WorkspaceWindow(QMainWindow):
         self.center_tabs.addTab(play, tr("Playback"))
         self.center_tabs.addTab(self._build_analysis_tab(), tr("Analysis"))
         self._trim_tab_index = self.center_tabs.addTab(self._build_trim_tab(), tr("Trim"))
+        self._layout_tab_index = self.center_tabs.addTab(
+            self._build_layout_tab(), tr("레이아웃"))
+        self.center_tabs.currentChanged.connect(self._on_center_tab_changed)
         for title, why in ((tr("Depth"), tr("깊이 스트림을 아직 수집하지 않습니다.")),
                            (tr("Point Cloud"), tr("포인트클라우드 렌더러가 없습니다."))):
             ph = QLabel(tr("{t} — {m}\n\n{w}").format(t=title, m=TODO_MARK, w=why))
@@ -643,20 +674,6 @@ class WorkspaceWindow(QMainWindow):
         nrow.addWidget(self.node_stop_btn)
         col.addWidget(node)
 
-        mode = QGroupBox(tr("모드"))
-        mcol = QVBoxLayout(mode)
-        self.no_dataset_check = QCheckBox(tr("데이터셋 없이 조작만 (연습 / 씬 세팅)"))
-        self.no_dataset_check.setToolTip(tr(
-            "파일을 전혀 만들지 않고 텔레옵만 합니다. 자세 게이트·카메라·프레임 "
-            "카운터는 그대로 동작하고, 저장을 눌러도 버려집니다."))
-        self.no_dataset_check.toggled.connect(self._on_no_dataset_toggled)
-        mcol.addWidget(self.no_dataset_check)
-        self.mode_hint = QLabel("")
-        self.mode_hint.setStyleSheet("color:#888;")
-        self.mode_hint.setWordWrap(True)
-        mcol.addWidget(self.mode_hint)
-        col.addWidget(mode)
-
         task = QGroupBox(tr("태스크"))
         self.task_box = task
         form = QFormLayout(task)
@@ -669,11 +686,17 @@ class WorkspaceWindow(QMainWindow):
             "이미 찍은 파일에 이어서 기록합니다. 고르면 Task 이름·Language·"
             "저장 경로가 그 파일 값으로 잠깁니다."))
         self.resume_combo.currentIndexChanged.connect(self._on_resume_selected)
-        form.addRow(tr("기존 task 이어찍기"), self.resume_combo)
-        self.resume_hint = QLabel("")
-        self.resume_hint.setStyleSheet("color:#888;")
-        self.resume_hint.setWordWrap(True)
-        form.addRow("", self.resume_hint)
+        # 무엇이 복원되고 잠기는지는 문장이 길어 인라인 라벨 대신 info 팝업으로.
+        resume_row = QWidget()
+        rrow = QHBoxLayout(resume_row)
+        rrow.setContentsMargins(0, 0, 0, 0)
+        rrow.addWidget(self.resume_combo, 1)
+        self.resume_info_btn = QPushButton(tr("info"))
+        self.resume_info_btn.setMaximumWidth(48)
+        self.resume_info_btn.setEnabled(False)
+        self.resume_info_btn.clicked.connect(self._show_resume_info)
+        rrow.addWidget(self.resume_info_btn)
+        form.addRow(tr("기존 task 이어찍기"), resume_row)
 
         self.task_edit = QLineEdit()
         self.task_edit.setPlaceholderText(tr("예) pick_up_the_blue_cup_and_place_it_on_the_blue_bowl"))
@@ -708,14 +731,30 @@ class WorkspaceWindow(QMainWindow):
         refresh = QPushButton(tr("카메라 새로고침"))
         refresh.clicked.connect(self._refresh_cameras)
         cform.addRow(refresh)
+        self.preview_btn = QPushButton(tr("미리보기 시작"))
+        self.preview_btn.clicked.connect(self._on_toggle_previews)
+        cform.addRow(self.preview_btn)
         self.camera_hint = QLabel("")
         self.camera_hint.setStyleSheet("color:#888;")
         self.camera_hint.setWordWrap(True)
         cform.addRow(self.camera_hint)
         col.addWidget(cam)
 
-        sess = QGroupBox(tr("세션"))
+        # "세션"이 아니라 "수집 설정": 여기 있는 것은 전부 Connect 시점에
+        # 적용되는 수집 방식이다. 연습 모드도 그중 하나라 별도 "모드" 그룹을
+        # 두지 않고 여기에 둔다.
+        sess = QGroupBox(tr("수집 설정"))
         sform = QFormLayout(sess)
+        self.no_dataset_check = QCheckBox(tr("데이터셋 없이 조작만 (연습 / 씬 세팅)"))
+        self.no_dataset_check.setToolTip(tr(
+            "파일을 전혀 만들지 않고 텔레옵만 합니다. 자세 게이트·카메라·프레임 "
+            "카운터는 그대로 동작하고, 저장을 눌러도 버려집니다."))
+        self.no_dataset_check.toggled.connect(self._on_no_dataset_toggled)
+        sform.addRow(self.no_dataset_check)
+        self.mode_hint = QLabel("")
+        self.mode_hint.setStyleSheet("color:#888;")
+        self.mode_hint.setWordWrap(True)
+        sform.addRow(self.mode_hint)
         self.reset_pose_combo = QComboBox()
         self.reset_pose_combo.addItems(sorted(FR3_RESET_POSES))
         if "libero" in FR3_RESET_POSES:
@@ -728,9 +767,6 @@ class WorkspaceWindow(QMainWindow):
         sform.addRow(tr("에피소드 길이(s)"), self.eplen_edit)
         self.resetwait_edit = QLineEdit("10")
         sform.addRow(tr("리셋 대기(s)"), self.resetwait_edit)
-        self.resume_check = QCheckBox(tr("기존 파일에 이어서 수집"))
-        self.resume_check.setChecked(True)
-        sform.addRow(self.resume_check)
         self.wall_check = QCheckBox(tr("관절 한계 벽 사용"))
         self.wall_check.setChecked(True)
         sform.addRow(self.wall_check)
@@ -1348,6 +1384,7 @@ class WorkspaceWindow(QMainWindow):
             box = QVBoxLayout()
             v = VideoView()
             v.clear_frame(tr("에피소드를 선택하세요"))
+            v.set_crop_guide(**self._crop_params[role])
             self.trim_views[role] = v
             box.addWidget(v, 1)
             lab = QLabel(cap)
@@ -1427,6 +1464,255 @@ class WorkspaceWindow(QMainWindow):
         outer.addWidget(split)
         self._trim_update()
         return page
+
+    # ------------------------------------------------- layout check tab
+    def _build_layout_tab(self) -> QWidget:
+        """LIBERO 초기 배치와 현재 카메라를 비교하는 탭.
+
+        위: 참조 이미지와 카메라를 50%씩 섞은 겹침 뷰 (agent / wrist).
+        아래: 참조·카메라 4장을 나란히. 로그 자리가 필요하므로 이 탭이
+        보이는 동안은 하단 로그 패널을 접는다(_on_center_tab_changed).
+        카메라 쪽은 변환 파이프라인과 같은 크롭(wrist 는 +31px)을 거치므로
+        보이는 그대로가 학습 입력 프레이밍이다.
+        """
+        self._layout_entries: list = []      # (suite, name, agent_png, wrist_png)
+        self._layout_idx = 0
+        self._layout_playing = True
+        self._layout_ref: dict = {}          # role -> (224,224,3) RGB
+        self._last_cam_frame: dict = {}      # role -> 카메라 원본 (640x480)
+
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(4, 4, 4, 4)
+
+        # 컨트롤(suite·재생·간격·투명도·번갈아 보기)은 왼쪽 Layout 페이지에
+        # 있다(_page_layout) -- 뷰를 보면서 조작할 수 있도록. 탭에는 지금 몇
+        # 번째 스틸인지만 남긴다.
+        self._layout_blink_state = False
+        self.layout_name_label = QLabel("")
+        self.layout_name_label.setStyleSheet("color:#888;")
+        col.addWidget(self.layout_name_label)
+
+        split = QSplitter(Qt.Orientation.Horizontal)
+        self.layout_overlay_views = {}
+        for role, title in (("agent", "Agent 비교"), ("wrist", "Wrist 비교")):
+            box = QGroupBox(tr(title))
+            inner = QVBoxLayout(box)
+            inner.setContentsMargins(4, 4, 4, 4)
+            v = VideoView()
+            v.setText(tr("참조 이미지 없음"))
+            inner.addWidget(v)
+            self.layout_overlay_views[role] = v
+            split.addWidget(box)
+        split.setSizes([600, 600])
+        col.addWidget(split, 1)
+
+        strip = QHBoxLayout()
+        self.layout_strip_views = {}
+        for key, cap in (("agent_ref", "LIBERO agent"), ("agent_live", tr("카메라 agent")),
+                         ("wrist_ref", "LIBERO wrist"), ("wrist_live", tr("카메라 wrist"))):
+            cell = QVBoxLayout()
+            v = VideoView()
+            v.setMinimumSize(120, 120)
+            cell.addWidget(v, 1)
+            lab = QLabel(cap)
+            lab.setStyleSheet("color:#888;")
+            lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cell.addWidget(lab)
+            self.layout_strip_views[key] = v
+            strip.addLayout(cell, 1)
+        strip_w = QWidget()
+        strip_w.setLayout(strip)
+        strip_w.setMinimumHeight(150)
+        strip_w.setMaximumHeight(220)
+        col.addWidget(strip_w)
+
+        self._layout_timer = QTimer(self)
+        self._layout_timer.setInterval(5000)
+        self._layout_timer.timeout.connect(lambda: self._layout_step(+1, user=False))
+        self._layout_blink_timer = QTimer(self)
+        self._layout_blink_timer.setInterval(500)
+        self._layout_blink_timer.timeout.connect(self._layout_blink_tick)
+        return w
+
+    def _ensure_layout_refs(self) -> bool:
+        """Unpacks assets/libero_init_layouts.zip next to itself.
+
+        Only the zip is in the remote; the extracted pngs fall under
+        .gitignore's *.png. A stamp of the zip's size+mtime decides whether to
+        re-extract, so replacing the zip is all it takes to update the refs.
+        """
+        if not LAYOUT_ZIP.exists():
+            return LAYOUT_DIR.exists()
+        stamp = LAYOUT_DIR / ".zip_stamp"
+        st = LAYOUT_ZIP.stat()
+        want = f"{st.st_size}:{int(st.st_mtime)}"
+        try:
+            if stamp.exists() and stamp.read_text() == want:
+                return True
+            import zipfile
+            if LAYOUT_DIR.exists():
+                shutil.rmtree(LAYOUT_DIR)
+            with zipfile.ZipFile(LAYOUT_ZIP) as z:
+                z.extractall(LAYOUT_DIR)
+            stamp.write_text(want)
+            self.log(f"[레이아웃] 참조 이미지 압축 해제: {LAYOUT_DIR}")
+            return True
+        except Exception as e:  # noqa: BLE001
+            self.log(f"[레이아웃] 압축 해제 실패: {type(e).__name__}: {e}")
+            return False
+
+    def _layout_reload(self) -> None:
+        """Scans the extracted tree and fills the suite filter."""
+        if not self._ensure_layout_refs():
+            self.layout_name_label.setText(
+                tr("assets/libero_init_layouts.zip 이 없습니다"))
+            return
+        entries = []
+        suites = []
+        for suite in sorted(p for p in LAYOUT_DIR.iterdir() if p.is_dir()):
+            found = False
+            for ap in sorted((suite / "agent").glob("*.png")):
+                wp = suite / "wrist" / ap.name
+                if wp.exists():
+                    entries.append((suite.name, ap.stem, str(ap), str(wp)))
+                    found = True
+            if found:
+                suites.append(suite.name)
+        self._layout_all_entries = entries
+        cur = self.layout_suite_combo.currentText()
+        self.layout_suite_combo.blockSignals(True)
+        self.layout_suite_combo.clear()
+        self.layout_suite_combo.addItem(tr("(전체)"), None)
+        for s in suites:
+            self.layout_suite_combo.addItem(s, s)
+        i = self.layout_suite_combo.findText(cur)
+        self.layout_suite_combo.setCurrentIndex(max(0, i))
+        self.layout_suite_combo.blockSignals(False)
+        self._layout_refilter()
+
+    def _layout_refilter(self) -> None:
+        suite = self.layout_suite_combo.currentData()
+        all_entries = getattr(self, "_layout_all_entries", [])
+        self._layout_entries = [e for e in all_entries
+                                if suite is None or e[0] == suite]
+        self._layout_idx = 0
+        self._layout_show()
+
+    def _layout_step(self, delta: int, user: bool = True) -> None:
+        if not self._layout_entries:
+            return
+        self._layout_idx = (self._layout_idx + delta) % len(self._layout_entries)
+        if user and self._layout_timer.isActive():
+            self._layout_timer.start()      # 수동 이동 시 타이머 리셋
+        self._layout_show()
+
+    def _layout_toggle_play(self) -> None:
+        self._layout_playing = not self._layout_playing
+        self.layout_play_btn.setText(
+            tr("일시정지") if self._layout_playing else tr("재생"))
+        if self._layout_playing and \
+                self.center_tabs.currentIndex() == self._layout_tab_index:
+            self._layout_timer.start()
+        else:
+            self._layout_timer.stop()
+
+    def _layout_apply_interval(self) -> None:
+        sec = self.layout_interval_combo.currentData() or 5
+        self._layout_timer.setInterval(int(sec) * 1000)
+
+    def _layout_show(self) -> None:
+        if not self._layout_entries:
+            for v in self.layout_overlay_views.values():
+                v.clear_frame(tr("참조 이미지 없음"))
+            for v in self.layout_strip_views.values():
+                v.clear_frame("")
+            self.layout_name_label.setText("")
+            return
+        import cv2
+        suite, name, ap, wp = self._layout_entries[self._layout_idx]
+        self.layout_name_label.setText(
+            f"{suite} · {name}  ({self._layout_idx + 1}/{len(self._layout_entries)})")
+        for role, path in (("agent", ap), ("wrist", wp)):
+            bgr = cv2.imread(path)
+            if bgr is None:
+                self._layout_ref.pop(role, None)
+                continue
+            self._layout_ref[role] = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            self.layout_strip_views[f"{role}_ref"].set_frame(self._layout_ref[role])
+            self._layout_update_role(role)
+
+    def _layout_alpha_changed(self, val: int) -> None:
+        self.layout_alpha_label.setText(tr("스틸 {v}%").format(v=val))
+        for role in ("agent", "wrist"):
+            self._layout_update_role(role)
+
+    def _layout_blink_toggled(self, on: bool) -> None:
+        """번갈아 보기 -- 겹침 대신 카메라와 스틸을 0.5초씩 교대로 보여준다."""
+        self.layout_alpha_slider.setEnabled(not on)
+        self._layout_blink_state = False
+        if on and self.center_tabs.currentIndex() == self._layout_tab_index:
+            self._layout_blink_timer.start()
+        else:
+            self._layout_blink_timer.stop()
+        for role in ("agent", "wrist"):
+            self._layout_update_role(role)
+
+    def _layout_blink_tick(self) -> None:
+        self._layout_blink_state = not self._layout_blink_state
+        for role in ("agent", "wrist"):
+            self._layout_update_role(role)
+
+    def _layout_update_role(self, role: str) -> None:
+        """Re-blends one side. Called on slideshow advance, on every camera
+        frame while the tab is visible, and when the alpha slider moves.
+
+        카메라가 바닥, LIBERO 스틸이 그 위에 슬라이더만큼의 불투명도로 올라간다.
+        카메라 프레임이 없으면 참조를 단독으로 보여주는 대신 그렇다고 말한다 --
+        참조 단독은 "겹침이 안 되고 있다"는 사실을 숨긴다.
+        """
+        ref = self._layout_ref.get(role)
+        if ref is None:
+            return
+        frame = self._last_cam_frame.get(role)
+        if frame is None:
+            self.layout_overlay_views[role].clear_frame(
+                tr("카메라 없음 — Configure 에서 미리보기를 켜세요"))
+            self.layout_strip_views[f"{role}_live"].clear_frame(tr("카메라 없음"))
+            return
+        p = self._crop_params[role]
+        live = resize_rgb(frame, ref.shape[0], zoom=p["zoom"],
+                          x_shift=p["x"], y_shift=p["y"])
+        self.layout_strip_views[f"{role}_live"].set_frame(live)
+        if self.layout_blink_check.isChecked():
+            # 교대 모드: 위치 차이가 겹침보다 눈에 잘 띈다 (운동 시차 효과).
+            shown = ref if self._layout_blink_state else live
+        else:
+            a = self.layout_alpha_slider.value()
+            shown = ((live.astype(np.uint16) * (100 - a)
+                      + ref.astype(np.uint16) * a) // 100).astype(np.uint8)
+        if self.layout_grid_check.isChecked():
+            shown = _grid_overlay(shown)
+        self.layout_overlay_views[role].set_frame(shown)
+
+    def _on_center_tab_changed(self, idx: int) -> None:
+        """레이아웃 탭이 보이는 동안만 하단 로그를 접고 슬라이드쇼를 돌린다."""
+        on = idx == self._layout_tab_index
+        self.bottom_tabs.setVisible(not on)
+        if on:
+            self._set_activity("layout")     # 컨트롤이 왼쪽 페이지에 있다
+            if not getattr(self, "_layout_all_entries", None):
+                self._layout_reload()
+            else:
+                self._layout_show()
+            self._layout_apply_interval()
+            if self._layout_playing:
+                self._layout_timer.start()
+            if self.layout_blink_check.isChecked():
+                self._layout_blink_timer.start()
+        else:
+            self._layout_timer.stop()
+            self._layout_blink_timer.stop()
 
     def _build_analysis_tab(self) -> QWidget:
         """Center-tab analysis: the curve view plus the curation list.
@@ -1562,6 +1848,173 @@ class WorkspaceWindow(QMainWindow):
         outer.addWidget(split)
         return page
 
+    def _page_layout(self) -> QWidget:
+        """카메라 레이아웃 설정 -- 레이아웃 탭의 뷰를 보면서 조작하는 왼쪽 패널."""
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(0, 0, 0, 0)
+
+        open_btn = QPushButton(tr("레이아웃 탭 열기"))
+        open_btn.clicked.connect(
+            lambda: self.center_tabs.setCurrentIndex(self._layout_tab_index))
+        col.addWidget(open_btn)
+
+        # Configure 의 카메라 그룹 복제 -- 여기서 고르나 저기서 고르나 같다.
+        # Configure 쪽 콤보가 원본이고 이쪽은 미러: 이쪽에서 바꾸면 원본으로
+        # 밀어넣고(_on_layout_camera_changed), 원본이 바뀌면 여기로 복사한다
+        # (_mirror_camera_combos). 미리보기 재시작은 원본의 시그널이 담당한다.
+        cam = QGroupBox(tr("카메라"))
+        cform = QFormLayout(cam)
+        self.layout_agent_combo = QComboBox()
+        self.layout_wrist_combo = QComboBox()
+        for c in (self.layout_agent_combo, self.layout_wrist_combo):
+            c.setEditable(True)
+            c.currentTextChanged.connect(self._on_layout_camera_changed)
+        cform.addRow(tr("Agent"), self.layout_agent_combo)
+        cform.addRow(tr("Wrist"), self.layout_wrist_combo)
+        refresh = QPushButton(tr("카메라 새로고침"))
+        refresh.clicked.connect(self._refresh_cameras)
+        cform.addRow(refresh)
+        self.layout_preview_btn = QPushButton(tr("미리보기 시작"))
+        self.layout_preview_btn.clicked.connect(self._on_toggle_previews)
+        cform.addRow(self.layout_preview_btn)
+        self.layout_camera_hint = QLabel("")
+        self.layout_camera_hint.setStyleSheet("color:#888;")
+        self.layout_camera_hint.setWordWrap(True)
+        cform.addRow(self.layout_camera_hint)
+        col.addWidget(cam)
+
+        show = QGroupBox(tr("슬라이드쇼"))
+        sform = QFormLayout(show)
+        self.layout_suite_combo = QComboBox()
+        self.layout_suite_combo.currentIndexChanged.connect(self._layout_refilter)
+        sform.addRow(tr("Suite"), self.layout_suite_combo)
+        nav = QWidget()
+        nrow = QHBoxLayout(nav)
+        nrow.setContentsMargins(0, 0, 0, 0)
+        prev_btn = QPushButton("◀")
+        prev_btn.clicked.connect(lambda: self._layout_step(-1))
+        nrow.addWidget(prev_btn)
+        self.layout_play_btn = QPushButton(tr("일시정지"))
+        self.layout_play_btn.clicked.connect(self._layout_toggle_play)
+        nrow.addWidget(self.layout_play_btn, 1)
+        next_btn = QPushButton("▶")
+        next_btn.clicked.connect(lambda: self._layout_step(+1))
+        nrow.addWidget(next_btn)
+        sform.addRow(nav)
+        self.layout_interval_combo = QComboBox()
+        for sec in (3, 5, 10):
+            self.layout_interval_combo.addItem(tr("{s}초마다").format(s=sec), sec)
+        self.layout_interval_combo.setCurrentIndex(1)
+        self.layout_interval_combo.currentIndexChanged.connect(
+            self._layout_apply_interval)
+        sform.addRow(tr("전환 간격"), self.layout_interval_combo)
+        col.addWidget(show)
+
+        disp = QGroupBox(tr("표시"))
+        dform = QFormLayout(disp)
+        # 스틸(LIBERO)이 카메라 위. 0% = 카메라만, 100% = 스틸만.
+        self.layout_alpha_slider = QSlider(Qt.Orientation.Horizontal)
+        self.layout_alpha_slider.setRange(0, 100)
+        self.layout_alpha_slider.setValue(50)
+        self.layout_alpha_slider.valueChanged.connect(self._layout_alpha_changed)
+        self.layout_alpha_label = QLabel(tr("스틸 50%"))
+        self.layout_alpha_label.setStyleSheet("color:#888;")
+        dform.addRow(self.layout_alpha_label, self.layout_alpha_slider)
+        self.layout_blink_check = QCheckBox(tr("카메라/스틸 번갈아 보기"))
+        self.layout_blink_check.toggled.connect(self._layout_blink_toggled)
+        dform.addRow(self.layout_blink_check)
+        self.layout_blink_slider = QSlider(Qt.Orientation.Horizontal)
+        self.layout_blink_slider.setRange(50, 500)      # ms
+        self.layout_blink_slider.setValue(500)
+        self.layout_blink_label = QLabel(tr("전환 0.50초"))
+        self.layout_blink_label.setStyleSheet("color:#888;")
+        self.layout_blink_slider.valueChanged.connect(
+            self._layout_blink_interval_changed)
+        dform.addRow(self.layout_blink_label, self.layout_blink_slider)
+        self.layout_grid_check = QCheckBox(tr("격자 표시 (수평 확인)"))
+        self.layout_grid_check.toggled.connect(
+            lambda _on: self._layout_rerender())
+        dform.addRow(self.layout_grid_check)
+        col.addWidget(disp)
+
+        # 크롭 정렬 -- 값은 640 폭 기준 px. 라이브 가이드·레이아웃 겹침·변환이
+        # 같은 값을 쓰고, 에피소드마다 attrs["crop_params"] 로 저장된다.
+        crop = QGroupBox(tr("크롭 정렬"))
+        crform = QFormLayout(crop)
+        p = self._crop_params
+
+        def _slider(lo: int, hi: int, val: int) -> QSlider:
+            s = QSlider(Qt.Orientation.Horizontal)
+            s.setRange(lo, hi)
+            s.setValue(val)
+            return s
+
+        self.crop_agent_zoom = _slider(100, 200, round(p["agent"]["zoom"] * 100))
+        self.crop_agent_zoom_label = QLabel("")
+        crform.addRow(self.crop_agent_zoom_label, self.crop_agent_zoom)
+        self.crop_agent_x = _slider(-80, 80, int(p["agent"]["x"]))
+        self.crop_agent_x_label = QLabel("")
+        crform.addRow(self.crop_agent_x_label, self.crop_agent_x)
+        self.crop_agent_y = _slider(-100, 100, int(p["agent"]["y"]))
+        self.crop_agent_y_label = QLabel("")
+        crform.addRow(self.crop_agent_y_label, self.crop_agent_y)
+        self.crop_wrist_x = _slider(-80, 80, int(p["wrist"]["x"]))
+        self.crop_wrist_x_label = QLabel("")
+        crform.addRow(self.crop_wrist_x_label, self.crop_wrist_x)
+        for s in (self.crop_agent_zoom, self.crop_agent_x,
+                  self.crop_agent_y, self.crop_wrist_x):
+            s.valueChanged.connect(self._crop_changed)
+        reset_btn = QPushButton(tr("기본값으로"))
+        reset_btn.clicked.connect(self._crop_reset)
+        crform.addRow(reset_btn)
+        self._crop_widgets = [self.crop_agent_zoom, self.crop_agent_x,
+                              self.crop_agent_y, self.crop_wrist_x, reset_btn]
+        self._refresh_crop_labels()
+        col.addWidget(crop)
+        col.addStretch()
+        return w
+
+    def _refresh_crop_labels(self) -> None:
+        p = self._crop_params
+        self.crop_agent_zoom_label.setText(
+            tr("Agent 줌 {z:.2f}x").format(z=p["agent"]["zoom"]))
+        self.crop_agent_x_label.setText(
+            tr("Agent x {v:+d}px").format(v=p["agent"]["x"]))
+        self.crop_agent_y_label.setText(
+            tr("Agent y {v:+d}px").format(v=p["agent"]["y"]))
+        self.crop_wrist_x_label.setText(
+            tr("Wrist x {v:+d}px").format(v=p["wrist"]["x"]))
+
+    def _crop_changed(self) -> None:
+        p = self._crop_params
+        p["agent"]["zoom"] = self.crop_agent_zoom.value() / 100.0
+        p["agent"]["x"] = self.crop_agent_x.value()
+        p["agent"]["y"] = self.crop_agent_y.value()
+        p["wrist"]["x"] = self.crop_wrist_x.value()
+        self._refresh_crop_labels()
+        save_crop_params(p)
+        for views in (self.live_views, self.play_views,
+                      getattr(self, "trim_views", {})):
+            for role, v in views.items():
+                v.set_crop_guide(**p[role])
+        self._layout_rerender()
+
+    def _crop_reset(self) -> None:
+        d = default_crop_params()
+        self.crop_agent_zoom.setValue(round(d["agent"]["zoom"] * 100))
+        self.crop_agent_x.setValue(d["agent"]["x"])
+        self.crop_agent_y.setValue(d["agent"]["y"])
+        self.crop_wrist_x.setValue(d["wrist"]["x"])
+
+    def _layout_rerender(self) -> None:
+        for role in ("agent", "wrist"):
+            self._layout_update_role(role)
+
+    def _layout_blink_interval_changed(self, ms: int) -> None:
+        self.layout_blink_label.setText(tr("전환 {s:.2f}초").format(s=ms / 1000))
+        self._layout_blink_timer.setInterval(int(ms))
+
     def _page_settings(self) -> QWidget:
         w = QWidget()
         col = QVBoxLayout(w)
@@ -1574,6 +2027,12 @@ class WorkspaceWindow(QMainWindow):
         lang = QPushButton(f'{tr("언어 전환 (한국어 / English)")} ({TODO_MARK})')
         col.addWidget(mark_todo(lang, tr(
             "이미 열린 창은 다시 그려지지 않아 한국어와 영어가 섞입니다.")))
+        layout_btn = QPushButton(tr("카메라 레이아웃 확인 (LIBERO 초기 배치와 비교)"))
+        layout_btn.setToolTip(tr(
+            "LIBERO 초기 배치 이미지와 현재 카메라를 50% 투명도로 겹쳐 보여줍니다."))
+        layout_btn.clicked.connect(
+            lambda: self.center_tabs.setCurrentIndex(self._layout_tab_index))
+        col.addWidget(layout_btn)
         schema = QPushButton(tr("데이터셋 구조 사용자 설정..."))
         schema.setToolTip(tr("Action 구조는 고정입니다. Observation 필드만 고를 수 "
                              "있습니다."))
@@ -2016,7 +2475,8 @@ class WorkspaceWindow(QMainWindow):
         for wdg in (self.task_edit, self.lang_edit, self.root_edit):
             wdg.setEnabled(editable)
         if editable:
-            self.resume_hint.setText("")
+            self._resume_info = ""
+            self.resume_info_btn.setEnabled(False)
             return
         p = Path(path)
         self.task_edit.setText(p.stem[:-5])
@@ -2031,14 +2491,27 @@ class WorkspaceWindow(QMainWindow):
                 if cfg:
                     restored = self._apply_session_config(json.loads(cfg))
         except (OSError, ValueError, KeyError) as e:
-            self.resume_hint.setText(tr("설정을 읽지 못했습니다: {e}").format(e=e))
+            # 읽기 실패는 사용자가 지금 알아야 한다 -- info 버튼 뒤에 숨기지
+            # 않고 바로 띄운다.
+            self._resume_info = tr("설정을 읽지 못했습니다: {e}").format(e=e)
+            self.resume_info_btn.setEnabled(True)
+            self.log(f"[이어찍기] {p.name}: 설정을 읽지 못했습니다: {e}")
+            self._alert(tr("기존 task 이어찍기"), self._resume_info)
             return
         self.lang_edit.setText(lang)
         self.root_edit.setText(str(p.parent))
-        self.resume_hint.setText(
-            tr("{f} 에 이어 기록합니다. 복원됨: {r}").format(
+        self._resume_info = tr(
+            "{f} 에 이어 기록합니다.\n\n"
+            "Task 이름·Language·저장 경로는 이 파일 값으로 잠깁니다.\n"
+            "복원된 세션 설정: {r}\n"
+            "이 파일의 구조는 대조하지 않습니다 — issue #12.").format(
                 f=p.name, r=", ".join(restored) if restored else tr("없음"))
-            + tr("   (이 파일의 구조는 대조하지 않습니다 — issue #12)"))
+        self.resume_info_btn.setEnabled(True)
+
+    def _show_resume_info(self) -> None:
+        if getattr(self, "_resume_info", ""):
+            self._alert(tr("기존 task 이어찍기"), self._resume_info,
+                        icon=QMessageBox.Icon.Information)
 
     def _apply_session_config(self, cfg: dict) -> list:
         """Puts a file's recorded session_config back into the widgets that
@@ -2094,7 +2567,7 @@ class WorkspaceWindow(QMainWindow):
 
             cams = RealSenseCamera.find_cameras()
         except Exception as e:  # noqa: BLE001
-            self.camera_hint.setText(tr("카메라 목록 조회 실패: {e}").format(e=e))
+            self._set_camera_hint(tr("카메라 목록 조회 실패: {e}").format(e=e))
             self.log(f"[카메라] 목록 조회 실패: {type(e).__name__}: {e}")
             return
         entries = []
@@ -2118,8 +2591,46 @@ class WorkspaceWindow(QMainWindow):
                         combo.setCurrentIndex(i)
                         break
             combo.blockSignals(False)
-        self.camera_hint.setText(tr("{n}대 감지됨").format(n=len(entries)))
+        self._mirror_camera_combos(rebuild=True)
+        self._set_camera_hint(tr("{n}대 감지됨").format(n=len(entries)))
         self.log(f"[카메라] {len(entries)}대 감지: {[s for s, _ in entries]}")
+
+    def _set_camera_hint(self, text: str) -> None:
+        self.camera_hint.setText(text)
+        if hasattr(self, "layout_camera_hint"):
+            self.layout_camera_hint.setText(text)
+
+    def _mirror_camera_combos(self, rebuild: bool = False) -> None:
+        """Configure 콤보(원본) -> Layout 콤보(미러) 복사. ``rebuild`` 면 항목
+        목록까지 새로 채운다 (_refresh_cameras 뒤)."""
+        if not hasattr(self, "layout_agent_combo"):
+            return
+        for src, dst in ((self.agent_combo, self.layout_agent_combo),
+                         (self.wrist_combo, self.layout_wrist_combo)):
+            dst.blockSignals(True)
+            if rebuild:
+                dst.clear()
+                for i in range(src.count()):
+                    dst.addItem(src.itemText(i), src.itemData(i))
+            i = src.currentIndex()
+            if i >= 0 and src.itemText(i) == src.currentText():
+                dst.setCurrentIndex(i)
+            else:
+                dst.setCurrentText(src.currentText())
+            dst.blockSignals(False)
+
+    def _on_layout_camera_changed(self) -> None:
+        """Layout 콤보에서 고른 것을 원본으로 밀어넣는다. 원본 시그널이
+        _on_camera_changed 를 태워 미리보기 재시작까지 이어진다."""
+        for src, dst in ((self.layout_agent_combo, self.agent_combo),
+                         (self.layout_wrist_combo, self.wrist_combo)):
+            if src.currentText() == dst.currentText():
+                continue
+            i = src.currentIndex()
+            if i >= 0 and src.itemText(i) == src.currentText():
+                dst.setCurrentIndex(i)
+            else:
+                dst.setCurrentText(src.currentText())
 
     def _combo_serial(self, combo: QComboBox) -> str:
         data = combo.currentData()
@@ -2134,9 +2645,30 @@ class WorkspaceWindow(QMainWindow):
             v.set_square_guide(on)
 
     def _on_camera_changed(self) -> None:
+        self._mirror_camera_combos()
         if self.worker is not None:
             return  # the session owns the cameras; previews must stay off
         self._restart_previews()
+
+    def _on_toggle_previews(self) -> None:
+        if self.worker is not None:
+            return  # the session owns the cameras; previews must stay off
+        if self.agent_preview or self.wrist_preview:
+            self._stop_previews_async()
+            for role in ("agent", "wrist"):
+                self.live_views[role].clear_frame(tr("미리보기 중단됨"))
+        else:
+            self._restart_previews()
+
+    def _update_preview_btn(self) -> None:
+        if not hasattr(self, "preview_btn"):
+            return
+        on = bool(self.agent_preview or self.wrist_preview)
+        for btn in (self.preview_btn,
+                    getattr(self, "layout_preview_btn", None)):
+            if btn is not None:
+                btn.setText(tr("미리보기 중단") if on else tr("미리보기 시작"))
+                btn.setEnabled(self.worker is None)
 
     def _restart_previews(self) -> None:
         self._stop_previews_async()
@@ -2154,6 +2686,7 @@ class WorkspaceWindow(QMainWindow):
             self.right_fields[f"cam_{role}"].setText(serial)
         self.lights["camera"].set("ok" if (self.agent_preview or self.wrist_preview) else "off",
                                   tr("미리보기") if (self.agent_preview or self.wrist_preview) else "-")
+        self._update_preview_btn()
 
     def _alert(self, title: str, text: str, icon=None) -> None:
         """Non-modal notice.
@@ -2231,6 +2764,13 @@ class WorkspaceWindow(QMainWindow):
             self._release_preview(role)
         self.lights["camera"].set("busy" if self._previews_busy() else "off",
                                   tr("정리 중") if self._previews_busy() else "-")
+        self._update_preview_btn()
+        # 멈춘 카메라의 마지막 프레임을 "현재"로 계속 겹쳐 보이지 않게 한다.
+        if self._last_cam_frame:
+            self._last_cam_frame.clear()
+            if self.center_tabs.currentIndex() == self._layout_tab_index:
+                for role in ("agent", "wrist"):
+                    self._layout_update_role(role)
 
     def _stop_previews_blocking(self, timeout_ms: int = 4000) -> None:
         """Only for shutdown: wait so the cameras are released before exit.
@@ -2246,6 +2786,9 @@ class WorkspaceWindow(QMainWindow):
 
     def _on_preview_frame(self, role: str, frame) -> None:
         self.live_views[role].set_frame(frame)
+        self._last_cam_frame[role] = frame
+        if self.center_tabs.currentIndex() == self._layout_tab_index:
+            self._layout_update_role(role)
         self._fps_count += 1
 
     def _on_preview_error(self, role: str, msg: str) -> None:
@@ -2268,6 +2811,21 @@ class WorkspaceWindow(QMainWindow):
             # Never reaches a writer, but WorkerConfig requires the fields and
             # a blank task_name would show up as an empty label everywhere.
             task = task or "practice"
+        # 이어쓰기 여부는 이어찍기 드롭다운에서 유도한다. 예전의 "기존 파일에
+        # 이어서 수집" 체크박스(기본 True)는 새로 시작인데 Task 이름이 기존
+        # 파일과 겹치면 다른 설정으로 조용히 이어붙였다 -- 드롭다운이 막으려던
+        # 바로 그 사고라서, 그 경우는 여기서 차단한다.
+        resume = self.resume_combo.currentData() is not None
+        if not no_dataset and not resume:
+            target = (Path(self.root_edit.text().strip())
+                      / f"{task.replace(' ', '_')}_demo.hdf5")
+            if target.exists():
+                QMessageBox.warning(self, tr("파일이 이미 있음"), tr(
+                    "{f} 이(가) 이미 있습니다.\n"
+                    "이어 찍으려면 태스크의 '기존 task 이어찍기'에서 이 파일을 "
+                    "고르고, 새 데이터셋이면 Task 이름을 바꾸세요.").format(
+                        f=target.name))
+                return
         agent, wrist = self._combo_serial(self.agent_combo), self._combo_serial(self.wrist_combo)
         if not agent or not wrist:
             QMessageBox.warning(self, tr("카메라 선택 필요"),
@@ -2321,11 +2879,14 @@ class WorkspaceWindow(QMainWindow):
             reset_wait_seconds=reset_wait,
             enable_wall=self.wall_check.isChecked(),
             auto_match_pose=self.match_check.isChecked(),
-            resume=self.resume_check.isChecked(),
+            resume=resume,
             no_dataset=no_dataset,
             agent_camera_serial=agent,
             wrist_camera_serial=wrist,
             schema=self.schema,
+            # 스냅샷(깊은 복사): 세션 중 슬라이더가 잠기긴 하지만, 기록될 값이
+            # GUI 상태와 얽혀 있지 않아야 한다.
+            crop_params={r: dict(v) for r, v in self._crop_params.items()},
         )
         for key, value in (("task", task), ("language", lang),
                            ("data_root", cfg.data_root),
@@ -2395,10 +2956,16 @@ class WorkspaceWindow(QMainWindow):
         self.no_dataset_check.setEnabled(not running)
         self.task_box.setEnabled(not running and not self.no_dataset_check.isChecked())
         for w in (self.lang_edit, self.root_edit, self.agent_combo,
-                  self.wrist_combo, self.reset_pose_combo, self.grip_combo,
-                  self.eplen_edit, self.resetwait_edit, self.resume_check,
+                  self.wrist_combo, self.layout_agent_combo,
+                  self.layout_wrist_combo, self.reset_pose_combo,
+                  self.grip_combo, self.eplen_edit, self.resetwait_edit,
                   self.wall_check, self.match_check):
             w.setEnabled(not running)
+        # 크롭 정렬은 에피소드 attrs 에 Connect 시점 스냅샷으로 찍히므로,
+        # 세션 중에 움직이면 가이드와 기록이 어긋난다. 잠근다.
+        for w in self._crop_widgets:
+            w.setEnabled(not running)
+        self._update_preview_btn()
         self.lights["robot"].set("ok" if running else "off",
                                  tr("연결됨") if running else tr("끊김"))
         self.right_fields["robot"].setText(tr("연결됨") if running else tr("끊김"))
@@ -2424,10 +2991,14 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(object, object)
     def _on_frames(self, agent_rgb, wrist_rgb) -> None:
-        if agent_rgb is not None:
-            self.live_views["agent"].set_frame(agent_rgb)
-        if wrist_rgb is not None:
-            self.live_views["wrist"].set_frame(wrist_rgb)
+        layout_on = self.center_tabs.currentIndex() == self._layout_tab_index
+        for role, rgb in (("agent", agent_rgb), ("wrist", wrist_rgb)):
+            if rgb is None:
+                continue
+            self.live_views[role].set_frame(rgb)
+            self._last_cam_frame[role] = rgb
+            if layout_on:
+                self._layout_update_role(role)
         self._fps_count += 1
 
     @pyqtSlot(object, object, bool)

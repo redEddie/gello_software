@@ -123,7 +123,11 @@ from lerobot.datasets.utils import DatasetInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.dataset_schema import ACTION_SPACE_EE_DELTA  # noqa: E402
-from gello.libero_format import action_column_names  # noqa: E402
+from gello.libero_format import (  # noqa: E402
+    EYE_IN_HAND_CROP_X_SHIFT,
+    action_column_names,
+    resize_rgb,
+)
 
 # 학습 파이프라인이 DINOv3 를 쓰고 그 입력이 224x224 다. .hdf5 쪽 기본값
 # (원본 640x480)과 일부러 다르다 -- 원본은 보관, 이쪽은 실사용 크기.
@@ -356,19 +360,19 @@ def _check_image_shape(path: Path, name: str, obs: h5py.Group, key: str,
             f"줄이려 합니다. 원본보다 크게 만들 수 없습니다.")
 
 
-def _to_target(img: np.ndarray, target: int) -> np.ndarray:
-    """Center-crops to square then resizes to `target` -- the same operation
-    the collector applies, so a 480x480 .hdf5 and a 256x256 one converted from
-    it differ only in how much detail survived, not in framing."""
-    if img.shape[0] == target and img.shape[1] == target:
-        return img
-    import cv2
+def _to_target(img: np.ndarray, target: int, zoom: float = 1.0,
+               x_shift: int = 0, y_shift: int = 0) -> np.ndarray:
+    """Square-crops then resizes to `target` -- the same operation the
+    collector applies (libero_format.square_crop 규약), so a 480x480 .hdf5 and
+    a 256x256 one converted from it differ only in how much detail survived,
+    not in framing.
 
-    h, w = img.shape[:2]
-    side = min(h, w)
-    y0, x0 = (h - side) // 2, (w - side) // 2
-    return cv2.resize(img[y0:y0 + side, x0:x0 + side], (target, target),
-                      interpolation=cv2.INTER_AREA)
+    Crop parameters come from each episode's ``crop_params`` attrs. An
+    already-target-square source passes through untouched."""
+    if img.shape[0] == target and img.shape[1] == target and zoom <= 1.0:
+        return img
+    return resize_rgb(img, size=target, zoom=zoom, x_shift=x_shift,
+                      y_shift=y_shift)
 
 
 def _scan_schema(hdf5_paths: list, only_success: bool) -> dict:
@@ -713,6 +717,20 @@ def main() -> None:
                     _check_image_shape(path, name, obs, "agentview_rgb", image_size)
                 if has_wrist:
                     _check_image_shape(path, name, obs, "eye_in_hand_rgb", image_size)
+                # 이 에피소드가 수집될 때의 크롭 정렬. 조작자가 GUI 에서 맞춘
+                # 프레이밍을 그대로 재현한다. 없는 옛 파일은 기본값 (wrist 는
+                # 측정된 D405 좌측 이미저 오프셋).
+                try:
+                    cp = json.loads(grp.attrs["crop_params"])
+                except (KeyError, ValueError, TypeError):
+                    cp = {}
+                ap = cp.get("agent", {}) if isinstance(cp, dict) else {}
+                wp = cp.get("wrist", {}) if isinstance(cp, dict) else {}
+                agent_crop = dict(zoom=ap.get("zoom", 1.0),
+                                  x_shift=ap.get("x", 0), y_shift=ap.get("y", 0))
+                wrist_crop = dict(zoom=wp.get("zoom", 1.0),
+                                  x_shift=wp.get("x", EYE_IN_HAND_CROP_X_SHIFT),
+                                  y_shift=wp.get("y", 0))
                 state_arrays = [obs[part][:] for part in state_parts]
                 cmd_arrays = [obs[part][:] for part in cmd_parts]
                 agent_rgb = obs["agentview_rgb"][:] if has_agent else None
@@ -733,9 +751,11 @@ def main() -> None:
                     if actions_ee is not None:
                         frame["action_ee"] = actions_ee[t].astype("float32")
                     if has_agent:
-                        frame["observation.images.agent"] = _to_target(agent_rgb[t], image_size)
+                        frame["observation.images.agent"] = _to_target(
+                            agent_rgb[t], image_size, **agent_crop)
                     if has_wrist:
-                        frame["observation.images.wrist"] = _to_target(wrist_rgb[t], image_size)
+                        frame["observation.images.wrist"] = _to_target(
+                            wrist_rgb[t], image_size, **wrist_crop)
                     ds.add_frame(frame)
                 ds.save_episode()
                 n_episodes += 1
