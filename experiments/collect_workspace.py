@@ -124,7 +124,7 @@ from gello.gui_widgets import (  # noqa: E402
     hf_account,
     is_progress_line,
 )
-from gello.i18n import get_language, set_language, tr  # noqa: E402
+from gello.i18n import tr  # noqa: E402
 from gello.libero_format import (  # noqa: E402
     describe_episode,
     hdf5_repack_status,
@@ -653,6 +653,21 @@ class WorkspaceWindow(QMainWindow):
         task = QGroupBox(tr("태스크"))
         self.task_box = task
         form = QFormLayout(task)
+        # 이어찍기 드롭다운이 세 입력란보다 위에 온다. 고르면 아래 셋이 잠기고,
+        # 그 파일의 세션 설정이 복원된다 -- 같은 파일에 다른 설정으로 이어
+        # 기록하는 사고를 막는 게 목적이고, 그 안전장치는 마법사 GUI 를
+        # 교체할 때(62cad92) 조용히 빠져 있었다.
+        self.resume_combo = QComboBox()
+        self.resume_combo.setToolTip(tr(
+            "이미 찍은 파일에 이어서 기록합니다. 고르면 Task 이름·Language·"
+            "저장 경로가 그 파일 값으로 고정됩니다."))
+        self.resume_combo.currentIndexChanged.connect(self._on_resume_selected)
+        form.addRow(tr("기존 task 이어찍기"), self.resume_combo)
+        self.resume_hint = QLabel("")
+        self.resume_hint.setStyleSheet("color:#888;")
+        self.resume_hint.setWordWrap(True)
+        form.addRow("", self.resume_hint)
+
         self.task_edit = QLineEdit()
         self.task_edit.setPlaceholderText(tr("예) pick_up_the_blue_cup_and_place_it_on_the_blue_bowl"))
         self.task_edit.setText(self._recents.most_recent("task", ""))
@@ -1544,10 +1559,18 @@ class WorkspaceWindow(QMainWindow):
         w = QWidget()
         col = QVBoxLayout(w)
         col.setContentsMargins(0, 0, 0, 0)
-        lang = QPushButton(tr("언어 전환 (한국어 / English)"))
-        lang.clicked.connect(self._toggle_language)
-        col.addWidget(lang)
-        schema = QPushButton(tr("데이터셋 스키마..."))
+        # 언어 전환은 반쪽만 동작한다. tr() 은 위젯을 만들 때 한 번 호출되고
+        # 그 문자열이 박히므로, 전역 언어를 바꿔도 이미 만들어진 창은 그대로다
+        # -- 전환 뒤 새로 여는 다이얼로그만 바뀌어서 한국어와 영어가 섞인다.
+        # 제대로 하려면 모든 위젯에 retranslate 경로가 필요하다. 그때까지는
+        # 반쯤 되는 채로 두는 것보다 미개발로 못 박아두는 쪽이 낫다.
+        lang = QPushButton(f'{tr("언어 전환 (한국어 / English)")} ({TODO_MARK})')
+        col.addWidget(mark_todo(lang, tr(
+            "전역 언어는 바뀌지만 이미 열린 창은 다시 그려지지 않아 "
+            "한국어와 영어가 섞입니다. 전체 retranslate 경로가 필요합니다.")))
+        schema = QPushButton(tr("데이터셋 구조 보기 / Observation 필드..."))
+        schema.setToolTip(tr("Action 구조는 고정입니다. Observation 필드만 고를 수 "
+                             "있고, '구조 미리보기'로 전체를 확인합니다."))
         schema.clicked.connect(self._on_schema)
         col.addWidget(schema)
         self.schema_label = QLabel("")
@@ -1789,8 +1812,8 @@ class WorkspaceWindow(QMainWindow):
         m.addAction(tr("카메라 점검 (USB 속도·프레임)"), self._on_check_cameras)
         m.addAction(tr("Hugging Face 계정..."), self._on_hf_accounts)
         m.addSeparator()
-        m.addAction(tr("데이터셋 스키마..."), self._on_schema)
-        m.addAction(tr("언어 전환"), self._toggle_language)
+        m.addAction(tr("데이터셋 구조 보기..."), self._on_schema)
+        m.addAction(f'{tr("언어 전환")} ({TODO_MARK})').setEnabled(False)
 
         m = mb.addMenu(tr("Help"))
         m.addAction(tr("단축키..."), lambda: QMessageBox.information(
@@ -1945,13 +1968,110 @@ class WorkspaceWindow(QMainWindow):
             self.root_edit.setText(d)
             self._refresh_dataset_tree()
 
-    def _toggle_language(self) -> None:
-        set_language("en" if get_language() == "ko" else "ko")
-        self.log(f"[설정] 언어: {get_language()} (일부 문구는 재시작 후 반영)")
+    # ------------------------------------------------- 기존 task 이어찍기
+    def _refresh_resume_combo(self) -> None:
+        """Rebuilds the resume list from what is actually on disk right now.
+
+        Rebuilt rather than cached: the operator deletes episodes and whole
+        files from the Dataset panel while this dropdown is on screen, and a
+        stale entry here would let them resume a file that no longer exists.
+        """
+        if not hasattr(self, "resume_combo"):
+            return
+        cur = self.resume_combo.currentData()
+        self.resume_combo.blockSignals(True)
+        self.resume_combo.clear()
+        self.resume_combo.addItem(tr("(새로 시작)"), None)
+        root = Path(self.root_edit.text().strip()).expanduser()
+        if root.is_dir():
+            for path in sorted(root.glob("*_demo.hdf5")):
+                try:
+                    with h5py.File(path, "r") as f:
+                        n = len(f["data"].keys())
+                except OSError:
+                    continue
+                self.resume_combo.addItem(
+                    tr("{name}  ({n}개)").format(name=path.stem[:-5], n=n), str(path))
+        idx = self.resume_combo.findData(cur)
+        self.resume_combo.setCurrentIndex(max(0, idx))
+        self.resume_combo.blockSignals(False)
+
+    def _on_resume_selected(self) -> None:
+        """Locks the three task fields to the chosen file and restores its
+        session settings.
+
+        The fields are disabled rather than merely pre-filled: they name the
+        file being written to, so editing them while resuming would either
+        silently start a different file or write this one under a name the
+        operator no longer sees.
+        """
+        path = self.resume_combo.currentData()
+        editable = path is None
+        for wdg in (self.task_edit, self.lang_edit, self.root_edit):
+            wdg.setEnabled(editable)
+        if editable:
+            self.resume_hint.setText("")
+            return
+        p = Path(path)
+        self.task_edit.setText(p.stem[:-5])
+        lang, restored = "", []
+        try:
+            with h5py.File(p, "r") as f:
+                data = f["data"]
+                info = data.attrs.get("problem_info")
+                if info:
+                    lang = json.loads(json.loads(info)["language_instruction"])
+                cfg = data.attrs.get("session_config")
+                if cfg:
+                    restored = self._apply_session_config(json.loads(cfg))
+        except (OSError, ValueError, KeyError) as e:
+            self.resume_hint.setText(tr("설정을 읽지 못했습니다: {e}").format(e=e))
+            return
+        self.lang_edit.setText(lang)
+        self.root_edit.setText(str(p.parent))
+        self.resume_hint.setText(
+            tr("{f} 에 이어 기록합니다. 복원됨: {r}").format(
+                f=p.name, r=", ".join(restored) if restored else tr("없음"))
+            + tr("   (구조는 고정이라 이 파일이 다른 구조면 섞입니다 — issue #12)"))
+
+    def _apply_session_config(self, cfg: dict) -> list:
+        """Puts a file's recorded session_config back into the widgets that
+        produced it (see libero_gui_worker.py's record_session_config).
+
+        Returns the labels of what was actually restored, so the hint can say
+        what changed rather than claim more than it did -- older files were
+        written before some of these keys existed.
+        """
+        done = []
+        for key, combo, label in (("reset_pose", self.reset_pose_combo, tr("Reset pose")),
+                                  ("grip", self.grip_combo, tr("Grip"))):
+            val = cfg.get(key)
+            if val is None:
+                continue
+            i = combo.findText(str(val))
+            if i >= 0:
+                combo.setCurrentIndex(i)
+                done.append(label)
+        for key, edit, label in (("max_episode_seconds", self.eplen_edit, tr("에피소드 길이")),
+                                 ("reset_wait_seconds", self.resetwait_edit, tr("리셋 대기"))):
+            val = cfg.get(key)
+            if val is not None:
+                edit.setText(str(int(val)))
+                done.append(label)
+        if cfg.get("enable_wall") is not None:
+            self.wall_check.setChecked(bool(cfg["enable_wall"]))
+            done.append(tr("관절 한계 벽"))
+        return done
 
     def _refresh_schema_label(self) -> None:
+        n = sum(1 for k in ("save_agentview_rgb", "save_eye_in_hand_rgb",
+                            "save_joint_states", "save_gripper_states",
+                            "save_ee_states", "save_ee_pos", "save_ee_ori",
+                            "save_joint_velocities", "save_timestamp")
+                if getattr(self.schema, k, False))
         self.schema_label.setText(
-            tr("action space: {a}").format(a=getattr(self.schema, "action_space", "?")))
+            tr("action: {a} (고정) · observation 필드 {n}개 선택됨").format(
+                a=getattr(self.schema, "action_space", "?"), n=n))
 
     def _on_schema(self) -> None:
         dlg = DatasetSchemaDialog(self, self.schema)
@@ -2702,6 +2822,7 @@ class WorkspaceWindow(QMainWindow):
         # 접은 채로 시작한다. 200줄 넘는 에피소드를 한 번에 펼쳐두면 정작 훑고
         # 싶은 task 목록이 화면 밖으로 밀린다. 필요한 파일만 열면 된다.
         self.dataset_tree.collapseAll()
+        self._refresh_resume_combo()
         self._update_dataset_panel(self._selected_file())
 
     def _selected_file(self) -> Path | None:

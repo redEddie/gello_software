@@ -45,23 +45,28 @@ class DatasetSchemaConfig:
     still carries the key is simply ignored by :meth:`from_json`.
     """
 
-    action_space: str = ACTION_SPACE_EE_DELTA
+    # ---- 아래 다섯은 GUI 에서 고를 수 없는 고정값이다 ----
+    # 액션 구조가 파일마다 갈리면 한 데이터셋 안에 조용히 호환되지 않는 파일이
+    # 섞이고, 그걸 잡아주는 장치가 지금 없다(issue #12). 관측 필드는 더하거나
+    # 빼도 파일끼리 호환되므로 계속 고를 수 있게 둔다.
+    action_space: str = ACTION_SPACE_JOINT_ABSOLUTE
     # LIBERO's original actions always end with a gripper component (see
     # libero_format.py's compute_delta_action) -- True keeps that. Off drops
     # the trailing gripper dimension from `actions` for every action space
     # (e.g. a policy that controls the gripper separately from arm motion).
-    action_include_gripper: bool = True
-    # Off (default): action's gripper is -1=open/+1=close, robosuite's Panda
-    # sign convention (this module's original design, kept for LIBERO-format
-    # consumer compatibility). On: action's gripper uses the SAME 0=open/
-    # 1=closed encoding as observation's gripper_states -- so obs and action
-    # match not just in shape (action_space=joint_absolute/joint_delta) but
-    # in the gripper VALUE convention too.
-    gripper_action_match_obs: bool = False
+    action_include_gripper: bool = True   # 고정
+    # 고정 On: action 의 그리퍼를 observation 의 gripper_states 와 같은
+    # 0=open/1=close 로 쓴다. robosuite 의 -1/+1 대신 이걸 쓰는 이유는 열 이름과
+    # 마찬가지로 Hugging Face 뷰어에서 obs 와 action 을 짝지어 보기 위해서다.
+    #
+    # 다만 "같은 인코딩"이지 "같은 신호"는 아니다. action 은 리더 트리거를
+    # 이진화한 값이라 0 또는 1 뿐이고, observation 은 실제 핑거 폭이라 명령 후
+    # ~0.3초 뒤부터 8~10Hz 로 0..1 사이를 연속으로 지난다(gello/gripper_synth.py).
+    # 그 간격이 정책이 학습해야 할 그리퍼 지연이다.
+    gripper_action_match_obs: bool = True
 
-    # 256 matches LIBERO/OpenVLA's convention (center-cropped square + resized
-    # -- see libero_format.py's resize_rgb). None keeps the raw camera frame
-    # as-is (e.g. RealSense's native 480x640, not center-cropped to square).
+    # 고정 256: LIBERO/OpenVLA 규약(정사각 크롭 후 리사이즈, libero_format.py 의
+    # resize_rgb). 바꾸면 그 규약으로 사전학습된 모델과 어긋난다.
     image_size: int | None = 256
 
     save_agentview_rgb: bool = True
@@ -78,23 +83,25 @@ class DatasetSchemaConfig:
     save_joint_velocities: bool = False
     save_timestamp: bool = False
 
-    # Per-dimension action column name overrides, keyed by the BUILT-IN
-    # default name (see libero_format._ACTION_COLUMNS / "gripper.pos") so
-    # switching action_space doesn't carry stale overrides from a different
-    # space's columns. Empty (default) means "use the built-in names" --
-    # only affects the human-readable names shown in the schema preview and
-    # the LeRobotDataset feature names built from them (see
-    # libero_format.resolved_action_column_names); the underlying array data
-    # and column ORDER are unaffected.
+    # 고정 빈 dict = 내장 이름(joint1.pos .. joint7.pos, gripper.pos) 사용.
+    # 내장 이름이 곧 observation 의 열 이름이라, Hugging Face 뷰어가 obs 와
+    # action 을 같은 축에 짝지어 그려준다. 필드는 남겨두지만 GUI 에서는 고를 수
+    # 없다 -- 이름을 바꿔서 얻을 것보다 짝이 깨져서 잃을 것이 크다.
     action_column_name_overrides: dict[str, str] = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, ensure_ascii=False)
 
+    # GUI 에서 고를 수 없는 필드들. 저장된 JSON 에 옛 값이 남아 있어도 무시한다
+    # -- 다이얼로그에서 뺐다는 이유만으로 고정이 되지는 않는다. 이 목록이 실제
+    # 강제 지점이고, 다이얼로그는 그 결과를 보여줄 뿐이다.
+    _FIXED = ("action_space", "action_include_gripper", "gripper_action_match_obs",
+              "image_size", "action_column_name_overrides")
+
     @classmethod
     def from_json(cls, s: str) -> "DatasetSchemaConfig":
         data = json.loads(s)
-        valid = {f.name for f in fields(cls)}
+        valid = {f.name for f in fields(cls)} - set(cls._FIXED)
         return cls(**{k: v for k, v in data.items() if k in valid})
 
 

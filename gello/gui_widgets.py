@@ -647,79 +647,33 @@ class DatasetSchemaDialog(QDialog):
         ("save_joint_velocities", "Joint velocities (관절 속도) -- 제어루프에서 이미 계산됨, 추가 비용 없음"),
         ("save_timestamp", "Timestamp (프레임별 wall-clock 시각) -- 프레임 간격 검증용"),
     ]
-    # QComboBox itemData round-trips ints reliably but not Python None, so
-    # "원본 해상도" is stored as this sentinel and translated to/from
-    # DatasetSchemaConfig.image_size=None at the edges (_current_config/init).
-    _IMAGE_SIZE_NATIVE = -1
-
     def __init__(self, parent: QWidget, cfg: DatasetSchemaConfig) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("데이터셋 구조 사용자 지정"))
         layout = QVBoxLayout(self)
 
-        action_row = QHBoxLayout()
-        action_row.addWidget(QLabel(tr("Action Space:")))
-        self.action_combo = QComboBox()
-        for key in ACTION_SPACES:
-            self.action_combo.addItem(tr(ACTION_SPACE_LABELS[key]), key)
-        idx = self.action_combo.findData(cfg.action_space)
-        if idx >= 0:
-            self.action_combo.setCurrentIndex(idx)
-        action_row.addWidget(self.action_combo, 1)
-        layout.addLayout(action_row)
+        # Action 쪽은 이 다이얼로그에서 고를 수 없다. 액션 공간·그리퍼 규약·열
+        # 이름이 파일마다 갈리면 한 데이터셋 안에서 조용히 호환되지 않는 파일이
+        # 생기고, 그걸 잡아주는 장치가 지금 없다(issue #12). 값 자체는
+        # DatasetSchemaConfig 의 FIXED_* 로 박혀 있고, 여기서는 무엇으로
+        # 고정돼 있는지만 보여준다.
+        fixed = QGroupBox(tr("Action 구조 (고정 -- 변경 불가)"))
+        fixed_layout = QVBoxLayout(fixed)
+        fixed_note = QLabel(tr(
+            "Action Space: joint_absolute (관절 절대각 7 + 그리퍼)\n"
+            "그리퍼: Observation 과 같은 0=open / 1=close\n"
+            "열 이름: joint1.pos .. joint7.pos, gripper.pos "
+            "— Observation 과 이름을 맞춰야 Hugging Face 뷰어에서 짝지어 보입니다\n"
+            "이미지: 256x256 정사각 크롭 (LIBERO/OpenVLA 규약)"))
+        fixed_note.setWordWrap(True)
+        fixed_note.setStyleSheet("color:#888;")
+        fixed_layout.addWidget(fixed_note)
+        layout.addWidget(fixed)
 
         self.field_checks: dict[str, QCheckBox] = {}
 
-        self.gripper_action_check = QCheckBox(
-            tr("Action에 그리퍼 값 포함 (끄면 위 Action Space 어떤 걸 골라도 그리퍼 차원이 빠집니다)")
-        )
-        self.gripper_action_check.setChecked(cfg.action_include_gripper)
-        self.field_checks["action_include_gripper"] = self.gripper_action_check
-        layout.addWidget(self.gripper_action_check)
-
-        self.gripper_match_obs_check = QCheckBox(
-            tr(
-                "Action 그리퍼 값을 Observation과 동일하게 0=open/1=close로 저장 "
-                "(기본은 -1/+1, robosuite 컨벤션)"
-            )
-        )
-        self.gripper_match_obs_check.setChecked(cfg.gripper_action_match_obs)
-        self.field_checks["gripper_action_match_obs"] = self.gripper_match_obs_check
-        # Enabled state depends on TWO things (기본값 사용 off AND 그리퍼 포함
-        # on) -- kept out of _editable_widgets (which only knows about the
-        # first) and driven by this instead, from both toggle signals.
-        self.gripper_action_check.toggled.connect(lambda _: self._update_gripper_match_obs_enabled())
-        layout.addWidget(self.gripper_match_obs_check)
-
-        # Per-column action name overrides, keyed by the built-in default
-        # name (e.g. "joint1.pos") -- survives switching Action Space back
-        # and forth within this dialog session via _pending_overrides, since
-        # the edit widgets themselves get rebuilt every time (the column set
-        # changes with the action space). Seeded from whatever was already
-        # saved (possibly for a different action_space than the one shown
-        # first) so a previous custom name isn't silently lost.
-        self._pending_overrides: dict[str, str] = dict(cfg.action_column_name_overrides)
-        self.name_override_edits: dict[str, QLineEdit] = {}
-        names_box = QGroupBox(tr("Action 열 이름 (선택 -- 비워두면 기본값)"))
-        self.names_layout = QVBoxLayout(names_box)
-        layout.addWidget(names_box)
-        self.action_combo.currentIndexChanged.connect(lambda _: self._rebuild_name_edits())
-        self.gripper_action_check.toggled.connect(lambda _: self._rebuild_name_edits())
-
         obs_box = QGroupBox(tr("저장할 Observation 필드"))
         obs_layout = QVBoxLayout(obs_box)
-
-        image_size_row = QHBoxLayout()
-        image_size_row.addWidget(QLabel(tr("이미지 해상도:")))
-        self.image_size_combo = QComboBox()
-        self.image_size_combo.addItem(tr("256x256 (LIBERO 기본, 정사각형 크롭)"), 256)
-        self.image_size_combo.addItem(tr("원본 해상도 유지 (리사이즈 안 함)"), self._IMAGE_SIZE_NATIVE)
-        target = cfg.image_size if cfg.image_size is not None else self._IMAGE_SIZE_NATIVE
-        idx = self.image_size_combo.findData(target)
-        if idx >= 0:
-            self.image_size_combo.setCurrentIndex(idx)
-        image_size_row.addWidget(self.image_size_combo, 1)
-        obs_layout.addLayout(image_size_row)
 
         for attr, label in self._OBS_FIELDS:
             cb = QCheckBox(tr(label))
@@ -737,15 +691,7 @@ class DatasetSchemaDialog(QDialog):
             extra_layout.addWidget(cb)
         layout.addWidget(extra_box)
 
-        self._editable_widgets = [
-            self.action_combo,
-            self.gripper_action_check,
-            names_box,
-            obs_box,
-            extra_box,
-        ]
-        self._rebuild_name_edits()
-        self._update_gripper_match_obs_enabled()
+        self._editable_widgets = [obs_box, extra_box]
 
         # Not in _editable_widgets on purpose -- always clickable, since
         # describe_schema() resolves
@@ -762,72 +708,16 @@ class DatasetSchemaDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _update_gripper_match_obs_enabled(self) -> None:
-        self.gripper_match_obs_check.setEnabled(self.gripper_action_check.isChecked())
-
-    def _rebuild_name_edits(self) -> None:
-        """Swaps the name-override row widgets for whatever column set the
-        currently-selected Action Space + gripper-include state implies.
-        Edits for the OLD column set are folded into _pending_overrides
-        first, so switching Action Space back and forth (or toggling
-        gripper-include) within this dialog session doesn't lose them --
-        only committing (OK) or discarding the whole dialog does.
-        """
-        for key, edit in self.name_override_edits.items():
-            text = edit.text().strip()
-            if text and text != key:
-                self._pending_overrides[key] = text
-            else:
-                self._pending_overrides.pop(key, None)
-
-        while self.names_layout.count():
-            item = self.names_layout.takeAt(0)
-            w = item.widget()
-            lay = item.layout()
-            if w is not None:
-                w.deleteLater()
-            elif lay is not None:
-                while lay.count():
-                    sub = lay.takeAt(0).widget()
-                    if sub is not None:
-                        sub.deleteLater()
-
-        self.name_override_edits = {}
-        cols = action_column_names(self.action_combo.currentData())
-        if self.gripper_action_check.isChecked():
-            cols = cols + ["gripper.pos"]
-        for default_name in cols:
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"{default_name}  ->"))
-            edit = QLineEdit(self._pending_overrides.get(default_name, ""))
-            edit.setPlaceholderText(default_name)
-            row.addWidget(edit)
-            self.names_layout.addLayout(row)
-            self.name_override_edits[default_name] = edit
-
     def _current_config(self) -> DatasetSchemaConfig:
         """The config implied by the dialog's current widget state --
         regardless of whether OK has been clicked yet. Shared by
         result_config() (on accept) and _show_preview() (live, before
         committing to anything).
         """
+        # Observation 쪽만 위젯에서 읽는다. Action 쪽은 dataclass 기본값이
+        # 곧 고정값이므로 아무것도 넘기지 않는 것이 그대로 고정을 뜻한다.
         kwargs = {attr: cb.isChecked() for attr, cb in self.field_checks.items()}
-        raw_size = self.image_size_combo.currentData()
-        kwargs["image_size"] = None if raw_size == self._IMAGE_SIZE_NATIVE else raw_size
-
-        overrides = dict(self._pending_overrides)
-        for key, edit in self.name_override_edits.items():
-            text = edit.text().strip()
-            if text and text != key:
-                overrides[key] = text
-            else:
-                overrides.pop(key, None)
-        kwargs["action_column_name_overrides"] = overrides
-
-        return DatasetSchemaConfig(
-            action_space=self.action_combo.currentData(),
-            **kwargs,
-        )
+        return DatasetSchemaConfig(**kwargs)
 
     def result_config(self) -> DatasetSchemaConfig:
         return self._current_config()
