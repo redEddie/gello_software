@@ -107,6 +107,7 @@ from gello.episode_stats import (  # noqa: E402
 from gello.episode_trim import plan_trim, suggest_trim, tail_speed, trim_tail  # noqa: E402
 from gello.plot_widgets import BarStrip, Histogram, SeriesPlot  # noqa: E402
 from gello.gui_widgets import (  # noqa: E402
+    repo_id_error,
     PLAYBACK_FPS,
     REPACK_SCRIPT,
     CameraPreviewWorker,
@@ -542,7 +543,7 @@ class WorkspaceWindow(QMainWindow):
             self.live_split.addWidget(box)
         self.live_split.setSizes([600, 600])
         live_col.addWidget(self.live_split, 1)
-        self.center_tabs.addTab(live, tr("Live"))
+        self._live_tab_index = self.center_tabs.addTab(live, tr("Live"))
 
         play = QWidget()
         play_col = QVBoxLayout(play)
@@ -893,6 +894,32 @@ class WorkspaceWindow(QMainWindow):
         acct_btn.clicked.connect(self._on_hf_accounts)
         col.addWidget(acct_btn)
 
+        # Repo ID 를 패널 밖으로 꺼내둔다. 다이얼로그 안에만 있을 때는 오타가
+        # Recents 에 저장돼도 아무데도 보이지 않고, 자동 버튼이 그걸 그대로 다시
+        # 쓴다 -- 실제로 'r/lerobot' 이 저장된 채 재압축 15.6분을 돌고 마지막
+        # 업로드에서 403 으로 죽었다. 여기 있으면 누르기 전에 눈에 띈다.
+        self.repo_edits = {}
+        form = QFormLayout()
+        form.setContentsMargins(0, 4, 0, 0)
+        for key, label, tip in (
+            ("repo_id", tr("LeRobot repo"),
+             tr("변환본이 올라갈 저장소. <조직 또는 사용자>/<이름>")),
+            ("hdf5_repo_id", tr("HDF5 repo"),
+             tr("원본 .hdf5 가 올라갈 저장소. 변환본과 별개입니다.")),
+        ):
+            e = QLineEdit(self._recents_valid_repo(key))
+            e.setPlaceholderText(tr("<조직 또는 사용자>/<이름>"))
+            e.setToolTip(tip)
+            e.textChanged.connect(self._on_repo_edited)
+            self.repo_edits[key] = e
+            form.addRow(QLabel(label), e)
+        col.addLayout(form)
+        self.repo_warn = QLabel("")
+        self.repo_warn.setStyleSheet("color:#e67e22;")
+        self.repo_warn.setWordWrap(True)
+        col.addWidget(self.repo_warn)
+        self._on_repo_edited()
+
         # 세 묶음으로 나눈다. 위에서 아래로 갈수록 범위가 좁아진다 --
         # 전부 / 원본(HDF5)만 / 변환본(LeRobot)만. 묶음마다 첫 줄이 "자동"이고
         # 그 아래가 같은 일을 쪼갠 수동 단계라, 어느 버튼이 어느 버튼을 포함하는지
@@ -962,6 +989,44 @@ class WorkspaceWindow(QMainWindow):
         col.addWidget(qbox)
         col.addStretch()
         return w
+
+    def _recents_valid_repo(self, key: str) -> str:
+        """Most recent stored id that actually parses -- a bad one is skipped.
+
+        Recents keeps whatever was last typed, so once a typo lands there it
+        becomes the default forever. Falling back to the newest *valid* entry
+        means a bad run does not poison the next one.
+        """
+        for v in self._recents.get(key):
+            if repo_id_error(v) is None:
+                return v
+        return ""
+
+    def repo_id_for(self, key: str) -> str:
+        return self.repo_edits[key].text().strip()
+
+    def _on_repo_edited(self) -> None:
+        msgs = []
+        for key, label in (("repo_id", "LeRobot"), ("hdf5_repo_id", "HDF5")):
+            e = self.repo_edits[key]
+            err = repo_id_error(e.text().strip())
+            # 비어 있는 것은 경고하지 않는다 -- 쓰지 않는 저장소일 수 있고,
+            # 실제로 필요할 때 각 버튼이 막는다.
+            if err and e.text().strip():
+                msgs.append(f"{label}: {err}")
+            e.setStyleSheet("" if not err else "border:1px solid #e67e22;")
+        self.repo_warn.setText("\n".join(msgs))
+
+    def _check_repo(self, key: str, what: str) -> "str | None":
+        """Returns the id, or None after telling the operator what is wrong."""
+        repo = self.repo_id_for(key)
+        err = repo_id_error(repo)
+        if err:
+            QMessageBox.warning(self, tr("Repo ID 오류"),
+                                tr("{w} 을(를) 시작할 수 없습니다.\n\n{e}").format(w=what, e=err))
+            return None
+        self._recents.add(key, repo)
+        return repo
 
     def _upload_button(self, layout, text: str, tip: str, slot,
                        primary: bool = False, color: str = "") -> QPushButton:
@@ -2314,6 +2379,10 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(int, str)
     def _on_connected(self, n_episodes, path) -> None:
+        # 연결되면 카메라 화면으로 따라간다. 버튼을 누른 시점이 아니라 여기인
+        # 이유는, 연결이 미리보기 정리를 기다리거나 실패할 수 있기 때문이다 --
+        # 그때 Live 로 옮겨두면 아무것도 안 나오는 탭을 보게 된다.
+        self.center_tabs.setCurrentIndex(self._live_tab_index)
         if self._no_dataset_session:
             # NullTaskWriter has no real path; claiming one here would make the
             # dataset tree think a file is locked by this session.
@@ -2630,7 +2699,9 @@ class WorkspaceWindow(QMainWindow):
                 child.setData(0, Qt.ItemDataRole.UserRole, ep["name"])
                 item.addChild(child)
             item.setText(1, tr("{n}개").format(n=len(episodes)))
-        self.dataset_tree.expandAll()
+        # 접은 채로 시작한다. 200줄 넘는 에피소드를 한 번에 펼쳐두면 정작 훑고
+        # 싶은 task 목록이 화면 밖으로 밀린다. 필요한 파일만 열면 된다.
+        self.dataset_tree.collapseAll()
         self._update_dataset_panel(self._selected_file())
 
     def _selected_file(self) -> Path | None:
@@ -2778,6 +2849,8 @@ class WorkspaceWindow(QMainWindow):
                 child = parent.child(j)
                 if (path, child.data(0, Qt.ItemDataRole.UserRole)) in flagged:
                     child.setSelected(True)
+                    # 접혀 있으면 "N개 선택됨"만 뜨고 무엇이 골렸는지 안 보인다.
+                    parent.setExpanded(True)
                     n += 1
         self.log(f"[큐레이션] 같은 task 평균과 {TASK_DEV_LIMIT} 넘게 차이 나는 "
                  f"에피소드 {n}개를 선택했습니다." + ("" if n else " (없음)"))
@@ -2803,6 +2876,7 @@ class WorkspaceWindow(QMainWindow):
                 child = parent.child(j)
                 if child.text(2) == tr("실패"):
                     child.setSelected(True)
+                    parent.setExpanded(True)
                     n += 1
         self.log(f"[큐레이션] 실패로 표시된 에피소드 {n}개를 선택했습니다."
                  + ("" if n else " (없음)"))
@@ -3068,11 +3142,8 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("파일 없음"),
                                 tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=data_root))
             return
-        repo = self._recents.most_recent("hdf5_repo_id", "")
-        if not repo:
-            QMessageBox.warning(self, tr("Repo ID 필요"),
-                                tr("HDF5 Repo ID가 없습니다. 'HDF5 원본 업로드...'에서 "
-                                   "한 번 지정한 뒤 다시 시도하세요."))
+        repo = self._check_repo("hdf5_repo_id", tr("HDF5 재압축 + 업로드"))
+        if repo is None:
             return
         todo = [x for x in paths if not hdf5_repack_status(x)["repacked"]]
         if QMessageBox.question(
@@ -3109,13 +3180,10 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("파일 없음"),
                                 tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=data_root))
             return
-        repo = self._recents.most_recent("repo_id", "")
-        root = self._recents.most_recent("lerobot_root", str(Path.home() / "lerobot_upload"))
-        if not repo:
-            QMessageBox.warning(self, tr("Repo ID 필요"),
-                                tr("LeRobot Repo ID가 없습니다. 'HDF5 골라서 변환만...'에서 "
-                                   "한 번 지정한 뒤 다시 시도하세요."))
+        repo = self._check_repo("repo_id", tr("LeRobot 변환 + 업로드"))
+        if repo is None:
             return
+        root = self._recents.most_recent("lerobot_root", str(Path.home() / "lerobot_upload"))
         if QMessageBox.question(
                 self, tr("LeRobot 변환 + 업로드"),
                 tr("task {n}개를 처음부터 다시 변환하고, {r} 을(를) 통째로 "
@@ -3157,11 +3225,10 @@ class WorkspaceWindow(QMainWindow):
         """재변환 없이, 이미 만들어둔 로컬 결과로 Hub을 교체."""
         if not self._pipeline_guard(tr("LeRobot 재업로드")):
             return
-        repo = self._recents.most_recent("repo_id", "")
-        root = self._recents.most_recent("lerobot_root", str(Path.home() / "lerobot_upload"))
-        if not repo:
-            QMessageBox.warning(self, tr("Repo ID 필요"), tr("LeRobot Repo ID가 없습니다."))
+        repo = self._check_repo("repo_id", tr("전체 task 다시 업로드"))
+        if repo is None:
             return
+        root = self._recents.most_recent("lerobot_root", str(Path.home() / "lerobot_upload"))
         info = Path(root) / "meta" / "info.json"
         if not info.exists():
             QMessageBox.warning(
@@ -3216,7 +3283,9 @@ class WorkspaceWindow(QMainWindow):
                                     tr("전체 처리가 이미 진행 중입니다. 로그를 확인하세요."))
             return
         data_root = self.root_edit.text().strip()
-        repo = self._recents.most_recent("repo_id", "")
+        repo = self._check_repo("repo_id", tr("전체 처리"))
+        if repo is None:
+            return
         self.log("[전체 처리] Hub 상태를 확인하는 중...", "upload")
         self.bottom_tabs.setCurrentWidget(self.upload_view)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -3229,12 +3298,25 @@ class WorkspaceWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
         dlg = PipelineDialog(self, data_root, plan, repo,
-                             self._recents.most_recent("hdf5_repo_id", ""),
+                             self.repo_id_for("hdf5_repo_id"),
                              self._recents.most_recent(
                                  "lerobot_root", str(Path.home() / "lerobot_upload")))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             self.log("[전체 처리] 취소했습니다.", "upload")
             return
+        # 다이얼로그 안에서 바꾼 값도 검사한다. HDF5 업로드는 파이프라인의 마지막
+        # 단계라, 여기서 막지 않으면 앞 단계를 다 돌고 나서야 403 으로 죽는다.
+        for edit, key, what in ((dlg.lerobot_repo_edit, "repo_id", "LeRobot"),
+                                (dlg.hdf5_repo_edit, "hdf5_repo_id", "HDF5")):
+            if key == "hdf5_repo_id" and not dlg.hdf5_check.isChecked():
+                continue
+            err = repo_id_error(edit.text().strip())
+            if err:
+                QMessageBox.warning(self, tr("Repo ID 오류"),
+                                    tr("{w} Repo ID: {e}").format(w=what, e=err))
+                self.log(f"[전체 처리] 중단 — {what} Repo ID: {err}", "upload")
+                return
+            self.repo_edits[key].setText(edit.text().strip())
         steps = dlg.steps()
         if not steps:
             self.log("[전체 처리] 할 일이 없습니다.", "upload")

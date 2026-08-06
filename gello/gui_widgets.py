@@ -150,6 +150,33 @@ class Recents:
             pass  # history is a convenience, never a hard failure
 
 
+_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def repo_id_error(repo_id: str) -> "str | None":
+    """Why `repo_id` is not a usable Hub id, or None if it is.
+
+    Checked before anything is stored or run because the failure it prevents is
+    slow and confusing: an id with a bad namespace passes every local step and
+    dies at the very end with `403 ... rights to create a dataset under the
+    namespace "r"`, after (in one real run) 15.6 minutes of repacking. And a
+    typo that reaches Recents becomes the default for the automatic buttons,
+    so the same failure repeats without anyone retyping it.
+    """
+    if not repo_id:
+        return "Repo ID를 입력하세요."
+    if "/" not in repo_id:
+        return f"'{repo_id}' 에 네임스페이스가 없습니다. <조직 또는 사용자>/<이름> 형식이어야 합니다."
+    if repo_id.count("/") > 1:
+        return f"'{repo_id}' 에 '/' 가 너무 많습니다. <네임스페이스>/<이름> 하나뿐이어야 합니다."
+    if not _REPO_ID_RE.match(repo_id):
+        return f"'{repo_id}' 는 사용할 수 없는 형식입니다 (영문/숫자로 시작, 나머지는 영문·숫자·. _ - )."
+    ns = repo_id.split("/")[0]
+    if len(ns) < 2:
+        return f"네임스페이스 '{ns}' 가 너무 짧습니다 — 오타로 보입니다."
+    return None
+
+
 def hf_account() -> tuple[str, str]:
     """(display text, css color) describing who a --push would upload as.
 
@@ -1007,8 +1034,9 @@ class LerobotConvertDialog(QDialog):
             QMessageBox.warning(self, tr("파일 필요"), tr(".hdf5 파일을 하나 이상 선택하세요."))
             return None
         repo_id = self.repo_id_edit.currentText().strip()
-        if not repo_id:
-            QMessageBox.warning(self, tr("Repo ID 필요"), tr("Repo ID를 입력하세요."))
+        err = repo_id_error(repo_id)
+        if err:
+            QMessageBox.warning(self, tr("Repo ID 오류"), tr(err))
             return None
         out_root = self.out_root_edit.currentText().strip()
         if not out_root:
@@ -1201,8 +1229,9 @@ class HdfUploadDialog(QDialog):
             QMessageBox.warning(self, tr("파일 필요"), tr(".hdf5 파일을 하나 이상 선택하세요."))
             return None
         repo_id = self.repo_id_edit.currentText().strip()
-        if not repo_id:
-            QMessageBox.warning(self, tr("Repo ID 필요"), tr("Repo ID를 입력하세요."))
+        err = repo_id_error(repo_id)
+        if err:
+            QMessageBox.warning(self, tr("Repo ID 오류"), tr(err))
             return None
         self._recents.add("hdf5_repo_id", repo_id)
         args = [*files, "--repo-id", repo_id]
