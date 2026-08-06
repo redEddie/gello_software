@@ -49,8 +49,12 @@ cross-coupling between joints (a real chain's gravity load on joint i also
 depends on joints i+1..n's angles; this doesn't), but needs only two
 hand-tunable numbers per joint instead of a full dynamics model, and is
 tunable live on the real leader by feel ("does it float here?") via
-``set_gravity_comp`` -- see ``scripts/tune_gravity_comp.py``. Both arrays
-default to all-zero (every joint's compensation is simply off) until tuned.
+``set_gravity_comp``. Both arrays default to all-zero -- every joint's
+compensation is simply off, and it has stayed off: the one real-hardware
+tuning pass did not behave right, and the suspect is this per-joint
+single-pendulum approximation itself rather than the numbers fed to it
+(GitHub issue #3). Reviving this needs a leader URDF or bigger servos, not
+another tuning session.
 Unlike the limit spring and match assist, gravity comp is meant to be on
 essentially continuously while a human might be holding the leader, so a
 non-zero ``gravity_gains`` force-arms the arm servos unconditionally (like
@@ -334,9 +338,8 @@ class JointLimitWall:
         stiction_gain: Optional[float] = None,
     ) -> None:
         """Live-adjust the empirical gravity-comp model (see class docstring)
-        -- meant to be called repeatedly from a tuning tool
-        (``scripts/tune_gravity_comp.py``) while watching the real leader,
-        not just once at startup. Any argument left ``None`` keeps its
+        -- meant to be called repeatedly while watching the real leader, not
+        just once at startup. Any argument left ``None`` keeps its
         current value; pass ``gains=np.zeros(n_arm)`` to fully disable
         (this also un-force-arms the servos once away from a limit/match).
         """

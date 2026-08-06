@@ -42,7 +42,7 @@ class DynamixelRobotConfig:
     gravity_gains: Optional[Sequence[float]] = None
     """Empirical per-arm-joint gravity-comp gains (current per rad, see
     JointLimitWall.set_gravity_comp) -- None/all-zero (the default) leaves
-    gravity comp off. Tune with scripts/tune_gravity_comp.py."""
+    gravity comp off, which is where it has stayed (GitHub issue #3)."""
 
     gravity_offsets: Optional[Sequence[float]] = None
     """Per-arm-joint angle (rad) where that joint's own gravity_gains term is
@@ -129,14 +129,17 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
         # previously unset here, so that clipping was silently a no-op for
         # this arm (see issue #3's "공통 선결 과제").
         servo_types=("XL330_M288_T",) * 8,
-        # Empirical per-joint gravity comp (issue #3's "③"), all-zero/off.
-        # A first real-hardware tuning pass (gravity_gains=(0,70,0,0,70,0,0),
-        # gravity_offsets=(0.075,0,0,0,0,0,0)) did not actually behave right
-        # on the leader -- reverted (see issue #3, reopened) pending further
-        # investigation of the empirical single-pendulum-per-joint model
-        # itself (gello/robots/joint_limit_wall.py), not just more tuning.
-        # No GELLO-leader URDF exists to do this the FACTR/RNEA way (no CAD
-        # data available) -- see scripts/tune_gravity_comp.py either way.
+        # Empirical per-joint gravity comp (issue #3's "③"), all-zero/off --
+        # and not a knob to reach for. The one real-hardware pass
+        # (gravity_gains=(0,70,0,0,70,0,0), gravity_offsets=(0.075,0,...))
+        # did not behave right and was reverted. What is suspect is the model,
+        # not the numbers: it approximates each joint as an independent
+        # pendulum and so cannot represent the cross-coupling a real chain has
+        # (gello/robots/joint_limit_wall.py). Doing it properly the FACTR/RNEA
+        # way needs a leader URDF, and no CAD for this arm exists. The servos
+        # are the other half -- all eight are XL330-M288-T, and match_max_current
+        # below already has to ration 3.5 A of a 4 A supply across seven joints.
+        # Both are prerequisites in issue #3; more tuning is not.
         gravity_gains=(0.0,) * 7,
         gravity_offsets=(0.0,) * 7,
         stiction_gain=0.0,
@@ -319,9 +322,9 @@ class GelloAgent(Agent):
         offsets: Optional[np.ndarray] = None,
         stiction_gain: Optional[float] = None,
     ) -> None:
-        """Live-adjust the empirical gravity-comp model (see
-        JointLimitWall's docstring / scripts/tune_gravity_comp.py). Raises if
-        there is no wall, same reasoning as start_pose_match."""
+        """Live-adjust the empirical gravity-comp model (see JointLimitWall's
+        docstring). Raises if there is no wall, same reasoning as
+        start_pose_match."""
         if self._wall is None:
             raise RuntimeError(
                 "gravity comp requires the leader's joint-limit wall "
