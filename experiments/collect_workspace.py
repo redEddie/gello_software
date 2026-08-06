@@ -107,6 +107,7 @@ from gello.episode_stats import (  # noqa: E402
 from gello.episode_trim import plan_trim, suggest_trim, tail_speed, trim_tail  # noqa: E402
 from gello.plot_widgets import BarStrip, Histogram, SeriesPlot  # noqa: E402
 from gello.gui_widgets import (  # noqa: E402
+    TODO_MARK,
     repo_id_error,
     PLAYBACK_FPS,
     REPACK_SCRIPT,
@@ -167,7 +168,7 @@ _DOT = {"ok": "#2ecc71", "busy": "#f39c12", "off": "#7f8c8d", "bad": "#e74c3c"}
 # tool cannot do that", while a greyed one says "not built yet" -- and leaving
 # the shape visible is what makes the gap reviewable instead of forgotten.
 TODO_STYLE = "color:#6b6b6b; font-style:italic;"
-TODO_MARK = "미개발"
+# TODO_MARK 는 gello/gui_widgets.py 에서 가져온다 (순환 import 방지).
 
 # 오른쪽 패널에서 값이 길어 좌우 배치로는 읽기 어려운 항목들.
 WIDE_FIELDS = {"ds_file", "ds_task"}

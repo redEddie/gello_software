@@ -151,6 +151,10 @@ class Recents:
             pass  # history is a convenience, never a hard failure
 
 
+# 미개발 표시. collect_workspace 가 gui_widgets 를 import 하므로 아래쪽 모듈인
+# 여기에 두고 위에서 가져다 쓴다 -- 반대로 두면 순환 import 가 된다.
+TODO_MARK = "미개발"
+
 _REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -674,6 +678,26 @@ class DatasetSchemaDialog(QDialog):
 
         obs_box = QGroupBox(tr("저장할 Observation 필드"))
         obs_layout = QVBoxLayout(obs_box)
+
+        # 원본 해상도 항목은 목록에 두되 고를 수 없게 한다. 코드 경로 자체는
+        # 있지만(리사이즈를 건너뛸 뿐) 실기에서 원본으로 저장할 때 문제가
+        # 확인됐고 원인이 특정되지 않았다(issue #13). 항목을 아예 빼면 "이런
+        # 선택지가 있었다"는 사실까지 사라져서, 잠가두고 이유를 툴팁에 남긴다.
+        image_size_row = QHBoxLayout()
+        image_size_row.addWidget(QLabel(tr("이미지 해상도:")))
+        self.image_size_combo = QComboBox()
+        self.image_size_combo.addItem(tr("256x256 (LIBERO 기본, 정사각형 크롭)"), 256)
+        self.image_size_combo.addItem(
+            f'{tr("원본 해상도 유지 (리사이즈 안 함)")} ({TODO_MARK})', None)
+        model = self.image_size_combo.model()
+        item = model.item(1)
+        item.setEnabled(False)
+        item.setToolTip(tr("원본 해상도로 저장할 때 문제가 확인됐습니다 "
+                           "(원인 미특정, issue #13). 고정 256x256 을 씁니다."))
+        self.image_size_combo.setCurrentIndex(0)
+        self.image_size_combo.setToolTip(item.toolTip())
+        image_size_row.addWidget(self.image_size_combo, 1)
+        obs_layout.addLayout(image_size_row)
 
         for attr, label in self._OBS_FIELDS:
             cb = QCheckBox(tr(label))
