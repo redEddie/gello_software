@@ -65,8 +65,9 @@ class DatasetSchemaConfig:
     # 그 간격이 정책이 학습해야 할 그리퍼 지연이다.
     gripper_action_match_obs: bool = True
 
-    # 고정 256: LIBERO/OpenVLA 규약(정사각 크롭 후 리사이즈, libero_format.py 의
-    # resize_rgb). 바꾸면 그 규약으로 사전학습된 모델과 어긋난다.
+    # 정사각 크롭 후 리사이즈할 한 변(px). None 이면 크롭도 리사이즈도 하지 않고
+    # 카메라가 준 프레임을 그대로 쓴다(현재 640x480, 비정사각).
+    # 256 은 LIBERO/OpenVLA 규약이라 그 규약으로 사전학습된 모델과 맞는다.
     image_size: int | None = 256
 
     save_agentview_rgb: bool = True
@@ -96,7 +97,7 @@ class DatasetSchemaConfig:
     # -- 다이얼로그에서 뺐다는 이유만으로 고정이 되지는 않는다. 이 목록이 실제
     # 강제 지점이고, 다이얼로그는 그 결과를 보여줄 뿐이다.
     _FIXED = ("action_space", "action_include_gripper", "gripper_action_match_obs",
-              "image_size", "action_column_name_overrides")
+              "action_column_name_overrides")
 
     @classmethod
     def from_json(cls, s: str) -> "DatasetSchemaConfig":

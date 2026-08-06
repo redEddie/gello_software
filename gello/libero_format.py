@@ -292,15 +292,21 @@ def describe_schema(cfg: DatasetSchemaConfig) -> str:
     """
     schema = cfg
     cols = resolved_action_column_names(schema)
-    if schema.action_include_gripper:
-        gripper_note = "0=open/1=close, matches obs" if schema.gripper_action_match_obs else "-1=open/+1=close"
-        cols[-1] = f"{cols[-1]} ({gripper_note})"
+    # actions 도 obs/ 와 같은 "헤더 + 들여쓴 항목" 형식으로 쓴다. 예전에는 이
+    # 블록만 `= [col, col, ...]` 한 줄이라, 같은 화면 안에서 actions 만 다른
+    # 문법으로 읽혔다.
+    arm_cols = [c for c in cols if not c.startswith("gripper")]
     lines = [
-        f"Action space: {ACTION_SPACE_LABELS.get(schema.action_space, schema.action_space)}",
-        f"  actions: (T, {len(cols)}) float32 = [{', '.join(cols)}]",
-        "",
-        "obs/:",
+        f"actions: (T, {len(cols)}) float32  -- "
+        f"{ACTION_SPACE_LABELS.get(schema.action_space, schema.action_space)}",
     ]
+    if arm_cols:
+        lines.append(f"  {arm_cols[0]} .. {arm_cols[-1]}: (rad) 관절 절대각"
+                     if len(arm_cols) > 1 else f"  {arm_cols[0]}: (rad)")
+    if schema.action_include_gripper:
+        note = "0=open / 1=close" if schema.gripper_action_match_obs else "-1=open / +1=close"
+        lines.append(f"  {cols[-1]}: {note}")
+    lines += ["", "obs/:"]
 
     obs_rows = []
     if schema.image_size is not None:
@@ -561,8 +567,28 @@ class LiberoEpisodeBuffer:
             self.timestamps.append(float(timestamp))
 
     def _process_image(self, img: np.ndarray) -> np.ndarray:
+        """Returns a frame this buffer owns, resized if the schema asks for it.
+
+        The copy is the point, and it is deliberate rather than a side effect.
+        Camera drivers hand out a *view* into a small pool of frame buffers
+        they recycle (librealsense via lerobot's RealSenseCamera does, and its
+        _postprocess_image only copies when a colour conversion or rotation is
+        configured -- this collector requests neither). Appending that view
+        stores a window onto memory the driver overwrites a few frames later,
+        so a 200-frame episode ends up holding the same handful of images
+        repeated, at the right shape and count and with no error anywhere.
+
+        This used to be safe only by accident: cv2.resize allocates its output,
+        so the resize path copied for free while image_size=None returned the
+        view untouched. Copying here instead means the guarantee no longer
+        depends on which branch runs.
+
+        ``.copy()`` and not ``np.ascontiguousarray``: the latter is a no-op
+        when the input already is contiguous, which a driver frame buffer is
+        -- it would have left the aliasing exactly as it was.
+        """
         if self.schema.image_size is None:
-            return np.asarray(img, dtype=np.uint8)
+            return img.copy()
         return resize_rgb(img, size=self.schema.image_size)
 
     def clear(self) -> None:

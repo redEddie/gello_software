@@ -661,7 +661,7 @@ class WorkspaceWindow(QMainWindow):
         self.resume_combo = QComboBox()
         self.resume_combo.setToolTip(tr(
             "이미 찍은 파일에 이어서 기록합니다. 고르면 Task 이름·Language·"
-            "저장 경로가 그 파일 값으로 고정됩니다."))
+            "저장 경로가 그 파일 값으로 잠깁니다."))
         self.resume_combo.currentIndexChanged.connect(self._on_resume_selected)
         form.addRow(tr("기존 task 이어찍기"), self.resume_combo)
         self.resume_hint = QLabel("")
@@ -1567,11 +1567,10 @@ class WorkspaceWindow(QMainWindow):
         # 반쯤 되는 채로 두는 것보다 미개발로 못 박아두는 쪽이 낫다.
         lang = QPushButton(f'{tr("언어 전환 (한국어 / English)")} ({TODO_MARK})')
         col.addWidget(mark_todo(lang, tr(
-            "전역 언어는 바뀌지만 이미 열린 창은 다시 그려지지 않아 "
-            "한국어와 영어가 섞입니다. 전체 retranslate 경로가 필요합니다.")))
-        schema = QPushButton(tr("데이터셋 구조 보기 / Observation 필드..."))
+            "이미 열린 창은 다시 그려지지 않아 한국어와 영어가 섞입니다.")))
+        schema = QPushButton(tr("데이터셋 구조 사용자 설정..."))
         schema.setToolTip(tr("Action 구조는 고정입니다. Observation 필드만 고를 수 "
-                             "있고, '구조 미리보기'로 전체를 확인합니다."))
+                             "있습니다."))
         schema.clicked.connect(self._on_schema)
         col.addWidget(schema)
         self.schema_label = QLabel("")
@@ -1813,7 +1812,7 @@ class WorkspaceWindow(QMainWindow):
         m.addAction(tr("카메라 점검 (USB 속도·프레임)"), self._on_check_cameras)
         m.addAction(tr("Hugging Face 계정..."), self._on_hf_accounts)
         m.addSeparator()
-        m.addAction(tr("데이터셋 구조 보기..."), self._on_schema)
+        m.addAction(tr("데이터셋 구조 사용자 설정..."), self._on_schema)
         m.addAction(f'{tr("언어 전환")} ({TODO_MARK})').setEnabled(False)
 
         m = mb.addMenu(tr("Help"))
@@ -2033,7 +2032,7 @@ class WorkspaceWindow(QMainWindow):
         self.resume_hint.setText(
             tr("{f} 에 이어 기록합니다. 복원됨: {r}").format(
                 f=p.name, r=", ".join(restored) if restored else tr("없음"))
-            + tr("   (구조는 고정이라 이 파일이 다른 구조면 섞입니다 — issue #12)"))
+            + tr("   (이 파일의 구조는 대조하지 않습니다 — issue #12)"))
 
     def _apply_session_config(self, cfg: dict) -> list:
         """Puts a file's recorded session_config back into the widgets that

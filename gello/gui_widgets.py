@@ -647,13 +647,16 @@ class DatasetSchemaDialog(QDialog):
         ("save_ee_pos", "EE position"),
         ("save_ee_ori", "EE orientation (axis-angle)"),
     ]
+    # QComboBox itemData 는 int 는 왕복하지만 Python None 은 왕복하지 않는다.
+    _IMAGE_SIZE_NATIVE = -1
+
     _EXTRA_FIELDS = [
         ("save_joint_velocities", "Joint velocities (관절 속도) -- 제어루프에서 이미 계산됨, 추가 비용 없음"),
         ("save_timestamp", "Timestamp (프레임별 wall-clock 시각) -- 프레임 간격 검증용"),
     ]
     def __init__(self, parent: QWidget, cfg: DatasetSchemaConfig) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("데이터셋 구조 사용자 지정"))
+        self.setWindowTitle(tr("데이터셋 구조 사용자 설정"))
         layout = QVBoxLayout(self)
 
         # Action 쪽은 이 다이얼로그에서 고를 수 없다. 액션 공간·그리퍼 규약·열
@@ -664,11 +667,11 @@ class DatasetSchemaDialog(QDialog):
         fixed = QGroupBox(tr("Action 구조 (고정 -- 변경 불가)"))
         fixed_layout = QVBoxLayout(fixed)
         fixed_note = QLabel(tr(
-            "Action Space: joint_absolute (관절 절대각 7 + 그리퍼)\n"
-            "그리퍼: Observation 과 같은 0=open / 1=close\n"
+            "Action Space: joint_absolute — 관절 절대각 7 + 그리퍼\n"
+            "그리퍼: 0=open / 1=close 이진값 "
+            "(Observation 의 gripper_states 는 0~1 연속값)\n"
             "열 이름: joint1.pos .. joint7.pos, gripper.pos "
-            "— Observation 과 이름을 맞춰야 Hugging Face 뷰어에서 짝지어 보입니다\n"
-            "이미지: 256x256 정사각 크롭 (LIBERO/OpenVLA 규약)"))
+            "— Observation 과 동일"))
         fixed_note.setWordWrap(True)
         fixed_note.setStyleSheet("color:#888;")
         fixed_layout.addWidget(fixed_note)
@@ -679,25 +682,26 @@ class DatasetSchemaDialog(QDialog):
         obs_box = QGroupBox(tr("저장할 Observation 필드"))
         obs_layout = QVBoxLayout(obs_box)
 
-        # 원본 해상도 항목은 목록에 두되 고를 수 없게 한다. 코드 경로 자체는
-        # 있지만(리사이즈를 건너뛸 뿐) 실기에서 원본으로 저장할 때 문제가
-        # 확인됐고 원인이 특정되지 않았다(issue #13). 항목을 아예 빼면 "이런
-        # 선택지가 있었다"는 사실까지 사라져서, 잠가두고 이유를 툴팁에 남긴다.
+        # None 은 QComboBox itemData 로 왕복하지 않아 센티널로 저장한다.
         image_size_row = QHBoxLayout()
         image_size_row.addWidget(QLabel(tr("이미지 해상도:")))
         self.image_size_combo = QComboBox()
-        self.image_size_combo.addItem(tr("256x256 (LIBERO 기본, 정사각형 크롭)"), 256)
+        self.image_size_combo.addItem(tr("256x256, 정사각 크롭"), 256)
+        self.image_size_combo.addItem(tr("480x480, 정사각 크롭"), 480)
         self.image_size_combo.addItem(
-            f'{tr("원본 해상도 유지 (리사이즈 안 함)")} ({TODO_MARK})', None)
-        model = self.image_size_combo.model()
-        item = model.item(1)
-        item.setEnabled(False)
-        item.setToolTip(tr("원본 해상도로 저장할 때 문제가 확인됐습니다 "
-                           "(원인 미특정, issue #13). 고정 256x256 을 씁니다."))
-        self.image_size_combo.setCurrentIndex(0)
-        self.image_size_combo.setToolTip(item.toolTip())
+            tr("640x480, 크롭 없음 (카메라 원본)"), self._IMAGE_SIZE_NATIVE)
+        target = cfg.image_size if cfg.image_size is not None else self._IMAGE_SIZE_NATIVE
+        idx = self.image_size_combo.findData(target)
+        if idx >= 0:
+            self.image_size_combo.setCurrentIndex(idx)
         image_size_row.addWidget(self.image_size_combo, 1)
         obs_layout.addLayout(image_size_row)
+        size_note = QLabel(tr(
+            "에피소드 200프레임 기준 저장 시간 1.0 / 3.6 / 5.0초, "
+            "파일 79 / 277 / 370MB"))
+        size_note.setStyleSheet("color:#888;")
+        size_note.setWordWrap(True)
+        obs_layout.addWidget(size_note)
 
         for attr, label in self._OBS_FIELDS:
             cb = QCheckBox(tr(label))
@@ -741,6 +745,8 @@ class DatasetSchemaDialog(QDialog):
         # Observation 쪽만 위젯에서 읽는다. Action 쪽은 dataclass 기본값이
         # 곧 고정값이므로 아무것도 넘기지 않는 것이 그대로 고정을 뜻한다.
         kwargs = {attr: cb.isChecked() for attr, cb in self.field_checks.items()}
+        raw = self.image_size_combo.currentData()
+        kwargs["image_size"] = None if raw == self._IMAGE_SIZE_NATIVE else raw
         return DatasetSchemaConfig(**kwargs)
 
     def result_config(self) -> DatasetSchemaConfig:
