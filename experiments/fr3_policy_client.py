@@ -85,6 +85,7 @@ def dry_run(url: str, instruction: str, n: int = 5) -> None:
     rng = np.random.default_rng(0)
     img = rng.integers(0, 255, (256, 256, 3), dtype=np.uint8)
     state = [0.0, -0.161, 0.0, -2.445, 0.0, 2.227, 0.785, 0.0]  # libero reset pose
+    print(f"[dry-run] POST {url}/reset ... (서버가 없으면 여기서 최대 60초 대기)")
     r = requests.post(f"{url}/reset", json={"instruction": instruction}, timeout=60)
     r.raise_for_status()
     print(f"[dry-run] /reset ok: {r.json()}")
@@ -119,6 +120,11 @@ def main() -> None:
                          "(0=예전 순차 동작, 경계 정지 발생)")
     args = ap.parse_args()
 
+    # 첫 출력까지 조용한 구간(카메라/로봇/서버 연결)이 길다 — 시작 즉시 설정을 보여준다.
+    print(f"[client] server {args.server} | instruction {args.instruction!r}")
+    print(f"[client] exec-horizon {args.exec_horizon}, lead-ticks {args.lead_ticks}, "
+          f"max-seconds {args.max_seconds}" + (" (dry-run)" if args.dry_run else ""))
+
     if args.dry_run:
         dry_run(args.server, args.instruction)
         return
@@ -129,6 +135,9 @@ def main() -> None:
     from gello.libero_format import resize_rgb
     from gello.robots.franka_fr3 import FR3_RESET_POSES
 
+    print(f"[client] connecting robot(ZMQ {HOSTNAME}:{ROBOT_PORT}) + RealSense "
+          f"agent={AGENT_CAMERA_SERIAL} wrist={WRIST_CAMERA_SERIAL} ... "
+          f"(카메라가 안 붙어 있으면 여기서 멈춘다)")
     robot = FR3ZMQRobot(FR3ZMQRobotConfig(
         id="fr3", host=HOSTNAME, port=ROBOT_PORT,
         cameras={
@@ -138,6 +147,7 @@ def main() -> None:
                 serial_number_or_name=WRIST_CAMERA_SERIAL, fps=30, width=640, height=480),
         }))
     robot.connect()
+    print("[client] robot + cameras connected.")
     reset_q = FR3_RESET_POSES[RESET_POSE]
 
     def joints(obs) -> np.ndarray:
@@ -186,6 +196,7 @@ def main() -> None:
             raise RuntimeError("reset ramp did not converge")
         print("[client] at reset pose.")
 
+        print(f"[client] POST {args.server}/reset ... (서버가 없으면 여기서 최대 60초 대기)")
         r = requests.post(f"{args.server}/reset",
                           json={"instruction": args.instruction}, timeout=60)
         r.raise_for_status()
