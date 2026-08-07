@@ -40,6 +40,7 @@ from gello.lerobot_plugin import (
     GelloFR3TeleopConfig,
 )
 from gello.robots.franka_fr3 import DEFAULT_RESET_POSE, FR3_RESET_POSES
+from gello.station import load_station
 from lerobot.cameras.realsense import RealSenseCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.feature_utils import (
@@ -48,8 +49,13 @@ from lerobot.utils.feature_utils import (
     hw_to_dataset_features,
 )
 
-# agent = 외부(3인칭) D455, wrist = 손목 D435i
-CAMERA_SERIALS = {"agent": "338122300664", "wrist": "317622072663"}
+# 스테이션 설정에서 온다 (configs/stations/<이름>.yaml). 여기에 직접 적혀
+# 있던 손목 시리얼은 2026-07-27 카메라 교체(D435i -> D405) 이후로 존재하지
+# 않는 장치를 가리키고 있었다 -- 같은 값이 네 곳에 복사돼 있으면 이런 건
+# 반드시 어딘가 하나는 뒤처진다.
+CAMERA_SERIALS = {
+    role: load_station().camera(role).serial for role in ("agent", "wrist")
+}
 
 GATE_RAD = 0.5  # run_env와 동일한 자세 게이트 임계
 RAMP_STEP = 0.05  # rad/tick @20Hz = 1.0 rad/s
@@ -272,9 +278,15 @@ def main():
     robot = FR3ZMQRobot(
         FR3ZMQRobotConfig(
             id="fr3",
+            # 스트림 포맷도 스테이션 설정에서. 여기 박혀 있던 fps=60 은 손목이
+            # D435i 이던 시절 값이라, D405 로 바뀐 지금은 librealsense 가 스트림
+            # 설정을 거부하고 "device busy" ConnectionError 로 나온다.
             cameras={
                 name: RealSenseCameraConfig(
-                    serial_number_or_name=serial, fps=60, width=640, height=480
+                    serial_number_or_name=serial,
+                    fps=load_station().camera(name).fps,
+                    width=load_station().camera(name).width,
+                    height=load_station().camera(name).height,
                 )
                 for name, serial in CAMERA_SERIALS.items()
             },

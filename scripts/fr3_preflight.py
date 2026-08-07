@@ -14,15 +14,23 @@ Run inside the pylibfranka venv, from OUTSIDE ~/libfranka-0.17.0:
 """
 
 import resource
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import tyro
 
+# 리포 루트에서 실행하지 않아도 gello.station 을 찾게 한다 -- 이 스크립트는
+# 어느 디렉터리에서든 돌 수 있어야 한다.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from gello.station import load_station  # noqa: E402
+
 
 @dataclass
 class Args:
-    robot_ip: str = "172.16.0.2"
+    # 기본값은 스테이션 설정에서 (configs/stations/<이름>.yaml)
+    robot_ip: str = load_station().robot.ip
 
 
 def check_realtime() -> bool:

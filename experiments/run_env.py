@@ -10,8 +10,11 @@ import tyro
 from gello.env import RobotEnv
 from gello.robots.franka_fr3 import DEFAULT_RESET_POSE, FR3_RESET_POSES
 from gello.robots.robot import PrintRobot
+from gello.station import load_station
 from gello.utils.launch_utils import instantiate_from_dict
 from gello.zmq_core.robot_node import ZMQClientRobot
+
+_STATION = load_station()
 
 
 def print_color(*args, color=None, attrs=(), **kwargs):
@@ -25,10 +28,12 @@ def print_color(*args, color=None, attrs=(), **kwargs):
 @dataclass
 class Args:
     agent: str = "none"
-    robot_port: int = 6001
+    # 노드 주소는 스테이션 설정에서 (configs/stations/<이름>.yaml,
+    # GELLO_STATION 으로 선택). CLI 인자가 이긴다.
+    robot_port: int = _STATION.node.port
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
-    hostname: str = "127.0.0.1"
+    hostname: str = _STATION.node.host
     robot_type: str = None  # only needed for quest agent or spacemouse agent
     hz: int = 100
     start_joints: Optional[Tuple[float, ...]] = None

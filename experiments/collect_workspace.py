@@ -137,9 +137,13 @@ from gello.libero_format import (  # noqa: E402
 )
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
 from gello.robots.franka_fr3 import FR3_RESET_POSES  # noqa: E402
+from gello.station import load_station  # noqa: E402
 
 LOG_DIR = Path.home() / "libero_gui_logs"
-PYLIBFRANKA_PYTHON = str(Path.home() / "pylibfranka-venv" / "bin" / "python")
+# 로봇 IP, ZMQ 주소, 카메라 스트림 포맷, 크롭 초기값은 전부 여기서 온다.
+# GELLO_STATION 으로 고르고, 파일은 configs/stations/<이름>.yaml.
+STATION = load_station()
+PYLIBFRANKA_PYTHON = STATION.node.python_path
 LAUNCH_NODES_SCRIPT = str(Path(__file__).resolve().parent / "launch_nodes.py")
 CONVERT_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "convert_libero_to_lerobot.py")
 UPLOAD_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "upload_to_hub.py")
@@ -149,6 +153,12 @@ RUNME_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "runme.s
 # 푼다 -- _ensure_layout_refs().
 LAYOUT_ZIP = Path(__file__).resolve().parent.parent / "assets" / "libero_init_layouts.zip"
 LAYOUT_DIR = Path(__file__).resolve().parent.parent / "assets" / "libero_init_layouts"
+
+
+def _new_stats() -> dict:
+    """수집 카운터 한 벌. 이번 task 용과 누적용이 같은 모양이라 같은 곳에서 만든다."""
+    return {"saved": 0, "success": 0, "failed": 0, "discarded": 0,
+            "frames": 0, "t0": time.monotonic()}
 
 
 def _grid_overlay(img):
@@ -4166,7 +4176,18 @@ class WorkspaceWindow(QMainWindow):
         # --die-with-parent: closeEvent가 노드를 정리하지만 그건 정상 종료일
         # 때뿐이다. GUI가 갑자기 죽으면 노드가 FCI 연결을 쥔 채 남아 다음 실행이
         # 노드를 못 띄운다. 커널이 대신 정리하게 한다.
-        proc.setArguments([LAUNCH_NODES_SCRIPT, "--robot", "fr3", "--die-with-parent"])
+        # 주소를 명시적으로 넘긴다. 노드는 다른 venv 에서 도는 별도
+        # 프로세스라 스테이션 설정을 자기가 다시 읽는데, GELLO_STATION 이
+        # 전달되지 않거나 그 사이 파일이 바뀌면 GUI 가 붙을 곳과 노드가 여는
+        # 곳이 조용히 어긋난다. 여기서 넘기면 둘은 항상 같은 값을 본다.
+        proc.setArguments([
+            LAUNCH_NODES_SCRIPT,
+            "--robot", STATION.robot.kind,
+            "--robot-ip", STATION.robot.ip,
+            "--robot-port", str(STATION.node.port),
+            "--hostname", STATION.node.host,
+            "--die-with-parent",
+        ])
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.readyReadStandardOutput.connect(self._on_node_output)
         proc.finished.connect(lambda c, _s: self.log(f"[노드] 종료 (exit={c})"))

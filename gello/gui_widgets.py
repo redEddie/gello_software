@@ -88,6 +88,7 @@ from gello.libero_format import (  # noqa: E402
 )
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
 from gello.robots.franka_fr3 import FR3_RESET_POSES  # noqa: E402
+from gello.station import load_station  # noqa: E402
 
 # The OMP/OPENBLAS/MKL env vars above only cap numpy's BLAS backend --
 # OpenCV's own parallel_for_ executor is a separate thread pool controlled
@@ -97,8 +98,8 @@ cv2.setNumThreads(1)
 # launch_nodes.py needs pylibfranka, which only exists in this separate venv
 # (this GUI itself runs in lerobot-venv -- see module docstring). Spawned as
 # a subprocess rather than imported, same as running it by hand in a second
-# terminal.
-PYLIBFRANKA_PYTHON = str(Path.home() / "pylibfranka-venv" / "bin" / "python")
+# terminal. 경로는 스테이션 설정의 node.python.
+PYLIBFRANKA_PYTHON = load_station().node.python_path
 LAUNCH_NODES_SCRIPT = str(Path(__file__).resolve().parent / "launch_nodes.py")
 RUNME_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "runme.sh")
 REPACK_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "repack_hdf5.py")

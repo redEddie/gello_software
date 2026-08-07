@@ -6,7 +6,7 @@ joint-angle chunks on the robot. No model compute on this machine.
 
 Data path per replan cycle (default 0.40 s = 8 executed steps @ 20 Hz):
   FR3ZMQRobot.get_observation()             joints 7 rad + gripper 0..1, 2x 640x480 RGB
-    -> resize_rgb (libero_format)           center-crop 480^2 -> 256^2  (train-identical)
+    -> resize_rgb (libero_format)           square-crop 480^2 -> 256^2, crop_params 적용
     -> base64 JSON POST /infer              ~0.4 MB/request, on a background thread
     <- {"actions": [[8] x 10]}              joint1-7 rad + gripper 0..1 (absolute)
     -> send_action at 20 Hz                 with per-step |dq| safety clamp
@@ -37,13 +37,20 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import requests
 
+from gello.station import load_station
+
+# 로봇/카메라/주파수는 스테이션 설정에서 온다 -- 수집 GUI 와 같은 파일을 읽으므로
+# "수집 GUI와 동일" 이 주석이 아니라 구조로 보장된다.
+# configs/stations/<이름>.yaml, GELLO_STATION 으로 선택.
+STATION = load_station()
+
 # ───────────────────────── CONFIG (edit me) ─────────────────────────
 SERVER_URL = "http://155.230.189.77:8080"  # GPU 머신 IP:port (같은 /22 서브넷, RTT 0.24ms)
-ROBOT_PORT = 6001                          # launch_nodes.py ZMQ port
-HOSTNAME = "127.0.0.1"
-AGENT_CAMERA_SERIAL = "338122300664"       # RealSense serials (수집 GUI와 동일)
-WRIST_CAMERA_SERIAL = "230422272249"
-FPS = 20                                   # 학습 데이터와 동일 (20 Hz)
+ROBOT_PORT = STATION.node.port             # launch_nodes.py ZMQ port
+HOSTNAME = STATION.node.host
+AGENT_CAMERA_SERIAL = STATION.camera("agent").serial
+WRIST_CAMERA_SERIAL = STATION.camera("wrist").serial
+FPS = STATION.fps                          # 학습 데이터와 동일 (20 Hz)
 EXEC_HORIZON = 10                          # 청크 중 쓸 최대 개수 (10=full, 서버 청크와 동일)
 # 청크 경계 정지를 없애는 겹치기 실행. 정책은 "인덱스 i = 관측시각 + i·dt"로 학습돼
 # 있으므로, 그 약속을 벽시계와 맞추기만 하면 된다 — 재학습 불필요한 클라이언트 장부 정리다.
@@ -126,16 +133,33 @@ def main() -> None:
     from lerobot.cameras.realsense import RealSenseCameraConfig
 
     from gello.lerobot_plugin import JOINT_KEYS, FR3ZMQRobot, FR3ZMQRobotConfig
-    from gello.libero_format import resize_rgb
+    from gello.libero_format import load_crop_params, resize_rgb
     from gello.robots.franka_fr3 import FR3_RESET_POSES
+
+    # 정책 입력의 프레이밍은 학습 데이터와 같아야 한다. 수집기가 쓰는 것과
+    # 같은 crop_params.json 을 읽는다 -- 예전에는 resize_rgb 를 인자 없이
+    # 불러서 zoom=1.0/x=0 고정이었고, 그건 agent zoom 1.2 / wrist +31px 로
+    # 찍힌 데이터와 프레이밍이 어긋난다.
+    #
+    # 체크포인트가 *다른* 크롭으로 학습됐다면 그 값을 써야 한다. 각
+    # 에피소드의 실제 값은 hdf5 의 attrs["crop_params"] 에 남아 있다.
+    crop = load_crop_params()
+    print(f"[crop] agent={crop['agent']} wrist={crop['wrist']}", flush=True)
+
+    def _crop_resize(img, role: str):
+        p = crop[role]
+        return resize_rgb(img, zoom=p["zoom"], x_shift=p["x"], y_shift=p["y"])
 
     robot = FR3ZMQRobot(FR3ZMQRobotConfig(
         id="fr3", host=HOSTNAME, port=ROBOT_PORT,
         cameras={
-            "agent": RealSenseCameraConfig(
-                serial_number_or_name=AGENT_CAMERA_SERIAL, fps=30, width=640, height=480),
-            "wrist": RealSenseCameraConfig(
-                serial_number_or_name=WRIST_CAMERA_SERIAL, fps=30, width=640, height=480),
+            role: RealSenseCameraConfig(
+                serial_number_or_name=serial,
+                fps=STATION.camera(role).fps,
+                width=STATION.camera(role).width,
+                height=STATION.camera(role).height)
+            for role, serial in (("agent", AGENT_CAMERA_SERIAL),
+                                 ("wrist", WRIST_CAMERA_SERIAL))
         }))
     robot.connect()
     reset_q = FR3_RESET_POSES[RESET_POSE]
@@ -160,8 +184,8 @@ def main() -> None:
         """
         payload = {
             "observation.state": [float(obs[k]) for k in JOINT_KEYS],
-            "observation.images.agent": _b64(resize_rgb(obs["agent"])),
-            "observation.images.wrist": _b64(resize_rgb(obs["wrist"])),
+            "observation.images.agent": _b64(_crop_resize(obs["agent"], "agent")),
+            "observation.images.wrist": _b64(_crop_resize(obs["wrist"], "wrist")),
         }
         t0 = time.perf_counter()
         r = session.post(f"{args.server}/infer", json=payload, timeout=60)
