@@ -33,6 +33,7 @@ from gello.lerobot_plugin import (
 )
 from gello.libero_format import LiberoTaskWriter, NullTaskWriter
 from gello.robots.franka_fr3 import FR3_RESET_POSES
+from gello.station import load_station
 
 GATE_RAD = 0.5  # run_env.py / gello_match_pose.py's start-gate threshold
 # rad/tick @ 20Hz. The FR3 driver's reference filter saturates at 1.0 rad/s
@@ -47,8 +48,9 @@ GRIPPER_OPEN = 0.0  # GELLO/franka_fr3 convention: 0=open, 1=closed
 # scan (see experiments/collect_workspace.py's agent_combo/wrist_combo),
 # since serials change
 # whenever a camera is swapped.
-AGENT_CAMERA_SERIAL = "338122300664"
-WRIST_CAMERA_SERIAL = "230422272249"
+_STATION = load_station()
+AGENT_CAMERA_SERIAL = _STATION.camera("agent").serial
+WRIST_CAMERA_SERIAL = _STATION.camera("wrist").serial
 
 
 class EpisodeSaver(QThread):
@@ -132,11 +134,11 @@ class WorkerConfig:
     task_name: str
     language_instruction: str
     data_root: str
-    robot_port: int = 6001
-    hostname: str = "127.0.0.1"
+    robot_port: int = _STATION.node.port
+    hostname: str = _STATION.node.host
     grip: str = "right"
     reset_pose: str = "libero"
-    fps: int = 20
+    fps: int = _STATION.fps
     max_episode_seconds: float = 20.0
     reset_wait_seconds: float = 10.0
     enable_wall: bool = True
@@ -884,20 +886,28 @@ class CollectionWorker(QThread):
                 id="fr3",
                 host=self.cfg.hostname,
                 port=self.cfg.robot_port,
+                # 스트림 포맷은 스테이션 설정에서 온다
+                # (configs/stations/<이름>.yaml 의 cameras.<역할>). 시리얼만은
+                # WorkerConfig 를 따르는데, GUI 가 라이브 장치 스캔 결과로
+                # 채워 주기 때문이다 -- 카메라를 바꿔 끼우면 시리얼이 바뀐다.
+                #
+                # 30fps 이지 60 이 아닌 이유: D405 는 640x480 에서 30fps 가
+                # 상한이고(pyrealsense2 프로파일 열거로 확인), 60 을 요구하면
+                # librealsense 가 스트림 설정을 거부하면서 엉뚱하게 "device
+                # busy" ConnectionError 로 나온다. 기록 루프는 어차피
+                # read_latest() 로 cfg.fps(기본 20Hz)에서만 집어가므로 30fps
+                # 캡처로 충분하다.
                 cameras={
-                    # 30fps, not 60: the D405 wrist cam only supports up to
-                    # 30fps at 640x480 (confirmed via direct pyrealsense2
-                    # profile enumeration) -- requesting 60 makes librealsense
-                    # reject the stream config, which surfaces as a
-                    # misleading "device busy" ConnectionError. The recording
-                    # loop itself only samples at cfg.fps (20Hz by default)
-                    # via read_latest(), so 30fps capture is plenty either way.
-                    "agent": RealSenseCameraConfig(
-                        serial_number_or_name=self.cfg.agent_camera_serial, fps=30, width=640, height=480
-                    ),
-                    "wrist": RealSenseCameraConfig(
-                        serial_number_or_name=self.cfg.wrist_camera_serial, fps=30, width=640, height=480
-                    ),
+                    role: RealSenseCameraConfig(
+                        serial_number_or_name=serial,
+                        fps=_STATION.camera(role).fps,
+                        width=_STATION.camera(role).width,
+                        height=_STATION.camera(role).height,
+                    )
+                    for role, serial in (
+                        ("agent", self.cfg.agent_camera_serial),
+                        ("wrist", self.cfg.wrist_camera_serial),
+                    )
                 },
             )
         )

@@ -88,6 +88,7 @@ from gello.dataset_schema import (
     ACTION_SPACE_LABELS,
     DatasetSchemaConfig,
 )
+from gello.station import load_station
 
 # robosuite OSC_POSE defaults (position/orientation controllers), see
 # robosuite.controllers.parts.arm.osc.OperationalSpaceController.
@@ -503,6 +504,12 @@ def renumber_episodes(data: Any) -> None:
 # 시차 때문에 한 깊이에서만 정확히 가운데가 된다. 파지 평면(손끝 깊이)을
 # 기준으로 잡았다 -- 조작 대상이 놓이는 깊이라서다. 더 먼 배경(탁자)은 이보다
 # 덜 밀리지만(예: 25cm 에서 ~12px) 조작에는 영향이 없다.
+#
+# 이 값은 **역사적 상수**이지 현재 설정이 아니다. attrs["crop_params"] 가 없는
+# 옛 파일이 실제로 찍힌 값이라, 변환할 때의 fallback 으로만 쓴다
+# (scripts/convert_libero_to_lerobot.py). 스테이션 설정을 고쳐도 여기는 31 로
+# 남아야 옛 파일의 프레이밍이 재현된다. 지금 수집에 쓰이는 값은
+# default_crop_params() 를 보라.
 EYE_IN_HAND_CROP_X_SHIFT = 31
 
 
@@ -513,20 +520,47 @@ def default_crop_params() -> dict:
 
     ``x``/``y`` move the crop window (px at 640 source width; +x right,
     +y down). ``zoom`` divides the crop side (1.0 = full square, 2.0 = half).
-    Agent 1.2 는 LIBERO 초기 배치와 실기 화각을 맞춰본 실측값, wrist 는
-    측정된 D405 좌측 이미저 오프셋."""
-    return {"agent": {"zoom": 1.2, "x": 0, "y": 0},
-            "wrist": {"zoom": 1.0, "x": EYE_IN_HAND_CROP_X_SHIFT, "y": 0}}
+
+    값은 스테이션 설정(configs/stations/<이름>.yaml 의 ``crop``)에서 온다 --
+    카메라가 어디에 어떻게 달렸는지의 결과라 스테이션마다 다르다. 여기서
+    주는 것은 초기값이고, GUI 에서 조정한 값은 crop_params.json 이 이긴다."""
+    return load_station().crop_params()
 
 
 # dataset_schema.json / recent_inputs.json 과 같은 자리. GUI 재시작 간 유지용
 # 환경설정이고, 에피소드의 진실은 각 demo attrs["crop_params"] 쪽이다.
-CROP_PARAMS_PATH = Path.home() / "libero_gui_logs" / "crop_params.json"
+#
+# **스테이션마다 따로** 둔다. 크롭은 카메라가 어디에 어떻게 달렸는지의 결과라
+# 스테이션이 바뀌면 통째로 달라진다. 예전에는 전역 파일 하나였고, 그 탓에
+# 스테이션을 바꿔도 이전 스테이션에서 맞춘 값이 그대로 이겨서 -- yaml 에 새 값을
+# 적어 두어도 -- 조용히 옛 프레이밍으로 찍혔다.
+CROP_PARAMS_DIR = Path.home() / "libero_gui_logs"
+# 스테이션이 하나뿐이던 시절의 파일. 기본 스테이션에 한해 한 번 물려받는다.
+LEGACY_CROP_PARAMS_PATH = CROP_PARAMS_DIR / "crop_params.json"
 
 
-def load_crop_params(path: Path = CROP_PARAMS_PATH) -> dict:
-    """Never raises -- missing/corrupt file just means defaults."""
+def crop_params_path(station: str | None = None) -> Path:
+    """이 스테이션의 크롭 설정 파일 경로."""
+    name = station or load_station().name
+    return CROP_PARAMS_DIR / f"crop_params.{name}.json"
+
+
+def load_crop_params(path: Path | None = None, station: str | None = None) -> dict:
+    """Never raises -- missing/corrupt file just means the station's defaults.
+
+    ``path`` 를 직접 주면 그것만 읽는다(테스트용). 아니면 스테이션별 파일을
+    읽고, 그게 없고 기본 스테이션이면 옛 전역 파일을 한 번 물려받는다.
+    """
+    from gello.station import DEFAULT_STATION
+
     base = default_crop_params()
+    if path is None:
+        name = station or load_station().name
+        path = crop_params_path(name)
+        # 다른 스테이션은 옛 파일을 물려받지 않는다 -- 물려받으면 그게 바로
+        # 이 분리로 없애려는 버그다.
+        if not Path(path).exists() and name == DEFAULT_STATION:
+            path = LEGACY_CROP_PARAMS_PATH
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         for role, defaults in base.items():
@@ -542,9 +576,10 @@ def load_crop_params(path: Path = CROP_PARAMS_PATH) -> dict:
     return base
 
 
-def save_crop_params(params: dict, path: Path = CROP_PARAMS_PATH) -> None:
+def save_crop_params(params: dict, path: Path | None = None,
+                     station: str | None = None) -> None:
     try:
-        p = Path(path)
+        p = Path(path) if path is not None else crop_params_path(station)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(params, indent=1), encoding="utf-8")
     except OSError:
@@ -1019,6 +1054,10 @@ class LiberoTaskWriter:
         # 크롭 정렬. buf 의 것을 쓴다 -- 백그라운드 저장 중 writer 쪽 값이
         # 바뀌어도 찍히는 값은 그 에피소드가 실제로 쓰던 것이어야 한다.
         grp.attrs["crop_params"] = json.dumps(buf.crop_params)
+        # 어느 스테이션에서 찍었는지. 형식은 v0 에서 고정이라 코드 버전은 남기지
+        # 않지만, 스테이션은 하드웨어가 바뀌면 같이 바뀐다 -- 카메라를 교체하거나
+        # 두 번째 스테이션이 생기면 프레이밍이 갈리는 지점이 여기다.
+        grp.attrs["station"] = load_station().name
 
         obs = grp.create_group("obs")
         if schema.save_agentview_rgb:

@@ -267,6 +267,19 @@ _EN: dict[str, str] = {
     "(읽기 실패: {e})": "(read failed: {e})",
     "성공": "success",
     "실패": "fail",
+
+    # ---- 수집 현황 패널 / 상태바 (이번 task vs 누적) ----
+    "수집 현황": "Progress",
+    "이번 task": "This task",
+    "누적": "Total",
+    "저장된 에피소드": "Episodes saved",
+    "버림": "Discarded",
+    "총 프레임": "Frames",
+    "경과 시간": "Elapsed",
+    "분당 에피소드": "Episodes/min",
+    "{k}: 에피소드 {t}개 (이번 +{s})": "{k}: {t} episodes (+{s} this task)",
+    "{t}개  (이번 +{s})": "{t}  (+{s} this task)",
+    "저장 {s}": "{s} saved",
     "데이터셋 구조: 기본 (LIBERO 표준) -- 사용자 지정...": "Dataset schema: default (LIBERO standard) -- customize...",
     "데이터셋 구조: 사용자 지정 ({action}) -- 편집...": "Dataset schema: custom ({action}) -- edit...",
 

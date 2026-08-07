@@ -19,6 +19,11 @@
 
 실행: `run_libero_collector.sh` 또는 바탕화면 바로가기로 GUI만 켜면, 그 안에서 로봇 노드까지 관리 가능.
 
+### 문서
+
+- [`docs/architecture.md`](docs/architecture.md) -- 토폴로지 / 타이밍(1kHz·20Hz·30fps) / 상태기계 / 데이터 계보 다이어그램
+- [`configs/stations/`](configs/stations/) -- 로봇 IP, 카메라 시리얼, 크롭 초기값 등 스테이션 고유값. `GELLO_STATION` 으로 선택
+
 ## 명령(commanded) 스트림 기록 + commanded EE-delta 유도
 
 기존 action space 4종은 전부 follower의 **실현된(achieved)** 궤적에서 사후 재구성된다. 접촉 구간에서는 leader가 계속 밀어도 실현 delta가 ~0으로 붕괴하므로, 조작자의 힘 의도는 실현 궤적에 남지 않는다 (자유공간 재생은 되지만 접촉 작업 재생이 실패하는 원인). 이를 위해:

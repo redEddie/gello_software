@@ -1,0 +1,72 @@
+# 스테이션 설정 -- 이 물리적 셋업이 무엇인가.
+#
+# 다른 스테이션을 추가하려면 이 파일을 복사해서 configs/stations/<이름>.yaml 로
+# 두고 GELLO_STATION=<이름> 으로 고른다. 기본값은 knu-eng7.
+# 읽는 코드는 gello/station.py.
+#
+# 여기 넣는 것: 하드웨어를 바꾸지 않는 한 변하지 않는 값.
+# 여기 넣지 않는 것:
+#   - 무엇을 저장할지          -> ~/libero_gui_logs/dataset_schema.json
+#   - 슬라이더로 튜닝하는 크롭 -> ~/libero_gui_logs/crop_params.json (아래는 초기값)
+#   - 리더암 조인트 오프셋/부호 -> gello/agents/gello_agent.py PORT_CONFIG_MAP
+#     (USB 시리얼로 키가 잡힌 장치 지문 테이블이라 스테이션이 아니라 장치에 속한다)
+
+name: knu-eng7
+description: KNU 공대 7호관 FR3 + GELLO 수집 스테이션
+
+robot:
+  kind: fr3
+  ip: 172.16.0.2          # FCI 주소. 정책 서버 주소가 아니다.
+  reset_pose: libero      # gello/robots/franka_fr3.py FR3_RESET_POSES
+
+node:
+  # launch_nodes.py 가 여는 ZMQ REP 소켓. GUI 워커가 REQ 로 붙는다.
+  host: 127.0.0.1
+  port: 6001
+  # pylibfranka 는 이 venv 에만 있다. GUI 를 돌리는 인터프리터(lerobot-venv)로는
+  # 노드를 띄울 수 없어서 경로를 따로 들고 있어야 한다.
+  python: ~/pylibfranka-venv/bin/python
+
+leader:
+  # null = /dev/serial/by-id 에서 FTDI 장치를 자동 탐색 (지금까지의 동작).
+  # 여러 리더암이 동시에 꽂히면 아래를 명시한다. FR3 빌드는
+  #   /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBIN516-if00-port0
+  port: null
+
+cameras:
+  agent:
+    serial: "338122300664"
+    model: D455
+    width: 640
+    height: 480
+    fps: 30
+  wrist:
+    serial: "230422272249"
+    model: D405
+    width: 640
+    height: 480
+    fps: 30
+    # D405 는 640x480 에서 30fps 가 상한이다. 60 을 넣으면 librealsense 가
+    # 스트림 설정을 거부하고, 그게 "device busy" ConnectionError 로 나온다.
+
+crop:
+  # 정사각 크롭 초기값. GUI Layout 패널에서 조정한 값은 crop_params.json 에
+  # 저장되어 이걸 덮어쓰고, 실제 사용된 값은 에피소드마다 HDF5
+  # attrs["crop_params"] 로 남는다.
+  agent:
+    zoom: 1.2
+    x: 0
+    y: 0
+  wrist:
+    zoom: 1.0
+    # D405 의 RGB 는 좌측 이미저에서 나오고 베이스라인이 18.2mm 라, 프레임
+    # 한가운데를 크롭하면 손가락이 왼쪽으로 치우친다. +31px @640 은 에피소드
+    # 첫 프레임 247장의 핑거 패드 위치를 연결성분으로 검출해 잰 값이고
+    # (+16.61px @256, sigma 1.88), fx*d/Z 로도 교차 확인했다.
+    x: 31
+    y: 0
+
+recording:
+  # 텔레옵/기록 루프 주파수(Hz). 카메라 fps 와 다르다 -- 카메라는 30fps 로
+  # 자유 실행되고 루프가 20Hz 로 최신 프레임만 집어간다.
+  fps: 20

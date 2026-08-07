@@ -33,11 +33,16 @@ from lerobot.robots import Robot, RobotConfig
 from lerobot.teleoperators import Teleoperator, TeleoperatorConfig
 
 from gello.robots.franka_fr3 import GRIPPER_CLOSE_AT
+from gello.station import load_station
 
 JOINT_KEYS = [f"joint{i}.pos" for i in range(1, 8)] + ["gripper.pos"]
 
 
 def _find_gello_port() -> str:
+    """리더암 시리얼 포트. 스테이션이 지정했으면 그것, 아니면 FTDI 자동 탐색."""
+    configured = load_station().leader.port
+    if configured:
+        return configured
     ports = glob.glob("/dev/serial/by-id/*FTDI*")
     if not ports:
         raise RuntimeError("no GELLO port found (/dev/serial/by-id/*FTDI*)")
@@ -47,8 +52,11 @@ def _find_gello_port() -> str:
 @RobotConfig.register_subclass("fr3_zmq")
 @dataclass
 class FR3ZMQRobotConfig(RobotConfig):
-    host: str = "127.0.0.1"
-    port: int = 6001
+    # 노드 주소는 스테이션 설정에서. 지금 호출자(수집 GUI, 정책 클라이언트)는
+    # 둘 다 명시적으로 넘겨 주지만, 기본값이 하드코딩이면 그러지 않는 호출자가
+    # 조용히 다른 곳에 붙는다 -- 클라이언트 타입 자체가 스테이션을 알아야 한다.
+    host: str = field(default_factory=lambda: load_station().node.host)
+    port: int = field(default_factory=lambda: load_station().node.port)
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
 
 

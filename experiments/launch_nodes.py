@@ -7,6 +7,7 @@ from pathlib import Path
 import tyro
 
 from gello.robots.robot import BimanualRobot, PrintRobot
+from gello.station import load_station
 from gello.zmq_core.robot_node import ZMQServerRobot
 
 _PR_SET_PDEATHSIG = 1
@@ -33,16 +34,27 @@ def die_with_parent(sig: int = signal.SIGTERM) -> None:
         print(f"[node] PDEATHSIG 설정 실패 (계속 진행): {e}", flush=True)
 
 
+_STATION = load_station()
+
+
 @dataclass
 class Args:
+    """로봇 노드 인자.
+
+    robot_port/hostname/robot_ip 의 기본값은 스테이션 설정에서 온다
+    (configs/stations/<이름>.yaml, GELLO_STATION 으로 선택). CLI 인자가 이긴다.
+    """
+
     robot: str = "xarm"
-    robot_port: int = 6001
-    hostname: str = "127.0.0.1"
+    # ZMQ REP 소켓이 열릴 포트
+    robot_port: int = _STATION.node.port
+    # ZMQ REP 소켓이 바인드할 주소
+    hostname: str = _STATION.node.host
     # GUI가 켜줄 때 붙인다. 부모가 죽으면 커널이 이 프로세스를 종료시킨다.
     die_with_parent: bool = False
     # 로봇 팔의 IP (정책 서버 주소가 아니다). FR3는 172.16.0.2 --
     # 192.168.1.10은 상류 GELLO 저장소의 xArm/UR 기본값이라 FR3에선 항상 타임아웃난다.
-    robot_ip: str = "172.16.0.2"
+    robot_ip: str = _STATION.robot.ip
     # FR3 (pylibfranka) hardware options; only used when robot == "fr3".
     fr3_read_only: bool = False
     fr3_use_gripper: bool = True
