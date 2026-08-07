@@ -70,3 +70,43 @@ recording:
   # 텔레옵/기록 루프 주파수(Hz). 카메라 fps 와 다르다 -- 카메라는 30fps 로
   # 자유 실행되고 루프가 20Hz 로 최신 프레임만 집어간다.
   fps: 20
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 아래는 기록용이다. gello/station.py 는 이 블록을 **읽지 않는다**.
+#
+# 위쪽 값들은 코드가 읽어서 하드웨어를 구성하므로 틀리면 즉시 고장난다 --
+# 그래서 썩지 않는다. 아래 값들은 아무도 읽지 않아서 틀려도 티가 안 나므로,
+# 설정이 아니라 문서로 둔다. 하드웨어를 바꿨을 때 사람이 손으로 고치면 되고,
+# 지금 값이 궁금하면 언제든 실측할 수 있다:
+#
+#   Franka        : Desk 웹 UI > Dashboard
+#   카메라/링크    : python scripts/check_cameras.py
+#   파이썬 패키지  : pip show pylibfranka / pyrealsense2
+#
+# 기록 시점 2026-08-07.
+info:
+  robot:
+    model: Franka Research 3
+    system_image: "5.10.0"          # Desk > Control > System image
+    control_hw_version: 4
+    control_serial: "295341-1326966"
+    arm_hw_version: 1
+    arm_serial: "290102-1324504"
+    hand: Franka Hand
+    shop_floor_network: 172.16.0.2/24   # FCI 가 쓰는 쪽
+    robot_network: 192.168.1.1/24
+    registered_to: KNUPILAB
+
+  leader:
+    model: GELLO (FR3 build)
+    servos: XL330-M288-T x 8        # 7 관절 + 그리퍼 트리거
+    calibrated: 2026-07-15          # gello/agents/gello_agent.py PORT_CONFIG_MAP
+
+  firmware:
+    agent_camera: "5.13.0.55"       # D455
+    wrist_camera: "5.17.0.10"       # D405
+
+  client:
+    pylibfranka: "0.21.2"           # FCI 프로토콜 v10. GIL-release 패치 소스 빌드
+    pyrealsense2: "2.56.5.9235"

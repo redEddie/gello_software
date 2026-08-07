@@ -408,6 +408,22 @@ def describe_episode(grp: Any) -> str:
         f"num_samples: {int(grp.attrs.get('num_samples', actions_shape[0]))}",
         f"success: {None if success is None else bool(success)}",
     ]
+    # 어디서, 어떤 프레이밍으로 찍혔는지. 파일에는 계속 들어 있었는데 이 요약이
+    # 출력하지 않아서, 구조 확인 창만 보면 없는 것처럼 보였다. 크롭은 변환 때
+    # 실제로 재현되는 값이라 눈으로 확인할 수 있어야 한다.
+    station = grp.attrs.get("station")
+    if station is not None:
+        lines.append(f"station: {station}")
+    raw_crop = grp.attrs.get("crop_params")
+    if raw_crop:
+        try:
+            cp = json.loads(raw_crop)
+            detail = "  ".join(
+                f"{role}(zoom {v.get('zoom', 1.0)}, x {v.get('x', 0):+d}, y {v.get('y', 0):+d})"
+                for role, v in sorted(cp.items()))
+            lines.append(f"crop_params: {detail}")
+        except (ValueError, TypeError, AttributeError):
+            lines.append(f"crop_params: {raw_crop}")
     return "\n".join(lines)
 
 
