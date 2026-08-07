@@ -495,8 +495,14 @@ class WorkspaceWindow(QMainWindow):
         self._play_frames: dict = {"agent": None, "wrist": None}
         self._play_key = None
 
-        self._session = {"saved": 0, "success": 0, "failed": 0, "discarded": 0,
-                         "frames": 0, "t0": time.monotonic()}
+        # 두 벌을 든다. _session 은 Connect 마다 0 으로 돌아가므로 "지금 찍고 있는
+        # task 를 몇 개 모았나"이고, _cumulative 는 GUI 를 켠 뒤 전체다. 예전에는
+        # _session 하나뿐이었고 그것이 Connect 때 리셋되지 않아서, task 를 바꿔
+        # 연결하면 이전 task 의 개수가 그대로 따라왔다 -- 게다가 상태바가
+        # max(목록 길이, 연결시점 + saved) 를 쓰는 탓에 정확한 목록이 도착해도
+        # 부풀려진 값이 이겨서, 빈 task 가 "에피소드 10개"로 보였다.
+        self._session = _new_stats()
+        self._cumulative = _new_stats()
         self._fps_count = 0
         self._fps_value = 0.0
         self._pending_success: bool | None = None
@@ -1117,17 +1123,35 @@ class WorkspaceWindow(QMainWindow):
         w = QWidget()
         col = QVBoxLayout(w)
         col.setContentsMargins(0, 0, 0, 0)
+        # 두 열: 왼쪽은 지금 찍고 있는 task, 오른쪽은 GUI 를 켠 뒤 전체.
+        # task 를 여러 개 도는 세션에서 "이 task 를 몇 개 모았나"와 "오늘 총
+        # 몇 개인가"는 서로 다른 질문이고, 한 열만 두면 둘 중 하나를 못 본다.
         self.stats_labels = {}
-        box = QGroupBox(tr("이번 세션"))
-        form = QFormLayout(box)
-        for key, label in (("saved", "저장된 에피소드"), ("success", "성공"),
-                           ("failed", "실패"), ("discarded", "버림"),
-                           ("frames", "총 프레임"), ("elapsed", "경과 시간"),
-                           ("rate", "분당 에피소드")):
-            lab = QLabel("-")
-            lab.setFont(QFont("", 10, QFont.Weight.Bold))
-            form.addRow(tr(label), lab)
-            self.stats_labels[key] = lab
+        self.stats_total_labels = {}
+        box = QGroupBox(tr("수집 현황"))
+        grid = QGridLayout(box)
+        grid.setColumnStretch(0, 1)
+        self.stats_task_header = QLabel(tr("이번 task"))
+        for c, head in ((1, self.stats_task_header), (2, QLabel(tr("누적")))):
+            head.setStyleSheet("color:#888;")
+            head.setAlignment(Qt.AlignmentFlag.AlignRight)
+            grid.addWidget(head, 0, c)
+        for row, (key, label) in enumerate((
+                ("saved", "저장된 에피소드"), ("success", "성공"),
+                ("failed", "실패"), ("discarded", "버림"),
+                ("frames", "총 프레임"), ("elapsed", "경과 시간"),
+                ("rate", "분당 에피소드")), start=1):
+            grid.addWidget(QLabel(tr(label)), row, 0)
+            for c, store in ((1, self.stats_labels), (2, self.stats_total_labels)):
+                lab = QLabel("-")
+                lab.setAlignment(Qt.AlignmentFlag.AlignRight)
+                # 이번 task 쪽만 굵게. 수집 중에 눈이 가야 할 것은 이쪽이다.
+                if c == 1:
+                    lab.setFont(QFont("", 10, QFont.Weight.Bold))
+                else:
+                    lab.setStyleSheet("color:#888;")
+                grid.addWidget(lab, row, c)
+                store[key] = lab
         col.addWidget(box)
         self.disk_box = QGroupBox(tr("디스크"))
         dform = QFormLayout(self.disk_box)
@@ -2410,8 +2434,8 @@ class WorkspaceWindow(QMainWindow):
             return
         self._last_saved_success = not self._last_saved_success
         self.worker.cmd_set_episode_success(self._last_saved_name, self._last_saved_success)
-        self._session["success"] += 1 if self._last_saved_success else -1
-        self._session["failed"] += -1 if self._last_saved_success else 1
+        self._bump("success", 1 if self._last_saved_success else -1)
+        self._bump("failed", -1 if self._last_saved_success else 1)
         self._refresh_verdict_label()
         self._refresh_stats()
 
@@ -3043,10 +3067,10 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(str, int)
     def _on_saved(self, name, n_frames) -> None:
-        self._session["saved"] += 1
-        self._session["frames"] += n_frames
+        self._bump("saved")
+        self._bump("frames", n_frames)
         if self._pending_success is not None:
-            self._session["success" if self._pending_success else "failed"] += 1
+            self._bump("success" if self._pending_success else "failed")
             self._pending_success = None
         self._last_saved_name = name
         if self._pending_success is not None:
@@ -3071,7 +3095,7 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(int)
     def _on_discarded(self, n_frames) -> None:
-        self._session["discarded"] += 1
+        self._bump("discarded")
         self.log(f"[버림] {n_frames} frames")
         self._refresh_stats()
 
@@ -3095,6 +3119,9 @@ class WorkspaceWindow(QMainWindow):
         # 이유는, 연결이 미리보기 정리를 기다리거나 실패할 수 있기 때문이다 --
         # 그때 Live 로 옮겨두면 아무것도 안 나오는 탭을 보게 된다.
         self.center_tabs.setCurrentIndex(self._live_tab_index)
+        # 이번 task 카운터는 여기서 0 으로 돌아간다(누적은 그대로). 연습 모드도
+        # 마찬가지다 -- NullTaskWriter 도 저장을 받아 넘기므로 카운터는 움직인다.
+        self._session = _new_stats()
         if self._no_dataset_session:
             # NullTaskWriter has no real path; claiming one here would make the
             # dataset tree think a file is locked by this session.
@@ -3124,31 +3151,61 @@ class WorkspaceWindow(QMainWindow):
         self._restart_previews()
 
     # -------------------------------------------------------------- stats
+    def _bump(self, key: str, n: int = 1) -> None:
+        """카운터 하나를 이번 task 와 누적 양쪽에 올린다.
+
+        두 dict 를 따로 건드리면 반드시 한쪽만 올리는 자리가 생긴다 -- 판정
+        뒤집기처럼 -1 도 있는 경로가 섞여 있어서 더 그렇다.
+        """
+        self._session[key] += n
+        self._cumulative[key] += n
+
+    def _current_task_label(self, limit: int = 0) -> str:
+        """수집 중인 task 이름. 연결 전이거나 연습 모드면 빈 문자열.
+
+        ``limit`` 을 주면 그 길이로 줄이되 **뒤쪽**을 자른다. LIBERO task 이름은
+        ``put_the_black_bowl_on_the_plate...`` 처럼 길고 앞부분이 서로 다르므로,
+        Qt 가 오른쪽 정렬 라벨에서 하듯 앞을 잘라내면 어느 task 인지 알 수 없다.
+        """
+        if self.worker is None or self._no_dataset_session:
+            return ""
+        name = getattr(self.worker.cfg, "task_name", "") or ""
+        if limit and len(name) > limit:
+            return name[: limit - 1] + "…"
+        return name
+
     def _tick_fps(self) -> None:
         self._fps_value = self._fps_count
         self._fps_count = 0
         self.right_fields["fps"].setText(f"{self._fps_value:.0f}")
         if self.worker is not None and not self._no_dataset_session:
+            # max(): 저장이 백그라운드라 episode_list_changed 가 몇 초 늦게 온다.
+            # 그 사이를 연결시점 + 이번 task 저장수로 메운다. _session 이 Connect
+            # 마다 리셋되므로 두 값 모두 지금 task 의 것이다.
             total = max(len(self.active_episode_cache or []),
                         self._episodes_at_connect + self._session["saved"])
-            count = tr("에피소드 {t}개 (이번 세션 +{s})").format(
-                t=total, s=self._session["saved"])
+            count = tr("{k}: 에피소드 {t}개 (이번 +{s})").format(
+                k=self._current_task_label(limit=32), t=total, s=self._session["saved"])
         else:
-            count = tr("저장 {s}").format(s=self._session["saved"])
+            count = tr("저장 {s}").format(s=self._cumulative["saved"])
         self.sb_right.setText(
             f"{self._fps_value:.0f} fps   |   {count}   |   {self.root_edit.text()}")
 
     def _refresh_stats(self) -> None:
-        s = self._session
-        elapsed = time.monotonic() - s["t0"]
-        self.stats_labels["saved"].setText(str(s["saved"]))
-        self.stats_labels["success"].setText(str(s["success"]))
-        self.stats_labels["failed"].setText(str(s["failed"]))
-        self.stats_labels["discarded"].setText(str(s["discarded"]))
-        self.stats_labels["frames"].setText(str(s["frames"]))
-        self.stats_labels["elapsed"].setText(f"{elapsed / 60:.1f} min")
-        rate = s["saved"] / (elapsed / 60) if elapsed > 30 else 0.0
-        self.stats_labels["rate"].setText(f"{rate:.2f}")
+        for stats, labels in ((self._session, self.stats_labels),
+                              (self._cumulative, self.stats_total_labels)):
+            elapsed = time.monotonic() - stats["t0"]
+            for key in ("saved", "success", "failed", "discarded", "frames"):
+                labels[key].setText(str(stats[key]))
+            labels["elapsed"].setText(f"{elapsed / 60:.1f} min")
+            # 30초 미만에서는 분당 환산이 의미 없는 큰 수로 튄다.
+            rate = stats["saved"] / (elapsed / 60) if elapsed > 30 else 0.0
+            labels["rate"].setText(f"{rate:.2f}")
+        # 어느 task 의 숫자인지 헤더에 박아 둔다. task 를 여러 개 도는 동안
+        # 왼쪽 열이 무엇을 세고 있는지가 패널만 보고 답이 되어야 한다.
+        task = self._current_task_label(limit=20)
+        self.stats_task_header.setText(task or tr("이번 task"))
+        self.stats_task_header.setToolTip(self._current_task_label())
         try:
             usage = shutil.disk_usage(self.root_edit.text().strip() or str(Path.home()))
             self.disk_label.setText(f"{usage.free / 1e9:.1f} GB / {usage.total / 1e9:.0f} GB")
@@ -3182,7 +3239,7 @@ class WorkspaceWindow(QMainWindow):
             counted = self._episodes_at_connect + self._session["saved"]
             total = max(listed, counted)
             f["ds_episodes"].setText(
-                tr("{t}개  (이번 세션 +{s})").format(t=total, s=self._session["saved"]))
+                tr("{t}개  (이번 +{s})").format(t=total, s=self._session["saved"]))
             f["ds_action"].setText(cfg.schema.action_space)
             f["ds_gripper"].setText(
                 "0/1 (obs와 동일)" if cfg.schema.gripper_action_match_obs else "-1/+1")
