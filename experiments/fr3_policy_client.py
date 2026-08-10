@@ -1,15 +1,25 @@
 """FR3 policy client — runs on the FR3 controller computer (lerobot-venv).
 
 Streams observations to the GPU policy server (mamba-embeddingvla
-real_deploy/fr3_policy_server.py) and executes the returned 8-dim absolute
-joint-angle chunks on the robot. No model compute on this machine.
+real_deploy/fr3_policy_server.py) and executes absolute joint-angle actions on
+the robot. The only heavy compute here is IK (analytic, ~4 ms) for EE ckpts.
 
 Data path per replan cycle (default 0.40 s = 8 executed steps @ 20 Hz):
   FR3ZMQRobot.get_observation()             joints 7 rad + gripper 0..1, 2x 640x480 RGB
     -> resize_rgb (libero_format)           square-crop 480^2 -> 256^2, crop_params 적용
-    -> base64 JSON POST /infer              ~0.4 MB/request, on a background thread
-    <- {"actions": [[8] x 10]}              joint1-7 rad + gripper 0..1 (absolute)
+    -> base64 JSON POST /predict            ~0.4 MB/request, on a background thread
+    <- {"actions": [[dim] x 10]}            dim=7 EE-delta (ee ckpt) or 8 joint (joint ckpt)
+  then every control tick (main thread, no network):
+    q_meas = get_observation()              latest measured joints
+    -> raw_to_joint (fr3_kinematics)        ee: re-anchor delta to q_meas + IK -> joint8
+       (joint ckpt: pass chunk[idx] through)
     -> send_action at 20 Hz                 with per-step |dq| safety clamp
+
+The per-tick re-anchor to the LATEST measured pose matches the training label
+(each frame's EE-delta is relative to that frame's measured pose), so tracking
+lag never accumulates. IK stays in the CONTROL thread (fresh q_meas); /predict
+stays on the background thread. This is the client half of the server's
+/predict + /step split — ee_step_to_joint is byte-identical to the server's /step.
 
 Chunk boundaries do not stall the arm.  Inference for the next chunk is fired
 CHUNK_LEAD ticks before the current one runs out, and the arriving chunk's
@@ -31,11 +41,16 @@ from __future__ import annotations
 
 import argparse
 import base64
+import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import requests
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fr3_kinematics import ee_step_to_joint  # noqa: E402  (mamba real_deploy copy, byte-identical)
 
 from gello.station import load_station
 
@@ -87,29 +102,41 @@ def _b64(img: np.ndarray) -> dict:
             "shape": list(img.shape), "dtype": "uint8"}
 
 
+def raw_to_joint(d: np.ndarray, q_meas: np.ndarray, ee_mode: bool) -> np.ndarray:
+    """One raw /predict chunk action -> absolute joint action [8] (client-side /step).
+
+    ee: re-anchor the EE-delta to the LATEST measured pose + IK. joint: passthrough.
+    Identical to the server's step(); the difference is q_meas is fresh here."""
+    return ee_step_to_joint(d, q_meas[:7]) if ee_mode else np.asarray(d, dtype=float)
+
+
 def dry_run(url: str, instruction: str, n: int = 5) -> None:
-    """Server round-trip test with synthetic obs — robot/cameras NOT required."""
+    """Server round-trip test with synthetic obs — robot/cameras NOT required.
+
+    Exercises the full client path: /predict then local step on each chunk row."""
     rng = np.random.default_rng(0)
     img = rng.integers(0, 255, (256, 256, 3), dtype=np.uint8)
-    state = [0.0, -0.161, 0.0, -2.445, 0.0, 2.227, 0.785, 0.0]  # libero reset pose
+    state = np.array([0.0, -0.161, 0.0, -2.445, 0.0, 2.227, 0.785, 0.0])  # libero reset
     r = requests.post(f"{url}/reset", json={"instruction": instruction}, timeout=60)
     r.raise_for_status()
     print(f"[dry-run] /reset ok: {r.json()}")
     for i in range(n):
         payload = {
-            "observation.state": state,
+            "observation.state": state.tolist(),
             "observation.images.agent": _b64(img),
             "observation.images.wrist": _b64(img),
         }
         t0 = time.perf_counter()
-        r = requests.post(f"{url}/infer", json=payload, timeout=60)
+        r = requests.post(f"{url}/predict", json=payload, timeout=60)
         r.raise_for_status()
         ms = (time.perf_counter() - t0) * 1000
-        chunk = r.json()["actions"]
-        a0 = np.array(chunk[0])
-        print(f"[dry-run] /infer #{i}: {len(chunk)}x{len(chunk[0])} actions, "
-              f"round-trip {ms:.1f} ms | a[0] joints(rad)={np.round(a0[:7], 3)} grip={a0[7]:.2f}")
-    print("[dry-run] OK — comm path verified.")
+        chunk = np.asarray(r.json()["actions"], dtype=float)  # [K, dim]
+        ee_mode = chunk.shape[1] == 7
+        a0 = raw_to_joint(chunk[0], state, ee_mode)  # local step, q_meas = reset pose
+        mode = "EE-delta+local-step" if ee_mode else "joint-absolute"
+        print(f"[dry-run] /predict #{i}: {chunk.shape[0]}x{chunk.shape[1]} ({mode}), "
+              f"round-trip {ms:.1f} ms | step->joints(rad)={np.round(a0[:7], 3)} grip={a0[7]:.2f}")
+    print("[dry-run] OK — comm path + local step verified.")
 
 
 def main() -> None:
@@ -171,11 +198,13 @@ def main() -> None:
         robot.send_action(dict(zip(JOINT_KEYS, np.append(q7, grip).tolist())))
 
     session = requests.Session()   # keep-alive — 매 요청 TCP 핸드셰이크 제거
-    infer_ms: list[float] = []
+    predict_ms: list[float] = []
 
-    def infer(obs: dict) -> np.ndarray:
-        """POST /infer. 워커 스레드에서 돈다 — ZMQ 소켓도 카메라도 만지지 않는다.
+    def predict(obs: dict) -> np.ndarray:
+        """POST /predict. 워커 스레드에서 돈다 — ZMQ 소켓도 카메라도 만지지 않는다.
 
+        정책 raw 청크만 받는다(EE-delta[7] or joint[8]). delta->joint 재앵커+IK는
+        제어 스레드가 매 틱 fresh q_meas로 하므로 여기서 하지 않는다.
         관측 읽기(get_observation)는 반드시 제어 스레드에 남겨야 한다: ZMQ 소켓은
         스레드 안전하지 않다. 여기서는 이미 읽어둔 obs만 다룬다.
         resize+base64(실측 4.2ms)도 여기서 하므로 제어 틱 예산 50ms를 쓰지 않는다.
@@ -188,12 +217,12 @@ def main() -> None:
             "observation.images.wrist": _b64(_crop_resize(obs["wrist"], "wrist")),
         }
         t0 = time.perf_counter()
-        r = session.post(f"{args.server}/infer", json=payload, timeout=60)
+        r = session.post(f"{args.server}/predict", json=payload, timeout=60)
         r.raise_for_status()
-        infer_ms.append((time.perf_counter() - t0) * 1000)
-        return np.asarray(r.json()["actions"], dtype=float)  # [10,8]
+        predict_ms.append((time.perf_counter() - t0) * 1000)
+        return np.asarray(r.json()["actions"], dtype=float)  # [10, dim] raw
 
-    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infer")
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="predict")
 
     try:
         # ── 홈 복귀 램프 (수집기 _ramp_to와 동일 상수) ──
@@ -223,7 +252,8 @@ def main() -> None:
 
         # 부트스트랩: 첫 청크는 겹칠 이전 청크가 없어 블로킹으로 받는다.
         # 팔이 홈 자세에서 정지 중이라 이 한 번의 정지는 무해하다.
-        chunk = infer(robot.get_observation())
+        chunk = predict(robot.get_observation())
+        ee_mode = chunk.shape[1] == 7   # 7=EE-delta(클라 재앵커+IK), 8=joint(passthrough)
         idx = 0
         n_replans = 1
         if len(chunk) < args.exec_horizon:
@@ -231,7 +261,8 @@ def main() -> None:
             # 주기가 의도와 달라지므로 한 번은 눈에 보이게 알린다.
             print(f"[client] 주의: 서버 청크 {len(chunk)}개 < exec-horizon "
                   f"{args.exec_horizon} — 실제로 쓰는 건 {len(chunk)}개")
-        print(f"[client] chunk {chunk.shape}, lead {K}틱(추론 예산 {K*1000//FPS} ms), "
+        print(f"[client] chunk {chunk.shape} mode={'ee' if ee_mode else 'joint'}, "
+              f"lead {K}틱(추론 예산 {K*1000//FPS} ms), "
               f"재계획 {(min(len(chunk), args.exec_horizon) - K) / FPS:.2f}s")
 
         deadline = time.monotonic() + args.max_seconds
@@ -245,7 +276,7 @@ def main() -> None:
             if idx >= horizon:
                 if pending is None:                 # K=0 또는 예외 경로 — 예전 순차 동작
                     t_obs = time.monotonic()
-                    chunk = infer(robot.get_observation())
+                    chunk = predict(robot.get_observation())
                 else:
                     if not pending.done():
                         n_late += 1                 # 예산 초과 — 여기서 경계 정지가 난다
@@ -255,12 +286,12 @@ def main() -> None:
                 horizon = min(len(chunk), args.exec_horizon)
                 skip = round((time.monotonic() - t_obs) / dt)
                 if skip >= horizon:
-                    print(f"[client] 경고: 추론({infer_ms[-1]:.0f} ms)이 청크 길이를 넘겼다 "
+                    print(f"[client] 경고: 추론({predict_ms[-1]:.0f} ms)이 청크 길이를 넘겼다 "
                           f"(skip {skip} >= {horizon}) — 마지막 액션만 실행한다. "
                           f"--lead-ticks를 올리거나 --exec-horizon을 늘려라.")
                 idx = min(max(skip, 0), horizon - 1)
                 if n_replans % 4 == 1:
-                    print(f"[client] replan #{n_replans}: infer {infer_ms[-1]:.0f} ms, "
+                    print(f"[client] replan #{n_replans}: predict {predict_ms[-1]:.0f} ms, "
                           f"chunk {chunk.shape}, skip {skip}")
 
             # (2) 끝 K틱 전 → 다음 추론을 미리 띄운다. 추론이 도는 동안 남은 K틱이
@@ -268,12 +299,12 @@ def main() -> None:
             if pending is None and K > 0 and idx >= horizon - K:
                 t_obs = time.monotonic()
                 obs = robot.get_observation()       # ZMQ는 제어 스레드에서만
-                pending = pool.submit(infer, obs)
+                pending = pool.submit(predict, obs)
 
-            # (3) 한 틱 실행
-            a = chunk[idx]
-            idx += 1
+            # (3) 한 틱 실행 — 매 틱 최신 측정 pose에 재앵커(ee) / passthrough(joint)
             q_meas = joints(robot.get_observation())
+            a = raw_to_joint(chunk[idx], q_meas, ee_mode)   # 클라측 /step (fresh anchor)
+            idx += 1
             # 안전 클램프: 목표가 측정치에서 MAX_STEP_RAD 이상 벗어나지 않게
             q_tgt = q_meas + np.clip(a[:7] - q_meas, -MAX_STEP_RAD, MAX_STEP_RAD)
             command(q_tgt, float(np.clip(a[7], 0.0, 1.0)))
@@ -286,9 +317,9 @@ def main() -> None:
                 t_next = time.monotonic()   # 크게 밀림 — 몰아치기 방지로 틱 시계 재동기
 
         print(f"[client] done ({n_replans} replans, 예산 초과 {n_late}회).")
-        if infer_ms:
-            p50, p95 = np.percentile(infer_ms, [50, 95])
-            print(f"[client] /infer {p50:.0f} / p95 {p95:.0f} / max {max(infer_ms):.0f} ms "
+        if predict_ms:
+            p50, p95 = np.percentile(predict_ms, [50, 95])
+            print(f"[client] /predict {p50:.0f} / p95 {p95:.0f} / max {max(predict_ms):.0f} ms "
                   f"(예산 {K*1000//FPS} ms)")
     except KeyboardInterrupt:
         print("\n[client] interrupted.")
