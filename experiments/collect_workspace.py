@@ -1059,6 +1059,13 @@ class WorkspaceWindow(QMainWindow):
                "Hub에서도 사라집니다.\n실행 전에 항상 확인 창을 띄웁니다."),
             self._on_lerobot_auto, primary=True, color="#3498db")
         self._upload_button(
+            lcol, tr("이어붙이기 (새 에피소드만)"),
+            tr("Hub과 대조해 새로 추가된 에피소드만 변환해 이어붙입니다.\n"
+               "5~10개씩 추가 수집한 날은 전체 재빌드 대신 이걸로 몇 분이면 "
+               "끝납니다.\n에피소드를 삭제·편집한 흔적이 있으면 안전하게 거부하고 "
+               "전체 재빌드를 안내합니다."),
+            self._on_lerobot_resume, primary=True, color="#1abc9c")
+        self._upload_button(
             lcol, tr("HDF5 골라서 변환만..."),
             tr("올리지 않고 로컬에만 변환합니다.\n"
                "결과를 눈으로 확인한 뒤 아래 버튼으로 올리세요."),
@@ -1073,8 +1080,9 @@ class WorkspaceWindow(QMainWindow):
 
         col.addSpacing(10)
         note = QLabel(tr(
-            "LeRobot 업로드는 항상 전체를 새로 올립니다. 큐레이션으로 지운 "
-            "에피소드를 Hub에서도 없애려면 이어붙이기로는 안 되기 때문입니다."))
+            "'변환 + 업로드 (자동)'은 전체를 새로 만들어 교체합니다 — 큐레이션으로 "
+            "지운 에피소드를 Hub에서도 없애는 유일한 방법입니다. 추가만 한 날은 "
+            "'이어붙이기'가 새 에피소드만 변환해서 훨씬 빠릅니다."))
         note.setStyleSheet("color:#888;")
         note.setWordWrap(True)
         col.addWidget(note)
@@ -4015,6 +4023,82 @@ class WorkspaceWindow(QMainWindow):
                       "--push-only", "--replace", "--no-private"]},
         ]
         self._start_pipeline(steps, tr("LeRobot 자동"))
+
+    def _on_lerobot_resume(self) -> None:
+        """이어붙이기 -- Hub과 대조해 새 에피소드만 변환·추가 업로드.
+
+        --resume 이 안전한 조건(추가만 있음)을 plan_sync 로 먼저 검증하고,
+        아니면 실행을 거부한다. 삭제/편집이 섞인 채 이어붙이면 지운 에피소드의
+        청크가 Hub에 남거나(선언 개수만 줄어듦) 개수 대응이 깨진다 --
+        convert_libero_to_lerobot.py 상단 docstring 2번 참고.
+        """
+        if not self._pipeline_guard(tr("LeRobot 이어붙이기")):
+            return
+        data_root = self.root_edit.text().strip()
+        paths = sorted(str(x) for x in Path(data_root).glob("*_demo.hdf5"))
+        if not paths:
+            QMessageBox.warning(self, tr("파일 없음"),
+                                tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=data_root))
+            return
+        repo = self._check_repo("repo_id", tr("LeRobot 이어붙이기"))
+        if repo is None:
+            return
+        plan = plan_sync(data_root, repo)  # 네트워크 -- Hub 개수 대조
+        if plan["action"] == "blocked":
+            QMessageBox.warning(self, tr("이어붙이기 불가"),
+                                tr("Hub 상태를 읽지 못했습니다: {e}\n확실하지 않은 "
+                                   "채로 올리지 않습니다.").format(e=plan["error"]))
+            return
+        if plan["action"] == "rebuild":
+            QMessageBox.warning(
+                self, tr("이어붙이기 불가"),
+                tr("이미 올라간 task에서 에피소드 {n}개가 삭제되었습니다.\n"
+                   "이어붙이기는 추가만 할 수 있어 지운 에피소드가 Hub에 "
+                   "남습니다.\n'변환 + 업로드 (자동)'으로 전체 재빌드하세요.")
+                .format(n=plan["shrunk"]))
+            return
+        if plan["ambiguous"]:
+            QMessageBox.warning(
+                self, tr("이어붙이기 불가"),
+                tr("개수는 같지만 재압축 이후 편집된 흔적이 있는 task가 "
+                   "있습니다:\n{t}\n\n지우고 다시 찍은 경우 이어붙이기로는 옛 "
+                   "에피소드가 Hub에 남습니다.\n'변환 + 업로드 (자동)'으로 전체 "
+                   "재빌드하세요.").format(
+                       t="\n".join(x[:60] for x in plan["ambiguous"])))
+            return
+        if plan["action"] == "up_to_date":
+            QMessageBox.information(
+                self, tr("이어붙일 것 없음"),
+                tr("Hub이 이미 로컬과 같습니다 ({n}개 에피소드).")
+                .format(n=plan["local_total"]))
+            return
+        root = self._recents.most_recent("lerobot_root",
+                                         str(Path.home() / "lerobot_upload"))
+        if QMessageBox.question(
+                self, tr("LeRobot 이어붙이기"),
+                tr("새 에피소드 {n}개만 변환해 이어붙입니다 "
+                   "(Hub {h} → {l}).\n\n"
+                   "· 로컬 변환 폴더를 비우고 Hub의 현재 상태를 기준으로 "
+                   "받습니다: {o}\n"
+                   "· 이미 올라간 에피소드는 다시 변환하지 않습니다\n\n진행할까요?")
+                .format(n=plan["added"], h=plan["hub_total"],
+                        l=plan["local_total"], o=root),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes) != QMessageBox.StandardButton.Yes:
+            self.log("[LeRobot 이어붙이기] 취소했습니다.", "upload")
+            return
+        self._recents.add("repo_id", repo)
+        self._recents.add("lerobot_root", root)
+        steps = [
+            {"name": tr("LeRobot 변환 (이어붙이기)"), "program": sys.executable,
+             "args": [CONVERT_SCRIPT, *paths, "--repo-id", repo, "--root", root,
+                      "--resume"],
+             "clear_root": root},
+            {"name": tr("LeRobot 추가 업로드"), "program": sys.executable,
+             "args": [CONVERT_SCRIPT, "--repo-id", repo, "--root", root,
+                      "--push-only", "--no-private"]},
+        ]
+        self._start_pipeline(steps, tr("LeRobot 이어붙이기"))
 
     def _count_hdf5_episodes(self) -> "int | None":
         """Episodes currently in the .hdf5 files. Metadata only -- no images."""
