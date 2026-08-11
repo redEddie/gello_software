@@ -133,6 +133,33 @@ from gello.libero_format import (  # noqa: E402
 # (원본 640x480)과 일부러 다르다 -- 원본은 보관, 이쪽은 실사용 크기.
 LEROBOT_IMAGE_SIZE = 224
 
+# Hub 데이터셋 카드에 박을 태그. push_to_hub 가 매 푸시마다 카드를 다시
+# 만들기 때문에, 웹에서 손으로 넣은 태그는 다음 푸시에 지워진다 -- 여기가
+# 유일하게 살아남는 자리다. (lerobot 이 'LeRobot' 태그는 알아서 붙인다.)
+DATASET_TAGS = [
+    "libero", "franka", "fr3", "manipulation", "teleoperation",
+    "imitation-learning", "multi-camera", "rgb",
+]
+
+
+def _merge_card_tags(repo_id: str) -> None:
+    """기존 데이터셋 카드의 태그에 DATASET_TAGS 를 합친다 (없으면 조용히 넘어감).
+
+    교체 업로드(--replace) 경로는 push_to_hub 를 안 거쳐 카드가 재생성되지
+    않으므로, 태그 유지는 여기서 한다. 태그 실패로 업로드 자체를 실패시키지는
+    않는다 -- 데이터가 올라간 뒤의 치장이다."""
+    try:
+        from huggingface_hub import DatasetCard
+
+        card = DatasetCard.load(repo_id, repo_type="dataset")
+        merged = sorted(set(card.data.tags or []) | set(DATASET_TAGS))
+        if merged != sorted(card.data.tags or []):
+            card.data.tags = merged
+            card.push_to_hub(repo_id, repo_type="dataset")
+            print(f"카드 태그 갱신: {merged}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"카드 태그 갱신 건너뜀 ({type(e).__name__}: {e})", flush=True)
+
 
 _STAT_KEYS = ("min", "max", "mean", "std", "count", "q01", "q10", "q50", "q90", "q99")
 
@@ -631,8 +658,12 @@ def main() -> None:
             except RevisionNotFoundError:
                 pass
             api.create_tag(args.repo_id, tag=CODEBASE_VERSION, repo_type="dataset")
+            # upload_folder 는 카드도 건드리지 않는다 -- 기존 README 의 태그에
+            # DATASET_TAGS 를 합쳐 유지한다 (카드가 없으면 push_to_hub 가 다음
+            # 비교체 푸시에서 만든다).
+            _merge_card_tags(args.repo_id)
         else:
-            ds.push_to_hub(private=args.private)
+            ds.push_to_hub(private=args.private, tags=DATASET_TAGS)
         ok_tag = _verify_tag(args.repo_id)
         print(f"완료: https://huggingface.co/datasets/{args.repo_id}", flush=True)
         # 태그가 안 따라왔으면 성공이 아니다. lerobot은 태그를 읽으므로 올린
@@ -774,7 +805,7 @@ def main() -> None:
 
     if args.push:
         print("Hugging Face Hub에 업로드 중...")
-        ds.push_to_hub(private=args.private)
+        ds.push_to_hub(private=args.private, tags=DATASET_TAGS)
         print(f"완료: https://huggingface.co/datasets/{args.repo_id}")
 
 
