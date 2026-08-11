@@ -433,15 +433,23 @@ class CollectionWorker(QThread):
     def _ik_posture(K, target: np.ndarray, q_seed: np.ndarray,
                     q_posture: np.ndarray, iters: int = 30,
                     damping: float = 1e-4, tol: float = 1e-5,
-                    posture_step: float = 0.01) -> np.ndarray:
+                    posture_step: float = 0.01,
+                    limit_margin: float = 0.6) -> np.ndarray:
         """Task-priority IK: 1순위 EE 목표 + 널스페이스로 자세를 q_posture 로.
 
         fr3_kinematics.ik 와 같은 damped-LS 지만, 매 반복 널스페이스 사영
-        ``N = I - J^+J`` 을 통해 자세 오차를 함께 줄인다. 사영된 자세 이동은
-        1차 근사에서 EE 를 움직이지 않으므로, EE 는 목표 궤적을 따라가면서
-        팔 구성(팔꿈치)은 별도로 홈 쪽으로 풀린다 -- "지나온 궤적을 금지
+        ``N = I - J^+J`` 을 통해 2차 목표를 함께 줄인다. 사영된 이동은 1차
+        근사에서 EE 를 움직이지 않으므로, EE 는 목표 궤적을 따라가면서 팔
+        구성(팔꿈치)은 별도로 홈 쪽으로 풀린다 -- "지나온 궤적을 금지
         영역으로" 제약하는 것과 같은 효과를 사영이 해석적으로 보장한다.
-        posture_step 은 반복당 자세 이동 상한: EE 수렴에 3~5회 걸리므로
+
+        2차 목표는 자세 복귀 + **관절 한계 회피**다. 한계 clip 만으로는
+        널 방향이 어떤 관절을 한계 근처까지 밀고 갔다가 돌아오는 여행을
+        막지 못한다(실측: 손목 j7 이 여유 2.2 rad 에서 0.38 rad 까지 접근).
+        여유가 limit_margin 아래로 줄면 여유에 비례해 반대 방향으로 미는
+        반발 항을 널스페이스에 함께 사영해, 한계 접근을 스스로 멈추게 한다.
+
+        posture_step 은 반복당 2차 목표 이동 상한: EE 수렴에 3~5회 걸리므로
         웨이포인트당 0.03~0.05 rad 씩, 경로 전체(30~40틱)에 걸쳐 1 rad 이상의
         꼬임도 점진적으로 풀 수 있는 예산이다.
         """
@@ -460,7 +468,15 @@ class CollectionWorker(QThread):
             dq_task = J.T @ sol[:, 0]
             N = np.eye(7) - J.T @ sol[:, 1:]
             dq_post = np.clip(q_posture - q, -posture_step, posture_step)
-            q = np.clip(q + dq_task + N @ dq_post, K.FR3_Q_MIN, K.FR3_Q_MAX)
+            # 한계 반발: 여유 < limit_margin 인 관절을 여유에 비례해 안쪽으로.
+            # (여유 0 에서 posture_step, margin 에서 0 -- 연속이라 떨림 없음)
+            lo = q - K.FR3_Q_MIN
+            hi = K.FR3_Q_MAX - q
+            rep = (np.clip(limit_margin - lo, 0.0, limit_margin)
+                   - np.clip(limit_margin - hi, 0.0, limit_margin))
+            dq_rep = rep * (posture_step / limit_margin)
+            q = np.clip(q + dq_task + N @ (dq_post + dq_rep),
+                        K.FR3_Q_MIN, K.FR3_Q_MAX)
         return q
 
     def _home_trajectory(self, q_now: np.ndarray) -> "list[np.ndarray] | None":
@@ -506,7 +522,12 @@ class CollectionWorker(QThread):
                     return None
                 wps.append(q)
 
-            # 2단계: 리프트 포즈 -> 홈 포즈 직선 (위치 lerp + 회전 slerp)
+            # 2단계: 리프트 포즈 -> 홈 포즈 직선 (위치 lerp + 회전 slerp).
+            # 참고: "위치만 잡고 자세는 널스페이스에 맡기는" 변형도 실험했으나,
+            # 자세 복귀 항의 권한이 부족해 도착 잔차가 1.2 rad/71°까지 커져
+            # 폐기했다. 한계 접근처럼 보이는 현상은 궤적이 아니라 텔레옵이
+            # 감아둔 시작 자세가 원인이다 -- 경로의 관절별 최소 한계 여유가
+            # 시작 자세의 여유와 동일함을 실측으로 확인(예: j7 0.379 vs 0.376).
             T_lift = T_now.copy()
             T_lift[2, 3] += HOME_LIFT_M
             p0, p1 = T_lift[:3, 3], T_home[:3, 3]
