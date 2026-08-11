@@ -360,7 +360,12 @@ class PipelineDialog(QDialog):
 
         opts = QGroupBox(tr("함께 할 일"))
         ocol = QVBoxLayout(opts)
-        n_repack = sum(1 for p in plan["paths"] if not hdf5_repack_status(p)["repacked"])
+        # 다이얼로그를 연 시점의 판정으로 고정한다 -- steps() 는 재압축 단계가
+        # 돌기 *전에* 호출되므로 그때 다시 판정해도 같지만, 두 곳이 따로 계산
+        # 하면 언젠가 어긋난다.
+        self._repack_todo = [p for p in plan["paths"]
+                             if not hdf5_repack_status(p)["repacked"]]
+        n_repack = len(self._repack_todo)
         self.repack_check = QCheckBox(
             tr("재압축 — 필요한 파일 {n}개").format(n=n_repack))
         self.repack_check.setChecked(n_repack > 0)
@@ -368,6 +373,19 @@ class PipelineDialog(QDialog):
         ocol.addWidget(self.repack_check)
         self.hdf5_check = QCheckBox(tr("원본 HDF5도 Hub에 업로드 (9GB 기준 약 15분)"))
         ocol.addWidget(self.hdf5_check)
+        # 업로드 쪽은 재압축 마커 같은 로컬 기록이 없어 "Hub과 다른 파일"을
+        # 스스로 고르지 못한다. 대신 이번에 재압축 대상인 파일(= 지난 재압축
+        # 이후 새로 찍었거나 편집한 파일)만 올리는 선택지를 준다. 변경 없는
+        # 파일은 올려도 Hub이 해시로 전송을 건너뛰지만, 그 판정에만 전체
+        # 파일을 다시 읽는 시간이 든다 -- 이 체크박스는 그 시간을 없앤다.
+        self.hdf5_only_new_check = QCheckBox(
+            tr("  ↳ 이번에 재압축한 파일만 ({n}개) — 나머지는 Hub에 이미 있음")
+            .format(n=n_repack))
+        self.hdf5_only_new_check.setChecked(n_repack > 0)
+        self.hdf5_only_new_check.setEnabled(False)  # hdf5_check 켜야 활성화
+        self.hdf5_check.toggled.connect(
+            lambda on: self.hdf5_only_new_check.setEnabled(on and n_repack > 0))
+        ocol.addWidget(self.hdf5_only_new_check)
         self.only_success_check = QCheckBox(tr("성공한 에피소드만 변환 (--only-success)"))
         ocol.addWidget(self.only_success_check)
         layout.addWidget(opts)
@@ -429,11 +447,9 @@ class PipelineDialog(QDialog):
         self._recents.add("lerobot_root", root)
 
         steps = []
-        if self.repack_check.isChecked():
-            todo = [p for p in paths if not hdf5_repack_status(p)["repacked"]]
-            if todo:
-                steps.append({"name": tr("재압축"), "program": sys.executable,
-                              "args": [REPACK_SCRIPT, *todo]})
+        if self.repack_check.isChecked() and self._repack_todo:
+            steps.append({"name": tr("재압축"), "program": sys.executable,
+                          "args": [REPACK_SCRIPT, *self._repack_todo]})
         convert = [CONVERT_SCRIPT, *paths, "--repo-id", lerobot_repo, "--root", root]
         if self.only_success_check.isChecked():
             convert.append("--only-success")
@@ -447,9 +463,15 @@ class PipelineDialog(QDialog):
             push.append("--replace")
         steps.append({"name": tr("LeRobot 업로드"), "program": sys.executable, "args": push})
         if self.hdf5_check.isChecked():
-            steps.append({"name": tr("HDF5 원본 업로드"), "program": sys.executable,
-                          "args": [UPLOAD_SCRIPT, *paths, "--repo-id", hdf5_repo,
-                                   "--no-private"]})
+            only_new = (self.hdf5_only_new_check.isChecked()
+                        and bool(self._repack_todo))
+            upload_paths = self._repack_todo if only_new else paths
+            steps.append({"name": tr("HDF5 원본 업로드")
+                          + (tr(" (재압축분 {n}개)").format(n=len(upload_paths))
+                             if only_new else ""),
+                          "program": sys.executable,
+                          "args": [UPLOAD_SCRIPT, *upload_paths, "--repo-id",
+                                   hdf5_repo, "--no-private"]})
         return steps
 
 
@@ -3916,21 +3938,36 @@ class WorkspaceWindow(QMainWindow):
         if repo is None:
             return
         todo = [x for x in paths if not hdf5_repack_status(x)["repacked"]]
-        if QMessageBox.question(
-                self, tr("HDF5 재압축 + 업로드"),
-                tr("파일 {n}개 중 재압축이 필요한 것 {m}개.\n"
-                   "재압축 후 {r} 에 원본을 업로드합니다.\n\n진행할까요?")
-                .format(n=len(paths), m=len(todo), r=repo),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes) != QMessageBox.StandardButton.Yes:
+        box = QMessageBox(QMessageBox.Icon.Question, tr("HDF5 재압축 + 업로드"),
+                          tr("파일 {n}개 중 재압축이 필요한 것 {m}개.\n"
+                             "재압축 후 {r} 에 원본을 업로드합니다.\n\n진행할까요?")
+                          .format(n=len(paths), m=len(todo), r=repo),
+                          QMessageBox.StandardButton.Yes
+                          | QMessageBox.StandardButton.No, self)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        # 업로드는 재압축과 달리 "Hub과 다른 파일"을 스스로 고르지 못한다
+        # (로컬에 업로드 마커가 없다). 변경 없는 파일도 Hub이 해시 대조로
+        # 전송은 건너뛰지만 그 대조에 파일 전체를 다시 읽는 시간이 들어서,
+        # 몇 개만 새로 찍은 날은 이 체크박스가 수십 분을 아낀다.
+        only_new = QCheckBox(
+            tr("이번에 재압축한 파일만 업로드 ({m}개)").format(m=len(todo)))
+        only_new.setChecked(bool(todo))
+        only_new.setEnabled(bool(todo))
+        box.setCheckBox(only_new)
+        if box.exec() != QMessageBox.StandardButton.Yes:
             self.log("[HDF5 자동] 취소했습니다.", "upload")
             return
+        upload_paths = todo if (only_new.isChecked() and todo) else paths
         steps = []
         if todo:
             steps.append({"name": tr("재압축"), "program": sys.executable,
                           "args": [REPACK_SCRIPT, *todo]})
-        steps.append({"name": tr("HDF5 원본 업로드"), "program": sys.executable,
-                      "args": [UPLOAD_SCRIPT, *paths, "--repo-id", repo, "--no-private"]})
+        steps.append({"name": tr("HDF5 원본 업로드")
+                      + (tr(" (재압축분 {n}개)").format(n=len(upload_paths))
+                         if len(upload_paths) < len(paths) else ""),
+                      "program": sys.executable,
+                      "args": [UPLOAD_SCRIPT, *upload_paths, "--repo-id", repo,
+                               "--no-private"]})
         self._start_pipeline(steps, tr("HDF5 자동"))
 
     def _on_lerobot_auto(self) -> None:
