@@ -294,10 +294,17 @@ class PipelineDialog(QDialog):
                             "없습니다.").format(n=plan["local_total"]))
             head.setStyleSheet("color:#27ae60; font-weight:bold;")
         elif action == "rebuild":
-            head.setText(tr(
-                "이미 올라간 task에서 에피소드 {n}개가 삭제되었습니다. LeRobot은 게시된 "
-                "에피소드를 지울 수 없으므로, 전체를 다시 만들어 Hub을 교체해야 합니다 "
-                "(오래 걸립니다).").format(n=plan["shrunk"]))
+            if plan["shrunk"]:
+                head.setText(tr(
+                    "이미 올라간 task에서 에피소드 {n}개가 삭제되었습니다. LeRobot은 게시된 "
+                    "에피소드를 지울 수 없으므로, 전체를 다시 만들어 Hub을 교체해야 합니다 "
+                    "(오래 걸립니다).").format(n=plan["shrunk"]))
+            else:
+                head.setText(tr(
+                    "task {n}개의 에피소드 이력이 Hub와 어긋나 있습니다 (길이 지문 "
+                    "불일치 — 지우고 다시 찍은 흔적). 이어붙이면 엉뚱한 에피소드가 "
+                    "붙으므로, 전체를 다시 만들어 Hub을 교체해야 합니다.").format(
+                        n=plan.get("mismatch", 0)))
             head.setStyleSheet("color:#e67e22; font-weight:bold;")
         else:
             head.setText(tr("새 에피소드 {n}개를 이어붙이면 됩니다 (Hub {h} → {l}). "
@@ -4070,21 +4077,23 @@ class WorkspaceWindow(QMainWindow):
                                    "채로 올리지 않습니다.").format(e=plan["error"]))
             return
         if plan["action"] == "rebuild":
-            QMessageBox.warning(
-                self, tr("이어붙이기 불가"),
-                tr("이미 올라간 task에서 에피소드 {n}개가 삭제되었습니다.\n"
-                   "이어붙이기는 추가만 할 수 있어 지운 에피소드가 Hub에 "
-                   "남습니다.\n'변환 + 업로드 (자동)'으로 전체 재빌드하세요.")
-                .format(n=plan["shrunk"]))
+            if plan["shrunk"]:
+                msg = tr("이미 올라간 task에서 에피소드 {n}개가 삭제되었습니다.\n"
+                         "이어붙이기는 추가만 할 수 있어 지운 에피소드가 Hub에 "
+                         "남습니다.").format(n=plan["shrunk"])
+            else:
+                msg = tr("에피소드 이력이 Hub와 어긋난 task가 있습니다 (길이 지문 "
+                         "불일치).\n이어붙이면 엉뚱한 에피소드가 붙습니다.")
+            QMessageBox.warning(self, tr("이어붙이기 불가"),
+                                msg + tr("\n'변환 + 업로드 (자동)'으로 전체 "
+                                         "재빌드하세요."))
             return
-        if plan["ambiguous"]:
-            QMessageBox.warning(
-                self, tr("이어붙이기 불가"),
-                tr("개수는 같지만 재압축 이후 편집된 흔적이 있는 task가 "
-                   "있습니다:\n{t}\n\n지우고 다시 찍은 경우 이어붙이기로는 옛 "
-                   "에피소드가 Hub에 남습니다.\n'변환 + 업로드 (자동)'으로 전체 "
-                   "재빌드하세요.").format(
-                       t="\n".join(x[:60] for x in plan["ambiguous"])))
+        # 여기 남는 ambiguous 는 전부 개수가 Hub와 같은 task 다 (append 대상이
+        # 아님 -- 대상이면서 이력이 어긋난 경우는 위 rebuild 로 빠졌다). 이번
+        # 실행이 그 task 에 아무것도 추가하지 않으므로, 위험을 확인했다는
+        # 체크만 받고 나머지 task 의 이어붙이기는 허용한다.
+        if plan["ambiguous"] and not self._confirm_ambiguous_idle(plan["ambiguous"]):
+            self.log("[LeRobot 이어붙이기] 취소했습니다 (이력 미확인).", "upload")
             return
         if plan["action"] == "up_to_date":
             QMessageBox.information(
@@ -4119,6 +4128,32 @@ class WorkspaceWindow(QMainWindow):
                       "--push-only", "--no-private"]},
         ]
         self._start_pipeline(steps, tr("LeRobot 이어붙이기"))
+
+    def _confirm_ambiguous_idle(self, tasks: list) -> bool:
+        """이력 검증을 통과 못했지만 append 대상도 아닌 task 확인창.
+
+        진행해도 이 task 들에는 아무것도 추가되지 않지만, 지우고 다시 찍은
+        것이라면 Hub 에 옛 에피소드가 남아 있을 수 있다 -- 그 정리는 전체
+        재빌드만 할 수 있다. 실수로 Yes 를 누르지 못하도록 체크박스를 켜야
+        진행 버튼이 활성화된다.
+        """
+        box = QMessageBox(
+            QMessageBox.Icon.Warning, tr("이력 확인 필요"),
+            tr("다음 task는 개수는 Hub와 같지만 이력 검증(에피소드 길이 지문)을 "
+               "통과하지 못했습니다:\n{t}\n\n이번 이어붙이기에서 이 task에는 "
+               "아무것도 추가되지 않습니다. 다만 지우고 다시 찍은 것이라면 Hub에 "
+               "옛 에피소드가 남아 있을 수 있고, 그 정리는 '변환 + 업로드 "
+               "(자동)' 전체 재빌드만 할 수 있습니다.").format(
+                   t="\n".join(f"· {x[:60]}" for x in tasks)),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            self)
+        yes = box.button(QMessageBox.StandardButton.Yes)
+        yes.setText(tr("나머지 task만 이어붙이기 진행"))
+        yes.setEnabled(False)
+        ack = QCheckBox(tr("위 내용을 확인했습니다"))
+        ack.toggled.connect(yes.setEnabled)
+        box.setCheckBox(ack)
+        return box.exec() == QMessageBox.StandardButton.Yes
 
     def _count_hdf5_episodes(self) -> "int | None":
         """Episodes currently in the .hdf5 files. Metadata only -- no images."""
