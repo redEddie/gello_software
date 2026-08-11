@@ -42,6 +42,17 @@ GATE_RAD = 0.5  # run_env.py / gello_match_pose.py's start-gate threshold
 RAMP_STEP = 0.10
 GRIPPER_OPEN = 0.0  # GELLO/franka_fr3 convention: 0=open, 1=closed
 
+# ---- EE 경로 homing ----
+# 관절 직선 보간 homing 은 파지 직후처럼 EE 가 낮을 때 베이스가 돌면서
+# 테이블 높이를 수평으로 쓸고 지나간다. 대신 "수직으로 들어올린 뒤 홈 EE
+# 포즈까지 직선" 경로를 IK 로 풀어 관절 웨이포인트를 만든다. IK 실패나
+# 관절 점프가 크면 기존 관절 램프로 폴백 -- homing 이 안 되는 것보다는
+# 예전처럼 무섭게라도 돌아가는 쪽이 낫다.
+HOME_LIFT_M = 0.10       # 1단계: 현재 포즈에서 수직 리프트 높이
+HOME_EE_STEP_M = 0.010   # tick 당 EE 이동 (20Hz -> 0.2 m/s)
+HOME_ROT_STEP_RAD = 0.05  # tick 당 EE 회전 (20Hz -> 1.0 rad/s)
+HOME_MAX_DQ = 0.35       # 연속 웨이포인트 관절 점프 상한 -- 초과 시 폴백
+
 # Fallback defaults, used only if the GUI doesn't supply a serial (e.g. a
 # script driving CollectionWorker directly). The GUI itself always populates
 # WorkerConfig.agent_camera_serial / wrist_camera_serial from a live device
@@ -418,6 +429,99 @@ class CollectionWorker(QThread):
             time.sleep(0.05)
         return "quit"
 
+    def _home_trajectory(self, q_now: np.ndarray) -> "list[np.ndarray] | None":
+        """수직 +HOME_LIFT_M 리프트 -> 홈 EE 포즈 직선의 관절 웨이포인트.
+
+        tick 당 하나씩 실행되도록 EE 스텝 크기로 샘플링하고, IK 는 직전 해를
+        시드로 체인해 자세(널스페이스)가 튀지 않게 한다. 마지막 웨이포인트의
+        EE 는 홈 포즈와 같지만 관절은 reset_q 와 널스페이스만큼 다를 수 있다
+        -- 호출자가 끝에서 _ramp_to(reset_q) 로 수렴시킨다 (EE 는 이미 홈이라
+        그 잔차 이동은 제자리 자세 조정이다).
+
+        None 반환 = 만들 수 없음(임포트 실패, IK 발산, 관절 점프 초과).
+        """
+        try:
+            # fr3_kinematics 는 experiments/ 에 있다. GUI/클라이언트 모두
+            # experiments/ 의 스크립트로 실행되어 sys.path 에 이미 있다.
+            import fr3_kinematics as K
+        except ImportError:
+            return None
+        try:
+            q = np.asarray(q_now, dtype=np.float64).copy()
+            T_now = K.fk(q)
+            T_home = K.fk(np.asarray(self._reset_q, dtype=np.float64))
+            wps: list = []
+
+            def _solve(T_target: np.ndarray, q_seed: np.ndarray):
+                q_next = K.ik(T_target, q_seed)
+                T_got = K.fk(q_next)
+                # IK 미수렴(잔차 5mm 초과)이나 큰 관절 점프는 실패로 취급
+                if np.linalg.norm(T_got[:3, 3] - T_target[:3, 3]) > 0.005:
+                    return None
+                if np.abs(q_next - q_seed).max() > HOME_MAX_DQ:
+                    return None
+                return q_next
+
+            # 1단계: 수직 리프트 (자세 유지, z 만 상승)
+            n_lift = max(1, int(np.ceil(HOME_LIFT_M / HOME_EE_STEP_M)))
+            for i in range(1, n_lift + 1):
+                T = T_now.copy()
+                T[2, 3] = T_now[2, 3] + HOME_LIFT_M * i / n_lift
+                q = _solve(T, q)
+                if q is None:
+                    return None
+                wps.append(q)
+
+            # 2단계: 리프트 포즈 -> 홈 포즈 직선 (위치 lerp + 회전 slerp)
+            T_lift = T_now.copy()
+            T_lift[2, 3] += HOME_LIFT_M
+            p0, p1 = T_lift[:3, 3], T_home[:3, 3]
+            R0 = T_lift[:3, :3]
+            aa = K._rot_to_axis_angle(T_home[:3, :3] @ R0.T)
+            n = max(1,
+                    int(np.ceil(np.linalg.norm(p1 - p0) / HOME_EE_STEP_M)),
+                    int(np.ceil(np.linalg.norm(aa) / HOME_ROT_STEP_RAD)))
+            for i in range(1, n + 1):
+                s = i / n
+                T = np.eye(4)
+                T[:3, 3] = p0 + (p1 - p0) * s
+                T[:3, :3] = K.axis_angle_to_rot(aa * s) @ R0
+                q = _solve(T, q)
+                if q is None:
+                    return None
+                wps.append(q)
+            return wps
+        except Exception:  # noqa: BLE001 - 어떤 실패든 폴백이 정답
+            return None
+
+    def _ramp_home(self, max_ticks: int = 600, react_to_go_home: bool = True) -> str:
+        """EE 경로(리프트 -> 직선) homing. 실패 시 기존 관절 램프로 폴백.
+
+        반환 계약은 _ramp_to 와 동일: "ok" / "quit" / "go_home".
+        """
+        obs = self._get_obs()
+        q_now = np.array([obs[k] for k in JOINT_KEYS[:7]])
+        if np.abs(self._reset_q - q_now).max() < 0.02:
+            return "ok"
+        wps = self._home_trajectory(q_now)
+        if wps is None:
+            self.log_message.emit(
+                "[HOME] EE 경로 생성 실패 -- 관절 램프로 폴백합니다")
+            return self._ramp_to(self._reset_q, max_ticks=max_ticks,
+                                 react_to_go_home=react_to_go_home)
+        for q_cmd in wps:
+            interrupt = self._drain_interrupt(react_to_go_home=react_to_go_home)
+            if interrupt:
+                return interrupt
+            obs = self._get_obs()
+            cmd = dict(zip(JOINT_KEYS, np.append(q_cmd, GRIPPER_OPEN).tolist()))
+            self._robot.send_action(cmd)
+            self._emit_frames(obs)
+            time.sleep(0.05)
+        # EE 는 홈 포즈에 도착. 남은 널스페이스/추종 잔차를 관절 램프로 수렴.
+        return self._ramp_to(self._reset_q, max_ticks=max_ticks,
+                             react_to_go_home=react_to_go_home)
+
     @staticmethod
     def _advance_cmd(q_cmd: np.ndarray, target_q: np.ndarray) -> np.ndarray:
         """Move the commanded position one ``RAMP_STEP`` toward ``target_q``.
@@ -779,7 +883,7 @@ class CollectionWorker(QThread):
                     # react_to_go_home=False: this ramp already IS "go home",
                     # so a go_home click here is a no-op, not an abort.
                     self.state_changed.emit("homing")
-                    if self._ramp_to(self._reset_q, react_to_go_home=False) != "ok":
+                    if self._ramp_home(react_to_go_home=False) != "ok":
                         break
 
                     if need_reset:
@@ -864,7 +968,7 @@ class CollectionWorker(QThread):
             except Exception:  # noqa: BLE001
                 pass
             try:
-                self._ramp_to(self._reset_q, max_ticks=200)
+                self._ramp_home(max_ticks=200)
             except Exception:  # noqa: BLE001
                 pass
             for cleanup in (
