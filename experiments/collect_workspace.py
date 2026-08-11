@@ -393,8 +393,11 @@ class PipelineDialog(QDialog):
         self.hdf5_check.toggled.connect(
             lambda on: self.hdf5_only_new_check.setEnabled(on and n_repack > 0))
         ocol.addWidget(self.hdf5_only_new_check)
-        self.only_success_check = QCheckBox(tr("성공한 에피소드만 변환 (--only-success)"))
-        ocol.addWidget(self.only_success_check)
+        # --only-success 체크박스는 없앴다. 이 팀 규약은 "실패는 푸시 전에
+        # 파일에서 삭제"라 필터링 업로드를 쓸 일이 없고, 실수로 켜면 로컬
+        # (실패 포함)과 Hub(성공만)의 에피소드 시퀀스가 어긋나 길이 지문
+        # 검증(dataset_sync)과 resume 스킵 산술이 둘 다 깨진다. CLI 플래그는
+        # 수동 용도로 convert_libero_to_lerobot.py 에 남아 있다.
         layout.addWidget(opts)
 
         grid = QGridLayout()
@@ -458,8 +461,6 @@ class PipelineDialog(QDialog):
             steps.append({"name": tr("재압축"), "program": sys.executable,
                           "args": [REPACK_SCRIPT, *self._repack_todo]})
         convert = [CONVERT_SCRIPT, *paths, "--repo-id", lerobot_repo, "--root", root]
-        if self.only_success_check.isChecked():
-            convert.append("--only-success")
         if not rebuild:
             convert.append("--resume")
         steps.append({"name": tr("LeRobot 변환") + ("" if not rebuild else tr(" (전체 재빌드)")),
