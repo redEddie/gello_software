@@ -2973,6 +2973,12 @@ class WorkspaceWindow(QMainWindow):
         w.connected.connect(self._on_connected)
         w.episode_list_changed.connect(self._on_episode_list)
         w.session_summary.connect(self._on_summary)
+        # 세션 해제(버튼 복구, worker=None)는 session_summary가 아니라 finished에
+        # 걸어야 한다. summary는 run()의 finally에서만 나오는데, 연결 실패는 그
+        # 전에 조기 return이라 summary가 영영 오지 않는다 -- 그 상태에서는 GUI가
+        # '연결됨'에 갇혀 재시도하려면 앱을 닫는 수밖에 없었다. finished는 Qt가
+        # run()이 어떤 경로로 끝나든 반드시 쏜다.
+        w.finished.connect(self._on_worker_finished)
         # 저장은 CollectionWorker가 아니라 그 안의 EpisodeSaver 스레드가 알린다
         # (h5py 접근을 한 스레드로 직렬화하려고 분리해 둔 것). 워커 쪽 시그널만
         # 연결해 두면 episode_saved/episode_list_changed가 영원히 오지 않아,
@@ -3171,7 +3177,21 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(dict)
     def _on_summary(self, summary) -> None:
+        # 해제는 여기서 하지 않는다 -- 정상 종료에만 오는 신호다. 실제 해제는
+        # 모든 종료 경로에서 오는 finished(_on_worker_finished)가 맡는다.
         self.log(f"[세션 요약] {summary}")
+
+    @pyqtSlot()
+    def _on_worker_finished(self) -> None:
+        """워커 run()이 어떤 경로로든 끝나면 세션을 해제한다.
+
+        정상 종료(요약 후), 연결 실패 조기 return, 예외 -- 전부 여기로 온다.
+        summary보다 늦게 도착하므로(둘 다 큐잉, run() 안에서 summary가 먼저
+        emit) 로그 순서도 자연스럽다.
+        """
+        if self.worker is not self.sender():
+            # 이미 다른 세션이 시작된 뒤 도착한 옛 워커의 신호 -- 무시.
+            return
         self.worker = None
         self._no_dataset_session = False
         self.active_file_path = None
