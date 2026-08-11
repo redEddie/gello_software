@@ -429,14 +429,47 @@ class CollectionWorker(QThread):
             time.sleep(0.05)
         return "quit"
 
+    @staticmethod
+    def _ik_posture(K, target: np.ndarray, q_seed: np.ndarray,
+                    q_posture: np.ndarray, iters: int = 30,
+                    damping: float = 1e-4, tol: float = 1e-5,
+                    posture_step: float = 0.01) -> np.ndarray:
+        """Task-priority IK: 1순위 EE 목표 + 널스페이스로 자세를 q_posture 로.
+
+        fr3_kinematics.ik 와 같은 damped-LS 지만, 매 반복 널스페이스 사영
+        ``N = I - J^+J`` 을 통해 자세 오차를 함께 줄인다. 사영된 자세 이동은
+        1차 근사에서 EE 를 움직이지 않으므로, EE 는 목표 궤적을 따라가면서
+        팔 구성(팔꿈치)은 별도로 홈 쪽으로 풀린다 -- "지나온 궤적을 금지
+        영역으로" 제약하는 것과 같은 효과를 사영이 해석적으로 보장한다.
+        posture_step 은 반복당 자세 이동 상한: EE 수렴에 3~5회 걸리므로
+        웨이포인트당 0.03~0.05 rad 씩, 경로 전체(30~40틱)에 걸쳐 1 rad 이상의
+        꼬임도 점진적으로 풀 수 있는 예산이다.
+        """
+        q = np.asarray(q_seed, dtype=np.float64).copy()
+        q_posture = np.asarray(q_posture, dtype=np.float64)
+        eye6 = np.eye(6)
+        for _ in range(iters):
+            J, T = K._jacobian_analytic(q)
+            ep = target[:3, 3] - T[:3, 3]
+            eR = K._rot_to_axis_angle(target[:3, :3] @ T[:3, :3].T)
+            e = np.concatenate([ep, eR])
+            if np.linalg.norm(e) < tol:
+                break
+            A = J @ J.T + damping * eye6
+            sol = np.linalg.solve(A, np.column_stack([e, J]))
+            dq_task = J.T @ sol[:, 0]
+            N = np.eye(7) - J.T @ sol[:, 1:]
+            dq_post = np.clip(q_posture - q, -posture_step, posture_step)
+            q = np.clip(q + dq_task + N @ dq_post, K.FR3_Q_MIN, K.FR3_Q_MAX)
+        return q
+
     def _home_trajectory(self, q_now: np.ndarray) -> "list[np.ndarray] | None":
         """수직 +HOME_LIFT_M 리프트 -> 홈 EE 포즈 직선의 관절 웨이포인트.
 
-        tick 당 하나씩 실행되도록 EE 스텝 크기로 샘플링하고, IK 는 직전 해를
-        시드로 체인해 자세(널스페이스)가 튀지 않게 한다. 마지막 웨이포인트의
-        EE 는 홈 포즈와 같지만 관절은 reset_q 와 널스페이스만큼 다를 수 있다
-        -- 호출자가 끝에서 _ramp_to(reset_q) 로 수렴시킨다 (EE 는 이미 홈이라
-        그 잔차 이동은 제자리 자세 조정이다).
+        tick 당 하나씩 실행되도록 EE 스텝 크기로 샘플링한다. IK 는 직전 해를
+        시드로 체인하되(_ik_posture) 널스페이스로 자세를 reset_q 쪽으로 함께
+        밀기 때문에, EE 가 홈에 도착할 때쯤이면 관절도 reset_q 에 거의 수렴해
+        있다. 남는 잔차는 호출자의 _ramp_to(reset_q) 가 안전망으로 정리한다.
 
         None 반환 = 만들 수 없음(임포트 실패, IK 발산, 관절 점프 초과).
         """
@@ -448,12 +481,13 @@ class CollectionWorker(QThread):
             return None
         try:
             q = np.asarray(q_now, dtype=np.float64).copy()
+            reset_q = np.asarray(self._reset_q, dtype=np.float64)
             T_now = K.fk(q)
-            T_home = K.fk(np.asarray(self._reset_q, dtype=np.float64))
+            T_home = K.fk(reset_q)
             wps: list = []
 
             def _solve(T_target: np.ndarray, q_seed: np.ndarray):
-                q_next = K.ik(T_target, q_seed)
+                q_next = self._ik_posture(K, T_target, q_seed, reset_q)
                 T_got = K.fk(q_next)
                 # IK 미수렴(잔차 5mm 초과)이나 큰 관절 점프는 실패로 취급
                 if np.linalg.norm(T_got[:3, 3] - T_target[:3, 3]) > 0.005:
