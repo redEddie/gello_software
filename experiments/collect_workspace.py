@@ -4027,15 +4027,19 @@ class WorkspaceWindow(QMainWindow):
         if repo is None:
             return
         root = self._recents.most_recent("lerobot_root", str(Path.home() / "lerobot_upload"))
+        # "task 15개" 만 보여주면 이어붙이기 확인창의 "새 에피소드 25개" 와
+        # 단위가 달라 개수 오류처럼 읽힌다 -- 에피소드 합계를 함께 표기한다.
+        n_ep = self._count_hdf5_episodes()
+        ep_txt = tr(" (에피소드 {e}개)").format(e=n_ep) if n_ep is not None else ""
         if QMessageBox.question(
                 self, tr("LeRobot 변환 + 업로드"),
-                tr("task {n}개를 처음부터 다시 변환하고, {r} 을(를) 통째로 "
+                tr("task {n}개{ep}를 처음부터 다시 변환하고, {r} 을(를) 통째로 "
                    "교체합니다.\n\n"
                    "· 로컬 변환 폴더를 비웁니다: {o}\n"
                    "· 이어붙이기(resume)를 쓰지 않으므로 큐레이션에서 지운 "
                    "에피소드가 Hub에서도 사라집니다\n"
                    "· 전체 재변환이라 시간이 걸립니다\n\n진행할까요?")
-                .format(n=len(paths), r=repo, o=root),
+                .format(n=len(paths), ep=ep_txt, r=repo, o=root),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             self.log("[LeRobot 자동] 취소했습니다.", "upload")
