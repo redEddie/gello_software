@@ -3,18 +3,23 @@
   "scenes": [
     {
       "scene_id": "S000",
-      "note": "파란 컵 + 파란 큰 그릇 (family A/D, 2026-08-13 첫 실기 scene — 이미 수집된 배치)",
+      "note": "하얀 컵[0,0] + 파란 컵[0,1] + 큰 그릇[1,2] — 2026-08-13 실기 배치. 주의: metadata 물체는 BOWLL-WHT(하얀 그릇)인데 문장은 blue bowl — 실물 확인 필요",
       "slots": [
         {
           "instruction_id": "I000",
           "instruction": "pick up the blue cup and place it on the blue bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I001",
+          "instruction": "pick up the white cup and place it on the blue bowl",
           "target": 10
         }
       ]
     },
     {
       "scene_id": "S001",
-      "note": "파란 컵 + 하얀 컵 + 파란 큰 그릇 + 노란 작은 그릇 + 3단 서랍장 (5물체, family B+E — 같은 장면·상이 지시문 축, I000 재사용으로 배치 일반화 축)",
+      "note": "다음 scene 후보: 컵 2 + 그릇 2 + 3단 서랍장 (5물체, family B+E). 배치 확정 시 슬롯·문장 조정",
       "slots": [
         {
           "instruction_id": "I000",
