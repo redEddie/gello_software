@@ -3643,16 +3643,24 @@ class WorkspaceWindow(QMainWindow):
         task = action = gripper = image = "-"
         try:
             with h5py.File(path, "r") as h:
-                data = h["data"]
-                info = data.attrs.get("problem_info")
-                if info:
-                    try:
-                        task = json.loads(json.loads(info)["language_instruction"])
-                    except Exception:  # noqa: BLE001
-                        task = str(info)[:60]
-                names = sorted(data.keys(), key=lambda s: int(s.split("_")[1]))
+                if "data" in h:
+                    data = h["data"]
+                    info = data.attrs.get("problem_info")
+                    if info:
+                        try:
+                            task = json.loads(json.loads(info)["language_instruction"])
+                        except Exception:  # noqa: BLE001
+                            task = str(info)[:60]
+                    names = sorted(data.keys(), key=lambda s: int(s.split("_")[1]))
+                    container = data
+                else:
+                    # scene-v1: task 는 파일 단위 개념이 아니다 -- scene ID 로 표기
+                    task = "scene " + str(h["metadata"].attrs.get("scene_id", "?"))
+                    names = sorted((k for k in h.keys() if k.startswith("episode_")),
+                                   key=lambda s: int(s.split("_")[1]))
+                    container = h
                 if names:
-                    g = data[names[0]]
+                    g = container[names[0]]
                     action = str(g.attrs.get("action_space", "-"))
                     conv = str(g.attrs.get("gripper_action_convention", ""))
                     gripper = {"01": "0/1 (obs와 동일)", "pm1": "-1/+1"}.get(conv, conv or "-")
