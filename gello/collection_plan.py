@@ -7,7 +7,12 @@
 
 규칙 (configs/collection_plans/README.md):
 - instruction 은 따옴표 없는 순수 문장, freeze 후 불변 (고치려면 새 ID)
-- 같은 instruction_id 는 어느 scene 에서든 항상 같은 문장
+- instruction_id 는 **scene 마다 독립**이다: 각 scene 의 첫 instruction 이
+  I000 이고 새 문장마다 하나씩 올라간다 (2026-08-13 사용자 결정). slot 의
+  전역 식별자는 (scene_id, instruction_id) 쌍 -- episode_uid 가 그 형태다.
+  같은 scene 안에서 같은 ID 가 다른 문장으로 쓰이는 것만 금지한다.
+  "다른 scene, 같은 지시문"(배치 일반화 축)은 ID 가 아니라 문장 텍스트로
+  대조해 파생한다.
 - 동사는 §4 통제 집합(pick up … and place / open / close) 안 — 벗어나면
   로드는 되지만 경고를 남긴다 (freeze 리뷰가 잡을 것을 GUI 에서도 보이게)
 """
@@ -81,13 +86,13 @@ def load_plan(path: Path) -> CollectionPlan:
     if not isinstance(raw, dict) or raw.get("plan_version") != 1:
         raise ValueError(f"{path.name}: plan_version 1 이 아니다")
     warnings: list = []
-    sentence_by_id: dict = {}
     scenes = []
     for s in raw.get("scenes", []):
         sid = str(s.get("scene_id", ""))
         if not SCENE_ID_RE.match(sid):
             raise ValueError(f"{path.name}: 잘못된 scene_id {sid!r}")
         slots = []
+        sentence_by_id: dict = {}  # ID 는 scene 로컬 -- scene 마다 새로 센다
         for sl in s.get("slots", []):
             iid = str(sl.get("instruction_id", ""))
             instr = str(sl.get("instruction", "")).strip()
@@ -102,8 +107,8 @@ def load_plan(path: Path) -> CollectionPlan:
             prev = sentence_by_id.get(iid)
             if prev is not None and prev != instr:
                 raise ValueError(
-                    f"{path.name}: {iid} 가 서로 다른 문장으로 쓰였다 -- "
-                    f"{prev!r} vs {instr!r} (같은 ID 는 항상 같은 문장, README)")
+                    f"{path.name}: {sid} 안에서 {iid} 가 서로 다른 문장으로 "
+                    f"쓰였다 -- {prev!r} vs {instr!r} (ID 는 scene 안에서 유일)")
             sentence_by_id[iid] = instr
             if not any(p.match(instr) for p in _ALLOWED_PATTERNS):
                 warnings.append(

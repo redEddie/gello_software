@@ -29,8 +29,13 @@ Scene × Instruction 조합(slot)과 목표 에피소드 수를 GUI 에 주입�
 
 - `instruction` 은 따옴표 없는 순수 문장. freeze 후에는 문장을 고치지 않는다 —
   고쳐야 하면 새 `instruction_id` 를 만든다 (§6 freeze 게이트).
-- 같은 `instruction_id` 를 여러 scene 에서 재사용하면 "다른 scene + 같은
-  instruction" 축(배치 일반화)이 자동으로 생긴다. 같은 ID 는 항상 같은 문장.
+- `instruction_id` 는 **scene 마다 독립**이다 (2026-08-13 결정): 각 scene 의
+  첫 instruction 이 `I000` 이고 새 문장마다 하나씩 올라간다. slot 의 전역
+  식별자는 `(scene_id, instruction_id)` 쌍 — `episode_uid` 가 그 형태다.
+  같은 scene 안에서 한 ID 를 두 문장에 쓰는 것만 금지한다. "다른 scene +
+  같은 instruction" 축(배치 일반화)은 ID 가 아니라 **문장 텍스트**를 대조해
+  파생한다 (GUI 의 자동 배정이 문장을 보고 ID 를 채우므로 손으로 맞출
+  필요 없음).
 - `collected` 는 계획 파일에 넣지 않는다. 항상 scene 파일을 읽어 계산한다
   (`gello.scene_format.count_by_slot`) — 계획 파일에 넣는 순간 두 개의 진실이
   생긴다.

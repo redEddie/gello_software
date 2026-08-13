@@ -1319,22 +1319,22 @@ class WorkspaceWindow(QMainWindow):
         return None, sid, True, None
 
     # -------------------------------------------------- slot ID 자동 배정
-    def _known_slots(self, scene_path=None, episodes=None) -> dict:
-        """알려진 instruction_id -> 문장 매핑.
+    def _known_slots(self, scene_id=None, scene_path=None, episodes=None) -> dict:
+        """**이 scene 의** instruction_id -> 문장 매핑.
 
-        계획(전역: 같은 ID 는 어느 scene 에서든 같은 문장, README 규칙)과
-        scene 의 기록(에피소드 목록 또는 파일)을 합친다. 계획이 먼저다 --
-        파일 쪽에 ID-문장 갈라짐 사고가 있어도 계획이 정본.
+        ID 는 scene 마다 독립이다(각 scene 의 첫 instruction 이 I000, 새
+        문장마다 +1 -- 2026-08-13 결정). 그래서 참조 범위도 scene 하나:
+        계획에서 그 scene 의 slot + 그 scene 파일에 기록된 에피소드.
+        계획이 먼저다 -- 파일 쪽에 갈라짐 사고가 있어도 계획이 정본.
 
         세션 중에는 episodes(GUI 가 saver 에게서 받은 캐시)를 넘겨야 한다 --
         HDF5 파일 잠금 때문에 열려 있는 파일을 다시 읽을 수 없다.
         """
         m: dict = {}
         plan = self._current_plan()
-        if plan is not None:
-            for sc in plan.scenes:
-                for s in sc.slots:
-                    m.setdefault(s.instruction_id, s.instruction)
+        if plan is not None and scene_id is not None:
+            for s in plan.slots_for(scene_id):
+                m.setdefault(s.instruction_id, s.instruction)
         for ep in (episodes or []):
             if ep.get("instruction_id"):
                 m.setdefault(ep["instruction_id"], ep.get("instruction", ""))
@@ -1376,19 +1376,19 @@ class WorkspaceWindow(QMainWindow):
         used = [int(i[1:]) for i in known if INSTRUCTION_ID_RE.match(i)]
         return f"I{(max(used) + 1) if used else 0:03d}"
 
-    def _auto_assign_iid(self, instr: str, iid_edit, scene_path=None,
-                         episodes=None) -> None:
-        """문장이 바뀌면 slot ID 를 자동으로 맞춘다.
+    def _auto_assign_iid(self, instr: str, iid_edit, scene_id=None,
+                         scene_path=None, episodes=None) -> None:
+        """문장이 바뀌면 slot ID 를 자동으로 맞춘다 (**scene 안에서**).
 
-        아는 문장 -> 그 ID 재사용 (같은 문장이 두 ID 로 갈라지는 것 방지),
-        처음 보는 문장 -> 다음 빈 ID 배정 (기존 ID 를 다른 문장에 재사용해
-        ID-문장 규칙이 깨지는 것 방지 -- 실데이터에서 실제 발생한 사고).
+        모든 scene 은 첫 instruction 이 I000 이고 새 문장마다 하나씩
+        올라간다. 이 scene 에서 아는 문장 -> 그 ID 재사용, 처음 보는 문장
+        -> 이 scene 의 다음 빈 ID. 다른 scene 의 ID 는 참조하지 않는다.
         자동 배정 후에도 손으로 고칠 수 있다.
         """
         instr = instr.strip()
         if not instr:
             return
-        known = self._known_slots(scene_path, episodes=episodes)
+        known = self._known_slots(scene_id, scene_path, episodes=episodes)
         for iid, s in known.items():
             if s == instr:
                 if iid_edit.text().strip() != iid:
@@ -1396,12 +1396,29 @@ class WorkspaceWindow(QMainWindow):
                     self.log(f"[SLOT] 아는 문장 -- {iid} 재사용")
                 return
         cur = iid_edit.text().strip()
+        nxt = self._next_iid(known)
         if cur in known and known[cur] != instr:
-            new = self._next_iid(known)
-            iid_edit.setText(new)
-            self.log(f"[SLOT] 새 문장 -- {new} 자동 배정 ({cur} 는 다른 문장이 사용 중)")
-        elif not INSTRUCTION_ID_RE.match(cur):
-            iid_edit.setText(self._next_iid(known))
+            iid_edit.setText(nxt)
+            self.log(f"[SLOT] 새 문장 -- {nxt} 자동 배정 ({cur} 는 이 scene 에서 사용 중)")
+        elif not INSTRUCTION_ID_RE.match(cur) or cur not in known and cur != nxt:
+            # 빈/이상한 값이거나, 이 scene 기준으로 뜬금없는 번호(예: 다른
+            # scene 에서 넘어온 I003)면 이 scene 의 다음 번호로 정렬한다.
+            iid_edit.setText(nxt)
+            if cur and cur != nxt:
+                self.log(f"[SLOT] 새 문장 -- {nxt} 자동 배정")
+
+    def _configure_scene_id(self):
+        """Configure 가 가리키는 scene ID -- 기존 선택이면 그것, 새 scene 이면
+        구성해 둔 metadata 의 ID, 그것도 없으면 다음 발번 예정 ID."""
+        sid = self.scene_combo.currentData()
+        if sid is not None:
+            return sid
+        if self._pending_scene_meta is not None:
+            return self._pending_scene_meta.scene_id
+        try:
+            return next_scene_id(Path(self.root_edit.text().strip() or "."))
+        except Exception:  # noqa: BLE001
+            return None
 
     def _selected_scene_path(self):
         """Configure 의 Scene 콤보가 가리키는 기존 scene 파일 (새 scene 이면 None)."""
@@ -1412,11 +1429,13 @@ class WorkspaceWindow(QMainWindow):
 
     def _on_start_sentence_edited(self) -> None:
         self._auto_assign_iid(self.lang_edit.text(), self.scene_iid_edit,
-                              self._selected_scene_path())
+                              scene_id=self._configure_scene_id(),
+                              scene_path=self._selected_scene_path())
 
     def _on_slot_sentence_edited(self) -> None:
         # 세션 중에는 파일이 잠겨 있으므로 캐시로 (파일 인자 없이)
         self._auto_assign_iid(self.slot_instr_edit.text(), self.slot_iid_edit,
+                              scene_id=self._session_scene_id(),
                               episodes=self.active_episode_cache)
 
     # -------------------------------------------------- 수집 계획 (slot plan)
@@ -1527,14 +1546,15 @@ class WorkspaceWindow(QMainWindow):
         # 계획과 어긋난 수동 입력은 막지 않되 즉시 보이게 한다 (ID-문장
         # 갈라짐이 실데이터에서 실제로 발생했다).
         plan = self._current_plan()
-        if plan is not None:
+        sid = self._session_scene_id()
+        if plan is not None and sid is not None:
             sentences = {s.instruction_id: s.instruction
-                         for sc in plan.scenes for s in sc.slots}
+                         for s in plan.slots_for(sid)}
             if iid in sentences and sentences[iid] != instr:
-                self.log(f"[SLOT 경고] {iid} 문장이 계획과 다릅니다 -- "
+                self.log(f"[SLOT 경고] {iid} 문장이 계획({sid})과 다릅니다 -- "
                          f"계획: {sentences[iid]!r}")
-            elif iid not in sentences:
-                self.log(f"[SLOT 경고] 계획에 없는 slot {iid} 로 수집합니다")
+            elif sentences and iid not in sentences:
+                self.log(f"[SLOT 경고] 계획({sid})에 없는 slot {iid} 로 수집합니다")
 
     def _on_no_dataset_toggled(self, on: bool) -> None:
         """No file is written, so the task/path fields have nothing to name."""
