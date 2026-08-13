@@ -4840,10 +4840,10 @@ class WorkspaceWindow(QMainWindow):
         if not self._pipeline_guard(tr("HDF5 자동 처리")):
             return
         data_root = self.root_edit.text().strip()
-        paths = sorted(str(x) for x in Path(data_root).glob("*_demo.hdf5"))
+        paths = self._all_hdf5(data_root)
         if not paths:
             QMessageBox.warning(self, tr("파일 없음"),
-                                tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=data_root))
+                                tr("{r} 에 *_demo.hdf5 / scene_*.hdf5 가 없습니다.").format(r=data_root))
             return
         repo = self._check_repo("hdf5_repo_id", tr("HDF5 재압축 + 업로드"))
         if repo is None:
@@ -4893,10 +4893,10 @@ class WorkspaceWindow(QMainWindow):
         if not self._pipeline_guard(tr("LeRobot 자동 처리")):
             return
         data_root = self.root_edit.text().strip()
-        paths = sorted(str(x) for x in Path(data_root).glob("*_demo.hdf5"))
+        paths = self._all_hdf5(data_root)
         if not paths:
             QMessageBox.warning(self, tr("파일 없음"),
-                                tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=data_root))
+                                tr("{r} 에 *_demo.hdf5 / scene_*.hdf5 가 없습니다.").format(r=data_root))
             return
         repo = self._check_repo("repo_id", tr("LeRobot 변환 + 업로드"))
         if repo is None:
@@ -4942,10 +4942,10 @@ class WorkspaceWindow(QMainWindow):
         if not self._pipeline_guard(tr("LeRobot 이어붙이기")):
             return
         data_root = self.root_edit.text().strip()
-        paths = sorted(str(x) for x in Path(data_root).glob("*_demo.hdf5"))
+        paths = self._all_hdf5(data_root)
         if not paths:
             QMessageBox.warning(self, tr("파일 없음"),
-                                tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=data_root))
+                                tr("{r} 에 *_demo.hdf5 / scene_*.hdf5 가 없습니다.").format(r=data_root))
             return
         repo = self._check_repo("repo_id", tr("LeRobot 이어붙이기"))
         if repo is None:
@@ -5120,7 +5120,7 @@ class WorkspaceWindow(QMainWindow):
                 "action": "blocked", "error": "LeRobot Repo ID가 없습니다 (먼저 한 번 지정하세요)",
                 "rows": [], "added": 0, "shrunk": 0, "ambiguous": [],
                 "local_total": 0, "hub_total": 0,
-                "paths": sorted(str(p) for p in Path(data_root).glob("*_demo.hdf5"))}
+                "paths": self._all_hdf5(data_root)}
         finally:
             QApplication.restoreOverrideCursor()
         dlg = PipelineDialog(self, data_root, plan, repo,
@@ -5327,9 +5327,19 @@ class WorkspaceWindow(QMainWindow):
         self.log("[노드] 종료했습니다.")
 
     # ----------------------------------------------------------- upload
+    @staticmethod
+    def _all_hdf5(data_root) -> list:
+        """변환·업로드 대상 파일 전부: legacy 정렬 + scene 정렬.
+
+        legacy 를 앞에 두는 순서는 plan_sync 의 길이 지문(접두 비교)과
+        일치해야 하므로 dataset_sync._ordered_paths 와 같은 규칙이다.
+        """
+        root = Path(str(data_root))
+        return ([str(p) for p in sorted(root.glob("*_demo.hdf5"))]
+                + [str(p) for p in sorted(root.glob("scene_*.hdf5"))])
+
     def _hdf5_candidates(self) -> list:
-        root = Path(self.root_edit.text().strip() or str(Path.home()))
-        return [str(p) for p in sorted(root.glob("*_demo.hdf5"))]
+        return self._all_hdf5(self.root_edit.text().strip() or str(Path.home()))
 
     def _on_repack(self) -> None:
         if self.worker is not None:

@@ -66,9 +66,35 @@ def local_tasks(data_root: str | Path) -> dict:
                     ns = data[n].attrs.get("num_samples")
                     lengths.append(int(ns) if ns is not None else -1)
                 out[task] = {"episodes": len(names), "path": Path(p),
+                             "paths": [Path(p)],
                              "at_repack": int(at) if at is not None else None,
                              "lengths": lengths}
         except Exception:  # noqa: BLE001
+            continue
+    # ---- scene-v1 파일의 기여. task = 에피소드별 instruction 이고, 변환이
+    # success 만 내보내므로 개수도 success 기준이다. 같은 문장이 legacy
+    # task 나 다른 scene 과 겹치면 합산한다. scene 기여가 섞인 task 는 길이
+    # 지문 검증을 끈다(lengths=None) -- scene 쪽 resume 안전성은 개수
+    # 산술이 아니라 변환기의 episode_uid 대조가 책임진다.
+    for p in sorted(glob.glob(str(Path(data_root) / "scene_*.hdf5"))):
+        try:
+            from gello.scene_format import list_scene_episodes
+
+            for ep in list_scene_episodes(Path(p)):
+                if ep.get("quality_status") != "success":
+                    continue
+                task = ep["instruction"]
+                e = out.get(task)
+                if e is None:
+                    out[task] = {"episodes": 1, "path": Path(p),
+                                 "paths": [Path(p)], "at_repack": None,
+                                 "lengths": None}
+                else:
+                    e["episodes"] += 1
+                    if Path(p) not in e["paths"]:
+                        e["paths"].append(Path(p))
+                    e["lengths"] = None
+        except Exception:  # noqa: BLE001 - 수집 세션이 잠근 파일 등
             continue
     return out
 
@@ -203,4 +229,21 @@ def plan_sync(data_root: str | Path, repo_id: str) -> dict:
             "ambiguous": ambiguous,
             "local_total": sum(v["episodes"] for v in local.values()),
             "hub_total": sum(hub.values()),
-            "paths": [str(v["path"]) for v in local.values()]}
+            # 변환기에 넘길 파일 목록: legacy 정렬 + scene 정렬, 중복 제거.
+            # (legacy 를 앞에 -- Hub 의 기존 순서가 legacy 선행이라 길이
+            # 지문의 접두 비교가 성립한다)
+            "paths": _ordered_paths(local)}
+
+
+def _ordered_paths(local: dict) -> list:
+    seen: set = set()
+    legacy: list = []
+    scene: list = []
+    for v in local.values():
+        for p in v.get("paths", [v["path"]]):
+            s = str(p)
+            if s in seen:
+                continue
+            seen.add(s)
+            (scene if Path(s).name.startswith("scene_") else legacy).append(s)
+    return sorted(legacy) + sorted(scene)

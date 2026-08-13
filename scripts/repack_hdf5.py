@@ -202,7 +202,15 @@ def process(path: Path, compression: str, level: int, dry_run: bool,
     # selection list) can skip it without inferring from the compressor.
     try:
         with h5py.File(path, "a") as f:
-            f["data"].attrs["repacked"] = (
+            # legacy 는 data/, scene-v1 은 metadata 그룹이 마커 자리다
+            # (gello/libero_format.py 의 hdf5_repack_status 와 대칭).
+            if "data" in f:
+                anchor = f["data"]
+                n_eps = len(f["data"].keys())
+            else:
+                anchor = f["metadata"]
+                n_eps = sum(1 for k in f.keys() if k.startswith("episode_"))
+            anchor.attrs["repacked"] = (
                 f"{time.strftime('%Y-%m-%d %H:%M')} {compression}"
                 + (f"-{level}" if compression == "gzip" else "")
             )
@@ -210,7 +218,7 @@ def process(path: Path, compression: str, level: int, dry_run: bool,
             # appends lzf episodes next to these gzip ones, and the count is
             # what lets a later run report "N added since" instead of just
             # trusting a marker that has gone stale.
-            f["data"].attrs["repacked_episodes"] = len(f["data"].keys())
+            anchor.attrs["repacked_episodes"] = n_eps
     except Exception as e:  # noqa: BLE001
         print(f"  (경고) repacked 표시 기록 실패: {e}", flush=True)
     print("  교체 완료", flush=True)

@@ -890,6 +890,7 @@ def main() -> None:
                         "episode_uid": uid,
                         "scene_id": scene_id,
                         "instruction_id": str(grp.attrs["instruction_id"]),
+                        "instruction": instruction,
                         "quality_status": str(grp.attrs.get("quality_status", "")),
                         "source_file": path.name,
                         "source_episode": name,
@@ -909,7 +910,15 @@ def main() -> None:
             # sides append in demo order and never reorder, so the count of this
             # task's episodes already present is exactly how many to skip.
             if args.resume and not args.force_all:
-                have = _task_episode_count(ds, task)
+                # 같은 문장(task)이 scene 파일에서도 올라갈 수 있다. legacy
+                # 스킵 산술은 'task 개수 = 이 legacy 파일의 선두 N개' 전제라,
+                # scene 출신 에피소드(사이드카에 instruction 기록)를 빼고
+                # 세야 한다 -- 안 빼면 have 가 부풀어 SystemExit 로 오탐.
+                scene_sourced = sum(
+                    1 for e in uid_records.values()
+                    if isinstance(e, dict) and e.get("episode_uid")
+                    and e.get("instruction") == task)
+                have = _task_episode_count(ds, task) - scene_sourced
                 if have:
                     if have > len(demo_names):
                         raise SystemExit(

@@ -1238,12 +1238,21 @@ def hdf5_repack_status(path) -> dict:
     try:
         out["size"] = Path(path).stat().st_size
         with h5py.File(path, "r") as f:
-            data = f["data"]
-            out["episodes"] = len(data.keys())
-            out["marker"] = data.attrs.get(REPACK_MARKER_ATTR)
+            if "data" in f:
+                marker_grp = f["data"]        # legacy: 마커도 에피소드도 data/
+                container = f["data"]
+                episode_names = list(container.keys())
+            else:
+                # scene-v1: 마커는 metadata 그룹에, 에피소드는 루트에 있다.
+                # 에피소드 안쪽 페이로드는 legacy 와 동일해 아래 로직을 공유.
+                marker_grp = f["metadata"]
+                container = f
+                episode_names = [k for k in f.keys() if k.startswith("episode_")]
+            out["episodes"] = len(episode_names)
+            out["marker"] = marker_grp.attrs.get(REPACK_MARKER_ATTR)
             if isinstance(out["marker"], bytes):
                 out["marker"] = out["marker"].decode(errors="replace")
-            at_repack = data.attrs.get(REPACK_COUNT_ATTR)
+            at_repack = marker_grp.attrs.get(REPACK_COUNT_ATTR)
             if at_repack is not None:
                 out["new_since"] = max(0, out["episodes"] - int(at_repack))
                 out["deleted_since"] = max(0, int(at_repack) - out["episodes"])
@@ -1258,8 +1267,8 @@ def hdf5_repack_status(path) -> dict:
             out["dead_bytes"] = max(0, out["size"] - _stored_bytes(f))
             out["dead_ratio"] = out["dead_bytes"] / out["size"] if out["size"] else 0.0
             comps = set()
-            for name in data.keys():
-                obs = data[name].get("obs")
+            for name in episode_names:
+                obs = container[name].get("obs")
                 if obs is None:
                     continue
                 for key in ("agentview_rgb", "eye_in_hand_rgb"):
