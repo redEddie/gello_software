@@ -1261,6 +1261,19 @@ class WorkspaceWindow(QMainWindow):
         w = QWidget()
         col = QVBoxLayout(w)
         col.setContentsMargins(0, 0, 0, 0)
+        # 이 페이지 전용 폴더 선택 -- 수집 저장 경로(root_edit)와 독립적으로
+        # 다른 폴더(예: old_data/)를 훑어볼 수 있다. 초기값은 수집 경로.
+        dr = QHBoxLayout()
+        self.dataset_root_edit = QLineEdit(
+            self.root_edit.text() if hasattr(self, "root_edit")
+            else str(Path.home() / "libero_datasets"))
+        self.dataset_root_edit.editingFinished.connect(self._refresh_dataset_tree)
+        dr.addWidget(self.dataset_root_edit, 1)
+        dbrowse = QPushButton(tr("..."))
+        dbrowse.setMaximumWidth(36)
+        dbrowse.clicked.connect(self._browse_dataset_root)
+        dr.addWidget(dbrowse)
+        col.addLayout(dr)
         search = QLineEdit()
         search.setPlaceholderText(f"{tr('에피소드 검색')} ({TODO_MARK})")
         mark_todo(search, tr("검색/필터는 아직 없습니다."))
@@ -3785,11 +3798,53 @@ class WorkspaceWindow(QMainWindow):
             self._refresh_analysis()
 
     # ------------------------------------------------------------ dataset
+    def _dataset_root(self) -> Path:
+        """Dataset 페이지의 폴더 -- 전용 입력이 있으면 그것, 없으면 수집 경로."""
+        edit = getattr(self, "dataset_root_edit", None)
+        text = (edit.text() if edit is not None else self.root_edit.text()).strip()
+        return Path(text).expanduser()
+
+    def _browse_dataset_root(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, tr("데이터 폴더"),
+                                             self.dataset_root_edit.text())
+        if d:
+            self.dataset_root_edit.setText(d)
+            self._refresh_dataset_tree()
+
     def _refresh_dataset_tree(self) -> None:
         self.dataset_tree.clear()
-        root = Path(self.root_edit.text().strip()).expanduser()
+        root = self._dataset_root()
         if not root.is_dir():
             return
+        # ---- scene 파일 (scene-v1). 재생·재판정 UI 는 #31 갤러리에서 --
+        # 여기서는 목록·개수·quality 확인용으로 보여준다. 에피소드는
+        # immutable 이라 삭제 버튼은 _delete_episodes 가 거부한다.
+        for path in iter_scene_files(root):
+            item = QTreeWidgetItem([path.name, "", "scene"])
+            item.setData(0, Qt.ItemDataRole.UserRole, str(path))
+            self.dataset_tree.addTopLevelItem(item)
+            try:
+                if (self.active_file_path is not None
+                        and path == self.active_file_path
+                        and self.active_episode_cache is not None):
+                    episodes = self.active_episode_cache
+                else:
+                    from gello.scene_format import list_scene_episodes
+
+                    episodes = list_scene_episodes(path)
+            except Exception as e:  # noqa: BLE001
+                item.setText(1, f"({type(e).__name__})")
+                continue
+            for ep in episodes:
+                label = f"  {ep['name']} · {ep.get('instruction_id', '')}"
+                q = ep.get("quality_status") or (
+                    "-" if ep.get("success") is None
+                    else ("success" if ep["success"] else "failed"))
+                child = QTreeWidgetItem([label, str(ep.get("num_samples", "")), q])
+                child.setData(0, Qt.ItemDataRole.UserRole, ep["name"])
+                child.setToolTip(0, ep.get("instruction", ""))
+                item.addChild(child)
+            item.setText(1, tr("{n}개").format(n=len(episodes)))
         for path in sorted(root.glob("*_demo.hdf5")):
             item = QTreeWidgetItem([path.name, "", ""])
             item.setData(0, Qt.ItemDataRole.UserRole, str(path))
@@ -3876,6 +3931,15 @@ class WorkspaceWindow(QMainWindow):
         if busy:
             QMessageBox.warning(self, tr("삭제 불가"),
                                 tr("{job}이(가) 진행 중입니다. 끝난 뒤 삭제하세요.").format(job=busy))
+            return False
+        scene_paths = [p for p in by_file if p.name.startswith("scene_")]
+        if scene_paths:
+            QMessageBox.warning(
+                self, tr("삭제 불가"),
+                tr("scene 에피소드는 지울 수 없습니다 (immutable 규격).\n"
+                   "불량은 quality_status 재판정으로 표시합니다 -- 변환이 "
+                   "success 만 내보내므로 학습에는 안 들어갑니다.\n대상: {p}")
+                .format(p=", ".join(p.name for p in scene_paths)))
             return False
 
         total = sum(len(v) for v in by_file.values())
@@ -4047,6 +4111,21 @@ class WorkspaceWindow(QMainWindow):
         path = self._selected_file()
         if path is None:
             QMessageBox.information(self, tr("선택 필요"), tr("파일을 선택하세요."))
+            return
+        if path.name.startswith("scene_"):
+            # scene 파일은 legacy 구조 검사 대신 표준 뷰(격자 지도 + slot 현황).
+            try:
+                md = read_scene_metadata(path)
+                counts = count_by_slot(path)
+                text = describe_scene(md)
+                if counts:
+                    text += "\n\nslot 현황: " + "  ".join(
+                        f"{iid} {c['usable']}/{c['total']}"
+                        for iid, c in sorted(counts.items()))
+                text += "\n\n" + tr("정밀 검사: python scripts/check_scene_file.py {p}").format(p=path)
+            except Exception as e:  # noqa: BLE001
+                text = f"{path.name}\n읽기 실패: {type(e).__name__}: {e}"
+            self._alert(tr("Scene 구조"), text, icon=QMessageBox.Icon.Information)
             return
         st = hdf5_repack_status(path)
         lines = [f"{path.name}",
