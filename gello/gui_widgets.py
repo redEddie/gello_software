@@ -501,6 +501,32 @@ class EpisodeLoadWorker(QThread):
         self.loaded.emit(self.path, self.demo, agent, wrist)
 
 
+class GalleryLoadWorker(QThread):
+    """scene 갤러리(#31)용: 썸네일 캐시 생성 + 에피소드 요약을 UI 스레드
+    밖에서 읽는다. 첫 로드에서 에피소드 수만큼 프레임을 읽으므로(예: 50개
+    ≈ 수 초) 타이머 콜백에 넣지 않는다. 캐시가 차면 이후에는 목록 조회뿐."""
+
+    loaded = pyqtSignal(str, list, object)  # scene_path, episodes(+thumb), ref_thumb|None
+    failed = pyqtSignal(str)
+
+    def __init__(self, scene_path: str) -> None:
+        super().__init__()
+        self.scene_path = scene_path
+
+    def run(self) -> None:
+        try:
+            from gello.scene_format import read_scene_metadata
+            from gello.scene_gallery import build_gallery, reference_thumb
+
+            episodes = build_gallery(self.scene_path)
+            sid = read_scene_metadata(Path(self.scene_path)).scene_id
+            ref = reference_thumb(self.scene_path, sid)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(f"{type(e).__name__}: {e}")
+            return
+        self.loaded.emit(self.scene_path, episodes, ref)
+
+
 class CameraPreviewWorker(QThread):
     """Opens a single RealSense camera on its own thread just to preview it
     before/independent of a recording session -- separate from

@@ -54,8 +54,8 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-from PyQt6.QtCore import QEvent, QProcess, Qt, QThread, QTimer, pyqtSlot
-from PyQt6.QtGui import QAction, QActionGroup, QFont, QTextCursor
+from PyQt6.QtCore import QEvent, QProcess, QSize, Qt, QThread, QTimer, pyqtSlot
+from PyQt6.QtGui import QAction, QActionGroup, QFont, QIcon, QTextCursor
 from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -116,6 +116,7 @@ from gello.gui_widgets import (  # noqa: E402
     REPACK_SCRIPT,
     CameraPreviewWorker,
     DatasetSchemaDialog,
+    GalleryLoadWorker,
     DeltaBar,
     EpisodeLoadWorker,
     HdfUploadDialog,
@@ -805,6 +806,153 @@ class WorkspaceWindow(QMainWindow):
         self.log("[준비] 로봇 노드를 먼저 띄운 뒤 Connect 를 누르세요.")
         QTimer.singleShot(0, self._startup_tuning)
 
+    # ------------------------------------------------------------ gallery
+    def _build_gallery_tab(self) -> QWidget:
+        """scene 에피소드 갤러리 (#31): 썸네일 그리드 + instruction 필터.
+
+        더블클릭 = Playback 재생(기존 경로 재사용), 재판정 버튼 = Dataset
+        페이지와 같은 코어(_relabel_episodes). 썸네일은 uid 기반 캐시라
+        (에피소드 immutable) 첫 로드 이후에는 즉시 뜬다.
+        """
+        w = QWidget()
+        col = QVBoxLayout(w)
+        row = QHBoxLayout()
+        self.gallery_scene_combo = QComboBox()
+        _shrinkable_combo(self.gallery_scene_combo)
+        self.gallery_scene_combo.currentIndexChanged.connect(self._refresh_gallery)
+        row.addWidget(self.gallery_scene_combo, 2)
+        self.gallery_filter_combo = QComboBox()
+        _shrinkable_combo(self.gallery_filter_combo)
+        self.gallery_filter_combo.currentIndexChanged.connect(self._apply_gallery_filter)
+        row.addWidget(self.gallery_filter_combo, 2)
+        b = QPushButton("↻")
+        b.setToolTip(tr("scene 목록·썸네일 새로고침"))
+        b.setMaximumWidth(32)
+        b.clicked.connect(self._refresh_gallery_scenes)
+        row.addWidget(b)
+        self.gallery_relabel_btn = QPushButton(tr("선택 재판정"))
+        self.gallery_relabel_btn.clicked.connect(self._on_gallery_relabel)
+        row.addWidget(self.gallery_relabel_btn)
+        col.addLayout(row)
+        self.gallery_list = QListWidget()
+        self.gallery_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self.gallery_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.gallery_list.setMovement(QListWidget.Movement.Static)
+        self.gallery_list.setIconSize(QSize(200, 150))
+        self.gallery_list.setSpacing(8)
+        self.gallery_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.gallery_list.itemActivated.connect(self._on_gallery_activated)
+        col.addWidget(self.gallery_list, 1)
+        self.gallery_status = QLabel(tr("scene 을 선택하세요"))
+        self.gallery_status.setStyleSheet("color:#888;")
+        self.gallery_status.setWordWrap(True)
+        col.addWidget(self.gallery_status)
+        self._gallery_loader = None
+        self._gallery_episodes = []
+        self._refresh_gallery_scenes()
+        return w
+
+    def _refresh_gallery_scenes(self) -> None:
+        combo = self.gallery_scene_combo
+        cur = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        try:
+            for p in iter_scene_files(self._dataset_root()):
+                combo.addItem(p.name, str(p))
+        except Exception:  # noqa: BLE001
+            pass
+        idx = combo.findData(cur)
+        combo.setCurrentIndex(max(0, idx))
+        combo.blockSignals(False)
+        self._refresh_gallery()
+
+    def _refresh_gallery(self, *_args) -> None:
+        path = self.gallery_scene_combo.currentData()
+        self.gallery_list.clear()
+        self._gallery_episodes = []
+        if not path:
+            self.gallery_status.setText(tr("표시할 scene 파일이 없습니다"))
+            return
+        self.gallery_status.setText(tr("불러오는 중... (첫 로드는 썸네일 생성으로 수 초)"))
+        if self._gallery_loader is not None:
+            self._gallery_loader.wait()
+        self._gallery_loader = GalleryLoadWorker(path)
+        self._gallery_loader.loaded.connect(self._on_gallery_loaded)
+        self._gallery_loader.failed.connect(
+            lambda m: self.gallery_status.setText(tr("갤러리 로드 실패: {m}").format(m=m)))
+        self._gallery_loader.start()
+
+    @pyqtSlot(str, list, object)
+    def _on_gallery_loaded(self, path, episodes, ref_thumb) -> None:
+        if path != self.gallery_scene_combo.currentData():
+            return  # 로드 중 scene 을 바꿨다
+        self._gallery_episodes = episodes
+        # instruction 필터 항목 재구성 (선택 유지)
+        cur = self.gallery_filter_combo.currentData()
+        self.gallery_filter_combo.blockSignals(True)
+        self.gallery_filter_combo.clear()
+        self.gallery_filter_combo.addItem(tr("(모든 instruction)"), None)
+        for iid, instr in sorted({(e["instruction_id"], e["instruction"])
+                                  for e in episodes}):
+            self.gallery_filter_combo.addItem(f"{iid} · {instr[:44]}", iid)
+        idx = self.gallery_filter_combo.findData(cur)
+        self.gallery_filter_combo.setCurrentIndex(max(0, idx))
+        self.gallery_filter_combo.blockSignals(False)
+        self._ref_thumb = ref_thumb
+        self._apply_gallery_filter()
+
+    def _apply_gallery_filter(self, *_args) -> None:
+        want = self.gallery_filter_combo.currentData()
+        path = self.gallery_scene_combo.currentData()
+        self.gallery_list.clear()
+        if getattr(self, "_ref_thumb", None):
+            it = QListWidgetItem(QIcon(self._ref_thumb), tr("기준 사진"))
+            it.setData(Qt.ItemDataRole.UserRole, None)
+            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.gallery_list.addItem(it)
+        shown = 0
+        for e in self._gallery_episodes:
+            if want is not None and e["instruction_id"] != want:
+                continue
+            mark = {"success": "✓", "failed": "✗"}.get(e["quality_status"],
+                                                       e["quality_status"][:4])
+            it = QListWidgetItem(
+                QIcon(e["thumb"]) if e["thumb"] else QIcon(),
+                f"{e['name'].replace('episode_', 'E')} {mark} · {e['instruction_id']}")
+            it.setData(Qt.ItemDataRole.UserRole, (path, e["name"]))
+            it.setToolTip(f"{e['episode_uid']}\n{e['instruction']}\n"
+                          f"{e['num_samples']}프레임 · {e['quality_status']}"
+                          f" · {e.get('collector', '')}")
+            self.gallery_list.addItem(it)
+            shown += 1
+        n_ok = sum(1 for e in self._gallery_episodes
+                   if e["quality_status"] == "success")
+        self.gallery_status.setText(
+            tr("{s}개 표시 (전체 {n}개 · success {ok}개) — 더블클릭: 재생, "
+               "선택 후 재판정 버튼: 성공↔실패").format(
+                   s=shown, n=len(self._gallery_episodes), ok=n_ok))
+
+    def _on_gallery_activated(self, item) -> None:
+        d = item.data(Qt.ItemDataRole.UserRole)
+        if d:
+            self._play_episode(d[0], d[1])
+
+    def _on_gallery_relabel(self) -> None:
+        by_file: dict = {}
+        for item in self.gallery_list.selectedItems():
+            d = item.data(Qt.ItemDataRole.UserRole)
+            if d:
+                by_file.setdefault(Path(d[0]), []).append(d[1])
+        if not by_file:
+            QMessageBox.information(self, tr("선택 필요"),
+                                    tr("재판정할 에피소드를 선택하세요."))
+            return
+        if self._relabel_episodes(by_file):
+            self._refresh_gallery()
+            self._refresh_dataset_tree()
+
     # ------------------------------------------------------------- center
     def _build_center(self) -> None:
         # 카메라별 크롭 정렬 -- 뷰 가이드·레이아웃 겹침·수집·변환이 전부 이
@@ -892,6 +1040,8 @@ class WorkspaceWindow(QMainWindow):
         self._trim_tab_index = self.center_tabs.addTab(self._build_trim_tab(), tr("Trim"))
         self._layout_tab_index = self.center_tabs.addTab(
             self._build_layout_tab(), tr("레이아웃"))
+        self._gallery_tab_index = self.center_tabs.addTab(
+            self._build_gallery_tab(), tr("Gallery"))
         self.center_tabs.currentChanged.connect(self._on_center_tab_changed)
         for title, why in ((tr("Depth"), tr("깊이 스트림을 아직 수집하지 않습니다.")),
                            (tr("Point Cloud"), tr("포인트클라우드 렌더러가 없습니다."))):
@@ -3974,10 +4124,13 @@ class WorkspaceWindow(QMainWindow):
 
     # ------------------------------------------------------------ dataset
     def _dataset_root(self) -> Path:
-        """Dataset 페이지의 폴더 -- 전용 입력이 있으면 그것, 없으면 수집 경로."""
-        edit = getattr(self, "dataset_root_edit", None)
-        text = (edit.text() if edit is not None else self.root_edit.text()).strip()
-        return Path(text).expanduser()
+        """Dataset 페이지의 폴더 -- 전용 입력이 있으면 그것, 없으면 수집 경로.
+        (빌드 순서상 어느 쪽도 아직 없을 수 있다 -- 기본 경로로 폴백.)"""
+        edit = (getattr(self, "dataset_root_edit", None)
+                or getattr(self, "root_edit", None))
+        if edit is None:
+            return Path.home() / "libero_datasets"
+        return Path(edit.text().strip()).expanduser()
 
     def _browse_dataset_root(self) -> None:
         d = QFileDialog.getExistingDirectory(self, tr("데이터 폴더"),
@@ -4053,6 +4206,8 @@ class WorkspaceWindow(QMainWindow):
         self.dataset_tree.collapseAll()
         if hasattr(self, "scene_combo"):
             self._refresh_scene_combo()
+        if hasattr(self, "gallery_scene_combo"):
+            self._refresh_gallery_scenes()
         self._update_dataset_panel(self._selected_file())
 
     def _selected_file(self) -> Path | None:
@@ -4093,11 +4248,16 @@ class WorkspaceWindow(QMainWindow):
                 tr("재판정할 scene 에피소드를 선택하세요 (legacy 파일은 세션 중 "
                    "판정 버튼을 사용)."))
             return
+        if self._relabel_episodes(by_file):
+            self._refresh_dataset_tree()
+
+    def _relabel_episodes(self, by_file: dict) -> bool:
+        """재판정 공용 코어 -- Dataset 트리와 Gallery 가 같은 것을 쓴다."""
         busy = self._busy_reason()
         if busy:
             QMessageBox.warning(self, tr("재판정 불가"),
                                 tr("{job}이(가) 진행 중입니다.").format(job=busy))
-            return
+            return False
         flipped = skipped = 0
         for path, names in by_file.items():
             owned = self.active_file_path is not None and path == self.active_file_path
@@ -4120,10 +4280,10 @@ class WorkspaceWindow(QMainWindow):
             except Exception as e:  # noqa: BLE001
                 QMessageBox.critical(self, tr("재판정 실패"),
                                      f"{path.name}\n{type(e).__name__}: {e}")
-                return
+                return False
         self.log(f"[재판정] {flipped}개 뒤집음"
                  + (f", {skipped}개 건너뜀 (success/failed 아님)" if skipped else ""))
-        self._refresh_dataset_tree()
+        return True
 
     def _on_delete_selected(self) -> None:
         """Deletes the selected episode.
