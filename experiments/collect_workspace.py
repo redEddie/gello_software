@@ -920,7 +920,8 @@ class WorkspaceWindow(QMainWindow):
                                                        e["quality_status"][:4])
             it = QListWidgetItem(
                 QIcon(e["thumb"]) if e["thumb"] else QIcon(),
-                f"{e['name'].replace('episode_', 'E')} {mark} · {e['instruction_id']}")
+                # E번호는 slot 로컬 (uid 의 마지막 조각) -- I000-E000, I003-E000 …
+                f"{e['instruction_id']}-{e['episode_uid'].rsplit('-', 1)[-1]} {mark}")
             it.setData(Qt.ItemDataRole.UserRole, (path, e["name"]))
             it.setToolTip(f"{e['episode_uid']}\n{e['instruction']}\n"
                           f"{e['num_samples']}프레임 · {e['quality_status']}"

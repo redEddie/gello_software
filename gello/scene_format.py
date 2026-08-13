@@ -144,7 +144,11 @@ def next_scene_id(root: Path) -> str:
 
 def episode_uid(scene_id: str, instruction_id: str, episode_idx: int) -> str:
     """``EP-S012-I003-E007`` -- HDF5, 수집 로그, QA 기록, Hub manifest,
-    evaluation 결과에서 전부 이 하나의 이름을 쓴다 (§2)."""
+    evaluation 결과에서 전부 이 하나의 이름을 쓴다 (§2).
+
+    ``episode_idx`` 는 **slot(=scene×instruction) 로컬** 번호다 -- 각 slot 의
+    첫 에피소드가 E000 (2026-08-13 결정). 파일 안 그룹 이름(episode_NNN)은
+    별개로 파일 전체 append 순서를 유지한다."""
     return f"EP-{scene_id}-{instruction_id}-E{episode_idx:03d}"
 
 
@@ -244,6 +248,7 @@ def _episode_summary(name: str, grp: h5py.Group) -> dict:
     return {
         "name": name,
         "episode_id": int(grp.attrs["episode_id"]),
+        "slot_episode_idx": int(grp.attrs.get("slot_episode_idx", -1)),
         "episode_uid": str(grp.attrs["episode_uid"]),
         "instruction_id": str(grp.attrs["instruction_id"]),
         "instruction": str(grp.attrs["instruction"]),
@@ -436,6 +441,20 @@ class SceneWriter:
             raise ValueError(f"잘못된 quality_status: {quality_status!r} (허용: {QUALITY_STATUSES})")
 
         idx = int(self._meta.attrs["next_episode_idx"])
+        # slot(=instruction) 로컬 E번호: 각 slot 은 E000 부터 센다 (2026-08-13
+        # 결정). 기존 같은 slot 에피소드의 uid E-부분 최대+1 로 계산 --
+        # 과거 파일(전역 번호 시절)에 이어붙여도 uid 가 충돌하지 않고,
+        # 삭제가 없는 포맷이라 번호 재사용도 불가능하다.
+        slot_idx = 0
+        for k in self._file.keys():
+            if not EPISODE_GROUP_RE.match(k):
+                continue
+            g = self._file[k]
+            if str(g.attrs.get("instruction_id", "")) != instruction_id:
+                continue
+            m = re.search(r"-E(\d+)$", str(g.attrs.get("episode_uid", "")))
+            if m:
+                slot_idx = max(slot_idx, int(m.group(1)) + 1)
         self._meta.attrs["next_episode_idx"] = idx + 1
         name = f"episode_{idx:03d}"
         grp = self._file.create_group(name)
@@ -445,7 +464,8 @@ class SceneWriter:
         grp.attrs["scene_id"] = sid
         grp.attrs["instruction_id"] = instruction_id
         grp.attrs["episode_id"] = idx
-        grp.attrs["episode_uid"] = episode_uid(sid, instruction_id, idx)
+        grp.attrs["slot_episode_idx"] = slot_idx
+        grp.attrs["episode_uid"] = episode_uid(sid, instruction_id, slot_idx)
         grp.attrs["instruction"] = instruction
         grp.attrs["quality_status"] = quality_status
         grp.attrs["collector"] = self.collector if collector is None else collector
