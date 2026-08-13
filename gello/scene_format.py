@@ -381,6 +381,12 @@ class SceneWriter:
         self._meta.create_dataset("reference_image", data=arr, compression="lzf")
         self._file.flush()
 
+    @property
+    def has_reference_image(self) -> bool:
+        """기준 사진 유무. 자동 캡처(첫 에피소드의 agentview)가 수동 촬영본을
+        덮어쓰지 않도록 쓰기 전에 확인하는 용도다."""
+        return "reference_image" in self._meta
+
     # ----------------------------------------------------------------- 저장
     def save_buffer(
         self,

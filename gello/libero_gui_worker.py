@@ -100,6 +100,11 @@ class EpisodeSaver(QThread):
     def enqueue_delete(self, name: str) -> None:
         self._q.put(("delete", name))
 
+    def enqueue_set_reference(self, img) -> None:
+        """scene 기준 사진 후보 (h5py 는 saver 스레드 전용이라 큐 경유).
+        이미 있으면(수동 촬영본 등) 건드리지 않는다."""
+        self._q.put(("set_ref", img))
+
     def enqueue_set_success(self, name: str, success: bool) -> None:
         """Re-label an already-saved episode. Goes through the same queue as
         the save itself, so a toggle sent while that save is still running is
@@ -150,6 +155,13 @@ class EpisodeSaver(QThread):
                     self._writer.delete_episode(name)
                     self.log_message.emit(f"[삭제] {name}")
                     self.episode_list_changed.emit(self._writer.list_episodes())
+                elif item[0] == "set_ref":
+                    img = item[1]
+                    if (hasattr(self._writer, "set_reference_image")
+                            and not getattr(self._writer, "has_reference_image", True)):
+                        self._writer.set_reference_image(img)
+                        self.log_message.emit(
+                            "[SCENE] 기준 사진을 첫 에피소드의 agentview 로 캡처했습니다")
                 elif item[0] == "set_success":
                     _, name, success = item
                     if hasattr(self._writer, "set_episode_success"):
@@ -249,6 +261,7 @@ class CollectionWorker(QThread):
         self._slot_instruction = config.language_instruction
         self._slot_instruction_id = config.instruction_id
         self._episode_slot = (self._slot_instruction, self._slot_instruction_id)
+        self._ref_enqueued = False  # scene 기준 사진 자동 캡처는 세션당 1회 시도
         # GUI 스레드에서 시그널을 미리 connect할 수 있도록 여기서 생성;
         # writer 주입/start()는 run()에서 (h5py 접근 직렬화는 saver가 소유).
         self.saver = EpisodeSaver()
@@ -898,6 +911,14 @@ class CollectionWorker(QThread):
             action = self._teleop.get_action()
             self._robot.send_action(action)
             obs = self._get_obs()
+
+            # scene 기준 사진(§6 "사진 1장 필수"): 세션 첫 기록 프레임의
+            # agentview 를 자동 캡처 후보로 보낸다. 이미 있으면 saver 가 무시.
+            if (self.cfg.scene_mode and not self._ref_enqueued
+                    and obs.get("agent") is not None):
+                self._ref_enqueued = True
+                self.saver.enqueue_set_reference(
+                    np.ascontiguousarray(obs["agent"]))
 
             q = self._joint_vec(obs)
             q_cmd = self._joint_vec(action)

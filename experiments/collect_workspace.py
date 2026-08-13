@@ -73,6 +73,8 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -136,7 +138,18 @@ from gello.libero_format import (  # noqa: E402
     save_crop_params,
 )
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
+from gello.props import load_props  # noqa: E402
 from gello.robots.franka_fr3 import FR3_RESET_POSES  # noqa: E402
+from gello.scene_format import (  # noqa: E402
+    INSTRUCTION_ID_RE,
+    SceneMetadata,
+    count_by_slot,
+    describe_scene,
+    iter_scene_files,
+    next_scene_id,
+    read_scene_metadata,
+    scene_filename,
+)
 from gello.station import load_station  # noqa: E402
 
 LOG_DIR = Path.home() / "libero_gui_logs"
@@ -483,6 +496,127 @@ class PipelineDialog(QDialog):
         return steps
 
 
+class NewSceneDialog(QDialog):
+    """새 scene 구성 — 소품 선택 + 3×3 존 배치 + 설명.
+
+    입력 검증은 SceneMetadata.validate 가 전담한다 (가드레일: UI 는 얇게).
+    기준 사진은 여기서 찍지 않는다 — 첫 에피소드 기록이 시작될 때 agentview
+    프레임이 자동 캡처된다 (libero_gui_worker 의 enqueue_set_reference).
+
+    사용법: 왼쪽 목록에서 물체를 체크해 포함시키고, 물체를 클릭해 선택한
+    상태로 오른쪽 3×3 격자 칸을 누르면 그 존에 배치된다. [0,0]=왼쪽 위.
+    """
+
+    def __init__(self, parent, scene_id: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("새 Scene 구성 — {sid}").format(sid=scene_id))
+        self.setMinimumWidth(720)
+        self._scene_id = scene_id
+        self._placements: dict = {}
+        self.metadata = None  # accept 시 SceneMetadata
+
+        layout = QVBoxLayout(self)
+        hint = QLabel(tr(
+            "① 포함할 물체를 체크  ② 목록에서 물체를 클릭해 선택  "
+            "③ 오른쪽 격자 칸을 눌러 그 존에 배치  ([0,0]=왼쪽 위)"))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        mid = QHBoxLayout()
+        self.prop_list = QListWidget()
+        for p in load_props():
+            if p.retired:
+                continue
+            it = QListWidgetItem(f"{p.id}  ({p.category} · {p.color})")
+            it.setData(Qt.ItemDataRole.UserRole, p.id)
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(Qt.CheckState.Unchecked)
+            self.prop_list.addItem(it)
+        self.prop_list.itemChanged.connect(self._refresh)
+        mid.addWidget(self.prop_list, 3)
+
+        grid = QGridLayout()
+        self.zone_buttons = {}
+        for r in range(3):
+            for c in range(3):
+                b = QPushButton("")
+                b.setMinimumSize(100, 56)
+                b.setToolTip(tr("존 [{r},{c}] 에 선택한 물체 배치").format(r=r, c=c))
+                b.clicked.connect(lambda _=False, rc=(r, c): self._assign(rc))
+                grid.addWidget(b, r, c)
+                self.zone_buttons[(r, c)] = b
+        mid.addLayout(grid, 4)
+        layout.addLayout(mid)
+
+        form = QFormLayout()
+        self.desc_edit = QLineEdit()
+        self.desc_edit.setPlaceholderText(
+            tr("배치 의도, 지칭하지 않는 물체 등 — 사람용 자유 문장"))
+        form.addRow(tr("설명"), self.desc_edit)
+        layout.addLayout(form)
+
+        self.preview = QLabel("")
+        self.preview.setStyleSheet(
+            "font-family: monospace; color:#888; font-size: 11px;")
+        layout.addWidget(self.preview)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._refresh()
+
+    def _checked_ids(self) -> list:
+        return [self.prop_list.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(self.prop_list.count())
+                if self.prop_list.item(i).checkState() == Qt.CheckState.Checked]
+
+    def _assign(self, rc) -> None:
+        it = self.prop_list.currentItem()
+        if it is None:
+            return
+        it.setCheckState(Qt.CheckState.Checked)  # 배치 = 포함 의사
+        self._placements[it.data(Qt.ItemDataRole.UserRole)] = [rc[0], rc[1]]
+        self._refresh()
+
+    def _build(self) -> SceneMetadata:
+        return SceneMetadata(
+            scene_id=self._scene_id,
+            objects=self._checked_ids(),
+            layout={"grid": [3, 3],
+                    "placements": {o: {"zone": z}
+                                   for o, z in self._placements.items()}},
+            description=self.desc_edit.text().strip(),
+            station=STATION.name,
+        )
+
+    def _refresh(self, *_args) -> None:
+        checked = set(self._checked_ids())
+        self._placements = {k: v for k, v in self._placements.items()
+                            if k in checked}
+        for (r, c), b in self.zone_buttons.items():
+            here = [o.replace("OBJ-", "") for o, z in self._placements.items()
+                    if z == [r, c]]
+            b.setText("\n".join(here))
+        try:
+            self.preview.setText(describe_scene(self._build()))
+        except Exception:  # noqa: BLE001 - 미완성 구성의 미리보기는 없어도 된다
+            self.preview.setText("")
+
+    def _accept(self) -> None:
+        md = self._build()
+        try:
+            from gello.props import active_prop_ids
+
+            md.validate(known_prop_ids=active_prop_ids())
+        except ValueError as e:
+            QMessageBox.warning(self, tr("Scene 구성 오류"), str(e))
+            return
+        self.metadata = md
+        super().accept()
+
+
 class StatusLight(QLabel):
     """One status-bar indicator: a colored dot plus a short label."""
 
@@ -765,6 +899,46 @@ class WorkspaceWindow(QMainWindow):
         form.addRow(tr("저장 경로"), root_row)
         col.addWidget(task)
 
+        # ---- scene-v1 수집 모드. 켜면 위 태스크 그룹(파일=task 방식)이 잠기고
+        # 파일=scene, instruction=에피소드별 attrs 로 기록된다.
+        scene = QGroupBox(tr("Scene 수집 (scene-v1)"))
+        sc_form = QFormLayout(scene)
+        self.scene_check = QCheckBox(tr("Scene 모드로 수집"))
+        self.scene_check.setToolTip(tr(
+            "파일 하나 = 책상 배치(scene) 하나. instruction 은 에피소드마다 "
+            "기록되며 수집 중에 바꿀 수 있습니다. Language 칸이 시작 문장이 "
+            "됩니다."))
+        self.scene_check.toggled.connect(self._on_scene_toggled)
+        sc_form.addRow(self.scene_check)
+        scene_row = QWidget()
+        srow = QHBoxLayout(scene_row)
+        srow.setContentsMargins(0, 0, 0, 0)
+        self.scene_combo = QComboBox()
+        self.scene_combo.currentIndexChanged.connect(self._on_scene_selected)
+        srow.addWidget(self.scene_combo, 1)
+        self.scene_refresh_btn = QPushButton(tr("새로고침"))
+        self.scene_refresh_btn.setMaximumWidth(80)
+        self.scene_refresh_btn.clicked.connect(self._refresh_scene_combo)
+        srow.addWidget(self.scene_refresh_btn)
+        sc_form.addRow(tr("Scene"), scene_row)
+        self.scene_new_btn = QPushButton(tr("새 Scene 구성..."))
+        self.scene_new_btn.clicked.connect(self._on_new_scene)
+        sc_form.addRow(self.scene_new_btn)
+        self.scene_iid_edit = QLineEdit(self._recents.most_recent("instruction_id", "I000"))
+        self.scene_iid_edit.setToolTip(tr("시작 slot 의 instruction ID (예: I000). "
+                                          "수집 중 Collect 페이지에서 바꿀 수 있습니다."))
+        sc_form.addRow(tr("시작 slot ID"), self.scene_iid_edit)
+        self.collector_edit = QLineEdit(self._recents.most_recent("collector", ""))
+        self.collector_edit.setPlaceholderText(tr("수집자 식별자 (필수 attr, 예: gibeom)"))
+        sc_form.addRow(tr("수집자"), self.collector_edit)
+        self.scene_info = QLabel("")
+        self.scene_info.setStyleSheet("font-family: monospace; color:#888; font-size: 11px;")
+        self.scene_info.setWordWrap(True)
+        sc_form.addRow(self.scene_info)
+        self._pending_scene_meta = None
+        self._scene_session = False
+        col.addWidget(scene)
+
         cam = QGroupBox(tr("카메라"))
         cform = QFormLayout(cam)
         self.agent_combo = QComboBox()
@@ -821,7 +995,145 @@ class WorkspaceWindow(QMainWindow):
         sform.addRow(self.match_check)
         col.addWidget(sess)
         col.addStretch()
+        # scene 위젯들의 활성 상태 초기화 -- no_dataset_check 가 위에서야
+        # 만들어지므로 페이지 구성이 끝난 여기서 한 번 정리한다.
+        self._on_scene_toggled(self.scene_check.isChecked())
         return w
+
+    # ------------------------------------------------------- scene 모드 UI
+    def _sync_task_box_enabled(self) -> None:
+        """태스크 그룹은 연습 모드(파일 없음)나 scene 모드(파일=scene)에서는
+        의미가 없어 잠근다. 단 Language 칸은 scene 모드의 시작 문장이라 살린다."""
+        no_ds = self.no_dataset_check.isChecked()
+        scene_on = self.scene_check.isChecked()
+        self.task_box.setEnabled(not no_ds and not scene_on)
+        if scene_on and not no_ds:
+            # scene 모드에서 쓰는 입력만 개별 활성화
+            self.task_box.setEnabled(True)
+            for w in (self.resume_combo, self.resume_info_btn, self.task_edit):
+                w.setEnabled(False)
+            self.lang_edit.setEnabled(True)
+            self.root_edit.setEnabled(True)
+        elif not no_ds:
+            for w in (self.resume_combo, self.resume_info_btn, self.task_edit,
+                      self.lang_edit, self.root_edit):
+                w.setEnabled(True)
+
+    def _on_scene_toggled(self, on: bool) -> None:
+        for w in (self.scene_combo, self.scene_refresh_btn, self.scene_new_btn,
+                  self.scene_iid_edit, self.collector_edit):
+            w.setEnabled(on)
+        if on:
+            self._refresh_scene_combo()
+        else:
+            self.scene_info.setText("")
+        self._sync_task_box_enabled()
+
+    def _refresh_scene_combo(self) -> None:
+        """저장 경로의 scene_*.hdf5 목록. 파일명이 아니라 내부 metadata 로
+        표시한다 (경로 역산 금지)."""
+        self.scene_combo.blockSignals(True)
+        self.scene_combo.clear()
+        root = Path(self.root_edit.text().strip() or ".")
+        try:
+            sid_next = next_scene_id(root)
+        except Exception:  # noqa: BLE001
+            sid_next = "S???"
+        self.scene_combo.addItem(tr("— 새 Scene ({sid}) —").format(sid=sid_next), None)
+        try:
+            for p in iter_scene_files(root):
+                try:
+                    md = read_scene_metadata(p)
+                except Exception as e:  # noqa: BLE001
+                    self.scene_combo.addItem(f"{p.name} (읽기 실패: {type(e).__name__})", None)
+                    continue
+                label = f"{md.scene_id} · 물체 {len(md.objects)}개"
+                if md.description:
+                    label += f" · {md.description[:28]}"
+                self.scene_combo.addItem(label, md.scene_id)
+        except Exception:  # noqa: BLE001
+            pass
+        self.scene_combo.blockSignals(False)
+        self._on_scene_selected()
+
+    def _on_scene_selected(self, *_args) -> None:
+        sid = self.scene_combo.currentData()
+        self.scene_new_btn.setEnabled(sid is None and self.scene_check.isChecked())
+        if sid is None:
+            if self._pending_scene_meta is not None:
+                self.scene_info.setText(
+                    describe_scene(self._pending_scene_meta)
+                    + "\n" + tr("(연결하면 이 구성으로 새 scene 파일이 만들어집니다)"))
+            else:
+                self.scene_info.setText(
+                    tr("'새 Scene 구성...'으로 물체 배치를 정의하세요."))
+            return
+        root = Path(self.root_edit.text().strip() or ".")
+        try:
+            path = root / scene_filename(sid)
+            md = read_scene_metadata(path)
+            counts = count_by_slot(path)
+            lines = [describe_scene(md)]
+            if counts:
+                lines.append("slot: " + "  ".join(
+                    f"{iid} {c['usable']}/{c['total']}" for iid, c in sorted(counts.items())))
+            self.scene_info.setText("\n".join(lines))
+        except Exception as e:  # noqa: BLE001
+            self.scene_info.setText(f"(scene 정보 읽기 실패: {type(e).__name__}: {e})")
+
+    def _on_new_scene(self) -> None:
+        root = Path(self.root_edit.text().strip() or ".")
+        try:
+            sid = next_scene_id(root)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, tr("경로 오류"),
+                                tr("저장 경로를 확인하세요: {e}").format(e=e))
+            return
+        dlg = NewSceneDialog(self, sid)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.metadata is not None:
+            self._pending_scene_meta = dlg.metadata
+            self._on_scene_selected()
+
+    def _scene_config_from_ui(self):
+        """Connect 시점의 scene 설정 검증. (meta, scene_id, resume, error) --
+        error 가 None 이 아니면 연결을 중단하고 그 메시지를 보여준다."""
+        lang = self.lang_edit.text().strip()
+        iid = self.scene_iid_edit.text().strip()
+        collector = self.collector_edit.text().strip()
+        if not lang:
+            return None, None, False, tr("시작 instruction 문장을 Language 칸에 입력하세요.")
+        if lang.startswith('"') and lang.endswith('"'):
+            return None, None, False, tr("instruction 은 따옴표 없는 순수 문장이어야 합니다.")
+        if not INSTRUCTION_ID_RE.match(iid):
+            return None, None, False, tr("시작 slot ID 형식이 틀렸습니다 (예: I000).")
+        if not collector:
+            return None, None, False, tr("수집자 식별자를 입력하세요 (에피소드 필수 attr).")
+        sid = self.scene_combo.currentData()
+        if sid is None:
+            if self._pending_scene_meta is None:
+                return None, None, False, tr(
+                    "'새 Scene 구성...'으로 배치를 먼저 정의하거나 기존 scene 을 고르세요.")
+            return self._pending_scene_meta, None, False, None
+        return None, sid, True, None
+
+    def _on_apply_slot(self) -> None:
+        """scene 세션 중 slot 전환 -- worker 의 cmd_set_slot 호출만 한다."""
+        if self.worker is None or not self._scene_session:
+            return
+        iid = self.slot_iid_edit.text().strip()
+        instr = self.slot_instr_edit.text().strip()
+        if not INSTRUCTION_ID_RE.match(iid):
+            QMessageBox.warning(self, tr("slot 오류"),
+                                tr("instruction ID 형식이 틀렸습니다 (예: I000)."))
+            return
+        if not instr or (instr.startswith('"') and instr.endswith('"')):
+            QMessageBox.warning(self, tr("slot 오류"),
+                                tr("따옴표 없는 순수 문장을 입력하세요."))
+            return
+        self.worker.cmd_set_slot(instr, iid)
+        self.slot_current_label.setText(f"{iid}: {instr}")
+        self._recents.add("instruction_id", iid)
+        self._recents.add("language", instr)
 
     def _on_no_dataset_toggled(self, on: bool) -> None:
         """No file is written, so the task/path fields have nothing to name."""
@@ -836,11 +1148,30 @@ class WorkspaceWindow(QMainWindow):
         for b in (getattr(self, "save_ok_btn", None), getattr(self, "save_ng_btn", None)):
             if b is not None:
                 b.setEnabled(not on and self.worker is not None)
+        self._sync_task_box_enabled()
 
     def _page_collect(self) -> QWidget:
         w = QWidget()
         col = QVBoxLayout(w)
         col.setContentsMargins(0, 0, 0, 0)
+
+        # scene 세션 전용: 다음 에피소드부터 수행할 slot(instruction) 전환.
+        # 진행 중 에피소드에는 영향이 없다 (worker 가 기록 시작 시점에 캡처).
+        slot = QGroupBox(tr("Scene slot — 현재 instruction"))
+        self.slot_box = slot
+        sfrm = QFormLayout(slot)
+        self.slot_current_label = QLabel("")
+        self.slot_current_label.setWordWrap(True)
+        sfrm.addRow(tr("현재"), self.slot_current_label)
+        self.slot_iid_edit = QLineEdit()
+        sfrm.addRow(tr("instruction ID"), self.slot_iid_edit)
+        self.slot_instr_edit = QLineEdit()
+        sfrm.addRow(tr("문장"), self.slot_instr_edit)
+        self.slot_apply_btn = QPushButton(tr("slot 적용 (다음 에피소드부터)"))
+        self.slot_apply_btn.clicked.connect(self._on_apply_slot)
+        sfrm.addRow(self.slot_apply_btn)
+        slot.setVisible(False)
+        col.addWidget(slot)
 
         gate = QGroupBox(tr("리더 자세 게이트"))
         gcol = QVBoxLayout(gate)
@@ -2874,21 +3205,34 @@ class WorkspaceWindow(QMainWindow):
             self.log("[연결] 이미 세션이 실행 중입니다.")
             return
         no_dataset = self.no_dataset_check.isChecked()
+        scene_on = self.scene_check.isChecked() and not no_dataset
         task = self.task_edit.text().strip()
         lang = self.lang_edit.text().strip()
-        if not task and not no_dataset:
+        if not task and not no_dataset and not scene_on:
             QMessageBox.warning(self, tr("Task 이름 필요"), tr("Task 이름을 입력하세요."))
             return
         if no_dataset:
             # Never reaches a writer, but WorkerConfig requires the fields and
             # a blank task_name would show up as an empty label everywhere.
             task = task or "practice"
+        # ---- scene 모드: 검증은 _scene_config_from_ui 가, 파일 생성/이어찍기
+        # 판정은 SceneWriter 가 한다 (파일명 중복 검사는 scene_id 기반이라
+        # 아래 legacy 검사 대상이 아니다).
+        scene_meta = None
+        scene_sid = None
+        scene_resume = False
+        if scene_on:
+            scene_meta, scene_sid, scene_resume, err = self._scene_config_from_ui()
+            if err is not None:
+                QMessageBox.warning(self, tr("Scene 설정"), err)
+                return
+            task = scene_meta.scene_id if scene_meta is not None else scene_sid
         # 이어쓰기 여부는 이어찍기 드롭다운에서 유도한다. 예전의 "기존 파일에
         # 이어서 수집" 체크박스(기본 True)는 새로 시작인데 Task 이름이 기존
         # 파일과 겹치면 다른 설정으로 조용히 이어붙였다 -- 드롭다운이 막으려던
         # 바로 그 사고라서, 그 경우는 여기서 차단한다.
-        resume = self.resume_combo.currentData() is not None
-        if not no_dataset and not resume:
+        resume = (self.resume_combo.currentData() is not None) and not scene_on
+        if not no_dataset and not resume and not scene_on:
             target = (Path(self.root_edit.text().strip())
                       / f"{task.replace(' ', '_')}_demo.hdf5")
             if target.exists():
@@ -2953,6 +3297,11 @@ class WorkspaceWindow(QMainWindow):
             auto_match_pose=self.match_check.isChecked(),
             resume=resume,
             no_dataset=no_dataset,
+            scene_metadata=scene_meta,
+            scene_id=scene_sid,
+            scene_resume=scene_resume,
+            instruction_id=(self.scene_iid_edit.text().strip() if scene_on else ""),
+            collector=(self.collector_edit.text().strip() if scene_on else ""),
             agent_camera_serial=agent,
             wrist_camera_serial=wrist,
             schema=self.schema,
@@ -2960,11 +3309,21 @@ class WorkspaceWindow(QMainWindow):
             # GUI 상태와 얽혀 있지 않아야 한다.
             crop_params={r: dict(v) for r, v in self._crop_params.items()},
         )
-        for key, value in (("task", task), ("language", lang),
+        for key, value in (("task", task if not scene_on else ""),
+                           ("language", lang),
                            ("data_root", cfg.data_root),
-                           ("agent_serial", agent), ("wrist_serial", wrist)):
+                           ("agent_serial", agent), ("wrist_serial", wrist),
+                           ("collector", cfg.collector),
+                           ("instruction_id", cfg.instruction_id)):
             if value:
                 self._recents.add(key, value)
+        # scene 세션 표시 + Collect 페이지 slot 패널 초기값
+        self._scene_session = scene_on
+        if scene_on:
+            self.slot_iid_edit.setText(cfg.instruction_id)
+            self.slot_instr_edit.setText(cfg.language_instruction)
+            self.slot_current_label.setText(
+                f"{cfg.instruction_id}: {cfg.language_instruction}")
 
         w = CollectionWorker(cfg)
         w.state_changed.connect(self._on_state)
@@ -3044,6 +3403,9 @@ class WorkspaceWindow(QMainWindow):
         for w in self._crop_widgets:
             w.setEnabled(not running)
         self._update_preview_btn()
+        # scene 세션에서만 slot 전환 패널 노출
+        self.slot_box.setVisible(running and self._scene_session)
+        self.scene_check.setEnabled(not running)
         self.lights["robot"].set("ok" if running else "off",
                                  tr("연결됨") if running else tr("끊김"))
         self.right_fields["robot"].setText(tr("연결됨") if running else tr("끊김"))
@@ -3174,6 +3536,9 @@ class WorkspaceWindow(QMainWindow):
             return
         self.active_file_path = Path(path)
         self._episodes_at_connect = int(n_episodes)
+        if self._scene_session:
+            # scene 파일이 실제로 만들어졌으니 보관해 둔 새 scene 구성은 소진.
+            self._pending_scene_meta = None
         self._update_dataset_panel()
         self.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
         self._refresh_dataset_tree()
@@ -3204,8 +3569,13 @@ class WorkspaceWindow(QMainWindow):
         self._no_dataset_session = False
         self.active_file_path = None
         self.active_episode_cache = None
+        was_scene = self._scene_session
+        self._scene_session = False
         self._set_running(False)
         self._refresh_dataset_tree()
+        if was_scene and self.scene_check.isChecked():
+            # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
+            self._refresh_scene_combo()
         self._restart_previews()
 
     # -------------------------------------------------------------- stats
