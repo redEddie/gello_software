@@ -81,6 +81,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSplitter,
@@ -839,7 +840,15 @@ class WorkspaceWindow(QMainWindow):
             head.setFont(f)
             head.setStyleSheet("color:#888; letter-spacing:1px;")
             col.addWidget(head)
-            col.addWidget(page, 1)
+            # 페이지가 창보다 길어지면(예: Configure 의 scene 그룹) 세로
+            # 스크롤. 가로는 폼이 접히게 두는 편이 낫다 -- 항상 끈다.
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setWidget(page)
+            col.addWidget(scroll, 1)
             self.left_pages[key] = self.left_stack.count()
             self.left_stack.addWidget(wrapper)
 
