@@ -11,6 +11,22 @@ Multiple task files become one multi-task LeRobotDataset (LeRobot's native
 way to hold many tasks): each episode carries the source file's language
 instruction as its `task`.
 
+SCENE-V1 파일도 같은 명령으로 읽는다 (2026-08-13)
+--------------------------------------------------
+scene_*.hdf5 (파일=scene, instruction 은 에피소드 attrs) 는 내부 구조로
+자동 판별된다 -- 파일명이 아니라 metadata 그룹의 scene_id 로. 차이점:
+
+- task 는 에피소드 attrs 의 instruction (scene 이 달라도 같은 문장이면
+  같은 task 로 합쳐진다).
+- scene 포맷은 에피소드 삭제가 없으므로(immutable) 큐레이션은 여기서:
+  기본 quality_status=success 만 변환, --include-failed 로 failed 포함,
+  bad_data/retake/deprecated 는 상시 제외.
+- 변환 결과에 meta/episode_uids.json 사이드카를 유지한다: LeRobot
+  episode_index -> 출처(episode_uid/scene_id/instruction_id). 학습 로더는
+  이 파일을 모르지만, (a) 평가에서 scene 단위 실패 분석, (b) scene 파일의
+  --resume 스킵을 개수 산술이 아닌 uid 대조로 정확하게 하는 데 쓴다.
+  legacy 파일 에피소드도 출처(source_file/episode)는 기록된다.
+
 SCHEMA IS DETECTED FROM THE FILES, NOT HARDCODED
 --------------------------------------------------
 Since the GUI's "데이터셋 구조 사용자 지정" dialog (gello/dataset_schema.py) lets an
@@ -127,6 +143,11 @@ from gello.libero_format import (  # noqa: E402
     EYE_IN_HAND_CROP_X_SHIFT,
     action_column_names,
     resize_rgb,
+)
+from gello.scene_format import (  # noqa: E402
+    EPISODE_GROUP_RE,
+    QUALITY_FAILED,
+    QUALITY_SUCCESS,
 )
 
 # 학습 파이프라인이 DINOv3 를 쓰고 그 입력이 224x224 다. .hdf5 쪽 기본값
@@ -322,6 +343,65 @@ def _language_instruction(f: h5py.File) -> str:
     return lang
 
 
+# --------------------------------------------------------------- scene-v1
+# scene 파일(scene_*.hdf5)은 "파일=scene, instruction 은 에피소드 attrs" 라서
+# legacy 의 파일 레벨 problem_info 전제가 성립하지 않는다. 판별은 파일명이
+# 아니라 내부 구조로 한다 (경로에서 아무것도 역산하지 않는다는 원칙).
+
+def _is_scene_file(f: h5py.File) -> bool:
+    return "metadata" in f and "scene_id" in f["metadata"].attrs
+
+
+def _scene_convertible(f: h5py.File, include_failed: bool):
+    """변환 대상 scene 에피소드를 번호순으로 (name, grp, instruction) yield.
+
+    scene 포맷은 에피소드 삭제가 없으므로(immutable) 이 quality 필터가
+    큐레이션 관문이다: 기본 success 만, --include-failed 면 failed 까지.
+    bad_data/retake/deprecated 는 데이터 자체가 못 쓰는 것이라 항상 제외.
+    """
+    names = sorted((k for k in f.keys() if EPISODE_GROUP_RE.match(k)),
+                   key=lambda n: int(n.split("_")[1]))
+    allowed = {QUALITY_SUCCESS} | ({QUALITY_FAILED} if include_failed else set())
+    for name in names:
+        grp = f[name]
+        if str(grp.attrs.get("quality_status", "")) not in allowed:
+            continue
+        yield name, grp, str(grp.attrs["instruction"])
+
+
+def _load_uid_sidecar(root: Path, repo_id: str, resume: bool) -> dict:
+    """meta/episode_uids.json -- LeRobot episode_index -> 출처(episode_uid 등).
+
+    scene 단위 실패 분석과 scene 파일의 정확한 resume 스킵(uid 대조)을 위해
+    변환기가 유지하는 사이드카다. 학습 로더는 이 파일을 모른다(영향 0).
+    resume 인데 로컬에 없으면 Hub 에서 받아본다 -- 사이드카 도입 전 데이터셋
+    (legacy 전용)은 없는 것이 정상이므로 실패는 조용히 빈 dict.
+    """
+    local = root / "meta" / "episode_uids.json"
+    if local.exists():
+        try:
+            return json.loads(local.read_text())
+        except ValueError:
+            return {}
+    if resume:
+        try:
+            from huggingface_hub import hf_hub_download
+
+            p = hf_hub_download(repo_id, "meta/episode_uids.json",
+                                repo_type="dataset")
+            return json.loads(Path(p).read_text())
+        except Exception:  # noqa: BLE001 - 없는 것이 정상 케이스
+            return {}
+    return {}
+
+
+def _write_uid_sidecar(root: Path, records: dict) -> None:
+    out = root / "meta" / "episode_uids.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(records, ensure_ascii=False, indent=1,
+                              sort_keys=True))
+
+
 def _is_success(grp) -> bool:
     """True only for an episode explicitly marked successful.
 
@@ -402,19 +482,29 @@ def _to_target(img: np.ndarray, target: int, zoom: float = 1.0,
                       y_shift=y_shift)
 
 
-def _scan_schema(hdf5_paths: list, only_success: bool) -> dict:
+def _scan_schema(hdf5_paths: list, only_success: bool,
+                 include_failed: bool = False) -> dict:
     """Pre-flight pass over every episode that will be converted -- cheap
     (attrs/group keys only, no array data) -- so a schema mismatch is caught
-    before LeRobotDataset.create() has written anything to --root."""
+    before LeRobotDataset.create() has written anything to --root.
+
+    변환 본문과 같은 필터를 적용해 "변환될 에피소드"만 본다: legacy 는
+    --only-success, scene 은 quality_status (기본 success 만)."""
     reference = None
     reference_loc = None
     for path in hdf5_paths:
         with h5py.File(path, "r") as f:
-            data = f["data"]
-            for name in sorted(data.keys(), key=lambda n: int(n.split("_")[1])):
-                grp = data[name]
-                if only_success and not _is_success(grp):
-                    continue
+            if _is_scene_file(f):
+                candidates = [(n, g) for n, g, _ in
+                              _scene_convertible(f, include_failed)]
+            else:
+                data = f["data"]
+                candidates = [
+                    (n, data[n])
+                    for n in sorted(data.keys(), key=lambda x: int(x.split("_")[1]))
+                    if not (only_success and not _is_success(data[n]))
+                ]
+            for name, grp in candidates:
                 schema = _episode_schema(grp)
                 if reference is None:
                     reference = schema
@@ -559,6 +649,11 @@ def main() -> None:
     p.add_argument("--root", type=Path, required=True, help="로컬에 LeRobotDataset을 만들 경로")
     p.add_argument("--fps", type=int, default=20)
     p.add_argument("--only-success", action="store_true", help="success=True인 에피소드만 포함")
+    p.add_argument(
+        "--include-failed", action="store_true",
+        help="scene 파일 전용: quality_status=failed 에피소드도 변환에 포함한다. "
+             "scene 포맷은 에피소드 삭제가 없으므로(immutable) 이 필터가 큐레이션 "
+             "관문이다 -- 기본은 success 만, bad_data/retake/deprecated 는 항상 제외.")
     p.add_argument("--image-writer-threads", type=int, default=4)
     p.add_argument(
         "--resume",
@@ -673,7 +768,8 @@ def main() -> None:
     # .hdf5 는 견고한 원본, LeRobot 사본은 실사용 크기 -- 둘을 갈라두면 원본을
     # 다시 찍지 않고도 학습용 해상도를 바꿀 수 있다.
     image_size = args.image_size
-    schema = _scan_schema(args.hdf5_paths, args.only_success)
+    schema = _scan_schema(args.hdf5_paths, args.only_success,
+                          include_failed=args.include_failed)
     features, state_parts, cmd_parts = _build_features(schema, image_size)
     print(
         f"감지된 스키마: action_space={schema['action_space']!r} "
@@ -709,11 +805,100 @@ def main() -> None:
     has_agent = "observation.images.agent" in features
     has_wrist = "observation.images.wrist" in features
 
+    def _convert_episode(path, name, grp, task) -> int:
+        """에피소드 하나를 ds 에 추가한다. 두 포맷 공통 -- 에피소드 안쪽
+        페이로드(obs/actions/attrs)가 동일하게 만들어져 있어서(scene 전환 시
+        write_episode_payload 공유) legacy demo_N 과 scene episode_NNN 이
+        같은 코드로 읽힌다. task 는 LeRobot 의 task 문자열: legacy 는 파일
+        레벨 instruction, scene 은 에피소드 attrs 의 instruction (scene 이
+        달라도 같은 문장이면 같은 task 로 합쳐진다 -- scene 구분은 uid
+        사이드카로 복원)."""
+        obs = grp["obs"]
+        if has_agent:
+            _check_image_shape(path, name, obs, "agentview_rgb", image_size)
+        if has_wrist:
+            _check_image_shape(path, name, obs, "eye_in_hand_rgb", image_size)
+        # 이 에피소드가 수집될 때의 크롭 정렬. 조작자가 GUI 에서 맞춘
+        # 프레이밍을 그대로 재현한다. 없는 옛 파일은 기본값 (wrist 는
+        # 측정된 D405 좌측 이미저 오프셋).
+        try:
+            cp = json.loads(grp.attrs["crop_params"])
+        except (KeyError, ValueError, TypeError):
+            cp = {}
+        ap = cp.get("agent", {}) if isinstance(cp, dict) else {}
+        wp = cp.get("wrist", {}) if isinstance(cp, dict) else {}
+        agent_crop = dict(zoom=ap.get("zoom", 1.0),
+                          x_shift=ap.get("x", 0), y_shift=ap.get("y", 0))
+        wrist_crop = dict(zoom=wp.get("zoom", 1.0),
+                          x_shift=wp.get("x", EYE_IN_HAND_CROP_X_SHIFT),
+                          y_shift=wp.get("y", 0))
+        state_arrays = [obs[part][:] for part in state_parts]
+        cmd_arrays = [obs[part][:] for part in cmd_parts]
+        agent_rgb = obs["agentview_rgb"][:] if has_agent else None
+        wrist_rgb = obs["eye_in_hand_rgb"][:] if has_wrist else None
+        actions = grp["actions"][:]
+        actions_ee = grp["actions_ee"][:] if schema["has_actions_ee"] else None
+        n = actions.shape[0]
+        for t in range(n):
+            frame = {"action": actions[t].astype("float32"), "task": task}
+            if state_arrays:
+                frame["observation.state"] = np.concatenate(
+                    [arr[t] for arr in state_arrays]
+                ).astype("float32")
+            if cmd_arrays:
+                frame["observation.commanded_state"] = np.concatenate(
+                    [arr[t] for arr in cmd_arrays]
+                ).astype("float32")
+            if actions_ee is not None:
+                frame["action_ee"] = actions_ee[t].astype("float32")
+            if has_agent:
+                frame["observation.images.agent"] = _to_target(
+                    agent_rgb[t], image_size, **agent_crop)
+            if has_wrist:
+                frame["observation.images.wrist"] = _to_target(
+                    wrist_rgb[t], image_size, **wrist_crop)
+            ds.add_frame(frame)
+        ds.save_episode()
+        return n
+
     n_episodes = 0
     n_skipped = 0
     n_already = 0
+    # LeRobot episode_index -> 출처 매핑 (episode_uid 사이드카). resume 이면
+    # 기존 매핑에 이어 쓴다 -- scene 파일의 스킵은 개수 산술이 아니라 이
+    # uid 집합과의 대조로 정확하게 한다.
+    uid_records = _load_uid_sidecar(Path(args.root), args.repo_id, args.resume)
+    existing_uids = {e["episode_uid"] for e in uid_records.values()
+                     if isinstance(e, dict) and e.get("episode_uid")}
+    next_index = ds.meta.total_episodes if args.resume else 0
     for path in args.hdf5_paths:
         with h5py.File(path, "r") as f:
+            if _is_scene_file(f):
+                scene_id = str(f["metadata"].attrs["scene_id"])
+                conv = list(_scene_convertible(f, args.include_failed))
+                total_eps = sum(1 for k in f.keys() if EPISODE_GROUP_RE.match(k))
+                n_skipped += total_eps - len(conv)
+                print(f"{path.name}: scene={scene_id}, "
+                      f"변환 대상 {len(conv)}/{total_eps} episodes")
+                for name, grp, instruction in conv:
+                    uid = str(grp.attrs["episode_uid"])
+                    if args.resume and not args.force_all and uid in existing_uids:
+                        n_already += 1
+                        continue
+                    n = _convert_episode(path, name, grp, instruction)
+                    uid_records[str(next_index)] = {
+                        "episode_uid": uid,
+                        "scene_id": scene_id,
+                        "instruction_id": str(grp.attrs["instruction_id"]),
+                        "quality_status": str(grp.attrs.get("quality_status", "")),
+                        "source_file": path.name,
+                        "source_episode": name,
+                    }
+                    next_index += 1
+                    n_episodes += 1
+                    print(f"  {name} ({n} frames, {uid}) converted")
+                continue
+
             task = _language_instruction(f)
             data = f["data"]
             demo_names = sorted(data.keys(), key=lambda n: int(n.split("_")[1]))
@@ -743,52 +928,11 @@ def main() -> None:
                 if args.only_success and not _is_success(grp):
                     n_skipped += 1
                     continue
-                obs = grp["obs"]
-                if has_agent:
-                    _check_image_shape(path, name, obs, "agentview_rgb", image_size)
-                if has_wrist:
-                    _check_image_shape(path, name, obs, "eye_in_hand_rgb", image_size)
-                # 이 에피소드가 수집될 때의 크롭 정렬. 조작자가 GUI 에서 맞춘
-                # 프레이밍을 그대로 재현한다. 없는 옛 파일은 기본값 (wrist 는
-                # 측정된 D405 좌측 이미저 오프셋).
-                try:
-                    cp = json.loads(grp.attrs["crop_params"])
-                except (KeyError, ValueError, TypeError):
-                    cp = {}
-                ap = cp.get("agent", {}) if isinstance(cp, dict) else {}
-                wp = cp.get("wrist", {}) if isinstance(cp, dict) else {}
-                agent_crop = dict(zoom=ap.get("zoom", 1.0),
-                                  x_shift=ap.get("x", 0), y_shift=ap.get("y", 0))
-                wrist_crop = dict(zoom=wp.get("zoom", 1.0),
-                                  x_shift=wp.get("x", EYE_IN_HAND_CROP_X_SHIFT),
-                                  y_shift=wp.get("y", 0))
-                state_arrays = [obs[part][:] for part in state_parts]
-                cmd_arrays = [obs[part][:] for part in cmd_parts]
-                agent_rgb = obs["agentview_rgb"][:] if has_agent else None
-                wrist_rgb = obs["eye_in_hand_rgb"][:] if has_wrist else None
-                actions = grp["actions"][:]
-                actions_ee = grp["actions_ee"][:] if schema["has_actions_ee"] else None
-                n = actions.shape[0]
-                for t in range(n):
-                    frame = {"action": actions[t].astype("float32"), "task": task}
-                    if state_arrays:
-                        frame["observation.state"] = np.concatenate(
-                            [arr[t] for arr in state_arrays]
-                        ).astype("float32")
-                    if cmd_arrays:
-                        frame["observation.commanded_state"] = np.concatenate(
-                            [arr[t] for arr in cmd_arrays]
-                        ).astype("float32")
-                    if actions_ee is not None:
-                        frame["action_ee"] = actions_ee[t].astype("float32")
-                    if has_agent:
-                        frame["observation.images.agent"] = _to_target(
-                            agent_rgb[t], image_size, **agent_crop)
-                    if has_wrist:
-                        frame["observation.images.wrist"] = _to_target(
-                            wrist_rgb[t], image_size, **wrist_crop)
-                    ds.add_frame(frame)
-                ds.save_episode()
+                n = _convert_episode(path, name, grp, task)
+                uid_records[str(next_index)] = {
+                    "source_file": path.name, "source_episode": name,
+                }
+                next_index += 1
                 n_episodes += 1
                 print(f"  {name} ({n} frames, success={success}) converted")
 
@@ -799,7 +943,9 @@ def main() -> None:
     fixed = repair_metadata(Path(args.root))
     if fixed:
         print(f"[검증] {fixed}", flush=True)
-    print(f"\n완료: {n_episodes}개 에피소드 변환, {n_skipped}개 건너뜀 (--only-success)"
+    # push 전에 써야 push_to_hub(폴더 업로드)에 사이드카가 실린다.
+    _write_uid_sidecar(Path(args.root), uid_records)
+    print(f"\n완료: {n_episodes}개 에피소드 변환, {n_skipped}개 건너뜀 (필터)"
           + (f", {n_already}개는 이미 데이터셋에 있어 제외" if n_already else "")
           + f" -> {args.root}")
 
