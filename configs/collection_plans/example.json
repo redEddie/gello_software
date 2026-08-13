@@ -1,0 +1,41 @@
+{
+  "plan_version": 1,
+  "scenes": [
+    {
+      "scene_id": "S000",
+      "note": "파란 컵 + 하얀 컵 + 노란 작은 그릇 + 3단 서랍장 (family B+E 예시, Notion §6 matrix)",
+      "slots": [
+        {
+          "instruction_id": "I000",
+          "instruction": "pick up the blue cup and place it on the yellow bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I001",
+          "instruction": "pick up the white cup and place it on the yellow bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I002",
+          "instruction": "pick up the blue cup and place it on top of the drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I003",
+          "instruction": "open the top drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I004",
+          "instruction": "pick up the cup next to the yellow bowl and place it on top of the drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I005",
+          "instruction": "open the top drawer and put the small bowl in it",
+          "target": 10
+        }
+      ]
+    }
+  ]
+}

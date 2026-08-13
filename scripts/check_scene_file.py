@@ -1,0 +1,352 @@
+"""scene_XXX.hdf5 구조 검사기 + 포맷 자가 검증.
+
+두 용도:
+
+  python scripts/check_scene_file.py <scene_000.hdf5> [...]
+      파일의 metadata / 에피소드 / slot 현황을 표로 출력하고 불변식을 검사한다.
+      QA 때 "이 파일이 규격대로인가"를 사람이 확인하는 용도.
+
+  python scripts/check_scene_file.py --selftest [--keep DIR]
+      로봇 없이 더미 데이터로 scene 파일을 처음부터 만들어 보고(생성 → 기준
+      사진 → 에피소드 3개 → QA 재판정 → resume 후 1개 추가) 규격 전체를
+      검증한다. 리팩터링된 write_episode_payload 를 legacy writer 가 그대로
+      쓰는지도 함께 확인한다. CI/개발머신용 -- 카메라·로봇·데이터 불필요.
+
+exit 0 = 전부 통과.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+import h5py
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from gello.props import active_prop_ids  # noqa: E402
+from gello.scene_format import (  # noqa: E402
+    EPISODE_GROUP_RE,
+    QUALITY_BAD_DATA,
+    QUALITY_STATUSES,
+    SCENE_FILE_RE,
+    SceneMetadata,
+    SceneWriter,
+    count_by_slot,
+    list_scene_episodes,
+    next_scene_id,
+    read_reference_image,
+    read_scene_metadata,
+)
+
+REQUIRED_EPISODE_ATTRS = (
+    "scene_id", "instruction_id", "episode_id", "episode_uid", "instruction",
+    "success", "quality_status", "collector", "timestamp",
+    "num_samples", "action_space", "gripper_action_convention",
+    "action_column_names", "crop_params", "station",
+)
+REQUIRED_METADATA_ATTRS = (
+    "scene_id", "objects", "layout", "distractors", "station",
+    "dataset_version", "created", "next_episode_idx",
+)
+
+
+def _fail(msg: str) -> None:
+    raise AssertionError(msg)
+
+
+def verify_scene_file(path: Path) -> list[str]:
+    """불변식 위반 목록(비면 통과). 완료 기준(계획서 §8)을 파일 하나에 대해
+    기계적으로 검사한다."""
+    problems: list[str] = []
+    if not SCENE_FILE_RE.match(path.name):
+        problems.append(f"파일명이 scene_XXX.hdf5 형식이 아니다: {path.name}")
+    if path.match("*_demo.hdf5"):
+        problems.append("파일명이 legacy 글롭(*_demo.hdf5)에 걸린다")
+
+    with h5py.File(path, "r") as f:
+        # legacy 흔적 금지 -- 이 두 스텁을 새 포맷에서 빼기로 결정했다
+        if "data" in f:
+            problems.append("legacy 'data' 그룹이 있다")
+        for bad in ("problem_info", "env_args", "next_demo_idx"):
+            if bad in f.attrs or ("metadata" in f and bad in f["metadata"].attrs):
+                problems.append(f"legacy attr {bad!r} 가 있다")
+
+        if "metadata" not in f:
+            problems.append("metadata 그룹이 없다")
+            return problems
+        meta = f["metadata"]
+        for k in REQUIRED_METADATA_ATTRS:
+            if k not in meta.attrs:
+                problems.append(f"metadata.attrs[{k!r}] 가 없다")
+
+        try:
+            md = _read_md_checked(meta)
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"metadata 파싱 실패: {e}")
+            md = None
+        if md is not None:
+            for oid in md.objects + md.distractors:
+                if not oid.startswith("OBJ-"):
+                    problems.append(f"objects/distractors 에 instance ID 가 아닌 값: {oid!r}")
+
+        ep_names = sorted(
+            (k for k in f.keys() if EPISODE_GROUP_RE.match(k)),
+            key=lambda k: int(EPISODE_GROUP_RE.match(k).group(1)),
+        )
+        stray = [k for k in f.keys() if k != "metadata" and not EPISODE_GROUP_RE.match(k)]
+        if stray:
+            problems.append(f"episode_NNN 도 metadata 도 아닌 그룹: {stray}")
+
+        seen_ids: list[int] = []
+        for name in ep_names:
+            grp = f[name]
+            for k in REQUIRED_EPISODE_ATTRS:
+                if k not in grp.attrs:
+                    problems.append(f"{name}: attrs[{k!r}] 가 없다")
+            if "instruction" in grp.attrs:
+                ins = str(grp.attrs["instruction"])
+                if len(ins) >= 2 and ins[0] == '"' and ins[-1] == '"':
+                    problems.append(f"{name}: instruction 이 따옴표로 감싸져 있다: {ins!r}")
+            if "quality_status" in grp.attrs and str(grp.attrs["quality_status"]) not in QUALITY_STATUSES:
+                problems.append(f"{name}: 알 수 없는 quality_status {grp.attrs['quality_status']!r}")
+            if "episode_id" in grp.attrs:
+                eid = int(grp.attrs["episode_id"])
+                if eid != int(EPISODE_GROUP_RE.match(name).group(1)):
+                    problems.append(f"{name}: episode_id attr({eid})와 그룹 이름이 다르다")
+                seen_ids.append(eid)
+            if md is not None and "scene_id" in grp.attrs and str(grp.attrs["scene_id"]) != md.scene_id:
+                problems.append(f"{name}: scene_id 가 metadata 와 다르다")
+            n = int(grp.attrs.get("num_samples", -1))
+            if "actions" not in grp or "obs" not in grp:
+                problems.append(f"{name}: actions/obs 페이로드가 없다")
+            elif grp["actions"].shape[0] != n:
+                problems.append(f"{name}: actions 길이 {grp['actions'].shape[0]} != num_samples {n}")
+        if seen_ids != sorted(seen_ids) or len(set(seen_ids)) != len(seen_ids):
+            problems.append(f"episode_id 가 단조 증가·유일하지 않다: {seen_ids}")
+
+        next_idx = int(meta.attrs.get("next_episode_idx", -1))
+        if seen_ids and next_idx <= max(seen_ids):
+            problems.append(f"next_episode_idx({next_idx})가 기존 최대 episode_id({max(seen_ids)}) 이하다")
+    return problems
+
+
+def _read_md_checked(meta: h5py.Group) -> SceneMetadata:
+    md = SceneMetadata(
+        scene_id=str(meta.attrs["scene_id"]),
+        objects=json.loads(meta.attrs["objects"]),
+        layout=json.loads(meta.attrs["layout"]),
+        distractors=json.loads(meta.attrs.get("distractors", "[]")),
+        station=str(meta.attrs.get("station", "")),
+        dataset_version=str(meta.attrs.get("dataset_version", "")),
+        created=str(meta.attrs.get("created", "")),
+    )
+    md.validate()
+    return md
+
+
+def print_scene_file(path: Path) -> None:
+    md = read_scene_metadata(path)
+    ref = read_reference_image(path)
+    print(f"\n== {path.name} ==")
+    print(f"  scene_id        : {md.scene_id}   ({md.dataset_version}, created {md.created})")
+    print(f"  station         : {md.station or '(미기록)'}")
+    print(f"  objects         : {', '.join(md.objects)}")
+    print(f"  distractors     : {', '.join(md.distractors) or '(없음)'}")
+    grid = md.layout.get("grid")
+    print(f"  layout          : grid {grid}, placements {len(md.layout.get('placements', {}))}개, "
+          f"relations {len(md.layout.get('relations', []))}개")
+    print(f"  reference_image : {'%dx%d' % (ref.shape[1], ref.shape[0]) if ref is not None else '(없음)'}")
+    eps = list_scene_episodes(path)
+    print(f"  episodes        : {len(eps)}개")
+    for ep in eps:
+        print(f"    {ep['episode_uid']}  [{ep['quality_status']:>10}]  {ep['num_samples']:4d}f  "
+              f"{ep['collector'] or '-':<10} {ep['instruction']}")
+    counts = count_by_slot(path)
+    if counts:
+        print("  slot 현황       :", "  ".join(
+            f"{iid}: {c['usable']}/{c['total']} usable" for iid, c in sorted(counts.items())))
+
+
+# ------------------------------------------------------------------ selftest
+def _dummy_frames(writer, n: int = 5, seed: int = 0) -> None:
+    rng = np.random.default_rng(seed)
+    for _ in range(n):
+        writer.add_frame(
+            agentview_rgb=rng.integers(0, 255, (48, 64, 3), dtype=np.uint8),
+            eye_in_hand_rgb=rng.integers(0, 255, (48, 64, 3), dtype=np.uint8),
+            joint_positions=rng.standard_normal(7).astype(np.float32),
+            gripper_position=float(rng.random()),
+            ee_pos_quat=np.array([0.4, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]),
+            gripper_closed=bool(rng.random() > 0.5),
+            commanded_joint_positions=rng.standard_normal(7).astype(np.float32),
+            commanded_gripper=float(rng.random() > 0.5),
+        )
+
+
+def _expect_raise(exc_type, fn, what: str) -> None:
+    try:
+        fn()
+    except exc_type:
+        print(f"  ✓ 거부됨: {what}")
+        return
+    _fail(f"거부됐어야 한다: {what}")
+
+
+def selftest(keep: Path | None) -> None:
+    root = keep or Path(tempfile.mkdtemp(prefix="scene_selftest_"))
+    root.mkdir(parents=True, exist_ok=True)
+    print(f"selftest root: {root}")
+    prop_ids = active_prop_ids()
+
+    layout = {
+        "grid": [3, 3],
+        "placements": {
+            "OBJ-CUP-BLU-01": {"zone": [0, 2]},
+            "OBJ-CUP-WHT-01": {"zone": [0, 0]},
+            "OBJ-BOWLS-YEL-01": {"zone": [1, 1]},
+            "OBJ-DRAWER-01": {"zone": [2, 0]},
+            "OBJ-CUP-PPR-01": {"zone": [2, 2]},
+        },
+        "relations": [["OBJ-CUP-BLU-01", "next_to", "OBJ-BOWLS-YEL-01"]],
+    }
+    sid = next_scene_id(root)
+    assert sid == "S000", sid
+    md = SceneMetadata(
+        scene_id=sid,
+        objects=["OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01", "OBJ-BOWLS-YEL-01", "OBJ-DRAWER-01"],
+        layout=layout,
+        distractors=["OBJ-CUP-PPR-01"],
+        station="selftest",
+    )
+
+    # -- metadata 검증이 실제로 막는지
+    bad = SceneMetadata(scene_id=sid, objects=["blue cup"], layout=layout)
+    _expect_raise(ValueError, lambda: bad.validate(), "색 이름을 objects 에 적음")
+    bad2 = SceneMetadata(scene_id=sid, objects=["OBJ-CUP-BLU-01"],
+                         layout={"grid": [3, 3], "placements": {"OBJ-CUP-BLU-01": {"zone": [5, 0]}}})
+    _expect_raise(ValueError, lambda: bad2.validate(), "격자를 벗어난 존")
+    _expect_raise(ValueError, lambda: SceneMetadata(
+        scene_id=sid, objects=["OBJ-NOPE-XXX-01"], layout=layout).validate(prop_ids),
+        "인벤토리에 없는 instance ID")
+
+    # -- 생성 + 에피소드 3개 (instruction 2종)
+    w = SceneWriter(root, metadata=md, collector="tester", known_prop_ids=prop_ids)
+    w.set_reference_image(np.zeros((48, 64, 3), dtype=np.uint8))
+    I0 = "pick up the blue cup and place it on the yellow bowl"
+    I3 = "open the top drawer"
+    _dummy_frames(w, seed=1)
+    assert w.save_buffer(w.detach_buffer(), instruction=I0, instruction_id="I000", success=True) == "episode_000"
+    _dummy_frames(w, seed=2)
+    assert w.save_buffer(w.detach_buffer(), instruction=I0, instruction_id="I000", success=False) == "episode_001"
+    _dummy_frames(w, seed=3)
+    assert w.save_buffer(w.detach_buffer(), instruction=I3, instruction_id="I003", success=True) == "episode_002"
+
+    # -- 저장 시점 가드
+    _dummy_frames(w, seed=4)
+    buf = w.detach_buffer()
+    _expect_raise(ValueError, lambda: w.save_buffer(
+        buf, instruction=f'"{I0}"', instruction_id="I000", success=True), "따옴표로 감싼 instruction")
+    _expect_raise(ValueError, lambda: w.save_buffer(
+        buf, instruction=I0, instruction_id="task_7", success=True), "잘못된 instruction ID")
+    _expect_raise(ValueError, lambda: w.save_buffer(
+        buf, instruction=I0, instruction_id="I000"), "라벨 없는 에피소드")
+    # 빈 버퍼는 조용히 None (legacy 와 동일)
+    assert w.save_buffer(w.detach_buffer(), instruction=I0, instruction_id="I000", success=True) is None
+
+    # -- QA 재판정 (덮어쓰기·삭제 대신 상태만)
+    w.set_quality_status("episode_001", QUALITY_BAD_DATA)
+    _expect_raise(ValueError, lambda: w.set_quality_status("episode_000", "great"), "알 수 없는 quality_status")
+    w.close()
+
+    # -- 같은 scene 을 실수로 다시 만들면 거부
+    _expect_raise(FileExistsError, lambda: SceneWriter(root, metadata=md), "기존 scene 덮어쓰기")
+
+    # -- resume: 파일에서 metadata 를 읽고, 번호는 이어서
+    w2 = SceneWriter(root, scene_id="S000", resume=True, collector="tester2")
+    assert w2.metadata.objects == md.objects
+    _dummy_frames(w2, seed=5)
+    assert w2.save_buffer(w2.detach_buffer(), instruction=I3, instruction_id="I003", success=True) == "episode_003"
+    assert w2.num_episodes == 4
+    w2.close()
+
+    path = root / "scene_000.hdf5"
+
+    # -- 불변식 전수 검사
+    problems = verify_scene_file(path)
+    if problems:
+        _fail("불변식 위반:\n  " + "\n  ".join(problems))
+    print("  ✓ verify_scene_file: 위반 없음")
+
+    # -- 내용 검사
+    eps = list_scene_episodes(path)
+    assert [e["episode_uid"] for e in eps] == [
+        "EP-S000-I000-E000", "EP-S000-I000-E001", "EP-S000-I003-E002", "EP-S000-I003-E003"]
+    assert [e["collector"] for e in eps] == ["tester", "tester", "tester", "tester2"]
+    assert eps[1]["quality_status"] == "bad_data" and eps[1]["success"] is False
+    assert count_by_slot(path) == {
+        "I000": {"total": 2, "usable": 1}, "I003": {"total": 2, "usable": 2}}
+    with h5py.File(path, "r") as f:
+        g = f["episode_000"]
+        assert g["actions"].shape == (5, 8)
+        assert g["obs/joint_states"].shape == (5, 7)
+        assert g["obs/agentview_rgb"].shape == (5, 48, 64, 3)
+        assert str(g.attrs["instruction"]) == I0  # 따옴표 없이 그대로
+    assert read_reference_image(path) is not None
+    assert next_scene_id(root) == "S001"
+    print("  ✓ scene 포맷: UID·slot 카운트·페이로드·기준사진 확인")
+
+    # -- 리팩터링 회귀: legacy writer 가 공용 페이로드로 여전히 demo_N 을 쓴다
+    from gello.libero_format import LiberoTaskWriter
+    lw = LiberoTaskWriter(root, task_name="selftest task", language_instruction="selftest task")
+    _dummy_frames(lw, seed=6)
+    assert lw.save_episode(success=True) == "demo_0"
+    lw.close()
+    with h5py.File(root / "selftest_task_demo.hdf5", "r") as f:
+        d = f["data/demo_0"]
+        assert d["actions"].shape == (5, 8) and d["obs/joint_states"].shape == (5, 7)
+        assert "problem_info" in f["data"].attrs  # legacy 는 스텁 유지
+        assert int(f["data"].attrs["next_demo_idx"]) == 1
+    print("  ✓ legacy writer 회귀: demo_0 페이로드·스텁 동일")
+
+    print_scene_file(path)
+    if keep is None:
+        import shutil
+        shutil.rmtree(root)
+        print("\nselftest 통과 (임시 파일 삭제됨). --keep DIR 로 결과 파일을 남길 수 있다.")
+    else:
+        print(f"\nselftest 통과. 결과 파일: {root}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("paths", nargs="*", type=Path, help="검사할 scene_XXX.hdf5")
+    ap.add_argument("--selftest", action="store_true", help="더미 데이터로 포맷 전체를 자가 검증")
+    ap.add_argument("--keep", type=Path, default=None, help="selftest 결과 파일을 이 디렉터리에 남긴다")
+    args = ap.parse_args()
+
+    if args.selftest:
+        selftest(args.keep)
+        return 0
+    if not args.paths:
+        ap.error("검사할 파일을 주거나 --selftest 를 쓴다")
+    rc = 0
+    for p in args.paths:
+        problems = verify_scene_file(p)
+        print_scene_file(p)
+        if problems:
+            rc = 1
+            print("  ✖ 불변식 위반:")
+            for msg in problems:
+                print(f"    - {msg}")
+        else:
+            print("  ✓ 불변식 통과")
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

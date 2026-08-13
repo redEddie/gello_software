@@ -1,0 +1,44 @@
+# 소품 인벤토리 -- scene metadata 의 objects/distractors 에 들어가는
+# instance ID 의 정본. 읽는 코드는 gello/props.py.
+#
+# 규칙 (Notion 프로토콜 §3):
+#   - 물리적 instance 마다 안정적인 ID. 같은 색 두 개(파란 컵 x2, 하얀 컵 x2)를
+#     구분하는 것이 이 파일의 존재 이유다.
+#   - ID 는 소품 바닥면 라벨과 일치해야 한다 (카메라에 안 잡히는 곳에 부착).
+#   - 교체 시 원칙은 같은 ID 유지. 학습 이미지에서 육안으로 구분되는 차이
+#     (색·광택·인쇄·변형)가 생겼을 때만 새 ID 를 발급하고, 옛 ID 는 retired 로
+#     표시한다 -- 삭제하면 기존 scene metadata 가 고아가 된다.
+#   - 3D 프린트/구매로 소품이 늘면 여기에 항목을 추가한다.
+#
+# ID 형식: OBJ-<종류>-<색>-<번호>
+#   작은 그릇과 큰 멜라민 그릇은 색이 겹치므로(yellow/white/blue) 종류 토큰으로
+#   구분한다: BOWLS = small bowl, BOWLL = large (melamine) bowl.
+
+version: 1
+
+props:
+  # 플라스틱 컵 -- 동일 색 중복이 있어 instance 구분이 필수인 유일한 분류
+  - {id: OBJ-CUP-WHT-01, category: cup, color: white, material: plastic}
+  - {id: OBJ-CUP-WHT-02, category: cup, color: white, material: plastic}
+  - {id: OBJ-CUP-BLU-01, category: cup, color: blue, material: plastic}
+  - {id: OBJ-CUP-BLU-02, category: cup, color: blue, material: plastic}
+
+  # 종이컵 -- 재질 variation 용. 소모품이라 교체 시 기존 것과 나란히 비교(§3)
+  - {id: OBJ-CUP-PPR-01, category: cup, color: white, material: paper}
+
+  # 작은 그릇 6색
+  - {id: OBJ-BOWLS-GRY-01, category: small_bowl, color: gray, material: plastic}
+  - {id: OBJ-BOWLS-WHT-01, category: small_bowl, color: white, material: plastic}
+  - {id: OBJ-BOWLS-BLU-01, category: small_bowl, color: blue, material: plastic}
+  - {id: OBJ-BOWLS-PNK-01, category: small_bowl, color: pink, material: plastic}
+  - {id: OBJ-BOWLS-YEL-01, category: small_bowl, color: yellow, material: plastic}
+  - {id: OBJ-BOWLS-GRN-01, category: small_bowl, color: green, material: plastic}
+
+  # 큰 그릇 (멜라민) 3색 -- 크기 variation 용
+  - {id: OBJ-BOWLL-YEL-01, category: large_bowl, color: yellow, material: melamine}
+  - {id: OBJ-BOWLL-WHT-01, category: large_bowl, color: white, material: melamine}
+  - {id: OBJ-BOWLL-BLU-01, category: large_bowl, color: blue, material: melamine}
+
+  # 미니 3단 서랍장 -- articulated. top/middle/bottom 이 모두 실재.
+  # LIBERO 의 cabinet 어휘를 가져오지 않는다 (§5): 이건 탁자 위 소형 서랍장이다.
+  - {id: OBJ-DRAWER-01, category: drawer, color: white, material: plastic}
