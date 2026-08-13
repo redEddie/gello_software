@@ -581,6 +581,65 @@ class SceneInfoView(QWidget):
         return "\n".join(x for x in (self._text.text(), self._grid.text()) if x)
 
 
+class PlanEditDialog(QDialog):
+    """수집 계획(JSON) 편집 — 저장하려면 load_plan 검증을 통과해야 한다.
+
+    계획의 정본은 여전히 파일(git 이력)이다. 이 다이얼로그는 편한 편집기 +
+    검증 게이트일 뿐, 스키마를 감추는 폼을 만들지 않는다 (README 스키마가
+    단순하고, 폼 UI 는 스키마가 바뀔 때마다 같이 고쳐야 하는 두 번째 진실이
+    된다).
+    """
+
+    def __init__(self, parent, path: Path) -> None:
+        super().__init__(parent)
+        self._path = Path(path)
+        self.setWindowTitle(tr("수집 계획 편집 — {n}").format(n=self._path.name))
+        self.setMinimumSize(680, 480)
+        col = QVBoxLayout(self)
+        hint = QLabel(tr(
+            "저장하면 규칙 검증(scene 내 ID 유일, 따옴표 금지, target>0)을 "
+            "통과해야 반영됩니다. 동사 집합(§4) 밖 문장은 경고만 합니다."))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#888;")
+        col.addWidget(hint)
+        self.editor = QPlainTextEdit()
+        self.editor.setStyleSheet(
+            "font-family: 'DejaVu Sans Mono', monospace; font-size: 12px;")
+        try:
+            self.editor.setPlainText(self._path.read_text(encoding="utf-8"))
+        except OSError as e:
+            self.editor.setPlainText("")
+            QMessageBox.warning(self, tr("읽기 실패"), str(e))
+        col.addWidget(self.editor, 1)
+        self.error_label = QLabel("")
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color:#e74c3c;")
+        col.addWidget(self.error_label)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        col.addWidget(buttons)
+
+    def _save(self) -> None:
+        import tempfile
+
+        text = self.editor.toPlainText()
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                             encoding="utf-8") as tf:
+                tf.write(text)
+                tmp = Path(tf.name)
+            plan = load_plan(tmp)
+            tmp.unlink(missing_ok=True)
+        except Exception as e:  # noqa: BLE001
+            self.error_label.setText(f"{type(e).__name__}: {e}")
+            return
+        self._path.write_text(text, encoding="utf-8")
+        self.warnings = plan.warnings
+        super().accept()
+
+
 class NewSceneDialog(QDialog):
     """새 scene 구성 — 소품 선택 + 3×3 존 배치 + 설명.
 
@@ -1140,7 +1199,16 @@ class WorkspaceWindow(QMainWindow):
         if idx > 0:
             self.plan_combo.setCurrentIndex(idx)
         self.plan_combo.currentIndexChanged.connect(self._on_plan_selected)
-        sc_form.addRow(tr("수집 계획"), self.plan_combo)
+        plan_row = QWidget()
+        prow = QHBoxLayout(plan_row)
+        prow.setContentsMargins(0, 0, 0, 0)
+        prow.addWidget(self.plan_combo, 1)
+        self.plan_edit_btn = QPushButton("✎")
+        self.plan_edit_btn.setToolTip(tr("선택한 계획 파일 편집 (저장 시 규칙 검증)"))
+        self.plan_edit_btn.setMaximumWidth(32)
+        self.plan_edit_btn.clicked.connect(self._on_edit_plan)
+        prow.addWidget(self.plan_edit_btn)
+        sc_form.addRow(tr("수집 계획"), plan_row)
         self.scene_iid_edit = QLineEdit(self._recents.most_recent("instruction_id", "I000"))
         self.scene_iid_edit.setToolTip(tr("시작 slot 의 instruction ID (예: I000). "
                                           "수집 중 Collect 페이지에서 바꿀 수 있습니다."))
@@ -1451,6 +1519,20 @@ class WorkspaceWindow(QMainWindow):
         except Exception as e:  # noqa: BLE001
             self.log(f"[계획] {Path(data).name} 로드 실패: {type(e).__name__}: {e}")
             return None
+
+    def _on_edit_plan(self) -> None:
+        data = self.plan_combo.currentData()
+        if not data:
+            QMessageBox.information(self, tr("계획 없음"),
+                                    tr("편집할 계획 파일을 먼저 선택하세요."))
+            return
+        dlg = PlanEditDialog(self, Path(data))
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            for w in getattr(dlg, "warnings", []):
+                self.log(f"[계획 경고] {w}")
+            self.log(f"[계획] {Path(data).name} 저장됨")
+            # 갱신된 목표/slot 이 화면에 반영되게
+            self._on_plan_selected()
 
     def _on_plan_selected(self, *_args) -> None:
         plan = self._current_plan()
