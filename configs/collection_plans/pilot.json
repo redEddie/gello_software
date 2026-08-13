@@ -1,0 +1,47 @@
+{
+  "plan_version": 1,
+  "scenes": [
+    {
+      "scene_id": "S000",
+      "note": "파란 컵 + 파란 큰 그릇 (family A/D, 2026-08-13 첫 실기 scene — 이미 수집된 배치)",
+      "slots": [
+        {
+          "instruction_id": "I000",
+          "instruction": "pick up the blue cup and place it on the blue bowl",
+          "target": 10
+        }
+      ]
+    },
+    {
+      "scene_id": "S001",
+      "note": "파란 컵 + 하얀 컵 + 파란 큰 그릇 + 노란 작은 그릇 + 3단 서랍장 (5물체, family B+E — 같은 장면·상이 지시문 축, I000 재사용으로 배치 일반화 축)",
+      "slots": [
+        {
+          "instruction_id": "I000",
+          "instruction": "pick up the blue cup and place it on the blue bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I001",
+          "instruction": "pick up the white cup and place it on the yellow bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I002",
+          "instruction": "pick up the blue cup and place it on top of the drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I003",
+          "instruction": "open the top drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I004",
+          "instruction": "close the top drawer",
+          "target": 10
+        }
+      ]
+    }
+  ]
+}

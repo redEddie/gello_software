@@ -1,0 +1,142 @@
+"""수집 계획(slot plan) 로더 — configs/collection_plans/*.json.
+
+계획은 Notion §6 matrix 가 정본이고, freeze 된 것을 JSON 으로 export 해
+커밋한다. 이 모듈은 그 파일을 읽고 규칙을 검증할 뿐, collected 를 계산하지
+않는다 — 수집 현황은 항상 scene 파일에서 파생한다
+(gello.scene_format.count_by_slot, "두 개의 진실 금지").
+
+규칙 (configs/collection_plans/README.md):
+- instruction 은 따옴표 없는 순수 문장, freeze 후 불변 (고치려면 새 ID)
+- 같은 instruction_id 는 어느 scene 에서든 항상 같은 문장
+- 동사는 §4 통제 집합(pick up … and place / open / close) 안 — 벗어나면
+  로드는 되지만 경고를 남긴다 (freeze 리뷰가 잡을 것을 GUI 에서도 보이게)
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from gello.scene_format import INSTRUCTION_ID_RE, SCENE_ID_RE
+
+PLANS_DIR = Path(__file__).resolve().parent.parent / "configs" / "collection_plans"
+
+# §4 instruction 동사 레지스트리. push 등은 파이프라인 검증 후에 푼다.
+_ALLOWED_PATTERNS = (
+    re.compile(r"^pick up .+ and place it .+$"),
+    re.compile(r"^open .+$"),
+    re.compile(r"^close .+$"),
+)
+
+
+@dataclass(frozen=True)
+class PlanSlot:
+    instruction_id: str
+    instruction: str
+    target: int
+
+
+@dataclass(frozen=True)
+class ScenePlan:
+    scene_id: str
+    note: str
+    slots: tuple
+
+
+@dataclass
+class CollectionPlan:
+    path: Path
+    version: int
+    scenes: tuple
+    warnings: list = field(default_factory=list)
+
+    def scene(self, scene_id: str) -> Optional[ScenePlan]:
+        return next((s for s in self.scenes if s.scene_id == scene_id), None)
+
+    def slots_for(self, scene_id: str) -> tuple:
+        sp = self.scene(scene_id)
+        return sp.slots if sp is not None else ()
+
+
+def list_plans(plans_dir: Path = PLANS_DIR) -> list:
+    """커밋된 계획 파일 목록 (example.json 은 문서용이라 뒤로 보낸다)."""
+    if not plans_dir.is_dir():
+        return []
+    files = sorted(plans_dir.glob("*.json"))
+    return sorted(files, key=lambda p: (p.name == "example.json", p.name))
+
+
+def load_plan(path: Path) -> CollectionPlan:
+    """계획을 읽고 구조·규칙을 검증한다.
+
+    구조가 틀리면(중복 ID 에 다른 문장, 따옴표 문장, ID 형식) ValueError --
+    틀린 계획으로 수집하는 것이 곧 재수집이다. 동사 집합 위반은 경고로만
+    남긴다(§4 는 운영 규칙이고, 예외 승인이 있을 수 있다).
+    """
+    path = Path(path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or raw.get("plan_version") != 1:
+        raise ValueError(f"{path.name}: plan_version 1 이 아니다")
+    warnings: list = []
+    sentence_by_id: dict = {}
+    scenes = []
+    for s in raw.get("scenes", []):
+        sid = str(s.get("scene_id", ""))
+        if not SCENE_ID_RE.match(sid):
+            raise ValueError(f"{path.name}: 잘못된 scene_id {sid!r}")
+        slots = []
+        for sl in s.get("slots", []):
+            iid = str(sl.get("instruction_id", ""))
+            instr = str(sl.get("instruction", "")).strip()
+            target = int(sl.get("target", 0))
+            if not INSTRUCTION_ID_RE.match(iid):
+                raise ValueError(f"{path.name}: 잘못된 instruction_id {iid!r} ({sid})")
+            if not instr or (instr.startswith('"') and instr.endswith('"')):
+                raise ValueError(
+                    f"{path.name}: {sid}/{iid} instruction 은 따옴표 없는 순수 문장이어야 한다")
+            if target <= 0:
+                raise ValueError(f"{path.name}: {sid}/{iid} target 은 양수여야 한다")
+            prev = sentence_by_id.get(iid)
+            if prev is not None and prev != instr:
+                raise ValueError(
+                    f"{path.name}: {iid} 가 서로 다른 문장으로 쓰였다 -- "
+                    f"{prev!r} vs {instr!r} (같은 ID 는 항상 같은 문장, README)")
+            sentence_by_id[iid] = instr
+            if not any(p.match(instr) for p in _ALLOWED_PATTERNS):
+                warnings.append(
+                    f"{sid}/{iid}: 동사 집합(§4: pick-place/open/close) 밖의 문장 -- {instr!r}")
+            slots.append(PlanSlot(iid, instr, target))
+        scenes.append(ScenePlan(scene_id=sid, note=str(s.get("note", "")),
+                                slots=tuple(slots)))
+    return CollectionPlan(path=path, version=1, scenes=tuple(scenes),
+                          warnings=warnings)
+
+
+def check_scene_against_plan(plan: CollectionPlan, scene_id: str,
+                             episodes: list) -> list:
+    """scene 파일의 에피소드가 계획과 어긋난 곳을 찾는다.
+
+    반환: 경고 문자열 목록. 잡는 것:
+    - 계획에 있는 ID 인데 파일의 문장이 계획과 다름 (ID-문장 규칙 위반 --
+      실데이터에서 실제로 발생했다: I000 에 두 문장)
+    - 계획에 없는 ID 로 기록된 에피소드 (계획 밖 수집)
+    """
+    out: list = []
+    slots = {s.instruction_id: s.instruction for s in plan.slots_for(scene_id)}
+    seen: set = set()
+    for ep in episodes:
+        iid = ep.get("instruction_id", "")
+        instr = ep.get("instruction", "")
+        key = (iid, instr)
+        if key in seen:
+            continue
+        seen.add(key)
+        if iid in slots and instr != slots[iid]:
+            out.append(f"{ep.get('name', '?')}: {iid} 문장이 계획과 다름 -- "
+                       f"파일 {instr!r} vs 계획 {slots[iid]!r}")
+        elif iid not in slots:
+            out.append(f"{ep.get('name', '?')}: 계획에 없는 slot {iid} ({instr!r})")
+    return out
