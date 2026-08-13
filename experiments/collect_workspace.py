@@ -841,12 +841,11 @@ class WorkspaceWindow(QMainWindow):
             head.setStyleSheet("color:#888; letter-spacing:1px;")
             col.addWidget(head)
             # 페이지가 창보다 길어지면(예: Configure 의 scene 그룹) 세로
-            # 스크롤. 가로는 폼이 접히게 두는 편이 낫다 -- 항상 끈다.
+            # 스크롤. 가로도 필요할 때만 나타난다 -- 항상 꺼두면 줄바꿈 없는
+            # 내용(scene 격자 라벨 등)이 패널 폭에서 잘린다.
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QFrame.Shape.NoFrame)
-            scroll.setHorizontalScrollBarPolicy(
-                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             scroll.setWidget(page)
             col.addWidget(scroll, 1)
             self.left_pages[key] = self.left_stack.count()
