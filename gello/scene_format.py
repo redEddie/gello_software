@@ -8,7 +8,7 @@ instruction 은 **episode attrs 안에만** 존재한다 -- legacy v0 에서 파
 
     scene_012.hdf5
     ├── metadata                    <- scene 단위. 그룹 attrs + 기준 사진
-    │   attrs: scene_id, objects(JSON), layout(JSON), distractors(JSON),
+    │   attrs: scene_id, description, objects(JSON), layout(JSON),
     │          station, dataset_version, created, next_episode_idx
     │   └── reference_image         <- (H, W, 3) uint8 정면 사진 (배치 재현용)
     ├── episode_000
@@ -51,14 +51,25 @@ layout 은 격자 존 기반 구조화 JSON 이다 (결정 사항 -- scene 다�
 
 존은 로봇 기준 작업공간을 카메라(agentview) 프레임에서 rows x cols 로 나눈
 것이고, [0, 0] 이 왼쪽 위다. cm 좌표는 요구하지 않는다 -- 기준 위치에서 수 cm
-흔드는 controlled variation(§4)은 같은 존 안의 이동이다.
+흔드는 controlled variation(§4)은 같은 존 안의 이동이고, 존 경계를 넘으면
+새 scene ID 다.
+
+distractor 에 대하여 -- 개념은 유지하되 필드로 구현하지 않는다 (2026-08-13
+결정). distractor 는 "책상에 놓여 있고 카메라에 찍히지만 그 scene 의 어떤
+instruction 에도 등장하지 않는 물체"로, 언어조건 조작의 표준 robustness
+평가축이다 (BC-Z, RT-1 의 distractor 평가; 이론적 배경은 causal confusion in
+imitation learning). 다만 지금 스케일에서는 별도 필드가 주는 분석력보다
+수집자가 역할(objects vs distractors)을 오지정하는 비용이 크다. 그런 물체도
+``objects`` 에 넣고 ``description`` 에 사람 말로 적어 둔다 -- "어떤 물체가
+지칭되지 않았는가"는 나중에 계획 파일의 instruction 집합과 대조해 파생할 수
+있고, 정말 필드가 필요해지면 scene-v2 에서 되살린다.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -75,6 +86,14 @@ from gello.libero_format import (
 )
 
 SCENE_DATASET_VERSION = "scene-v1"
+
+# 표준 격자 (2026-08-13 결정). 포맷 자체는 파일마다 grid 를 기록하므로 나중에
+# 바꿔도 기존 파일은 읽히지만, 새 scene 생성은 이 값만 허용한다 -- 수집자마다
+# 격자 해석이 갈리는 것을 막고, "같은 존 안 이동 = 같은 scene, 존 경계를
+# 넘으면 새 scene ID" 라는 §4 controlled variation 규칙의 단위가 된다.
+# FR3 작업공간을 3x3 으로 나누면 칸 하나가 약 20x13cm 라 기준 위치에서
+# 수 cm 흔드는 것은 거의 항상 같은 존에 머문다.
+STANDARD_GRID = [3, 3]
 
 # ---------------------------------------------------------------------- 품질
 QUALITY_SUCCESS = "success"
@@ -132,13 +151,18 @@ def episode_uid(scene_id: str, instruction_id: str, episode_idx: int) -> str:
 # ------------------------------------------------------------ scene metadata
 @dataclass
 class SceneMetadata:
-    """파일당 1회 기록되는 scene 정의. ``objects``/``distractors`` 는 색 이름이
-    아니라 configs/props.yaml 의 instance ID 다."""
+    """파일당 1회 기록되는 scene 정의. ``objects`` 는 색 이름이 아니라
+    configs/props.yaml 의 instance ID 다.
+
+    ``description`` 은 사람이 쓰는 자유 문장이다 -- 파싱 대상도 정본도 아니고
+    (검증·추천·재현은 전부 구조화 필드가 담당), 배치 의도나 "지칭하지 않는
+    물체(distractor)" 같은 관례를 사람 말로 남기는 자리다.
+    """
 
     scene_id: str
     objects: list[str]
     layout: dict
-    distractors: list[str] = field(default_factory=list)
+    description: str = ""
     station: str = ""
     dataset_version: str = SCENE_DATASET_VERSION
     created: str = ""
@@ -151,10 +175,10 @@ class SceneMetadata:
             raise ValueError(f"잘못된 scene ID: {self.scene_id!r} (예: 'S000')")
         if not self.objects:
             raise ValueError("objects 가 비어 있다 -- scene 에는 물체가 최소 1개 필요하다")
-        placed = list(self.objects) + list(self.distractors)
+        placed = list(self.objects)
         dup = {o for o in placed if placed.count(o) > 1}
         if dup:
-            raise ValueError(f"objects/distractors 에 중복 instance ID: {sorted(dup)}")
+            raise ValueError(f"objects 에 중복 instance ID: {sorted(dup)}")
         for oid in placed:
             if not oid.startswith("OBJ-"):
                 raise ValueError(
@@ -171,12 +195,18 @@ class SceneMetadata:
             or not all(isinstance(g, int) and g > 0 for g in grid)
         ):
             raise ValueError(f"layout.grid 는 [rows, cols] 양의 정수 2개여야 한다: {grid!r}")
+        if list(grid) != STANDARD_GRID:
+            raise ValueError(
+                f"layout.grid 는 표준 {STANDARD_GRID} 만 허용한다 (현재: {list(grid)!r}) -- "
+                "격자가 scene 경계 판정의 단위라 수집자마다 다르면 안 된다. "
+                "바꾸려면 STANDARD_GRID 와 프로토콜 §4 를 함께 바꾼다"
+            )
         placements = self.layout.get("placements")
         if not isinstance(placements, dict) or not placements:
             raise ValueError("layout.placements 가 비어 있다 -- 모든 물체의 존을 기록한다")
         for oid, spec in placements.items():
             if oid not in placed:
-                raise ValueError(f"layout.placements 의 {oid!r} 가 objects/distractors 에 없다")
+                raise ValueError(f"layout.placements 의 {oid!r} 가 objects 에 없다")
             zone = (spec or {}).get("zone")
             if (
                 not isinstance(zone, (list, tuple))
@@ -198,7 +228,7 @@ def _read_metadata(meta: h5py.Group) -> SceneMetadata:
         scene_id=str(meta.attrs["scene_id"]),
         objects=json.loads(meta.attrs["objects"]),
         layout=json.loads(meta.attrs["layout"]),
-        distractors=json.loads(meta.attrs.get("distractors", "[]")),
+        description=str(meta.attrs.get("description", "")),
         station=str(meta.attrs.get("station", "")),
         dataset_version=str(meta.attrs.get("dataset_version", "")),
         created=str(meta.attrs.get("created", "")),
@@ -306,7 +336,7 @@ class SceneWriter:
             self._meta.attrs["scene_id"] = metadata.scene_id
             self._meta.attrs["objects"] = json.dumps(metadata.objects, ensure_ascii=False)
             self._meta.attrs["layout"] = json.dumps(metadata.layout, ensure_ascii=False)
-            self._meta.attrs["distractors"] = json.dumps(metadata.distractors, ensure_ascii=False)
+            self._meta.attrs["description"] = metadata.description
             self._meta.attrs["station"] = metadata.station
             self._meta.attrs["dataset_version"] = metadata.dataset_version
             self._meta.attrs["created"] = metadata.created
@@ -476,6 +506,66 @@ def list_scene_episodes(path: Path) -> list[dict]:
         ]
     items.sort(key=lambda d: d["episode_id"])
     return items
+
+
+def empty_zones(layout: dict) -> list[tuple[int, int]]:
+    """placements 에서 파생한 빈 존 목록 (행 우선 정렬).
+
+    파생 함수이지 저장 필드가 아니다 -- 빈 존을 metadata 에 따로 적으면
+    placements 와 어긋날 수 있는 두 번째 진실이 생긴다. legacy 사고(파일명 vs
+    attrs)의 교훈 그대로: 같은 사실은 한 곳에만 적는다."""
+    rows, cols = layout["grid"]
+    occupied = {tuple(spec["zone"]) for spec in layout["placements"].values()}
+    return [(r, c) for r in range(rows) for c in range(cols) if (r, c) not in occupied]
+
+
+def describe_scene(md: SceneMetadata) -> str:
+    """metadata 에서 파생한 사람용 요약 -- 채운 존과 빈 존이 한눈에 보이는
+    ASCII 격자 지도. QA 검사기(scripts/check_scene_file.py), GUI 의 scene
+    표시, 다양성 추천의 제안 카드가 전부 이 하나의 렌더러를 쓴다 -- 어디서든
+    같은 그림이 보이는데 저장은 placements 한 곳인 구조.
+
+    소품 종류(category/color)는 저장돼 있지 않고 인벤토리에서 조회한다 --
+    조회가 안 되는 ID(은퇴/테스트용)는 ID 만 보여준다."""
+    try:
+        from gello.props import props_by_id
+        inv = props_by_id()
+    except Exception:  # noqa: BLE001 -- 인벤토리가 없어도 요약은 나와야 한다
+        inv = {}
+
+    def _kind(oid: str) -> str:
+        p = inv.get(oid)
+        return f"({p.category}/{p.color})" if p else ""
+
+    lines = [f"{md.scene_id} · station {md.station or '(미기록)'} · "
+             f"{md.dataset_version} · created {md.created or '(미기록)'}"]
+    if md.description:
+        lines.append(f'"{md.description}"')
+    lines.append("objects: " + ", ".join(f"{o}{_kind(o)}" for o in md.objects))
+
+    rows, cols = md.layout["grid"]
+    cell: dict[tuple[int, int], list[str]] = {}
+    for oid, spec in md.layout["placements"].items():
+        label = oid[4:] if oid.startswith("OBJ-") else oid
+        cell.setdefault(tuple(spec["zone"]), []).append(label)
+    width = max([13] + [len("+".join(v)) + 2 for v in cell.values()])
+
+    def _row(cells: list[str]) -> str:
+        return "│" + "│".join(s.center(width) for s in cells) + "│"
+
+    def _rule(left: str, mid: str, right: str) -> str:
+        return left + mid.join("─" * width for _ in range(cols)) + right
+
+    lines.append(f"grid {rows}x{cols} (agentview, [0,0]=왼쪽 위)")
+    lines.append(_rule("┌", "┬", "┐"))
+    for r in range(rows):
+        lines.append(_row(["+".join(cell.get((r, c), [])) or "·" for c in range(cols)]))
+        lines.append(_rule("├", "┼", "┤") if r < rows - 1 else _rule("└", "┴", "┘"))
+    empties = empty_zones(md.layout)
+    lines.append("빈 존: " + (" ".join(f"({r},{c})" for r, c in empties) or "(없음)"))
+    for a, rel, b in md.layout.get("relations", []):
+        lines.append(f"관계: {a} {rel} {b}")
+    return "\n".join(lines)
 
 
 def count_by_slot(path: Path) -> dict[str, dict[str, int]]:

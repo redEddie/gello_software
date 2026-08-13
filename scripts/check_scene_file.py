@@ -37,6 +37,8 @@ from gello.scene_format import (  # noqa: E402
     SceneMetadata,
     SceneWriter,
     count_by_slot,
+    describe_scene,
+    empty_zones,
     list_scene_episodes,
     next_scene_id,
     read_reference_image,
@@ -50,7 +52,7 @@ REQUIRED_EPISODE_ATTRS = (
     "action_column_names", "crop_params", "station",
 )
 REQUIRED_METADATA_ATTRS = (
-    "scene_id", "objects", "layout", "distractors", "station",
+    "scene_id", "objects", "layout", "description", "station",
     "dataset_version", "created", "next_episode_idx",
 )
 
@@ -90,9 +92,9 @@ def verify_scene_file(path: Path) -> list[str]:
             problems.append(f"metadata 파싱 실패: {e}")
             md = None
         if md is not None:
-            for oid in md.objects + md.distractors:
+            for oid in md.objects:
                 if not oid.startswith("OBJ-"):
-                    problems.append(f"objects/distractors 에 instance ID 가 아닌 값: {oid!r}")
+                    problems.append(f"objects 에 instance ID 가 아닌 값: {oid!r}")
 
         ep_names = sorted(
             (k for k in f.keys() if EPISODE_GROUP_RE.match(k)),
@@ -140,7 +142,7 @@ def _read_md_checked(meta: h5py.Group) -> SceneMetadata:
         scene_id=str(meta.attrs["scene_id"]),
         objects=json.loads(meta.attrs["objects"]),
         layout=json.loads(meta.attrs["layout"]),
-        distractors=json.loads(meta.attrs.get("distractors", "[]")),
+        description=str(meta.attrs.get("description", "")),
         station=str(meta.attrs.get("station", "")),
         dataset_version=str(meta.attrs.get("dataset_version", "")),
         created=str(meta.attrs.get("created", "")),
@@ -153,13 +155,8 @@ def print_scene_file(path: Path) -> None:
     md = read_scene_metadata(path)
     ref = read_reference_image(path)
     print(f"\n== {path.name} ==")
-    print(f"  scene_id        : {md.scene_id}   ({md.dataset_version}, created {md.created})")
-    print(f"  station         : {md.station or '(미기록)'}")
-    print(f"  objects         : {', '.join(md.objects)}")
-    print(f"  distractors     : {', '.join(md.distractors) or '(없음)'}")
-    grid = md.layout.get("grid")
-    print(f"  layout          : grid {grid}, placements {len(md.layout.get('placements', {}))}개, "
-          f"relations {len(md.layout.get('relations', []))}개")
+    for line in describe_scene(md).splitlines():
+        print(f"  {line}")
     print(f"  reference_image : {'%dx%d' % (ref.shape[1], ref.shape[0]) if ref is not None else '(없음)'}")
     eps = list_scene_episodes(path)
     print(f"  episodes        : {len(eps)}개")
@@ -218,9 +215,10 @@ def selftest(keep: Path | None) -> None:
     assert sid == "S000", sid
     md = SceneMetadata(
         scene_id=sid,
-        objects=["OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01", "OBJ-BOWLS-YEL-01", "OBJ-DRAWER-01"],
+        objects=["OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01", "OBJ-BOWLS-YEL-01",
+                 "OBJ-DRAWER-01", "OBJ-CUP-PPR-01"],
         layout=layout,
-        distractors=["OBJ-CUP-PPR-01"],
+        description="컵 2개가 노란 그릇 양옆, 서랍장 왼쪽 아래. 종이컵은 어떤 instruction 에도 안 나오는 무시 대상.",
         station="selftest",
     )
 
@@ -230,6 +228,9 @@ def selftest(keep: Path | None) -> None:
     bad2 = SceneMetadata(scene_id=sid, objects=["OBJ-CUP-BLU-01"],
                          layout={"grid": [3, 3], "placements": {"OBJ-CUP-BLU-01": {"zone": [5, 0]}}})
     _expect_raise(ValueError, lambda: bad2.validate(), "격자를 벗어난 존")
+    bad3 = SceneMetadata(scene_id=sid, objects=["OBJ-CUP-BLU-01"],
+                         layout={"grid": [4, 3], "placements": {"OBJ-CUP-BLU-01": {"zone": [0, 0]}}})
+    _expect_raise(ValueError, lambda: bad3.validate(), "표준(3x3)이 아닌 격자")
     _expect_raise(ValueError, lambda: SceneMetadata(
         scene_id=sid, objects=["OBJ-NOPE-XXX-01"], layout=layout).validate(prop_ids),
         "인벤토리에 없는 instance ID")
@@ -298,7 +299,12 @@ def selftest(keep: Path | None) -> None:
         assert str(g.attrs["instruction"]) == I0  # 따옴표 없이 그대로
     assert read_reference_image(path) is not None
     assert next_scene_id(root) == "S001"
-    print("  ✓ scene 포맷: UID·slot 카운트·페이로드·기준사진 확인")
+    md_back = read_scene_metadata(path)
+    assert md_back.description == md.description
+    assert empty_zones(md_back.layout) == [(0, 1), (1, 0), (1, 2), (2, 1)]
+    desc = describe_scene(md_back)
+    assert "빈 존: (0,1) (1,0) (1,2) (2,1)" in desc and "CUP-BLU-01" in desc
+    print("  ✓ scene 포맷: UID·slot 카운트·페이로드·기준사진·describe_scene 확인")
 
     # -- 리팩터링 회귀: legacy writer 가 공용 페이로드로 여전히 demo_N 을 쓴다
     from gello.libero_format import LiberoTaskWriter
