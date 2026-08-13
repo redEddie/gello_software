@@ -1327,6 +1327,14 @@ class WorkspaceWindow(QMainWindow):
         trim_btn.clicked.connect(self._on_open_trim)
         col.addWidget(trim_btn)
 
+        relabel_btn = QPushButton(tr("선택 재판정 (성공↔실패)"))
+        relabel_btn.setToolTip(tr(
+            "scene 에피소드 전용. 선택한 에피소드의 quality_status 를 성공↔실패로 "
+            "뒤집습니다.\nscene 체계에서 삭제를 대신하는 큐레이션 수단입니다 -- "
+            "변환은 success 만 내보냅니다.\nbad_data 등 다른 상태는 건드리지 않습니다."))
+        relabel_btn.clicked.connect(self._on_relabel_selected)
+        col.addWidget(relabel_btn)
+
         del_btn = QPushButton(tr("선택한 에피소드 삭제"))
         del_btn.setToolTip(tr(
             "위에서 선택한 에피소드를 .hdf5 에서 실제로 지우고 번호를 다시 매깁니다.\n"
@@ -3896,6 +3904,59 @@ class WorkspaceWindow(QMainWindow):
             if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
                 return label
         return ""
+
+    def _on_relabel_selected(self) -> None:
+        """scene 에피소드의 quality_status 를 성공↔실패로 뒤집는다.
+
+        scene 체계의 큐레이션 수단이다 (삭제 없음, 변환이 success 만 내보냄).
+        소유권 규칙은 삭제와 동일: 세션이 파일을 쥐고 있으면 saver 스레드
+        경유, 아니면 직접 쓴다 (SceneWriter.set_quality_status 와 같은 필드).
+        success/failed 이외의 상태(bad_data 등)는 건드리지 않는다.
+        """
+        by_file: dict = {}
+        for item in self.dataset_tree.selectedItems():
+            if item.parent() is None:
+                continue
+            p = Path(item.parent().data(0, Qt.ItemDataRole.UserRole))
+            by_file.setdefault(p, []).append(item.data(0, Qt.ItemDataRole.UserRole))
+        by_file = {p: v for p, v in by_file.items() if p.name.startswith("scene_")}
+        if not by_file:
+            QMessageBox.information(
+                self, tr("선택 필요"),
+                tr("재판정할 scene 에피소드를 선택하세요 (legacy 파일은 세션 중 "
+                   "판정 버튼을 사용)."))
+            return
+        busy = self._busy_reason()
+        if busy:
+            QMessageBox.warning(self, tr("재판정 불가"),
+                                tr("{job}이(가) 진행 중입니다.").format(job=busy))
+            return
+        flipped = skipped = 0
+        for path, names in by_file.items():
+            owned = self.active_file_path is not None and path == self.active_file_path
+            try:
+                with h5py.File(path, "r" if owned else "a") as f:
+                    for name in names:
+                        q = str(f[name].attrs.get("quality_status", ""))
+                        if q not in ("success", "failed"):
+                            skipped += 1
+                            continue
+                        new_ok = q != "success"
+                        if owned:
+                            # 세션 소유 파일은 saver 스레드가 유일한 쓰기 통로.
+                            self.worker.cmd_set_episode_success(name, new_ok)
+                        else:
+                            f[name].attrs["quality_status"] = (
+                                "success" if new_ok else "failed")
+                            f[name].attrs["success"] = new_ok
+                        flipped += 1
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.critical(self, tr("재판정 실패"),
+                                     f"{path.name}\n{type(e).__name__}: {e}")
+                return
+        self.log(f"[재판정] {flipped}개 뒤집음"
+                 + (f", {skipped}개 건너뜀 (success/failed 아님)" if skipped else ""))
+        self._refresh_dataset_tree()
 
     def _on_delete_selected(self) -> None:
         """Deletes the selected episode.

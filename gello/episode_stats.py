@@ -202,7 +202,9 @@ def load_series(path: str, demo: str) -> dict:
     with the gripper appended as the 8th column so one loop covers all plots.
     """
     with h5py.File(path, "r") as f:
-        grp = f["data"][demo]
+        # legacy 는 data/demo_N, scene(scene-v1)은 루트의 episode_NNN --
+        # 에피소드 안쪽 페이로드는 동일하다.
+        grp = f[demo] if demo in f else f["data"][demo]
         obs = grp["obs"]
         action = grp["actions"][:]
         state = np.concatenate(

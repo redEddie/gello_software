@@ -486,7 +486,10 @@ class EpisodeLoadWorker(QThread):
     def run(self) -> None:
         try:
             with h5py.File(self.path, "r") as f:
-                obs = f["data"][self.demo]["obs"]
+                # legacy 는 data/demo_N, scene(scene-v1)은 루트의 episode_NNN.
+                # 에피소드 안쪽 페이로드는 동일해서 그룹만 찾으면 같은 코드다.
+                grp = f[self.demo] if self.demo in f else f["data"][self.demo]
+                obs = grp["obs"]
                 agent = obs["agentview_rgb"][:] if "agentview_rgb" in obs else None
                 wrist = obs["eye_in_hand_rgb"][:] if "eye_in_hand_rgb" in obs else None
         except Exception as e:  # noqa: BLE001
