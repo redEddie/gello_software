@@ -556,8 +556,12 @@ class NewSceneDialog(QDialog):
         layout.addLayout(form)
 
         self.preview = QLabel("")
+        # 'monospace' 별칭은 한국어 로케일에서 CJK 모노 폰트로 풀리는데, 그
+        # 폰트는 격자 선문자(│─┌)를 2칸 폭으로 그려 describe_scene 격자가
+        # 어긋난다. 선문자가 1칸인 DejaVu 를 명시한다 (우분투 기본 탑재).
         self.preview.setStyleSheet(
-            "font-family: monospace; color:#888; font-size: 11px;")
+            "font-family: 'DejaVu Sans Mono', 'Liberation Mono', monospace; "
+            "color:#888; font-size: 11px;")
         layout.addWidget(self.preview)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
@@ -899,8 +903,12 @@ class WorkspaceWindow(QMainWindow):
         rl.addWidget(browse)
         sc_form.addRow(tr("저장 경로"), root_row)
         self.scene_info = QLabel("")
-        self.scene_info.setStyleSheet("font-family: monospace; color:#888; font-size: 11px;")
-        self.scene_info.setWordWrap(True)
+        # DejaVu 명시 이유는 NewSceneDialog.preview 의 주석 참고 (CJK 모노
+        # 폰트의 2칸짜리 선문자 때문에 격자가 깨진다).
+        self.scene_info.setStyleSheet(
+            "font-family: 'DejaVu Sans Mono', 'Liberation Mono', monospace; "
+            "color:#888; font-size: 11px;")
+        self.scene_info.setWordWrap(False)
         sc_form.addRow(self.scene_info)
         self._pending_scene_meta = None
         self._scene_session = False
