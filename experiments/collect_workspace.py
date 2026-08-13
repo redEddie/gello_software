@@ -1123,6 +1123,9 @@ class WorkspaceWindow(QMainWindow):
         self.lang_edit = QLineEdit()
         self.lang_edit.setPlaceholderText(tr("예) pick up the blue cup and place it on the blue bowl"))
         self.lang_edit.setText(self._recents.most_recent("language", ""))
+        # 문장을 바꾸면 slot ID 가 자동으로 따라온다 (아는 문장=재사용,
+        # 새 문장=다음 빈 ID) -- ID-문장 갈라짐 방지.
+        self.lang_edit.editingFinished.connect(self._on_start_sentence_edited)
         sc_form.addRow(tr("시작 문장"), self.lang_edit)
         # 수집 계획 (slot plan). 계획이 있으면 Collect 의 slot 패널이 계획
         # 기반 드롭다운 + 수집 카운트로 동작한다. 없어도 자유 입력은 그대로.
@@ -1315,6 +1318,107 @@ class WorkspaceWindow(QMainWindow):
             return self._pending_scene_meta, None, False, None
         return None, sid, True, None
 
+    # -------------------------------------------------- slot ID 자동 배정
+    def _known_slots(self, scene_path=None, episodes=None) -> dict:
+        """알려진 instruction_id -> 문장 매핑.
+
+        계획(전역: 같은 ID 는 어느 scene 에서든 같은 문장, README 규칙)과
+        scene 의 기록(에피소드 목록 또는 파일)을 합친다. 계획이 먼저다 --
+        파일 쪽에 ID-문장 갈라짐 사고가 있어도 계획이 정본.
+
+        세션 중에는 episodes(GUI 가 saver 에게서 받은 캐시)를 넘겨야 한다 --
+        HDF5 파일 잠금 때문에 열려 있는 파일을 다시 읽을 수 없다.
+        """
+        m: dict = {}
+        plan = self._current_plan()
+        if plan is not None:
+            for sc in plan.scenes:
+                for s in sc.slots:
+                    m.setdefault(s.instruction_id, s.instruction)
+        for ep in (episodes or []):
+            if ep.get("instruction_id"):
+                m.setdefault(ep["instruction_id"], ep.get("instruction", ""))
+        if episodes is None and scene_path is not None and Path(scene_path).exists():
+            try:
+                from gello.scene_format import list_scene_episodes
+
+                for ep in list_scene_episodes(scene_path):
+                    m.setdefault(ep["instruction_id"], ep["instruction"])
+            except Exception:  # noqa: BLE001 - 다른 프로세스가 잠갔을 수 있다
+                pass
+        return m
+
+    def _session_scene_id(self):
+        if self.worker is None:
+            return None
+        cfg = self.worker.cfg
+        if getattr(cfg, "scene_metadata", None) is not None:
+            return cfg.scene_metadata.scene_id
+        return getattr(cfg, "scene_id", None)
+
+    def _session_slot_counts(self) -> dict:
+        """세션 중 slot 카운트 -- 파일은 saver 가 h5py 로 잠그고 있으므로
+        다시 열지 않고, saver 가 보내준 에피소드 목록으로 계산한다
+        (count_by_slot 과 같은 정의: usable = quality_status success)."""
+        counts: dict = {}
+        for e in (self.active_episode_cache or []):
+            iid = e.get("instruction_id")
+            if not iid:
+                continue
+            c = counts.setdefault(iid, {"total": 0, "usable": 0})
+            c["total"] += 1
+            if e.get("quality_status") == "success":
+                c["usable"] += 1
+        return counts
+
+    @staticmethod
+    def _next_iid(known: dict) -> str:
+        used = [int(i[1:]) for i in known if INSTRUCTION_ID_RE.match(i)]
+        return f"I{(max(used) + 1) if used else 0:03d}"
+
+    def _auto_assign_iid(self, instr: str, iid_edit, scene_path=None,
+                         episodes=None) -> None:
+        """문장이 바뀌면 slot ID 를 자동으로 맞춘다.
+
+        아는 문장 -> 그 ID 재사용 (같은 문장이 두 ID 로 갈라지는 것 방지),
+        처음 보는 문장 -> 다음 빈 ID 배정 (기존 ID 를 다른 문장에 재사용해
+        ID-문장 규칙이 깨지는 것 방지 -- 실데이터에서 실제 발생한 사고).
+        자동 배정 후에도 손으로 고칠 수 있다.
+        """
+        instr = instr.strip()
+        if not instr:
+            return
+        known = self._known_slots(scene_path, episodes=episodes)
+        for iid, s in known.items():
+            if s == instr:
+                if iid_edit.text().strip() != iid:
+                    iid_edit.setText(iid)
+                    self.log(f"[SLOT] 아는 문장 -- {iid} 재사용")
+                return
+        cur = iid_edit.text().strip()
+        if cur in known and known[cur] != instr:
+            new = self._next_iid(known)
+            iid_edit.setText(new)
+            self.log(f"[SLOT] 새 문장 -- {new} 자동 배정 ({cur} 는 다른 문장이 사용 중)")
+        elif not INSTRUCTION_ID_RE.match(cur):
+            iid_edit.setText(self._next_iid(known))
+
+    def _selected_scene_path(self):
+        """Configure 의 Scene 콤보가 가리키는 기존 scene 파일 (새 scene 이면 None)."""
+        sid = self.scene_combo.currentData()
+        if sid is None:
+            return None
+        return Path(self.root_edit.text().strip() or ".") / scene_filename(sid)
+
+    def _on_start_sentence_edited(self) -> None:
+        self._auto_assign_iid(self.lang_edit.text(), self.scene_iid_edit,
+                              self._selected_scene_path())
+
+    def _on_slot_sentence_edited(self) -> None:
+        # 세션 중에는 파일이 잠겨 있으므로 캐시로 (파일 인자 없이)
+        self._auto_assign_iid(self.slot_instr_edit.text(), self.slot_iid_edit,
+                              episodes=self.active_episode_cache)
+
     # -------------------------------------------------- 수집 계획 (slot plan)
     def _current_plan(self):
         """선택된 계획 파일. 작아서 캐시 없이 매번 읽는다 -- 파일을 고치고
@@ -1355,17 +1459,11 @@ class WorkspaceWindow(QMainWindow):
         combo.clear()
         combo.addItem(tr("(직접 입력)"), None)
         plan = self._current_plan()
-        path = self._scene_session_file()
-        sid, counts, episodes = None, {}, []
-        if path is not None:
-            try:
-                from gello.scene_format import list_scene_episodes
-
-                sid = read_scene_metadata(path).scene_id
-                counts = count_by_slot(path)
-                episodes = list_scene_episodes(path)
-            except Exception:  # noqa: BLE001 - 파일이 막 생성 중일 수 있다
-                pass
+        # 세션 중이므로 파일을 다시 열지 않는다(HDF5 잠금) -- scene ID 는
+        # 워커 설정에서, 에피소드·카운트는 saver 가 보내준 캐시에서.
+        sid = self._session_scene_id() if self._scene_session else None
+        counts = self._session_slot_counts()
+        episodes = list(self.active_episode_cache or [])
         warn: list = []
         if plan is not None and sid is not None:
             slots = plan.slots_for(sid)
@@ -1390,16 +1488,11 @@ class WorkspaceWindow(QMainWindow):
         """계획에서 목표(target)를 못 채운 첫 slot 을 골라 채워준다 (§6:
         채우지 못한 채 책상을 치우는 것이 재수집의 시작이다)."""
         plan = self._current_plan()
-        path = self._scene_session_file()
-        if plan is None or path is None:
+        sid = self._session_scene_id() if self._scene_session else None
+        if plan is None or sid is None:
             self.log("[SLOT] 계획이 없거나 scene 세션이 아닙니다")
             return
-        try:
-            sid = read_scene_metadata(path).scene_id
-            counts = count_by_slot(path)
-        except Exception as e:  # noqa: BLE001
-            self.log(f"[SLOT] scene 읽기 실패: {e}")
-            return
+        counts = self._session_slot_counts()
         for s in plan.slots_for(sid):
             c = counts.get(s.instruction_id, {}).get("usable", 0)
             if c < s.target:
@@ -1483,6 +1576,7 @@ class WorkspaceWindow(QMainWindow):
         self.slot_iid_edit = QLineEdit()
         sfrm.addRow(tr("instruction ID"), self.slot_iid_edit)
         self.slot_instr_edit = QLineEdit()
+        self.slot_instr_edit.editingFinished.connect(self._on_slot_sentence_edited)
         sfrm.addRow(tr("문장"), self.slot_instr_edit)
         self.slot_apply_btn = QPushButton(tr("slot 적용 (다음 에피소드부터)"))
         self.slot_apply_btn.clicked.connect(self._on_apply_slot)
@@ -3736,9 +3830,6 @@ class WorkspaceWindow(QMainWindow):
         self.right_fields["episode"].setText(name)
         self._update_dataset_panel()
         self._refresh_stats()
-        if self._scene_session:
-            # 저장될 때마다 slot 카운트("2/10")를 파일 실측으로 갱신
-            self._refresh_slot_panel()
 
     @pyqtSlot(str)
     def _on_save_status(self, text: str) -> None:
@@ -3796,6 +3887,9 @@ class WorkspaceWindow(QMainWindow):
     def _on_episode_list(self, episodes) -> None:
         self.active_episode_cache = episodes
         self._refresh_dataset_tree()
+        if self._scene_session:
+            # 저장/재판정마다 saver 가 새 목록을 보내온다 -- slot 카운트 갱신
+            self._refresh_slot_panel()
 
     @pyqtSlot(dict)
     def _on_summary(self, summary) -> None:
