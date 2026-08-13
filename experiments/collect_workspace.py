@@ -497,6 +497,49 @@ class PipelineDialog(QDialog):
         return steps
 
 
+class SceneInfoView(QWidget):
+    """describe_scene 출력 표시용 — 좁은 패널에서도 잘리지 않는 반응형.
+
+    일반 문장 줄(objects, 빈 존, 설명)은 줄바꿈으로 접고, 격자 줄(│┌…)만
+    고정폭 폰트의 비줄바꿈 라벨에 넣는다. 격자 라벨은 수평 크기 정책을
+    Ignored 로 두어 패널 폭을 강제하지 않는다 -- 패널이 격자보다 좁으면
+    격자 오른쪽이 살짝 잘릴 뿐, 다른 입력은 전부 접근 가능하게 남는다.
+    """
+
+    _GRID_CHARS = set("│┌┬┐├┼┤└┴┘─")
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+        self._text = QLabel("")
+        self._text.setWordWrap(True)
+        self._text.setStyleSheet("color:#888; font-size: 11px;")
+        self._grid = QLabel("")
+        # 'monospace' 별칭은 한국어 로케일에서 CJK 모노 폰트로 풀리는데, 그
+        # 폰트는 격자 선문자(│─┌)를 2칸 폭으로 그려 격자가 어긋난다.
+        self._grid.setStyleSheet(
+            "font-family: 'DejaVu Sans Mono', 'Liberation Mono', monospace; "
+            "color:#888; font-size: 10px;")
+        self._grid.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                 QSizePolicy.Policy.Preferred)
+        col.addWidget(self._text)
+        col.addWidget(self._grid)
+
+    def setText(self, text: str) -> None:
+        grid_lines = [ln for ln in text.splitlines()
+                      if set(ln) & self._GRID_CHARS]
+        text_lines = [ln for ln in text.splitlines()
+                      if not (set(ln) & self._GRID_CHARS)]
+        self._text.setText("\n".join(text_lines))
+        self._grid.setText("\n".join(grid_lines))
+        self._grid.setVisible(bool(grid_lines))
+
+    def text(self) -> str:
+        return "\n".join(x for x in (self._text.text(), self._grid.text()) if x)
+
+
 class NewSceneDialog(QDialog):
     """새 scene 구성 — 소품 선택 + 3×3 존 배치 + 설명.
 
@@ -556,13 +599,7 @@ class NewSceneDialog(QDialog):
         form.addRow(tr("설명"), self.desc_edit)
         layout.addLayout(form)
 
-        self.preview = QLabel("")
-        # 'monospace' 별칭은 한국어 로케일에서 CJK 모노 폰트로 풀리는데, 그
-        # 폰트는 격자 선문자(│─┌)를 2칸 폭으로 그려 describe_scene 격자가
-        # 어긋난다. 선문자가 1칸인 DejaVu 를 명시한다 (우분투 기본 탑재).
-        self.preview.setStyleSheet(
-            "font-family: 'DejaVu Sans Mono', 'Liberation Mono', monospace; "
-            "color:#888; font-size: 11px;")
+        self.preview = SceneInfoView()
         layout.addWidget(self.preview)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
@@ -841,11 +878,14 @@ class WorkspaceWindow(QMainWindow):
             head.setStyleSheet("color:#888; letter-spacing:1px;")
             col.addWidget(head)
             # 페이지가 창보다 길어지면(예: Configure 의 scene 그룹) 세로
-            # 스크롤. 가로도 필요할 때만 나타난다 -- 항상 꺼두면 줄바꿈 없는
-            # 내용(scene 격자 라벨 등)이 패널 폭에서 잘린다.
+            # 스크롤. 가로 스크롤은 쓰지 않는다 -- 내용이 패널 폭에 맞게
+            # 접히는 것이 원칙이다 (긴 한 줄 표시는 SceneInfoView 처럼 줄바꿈
+            # 또는 Ignored 정책으로 해결).
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             scroll.setWidget(page)
             col.addWidget(scroll, 1)
             self.left_pages[key] = self.left_stack.count()
@@ -910,13 +950,7 @@ class WorkspaceWindow(QMainWindow):
         browse.clicked.connect(self._browse_root)
         rl.addWidget(browse)
         sc_form.addRow(tr("저장 경로"), root_row)
-        self.scene_info = QLabel("")
-        # DejaVu 명시 이유는 NewSceneDialog.preview 의 주석 참고 (CJK 모노
-        # 폰트의 2칸짜리 선문자 때문에 격자가 깨진다).
-        self.scene_info.setStyleSheet(
-            "font-family: 'DejaVu Sans Mono', 'Liberation Mono', monospace; "
-            "color:#888; font-size: 11px;")
-        self.scene_info.setWordWrap(False)
+        self.scene_info = SceneInfoView()
         sc_form.addRow(self.scene_info)
         self._pending_scene_meta = None
         self._scene_session = False
