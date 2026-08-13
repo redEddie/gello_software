@@ -497,6 +497,16 @@ class PipelineDialog(QDialog):
         return steps
 
 
+def _shrinkable_combo(c: QComboBox) -> None:
+    """항목 텍스트(카메라 이름, scene 설명 등)가 길어도 콤보가 패널 폭에 맞춰
+    줄어들 수 있게 한다. 기본 정책은 가장 긴 항목만큼 최소 폭을 요구해서,
+    좁은 좌측 패널에서 페이지 전체가 오른쪽으로 잘려 나갔다 (가로 스크롤을
+    쓰지 않는다는 원칙과 충돌). 펼친 목록은 전체 텍스트를 그대로 보여준다."""
+    c.setSizeAdjustPolicy(
+        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    c.setMinimumContentsLength(12)
+
+
 class SceneInfoView(QWidget):
     """describe_scene 출력 표시용 — 좁은 패널에서도 잘리지 않는 반응형.
 
@@ -917,6 +927,7 @@ class WorkspaceWindow(QMainWindow):
         srow = QHBoxLayout(scene_row)
         srow.setContentsMargins(0, 0, 0, 0)
         self.scene_combo = QComboBox()
+        _shrinkable_combo(self.scene_combo)
         self.scene_combo.currentIndexChanged.connect(self._on_scene_selected)
         srow.addWidget(self.scene_combo, 1)
         self.scene_refresh_btn = QPushButton(tr("새로고침"))
@@ -962,6 +973,7 @@ class WorkspaceWindow(QMainWindow):
         self.wrist_combo = QComboBox()
         for c in (self.agent_combo, self.wrist_combo):
             c.setEditable(True)
+            _shrinkable_combo(c)
             c.currentTextChanged.connect(self._on_camera_changed)
         cform.addRow(tr("Agent"), self.agent_combo)
         cform.addRow(tr("Wrist"), self.wrist_combo)
