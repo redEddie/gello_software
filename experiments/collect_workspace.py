@@ -514,6 +514,12 @@ def _relax_min_widths(root: QWidget) -> None:
     # 라벨 아래로 내려가게 해서 폭 하한을 더 낮춘다.
     for f in root.findChildren(QFormLayout):
         f.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+    # 긴 안내문 라벨이 wordWrap 없이 폭을 강제하는 경우가 페이지마다 하나씩
+    # 숨어 있다(업로드 큐 안내문 등). 일괄 줄바꿈 -- 단, 수평 Ignored 정책
+    # 라벨(SceneInfoView 의 격자처럼 일부러 줄바꿈을 막은 것)은 제외.
+    for lb in root.findChildren(QLabel):
+        if lb.sizePolicy().horizontalPolicy() != QSizePolicy.Policy.Ignored:
+            lb.setWordWrap(True)
 
 
 def _shrinkable_combo(c: QComboBox) -> None:
@@ -3667,10 +3673,13 @@ class WorkspaceWindow(QMainWindow):
         """Rescans every .hdf5's actions. Only a few KB per episode, so this is
         rebuilt from disk rather than cached -- a cache would go stale the
         moment a session records another take."""
-        root = self.root_edit.text().strip()
-        files = hdf5_files(root)
+        # Dataset 페이지의 폴더 선택을 따른다 (수집 경로 하드코딩 제거) --
+        # scene 파일도 함께 스캔한다.
+        root = self._dataset_root()
+        files = hdf5_files(root) + [str(p) for p in iter_scene_files(root)]
         if not files:
-            self.analysis_summary.setText(tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=root))
+            self.analysis_summary.setText(
+                tr("{r} 에 *_demo.hdf5 / scene_*.hdf5 가 없습니다.").format(r=root))
             return
         t0 = time.monotonic()
         self._stats = scan_dataset(files)

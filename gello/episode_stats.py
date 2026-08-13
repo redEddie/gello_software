@@ -32,11 +32,16 @@ from __future__ import annotations
 
 import glob
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import h5py
 import numpy as np
+
+# scene-v1 파일의 에피소드 그룹 이름 (scene_format.EPISODE_GROUP_RE 와 동일
+# 패턴 -- 무거운 모듈을 끌어오지 않으려고 여기서 다시 정의한다)
+_EPISODE_RE = re.compile(r"^episode_(\d{3,})$")
 
 # 그리퍼는 0/1 이산값이라 열릴 때마다 |Δa|가 1이 된다 -- 평활도 판정에 섞으면
 # 모든 에피소드가 똑같이 거칠어 보인다. 팔 7관절만 쓴다.
@@ -92,14 +97,24 @@ def scan_dataset(paths) -> list[EpisodeStat]:
     for p in paths:
         try:
             with h5py.File(p, "r") as f:
-                data = f["data"]
-                info = data.attrs.get("problem_info")
-                try:
-                    task = json.loads(json.loads(info)["language_instruction"]) if info else Path(p).stem
-                except Exception:  # noqa: BLE001
-                    task = Path(p).stem
-                for name in sorted(data.keys(), key=lambda s: int(s.split("_")[1])):
-                    grp = data[name]
+                if "data" in f:
+                    # legacy: 파일 = task 하나, 에피소드는 data/demo_N
+                    data = f["data"]
+                    info = data.attrs.get("problem_info")
+                    try:
+                        task = json.loads(json.loads(info)["language_instruction"]) if info else Path(p).stem
+                    except Exception:  # noqa: BLE001
+                        task = Path(p).stem
+                    groups = [(n, data[n], task) for n in sorted(
+                        data.keys(), key=lambda s: int(s.split("_")[1]))]
+                else:
+                    # scene-v1: 에피소드는 루트 episode_NNN, task 는 에피소드
+                    # attrs 의 instruction (scene 이 달라도 같은 문장 = 같은 task)
+                    names = sorted((k for k in f.keys() if _EPISODE_RE.match(k)),
+                                   key=lambda s: int(s.split("_")[1]))
+                    groups = [(n, f[n], str(f[n].attrs.get("instruction", Path(p).stem)))
+                              for n in names]
+                for name, grp, task in groups:
                     a = grp["actions"][:]
                     if a.ndim != 2 or a.shape[0] < 4:
                         continue
