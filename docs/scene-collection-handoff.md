@@ -73,7 +73,7 @@ legacy 는 파일 하나 = task 하나였고 **파일명이 사실상 source of 
 각 작업의 공통 인수 기준: `python scripts/check_scene_file.py <파일>` 위반 0,
 legacy 경로 무변경(기존 `*_demo.hdf5` 수집·변환이 그대로 동작).
 
-### ⑤ GUI: New/Existing Scene 수집 통합 ← **여기부터. 로봇 필요**
+### ⑤ GUI: New/Existing Scene 수집 통합 ← **여기부터. 로봇 필요** ([#30](https://github.com/redEddie/gello_software/issues/30))
 
 목표: GUI 가 SceneWriter 로 기록할 수 있게 한다. 이게 되면 pilot 수집 가능.
 
@@ -107,7 +107,7 @@ legacy 경로 무변경(기존 `*_demo.hdf5` 수집·변환이 그대로 동작)
 instruction 에피소드 공존, 이어찍기에서 새 파일이 생기지 않음, `no_dataset`
 연습 모드(NullTaskWriter)와 legacy task 모드 회귀 없음.
 
-### ⑥ 에피소드 갤러리 그리드 + 재생
+### ⑥ 에피소드 갤러리 그리드 + 재생 ([#31](https://github.com/redEddie/gello_software/issues/31))
 
 - `list_scene_episodes()` 로 에피소드 요약(UID·instruction·quality) 목록,
   각 에피소드 첫 agentview 프레임을 썸네일 그리드로. instruction 필터.
@@ -115,7 +115,7 @@ instruction 에피소드 공존, 이어찍기에서 새 파일이 생기지 않�
   않도록). 재생은 기존 `EpisodeLoadWorker`(`gui_widgets.py:466`)+Playback 탭 재활용.
 - scene 갤러리(파일 단위)는 `metadata/reference_image` 를 대표 이미지로.
 
-### ⑦ slot 계획 표시와 카운트
+### ⑦ slot 계획 표시와 카운트 ([#32](https://github.com/redEddie/gello_software/issues/32))
 
 - `configs/collection_plans/*.json` 로드 (스키마는 그 디렉터리 README).
 - `count_by_slot()` 과 대조해 `S000 / I003 / open the top drawer / 4 of 10
@@ -124,7 +124,7 @@ instruction 에피소드 공존, 이어찍기에서 새 파일이 생기지 않�
 - freeze 검증 보너스: 계획의 instruction 문장이 §5 동사 집합(pick-place /
   open / close)을 벗어나면 로드 시 경고.
 
-### ⑧ scene 다양성 추천 (로봇 불필요 — 병행 가능)
+### ⑧ scene 다양성 추천 (로봇 불필요 — 병행 가능) ([#33](https://github.com/redEddie/gello_software/issues/33))
 
 `gello/scene_diversity.py` + `scripts/recommend_scene.py` CLI 로 먼저 만들고
 GUI 통합(New Scene "추천 받기")은 후속.
@@ -141,7 +141,7 @@ GUI 통합(New Scene "추천 받기")은 후속.
 - 결정성: seed 인자. 출력: `describe_scene` 과 같은 격자 지도 + 복사 가능한
   layout JSON.
 
-### ⑨ 변환기 양포맷 지원 (로봇 불필요 — 병행 가능)
+### ⑨ 변환기 양포맷 지원 (로봇 불필요 — 병행 가능) ([#34](https://github.com/redEddie/gello_software/issues/34))
 
 `scripts/convert_libero_to_lerobot.py`:
 
