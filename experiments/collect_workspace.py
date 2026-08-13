@@ -854,62 +854,13 @@ class WorkspaceWindow(QMainWindow):
         nrow.addWidget(self.node_stop_btn)
         col.addWidget(node)
 
-        task = QGroupBox(tr("태스크"))
-        self.task_box = task
-        form = QFormLayout(task)
-        # 이어찍기 드롭다운이 세 입력란보다 위에 온다. 고르면 아래 셋이 잠기고,
-        # 그 파일의 세션 설정이 복원된다 -- 같은 파일에 다른 설정으로 이어
-        # 기록하는 사고를 막는 게 목적이고, 그 안전장치는 마법사 GUI 를
-        # 교체할 때(62cad92) 조용히 빠져 있었다.
-        self.resume_combo = QComboBox()
-        self.resume_combo.setToolTip(tr(
-            "이미 찍은 파일에 이어서 기록합니다. 고르면 Task 이름·Language·"
-            "저장 경로가 그 파일 값으로 잠깁니다."))
-        self.resume_combo.currentIndexChanged.connect(self._on_resume_selected)
-        # 무엇이 복원되고 잠기는지는 문장이 길어 인라인 라벨 대신 info 팝업으로.
-        resume_row = QWidget()
-        rrow = QHBoxLayout(resume_row)
-        rrow.setContentsMargins(0, 0, 0, 0)
-        rrow.addWidget(self.resume_combo, 1)
-        self.resume_info_btn = QPushButton(tr("info"))
-        self.resume_info_btn.setMaximumWidth(48)
-        self.resume_info_btn.setEnabled(False)
-        self.resume_info_btn.clicked.connect(self._show_resume_info)
-        rrow.addWidget(self.resume_info_btn)
-        form.addRow(tr("기존 task 이어찍기"), resume_row)
-
-        self.task_edit = QLineEdit()
-        self.task_edit.setPlaceholderText(tr("예) pick_up_the_blue_cup_and_place_it_on_the_blue_bowl"))
-        self.task_edit.setText(self._recents.most_recent("task", ""))
-        form.addRow(tr("Task 이름"), self.task_edit)
-        self.lang_edit = QLineEdit()
-        self.lang_edit.setPlaceholderText(tr("예) pick up the blue cup and place it on the blue bowl"))
-        self.lang_edit.setText(self._recents.most_recent("language", ""))
-        form.addRow(tr("Language"), self.lang_edit)
-        root_row = QWidget()
-        rl = QHBoxLayout(root_row)
-        rl.setContentsMargins(0, 0, 0, 0)
-        self.root_edit = QLineEdit(self._recents.most_recent(
-            "data_root", str(Path.home() / "libero_datasets")))
-        rl.addWidget(self.root_edit, 1)
-        browse = QPushButton(tr("..."))
-        browse.setMaximumWidth(36)
-        browse.clicked.connect(self._browse_root)
-        rl.addWidget(browse)
-        form.addRow(tr("저장 경로"), root_row)
-        col.addWidget(task)
-
-        # ---- scene-v1 수집 모드. 켜면 위 태스크 그룹(파일=task 방식)이 잠기고
-        # 파일=scene, instruction=에피소드별 attrs 로 기록된다.
+        # ---- scene-v1 이 유일한 수집 방식이다 (2026-08-13, legacy 수집 UI
+        # 제거). 파일 하나 = 책상 배치(scene) 하나, instruction 은 에피소드마다
+        # 기록되고 수집 중에 바꿀 수 있다. legacy *_demo.hdf5 는 더 이상 새로
+        # 만들지 않지만 변환·업로드·재생 등 데이터 관리 기능은 그대로 남는다.
         scene = QGroupBox(tr("Scene 수집 (scene-v1)"))
+        self.task_box = scene  # 연습 모드 토글이 잠그는 그룹 (기존 이름 유지)
         sc_form = QFormLayout(scene)
-        self.scene_check = QCheckBox(tr("Scene 모드로 수집"))
-        self.scene_check.setToolTip(tr(
-            "파일 하나 = 책상 배치(scene) 하나. instruction 은 에피소드마다 "
-            "기록되며 수집 중에 바꿀 수 있습니다. Language 칸이 시작 문장이 "
-            "됩니다."))
-        self.scene_check.toggled.connect(self._on_scene_toggled)
-        sc_form.addRow(self.scene_check)
         scene_row = QWidget()
         srow = QHBoxLayout(scene_row)
         srow.setContentsMargins(0, 0, 0, 0)
@@ -924,6 +875,10 @@ class WorkspaceWindow(QMainWindow):
         self.scene_new_btn = QPushButton(tr("새 Scene 구성..."))
         self.scene_new_btn.clicked.connect(self._on_new_scene)
         sc_form.addRow(self.scene_new_btn)
+        self.lang_edit = QLineEdit()
+        self.lang_edit.setPlaceholderText(tr("예) pick up the blue cup and place it on the blue bowl"))
+        self.lang_edit.setText(self._recents.most_recent("language", ""))
+        sc_form.addRow(tr("시작 문장"), self.lang_edit)
         self.scene_iid_edit = QLineEdit(self._recents.most_recent("instruction_id", "I000"))
         self.scene_iid_edit.setToolTip(tr("시작 slot 의 instruction ID (예: I000). "
                                           "수집 중 Collect 페이지에서 바꿀 수 있습니다."))
@@ -931,6 +886,18 @@ class WorkspaceWindow(QMainWindow):
         self.collector_edit = QLineEdit(self._recents.most_recent("collector", ""))
         self.collector_edit.setPlaceholderText(tr("수집자 식별자 (필수 attr, 예: gibeom)"))
         sc_form.addRow(tr("수집자"), self.collector_edit)
+        root_row = QWidget()
+        rl = QHBoxLayout(root_row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        self.root_edit = QLineEdit(self._recents.most_recent(
+            "data_root", str(Path.home() / "libero_datasets")))
+        self.root_edit.editingFinished.connect(self._refresh_scene_combo)
+        rl.addWidget(self.root_edit, 1)
+        browse = QPushButton(tr("..."))
+        browse.setMaximumWidth(36)
+        browse.clicked.connect(self._browse_root)
+        rl.addWidget(browse)
+        sc_form.addRow(tr("저장 경로"), root_row)
         self.scene_info = QLabel("")
         self.scene_info.setStyleSheet("font-family: monospace; color:#888; font-size: 11px;")
         self.scene_info.setWordWrap(True)
@@ -995,40 +962,10 @@ class WorkspaceWindow(QMainWindow):
         sform.addRow(self.match_check)
         col.addWidget(sess)
         col.addStretch()
-        # scene 위젯들의 활성 상태 초기화 -- no_dataset_check 가 위에서야
-        # 만들어지므로 페이지 구성이 끝난 여기서 한 번 정리한다.
-        self._on_scene_toggled(self.scene_check.isChecked())
+        self._refresh_scene_combo()
         return w
 
-    # ------------------------------------------------------- scene 모드 UI
-    def _sync_task_box_enabled(self) -> None:
-        """태스크 그룹은 연습 모드(파일 없음)나 scene 모드(파일=scene)에서는
-        의미가 없어 잠근다. 단 Language 칸은 scene 모드의 시작 문장이라 살린다."""
-        no_ds = self.no_dataset_check.isChecked()
-        scene_on = self.scene_check.isChecked()
-        self.task_box.setEnabled(not no_ds and not scene_on)
-        if scene_on and not no_ds:
-            # scene 모드에서 쓰는 입력만 개별 활성화
-            self.task_box.setEnabled(True)
-            for w in (self.resume_combo, self.resume_info_btn, self.task_edit):
-                w.setEnabled(False)
-            self.lang_edit.setEnabled(True)
-            self.root_edit.setEnabled(True)
-        elif not no_ds:
-            for w in (self.resume_combo, self.resume_info_btn, self.task_edit,
-                      self.lang_edit, self.root_edit):
-                w.setEnabled(True)
-
-    def _on_scene_toggled(self, on: bool) -> None:
-        for w in (self.scene_combo, self.scene_refresh_btn, self.scene_new_btn,
-                  self.scene_iid_edit, self.collector_edit):
-            w.setEnabled(on)
-        if on:
-            self._refresh_scene_combo()
-        else:
-            self.scene_info.setText("")
-        self._sync_task_box_enabled()
-
+    # ------------------------------------------------------- scene 수집 UI
     def _refresh_scene_combo(self) -> None:
         """저장 경로의 scene_*.hdf5 목록. 파일명이 아니라 내부 metadata 로
         표시한다 (경로 역산 금지)."""
@@ -1058,7 +995,7 @@ class WorkspaceWindow(QMainWindow):
 
     def _on_scene_selected(self, *_args) -> None:
         sid = self.scene_combo.currentData()
-        self.scene_new_btn.setEnabled(sid is None and self.scene_check.isChecked())
+        self.scene_new_btn.setEnabled(sid is None)
         if sid is None:
             if self._pending_scene_meta is not None:
                 self.scene_info.setText(
@@ -1148,7 +1085,6 @@ class WorkspaceWindow(QMainWindow):
         for b in (getattr(self, "save_ok_btn", None), getattr(self, "save_ng_btn", None)):
             if b is not None:
                 b.setEnabled(not on and self.worker is not None)
-        self._sync_task_box_enabled()
 
     def _page_collect(self) -> QWidget:
         w = QWidget()
@@ -2836,85 +2772,9 @@ class WorkspaceWindow(QMainWindow):
             self.root_edit.setText(d)
             self._refresh_dataset_tree()
 
-    # ------------------------------------------------- 기존 task 이어찍기
-    def _refresh_resume_combo(self) -> None:
-        """Rebuilds the resume list from what is actually on disk right now.
-
-        Rebuilt rather than cached: the operator deletes episodes and whole
-        files from the Dataset panel while this dropdown is on screen, and a
-        stale entry here would let them resume a file that no longer exists.
-        """
-        if not hasattr(self, "resume_combo"):
-            return
-        cur = self.resume_combo.currentData()
-        self.resume_combo.blockSignals(True)
-        self.resume_combo.clear()
-        self.resume_combo.addItem(tr("(새로 시작)"), None)
-        root = Path(self.root_edit.text().strip()).expanduser()
-        if root.is_dir():
-            for path in sorted(root.glob("*_demo.hdf5")):
-                try:
-                    with h5py.File(path, "r") as f:
-                        n = len(f["data"].keys())
-                except OSError:
-                    continue
-                self.resume_combo.addItem(
-                    tr("{name}  ({n}개)").format(name=path.stem[:-5], n=n), str(path))
-        idx = self.resume_combo.findData(cur)
-        self.resume_combo.setCurrentIndex(max(0, idx))
-        self.resume_combo.blockSignals(False)
-
-    def _on_resume_selected(self) -> None:
-        """Locks the three task fields to the chosen file and restores its
-        session settings.
-
-        The fields are disabled rather than merely pre-filled: they name the
-        file being written to, so editing them while resuming would either
-        silently start a different file or write this one under a name the
-        operator no longer sees.
-        """
-        path = self.resume_combo.currentData()
-        editable = path is None
-        for wdg in (self.task_edit, self.lang_edit, self.root_edit):
-            wdg.setEnabled(editable)
-        if editable:
-            self._resume_info = ""
-            self.resume_info_btn.setEnabled(False)
-            return
-        p = Path(path)
-        self.task_edit.setText(p.stem[:-5])
-        lang, restored = "", []
-        try:
-            with h5py.File(p, "r") as f:
-                data = f["data"]
-                info = data.attrs.get("problem_info")
-                if info:
-                    lang = json.loads(json.loads(info)["language_instruction"])
-                cfg = data.attrs.get("session_config")
-                if cfg:
-                    restored = self._apply_session_config(json.loads(cfg))
-        except (OSError, ValueError, KeyError) as e:
-            # 읽기 실패는 사용자가 지금 알아야 한다 -- info 버튼 뒤에 숨기지
-            # 않고 바로 띄운다.
-            self._resume_info = tr("설정을 읽지 못했습니다: {e}").format(e=e)
-            self.resume_info_btn.setEnabled(True)
-            self.log(f"[이어찍기] {p.name}: 설정을 읽지 못했습니다: {e}")
-            self._alert(tr("기존 task 이어찍기"), self._resume_info)
-            return
-        self.lang_edit.setText(lang)
-        self.root_edit.setText(str(p.parent))
-        self._resume_info = tr(
-            "{f} 에 이어 기록합니다.\n\n"
-            "Task 이름·Language·저장 경로는 이 파일 값으로 잠깁니다.\n"
-            "복원된 세션 설정: {r}\n"
-            "이 파일의 구조는 대조하지 않습니다 — issue #12.").format(
-                f=p.name, r=", ".join(restored) if restored else tr("없음"))
-        self.resume_info_btn.setEnabled(True)
-
-    def _show_resume_info(self) -> None:
-        if getattr(self, "_resume_info", ""):
-            self._alert(tr("기존 task 이어찍기"), self._resume_info,
-                        icon=QMessageBox.Icon.Information)
+    # legacy '기존 task 이어찍기' 드롭다운(_refresh_resume_combo /
+    # _on_resume_selected / _show_resume_info)은 legacy 수집 UI 제거와 함께
+    # 삭제됐다 (2026-08-13). scene 이어찍기는 Scene 콤보가 담당한다.
 
     def _apply_session_config(self, cfg: dict) -> list:
         """Puts a file's recorded session_config back into the widgets that
@@ -3205,19 +3065,11 @@ class WorkspaceWindow(QMainWindow):
             self.log("[연결] 이미 세션이 실행 중입니다.")
             return
         no_dataset = self.no_dataset_check.isChecked()
-        scene_on = self.scene_check.isChecked() and not no_dataset
-        task = self.task_edit.text().strip()
+        scene_on = not no_dataset  # scene-v1 이 유일한 수집 방식 (legacy 제거)
         lang = self.lang_edit.text().strip()
-        if not task and not no_dataset and not scene_on:
-            QMessageBox.warning(self, tr("Task 이름 필요"), tr("Task 이름을 입력하세요."))
-            return
-        if no_dataset:
-            # Never reaches a writer, but WorkerConfig requires the fields and
-            # a blank task_name would show up as an empty label everywhere.
-            task = task or "practice"
-        # ---- scene 모드: 검증은 _scene_config_from_ui 가, 파일 생성/이어찍기
-        # 판정은 SceneWriter 가 한다 (파일명 중복 검사는 scene_id 기반이라
-        # 아래 legacy 검사 대상이 아니다).
+        # scene 설정 검증은 _scene_config_from_ui 가, 파일 생성/이어찍기 판정은
+        # SceneWriter 가 한다 (파일명은 scene_id 에서 나오므로 이름 중복 검사
+        # 자체가 없다).
         scene_meta = None
         scene_sid = None
         scene_resume = False
@@ -3227,21 +3079,10 @@ class WorkspaceWindow(QMainWindow):
                 QMessageBox.warning(self, tr("Scene 설정"), err)
                 return
             task = scene_meta.scene_id if scene_meta is not None else scene_sid
-        # 이어쓰기 여부는 이어찍기 드롭다운에서 유도한다. 예전의 "기존 파일에
-        # 이어서 수집" 체크박스(기본 True)는 새로 시작인데 Task 이름이 기존
-        # 파일과 겹치면 다른 설정으로 조용히 이어붙였다 -- 드롭다운이 막으려던
-        # 바로 그 사고라서, 그 경우는 여기서 차단한다.
-        resume = (self.resume_combo.currentData() is not None) and not scene_on
-        if not no_dataset and not resume and not scene_on:
-            target = (Path(self.root_edit.text().strip())
-                      / f"{task.replace(' ', '_')}_demo.hdf5")
-            if target.exists():
-                QMessageBox.warning(self, tr("파일이 이미 있음"), tr(
-                    "{f} 이(가) 이미 있습니다.\n"
-                    "이어 찍으려면 태스크의 '기존 task 이어찍기'에서 이 파일을 "
-                    "고르고, 새 데이터셋이면 Task 이름을 바꾸세요.").format(
-                        f=target.name))
-                return
+        else:
+            # 연습 모드: writer 에 닿지 않지만 WorkerConfig 라벨용 이름은 필요.
+            task = "practice"
+        resume = False  # legacy 이어찍기 제거 -- scene 은 scene_resume 이 담당
         agent, wrist = self._combo_serial(self.agent_combo), self._combo_serial(self.wrist_combo)
         if not agent or not wrist:
             QMessageBox.warning(self, tr("카메라 선택 필요"),
@@ -3309,8 +3150,7 @@ class WorkspaceWindow(QMainWindow):
             # GUI 상태와 얽혀 있지 않아야 한다.
             crop_params={r: dict(v) for r, v in self._crop_params.items()},
         )
-        for key, value in (("task", task if not scene_on else ""),
-                           ("language", lang),
+        for key, value in (("language", lang),
                            ("data_root", cfg.data_root),
                            ("agent_serial", agent), ("wrist_serial", wrist),
                            ("collector", cfg.collector),
@@ -3405,7 +3245,6 @@ class WorkspaceWindow(QMainWindow):
         self._update_preview_btn()
         # scene 세션에서만 slot 전환 패널 노출
         self.slot_box.setVisible(running and self._scene_session)
-        self.scene_check.setEnabled(not running)
         self.lights["robot"].set("ok" if running else "off",
                                  tr("연결됨") if running else tr("끊김"))
         self.right_fields["robot"].setText(tr("연결됨") if running else tr("끊김"))
@@ -3573,7 +3412,7 @@ class WorkspaceWindow(QMainWindow):
         self._scene_session = False
         self._set_running(False)
         self._refresh_dataset_tree()
-        if was_scene and self.scene_check.isChecked():
+        if was_scene:
             # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
             self._refresh_scene_combo()
         self._restart_previews()
@@ -3899,7 +3738,8 @@ class WorkspaceWindow(QMainWindow):
         # 접은 채로 시작한다. 200줄 넘는 에피소드를 한 번에 펼쳐두면 정작 훑고
         # 싶은 task 목록이 화면 밖으로 밀린다. 필요한 파일만 열면 된다.
         self.dataset_tree.collapseAll()
-        self._refresh_resume_combo()
+        if hasattr(self, "scene_combo"):
+            self._refresh_scene_combo()
         self._update_dataset_panel(self._selected_file())
 
     def _selected_file(self) -> Path | None:
