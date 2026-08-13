@@ -33,6 +33,7 @@ from gello.lerobot_plugin import (
 )
 from gello.libero_format import LiberoTaskWriter, NullTaskWriter
 from gello.robots.franka_fr3 import FR3_RESET_POSES
+from gello.scene_format import QUALITY_FAILED, QUALITY_SUCCESS, SceneMetadata, SceneWriter
 from gello.station import load_station
 
 GATE_RAD = 0.5  # run_env.py / gello_match_pose.py's start-gate threshold
@@ -88,8 +89,13 @@ class EpisodeSaver(QThread):
     def set_writer(self, writer) -> None:
         self._writer = writer
 
-    def enqueue_save(self, buf, success) -> None:
-        self._q.put(("save", buf, success))
+    def enqueue_save(self, buf, success, instruction=None, instruction_id=None) -> None:
+        """instruction/instruction_id 는 scene 모드 전용 -- 에피소드가 끝난
+        시점의 slot 을 워커가 캡처해서 싣는다. 저장은 백그라운드라 조작자가
+        다음 slot 으로 넘어간 뒤 실행될 수 있는데, 그때 writer 의 현재 상태가
+        아니라 "그 에피소드가 실제 수행한 문장"이 찍혀야 한다 (SceneWriter 가
+        instruction 을 저장 시점 명시 인자로만 받는 이유와 같은 경합)."""
+        self._q.put(("save", buf, success, instruction, instruction_id))
 
     def enqueue_delete(self, name: str) -> None:
         self._q.put(("delete", name))
@@ -111,13 +117,21 @@ class EpisodeSaver(QThread):
                 break
             try:
                 if item[0] == "save":
-                    _, buf, success = item
+                    _, buf, success, instruction, instruction_id = item
                     n = len(buf)
                     waiting = self._q.qsize()
                     self.save_status.emit(
                         f"저장 중... {n}프레임" + (f" (+대기 {waiting})" if waiting else ""))
                     t0 = time.monotonic()
-                    name = self._writer.save_buffer(buf, success=success)
+                    if instruction is not None:
+                        # scene 모드: SceneWriter.save_buffer 는 instruction 을
+                        # 저장 시점 명시 인자로 요구한다. 라벨(success) 없는
+                        # 에피소드는 여기서 규격이 거부한다(아래 except 로 감).
+                        name = self._writer.save_buffer(
+                            buf, success=success,
+                            instruction=instruction, instruction_id=instruction_id)
+                    else:
+                        name = self._writer.save_buffer(buf, success=success)
                     dt = time.monotonic() - t0
                     if name:
                         self.episode_saved.emit(name, n)
@@ -126,12 +140,24 @@ class EpisodeSaver(QThread):
                     self.save_status.emit("")
                 elif item[0] == "delete":
                     name = item[1]
+                    if not hasattr(self._writer, "delete_episode"):
+                        # scene 포맷: 에피소드는 immutable -- 삭제가 존재하지
+                        # 않는다. 불량은 quality_status 재판정으로만 표시한다.
+                        self.log_message.emit(
+                            f"[삭제 불가] {name}: scene 에피소드는 지울 수 없습니다 "
+                            "-- 실패로 재판정하세요 (quality_status)")
+                        continue
                     self._writer.delete_episode(name)
                     self.log_message.emit(f"[삭제] {name}")
                     self.episode_list_changed.emit(self._writer.list_episodes())
                 elif item[0] == "set_success":
                     _, name, success = item
-                    self._writer.set_episode_success(name, success)
+                    if hasattr(self._writer, "set_episode_success"):
+                        self._writer.set_episode_success(name, success)
+                    else:
+                        # SceneWriter: 같은 재판정이 quality_status 로 표현된다.
+                        self._writer.set_quality_status(
+                            name, QUALITY_SUCCESS if success else QUALITY_FAILED)
                     self.log_message.emit(
                         f"[판정] {name} -> {'성공' if success else '실패'}")
                     self.episode_list_changed.emit(self._writer.list_episodes())
@@ -164,12 +190,31 @@ class WorkerConfig:
     # episode-to-episode -- deliberate variation, not sloppiness.
     auto_match_pose: bool = True
     resume: bool = False
+    # ---- scene 모드 (scene-v1) ----
+    # scene_metadata(새 scene) 또는 scene_id+scene_resume(이어찍기)가 주어지면
+    # LiberoTaskWriter 대신 SceneWriter 로 기록한다. 이때 task_name 은 쓰이지
+    # 않고(파일명은 scene_id 에서 나온다), language_instruction 과
+    # instruction_id 가 시작 slot 이 된다. slot 은 수집 중 cmd_set_slot 으로
+    # 바뀔 수 있고, 에피소드에는 "기록 시작 시점의 slot" 이 찍힌다.
+    scene_metadata: Optional[SceneMetadata] = None
+    scene_id: Optional[str] = None
+    scene_resume: bool = False
+    instruction_id: str = ""      # scene 모드 시작 slot 의 ID (예: "I000")
+    collector: str = ""           # scene 모드 필수 attr -- 수집자 식별자
     agent_camera_serial: str = AGENT_CAMERA_SERIAL
     wrist_camera_serial: str = WRIST_CAMERA_SERIAL
     schema: DatasetSchemaConfig = field(default_factory=DatasetSchemaConfig)
     # 카메라별 정사각 크롭 정렬 (GUI Layout 페이지에서 조정). None 이면 기본값.
     # 에피소드마다 attrs["crop_params"] 로 찍힌다.
     crop_params: dict | None = None
+
+    @property
+    def scene_mode(self) -> bool:
+        # no_dataset(연습) 이 scene 지정보다 우선한다 -- 연습 모드의 계약은
+        # "파일을 만들지 않는다" 이고 그건 scene 에서도 그대로여야 한다.
+        return not self.no_dataset and (
+            self.scene_metadata is not None or self.scene_id is not None
+        )
 
 
 class CollectionWorker(QThread):
@@ -198,6 +243,12 @@ class CollectionWorker(QThread):
         self._writer: Optional[LiberoTaskWriter] = None
         self._reset_q = FR3_RESET_POSES[self.cfg.reset_pose]
         self._episode_count = 0
+        # scene 모드 slot 상태. cmd_set_slot 으로 바뀌고, 에피소드에는
+        # "기록 시작 시점의 slot"(_episode_slot 캡처본)이 찍힌다 -- 저장이
+        # 백그라운드라 저장 시점의 현재 slot 을 읽으면 안 된다.
+        self._slot_instruction = config.language_instruction
+        self._slot_instruction_id = config.instruction_id
+        self._episode_slot = (self._slot_instruction, self._slot_instruction_id)
         # GUI 스레드에서 시그널을 미리 connect할 수 있도록 여기서 생성;
         # writer 주입/start()는 run()에서 (h5py 접근 직렬화는 saver가 소유).
         self.saver = EpisodeSaver()
@@ -233,6 +284,15 @@ class CollectionWorker(QThread):
     def cmd_set_episode_success(self, name: str, success: bool) -> None:
         self.saver.enqueue_set_success(name, success)
 
+    def cmd_set_slot(self, instruction: str, instruction_id: str) -> None:
+        """scene 모드: 현재 slot(수행할 instruction)을 바꾼다.
+
+        기록 중에 도착하면 진행 중인 에피소드에는 영향이 없고 다음
+        에피소드부터 적용된다 -- 에피소드에 찍히는 slot 은 기록 *시작*
+        시점의 캡처본이다 (_record_episode 참고).
+        """
+        self._cmds.put(("set_slot", instruction, instruction_id))
+
     def cmd_delete_episode(self, name: str) -> None:
         self._cmds.put(("delete_episode", name))
 
@@ -251,10 +311,18 @@ class CollectionWorker(QThread):
         thread-safe); pending saves queued before this delete commit first."""
         self.saver.enqueue_delete(name)
 
+    def _handle_set_slot(self, instruction: str, instruction_id: str) -> None:
+        """delete_episode 처럼 상태와 무관한 인라인 커맨드 -- 모든 드레인
+        지점에서 처리한다. 파일을 만지지 않으므로 워커 스레드에서 안전하다."""
+        self._slot_instruction = instruction
+        self._slot_instruction_id = instruction_id
+        self.log_message.emit(f"[SLOT] {instruction_id}: {instruction}")
+
     def _poll_cmd(self, block: bool = False, timeout: float = 0.0) -> Optional[tuple]:
-        """Pops queued commands, servicing ``delete_episode`` inline (it doesn't
-        belong to any particular state), and returns the newest remaining
-        state-machine command (start_teleop/save/discard/skip/quit), if any.
+        """Pops queued commands, servicing ``delete_episode``/``set_slot``
+        inline (they don't belong to any particular state), and returns the
+        newest remaining state-machine command (start_teleop/save/discard/
+        skip/quit), if any.
         """
         result = None
         try:
@@ -263,6 +331,9 @@ class CollectionWorker(QThread):
                 block = False  # only the first get() honors block/timeout
                 if cmd[0] == "delete_episode":
                     self._handle_delete_episode(cmd[1])
+                    continue
+                if cmd[0] == "set_slot":
+                    self._handle_set_slot(cmd[1], cmd[2])
                     continue
                 result = cmd  # last one wins if several piled up
         except queue.Empty:
@@ -287,6 +358,8 @@ class CollectionWorker(QThread):
                 cmd = self._cmds.get_nowait()
                 if cmd[0] == "delete_episode":
                     self._handle_delete_episode(cmd[1])
+                elif cmd[0] == "set_slot":
+                    self._handle_set_slot(cmd[1], cmd[2])
                 elif cmd[0] == "quit":
                     quit_seen = True
                 elif cmd[0] == "go_home":
@@ -315,6 +388,8 @@ class CollectionWorker(QThread):
                 cmd = self._cmds.get_nowait()
                 if cmd[0] == "delete_episode":
                     self._handle_delete_episode(cmd[1])
+                elif cmd[0] == "set_slot":
+                    self._handle_set_slot(cmd[1], cmd[2])
                 elif cmd[0] == "quit":
                     quit_seen = True
                 elif cmd[0] == "go_home":
@@ -794,6 +869,9 @@ class CollectionWorker(QThread):
         """Returns (outcome, n_frames); outcome is "save", "discard", "quit", or "go_home"."""
         self.state_changed.emit("recording")
         self._writer.start_episode()
+        # 이 에피소드에 찍힐 slot 을 기록 시작 시점에 캡처한다. 이후
+        # cmd_set_slot 이 와도(다음 에피소드 준비) 이 에피소드에는 무영향.
+        self._episode_slot = (self._slot_instruction, self._slot_instruction_id)
         self._cam_stale = {}  # per-episode, see _get_obs
         self._cam_stale_run = {}
         self._cam_stale_max_run = {}
@@ -877,6 +955,22 @@ class CollectionWorker(QThread):
             self._connect()
             if self.cfg.no_dataset:
                 self._writer = NullTaskWriter(schema=self.cfg.schema)
+            elif self.cfg.scene_mode:
+                # scene 모드: 파일명·instruction 은 config 의 task_name 이 아니라
+                # scene metadata 와 저장 시점 slot 에서 나온다. 소품 인벤토리
+                # 검증(미등록 ID 거부)은 SceneMetadata.validate 가 한다.
+                from gello.props import active_prop_ids
+
+                self._writer = SceneWriter(
+                    root=self.cfg.data_root,
+                    scene_id=self.cfg.scene_id,
+                    metadata=self.cfg.scene_metadata,
+                    resume=self.cfg.scene_resume,
+                    schema=self.cfg.schema,
+                    crop_params=self.cfg.crop_params,
+                    collector=self.cfg.collector,
+                    known_prop_ids=active_prop_ids(),
+                )
             else:
                 self._writer = LiberoTaskWriter(
                     root=self.cfg.data_root,
@@ -886,13 +980,16 @@ class CollectionWorker(QThread):
                     schema=self.cfg.schema,
                     crop_params=self.cfg.crop_params,
                 )
-            self._writer.record_session_config(
-                reset_pose=self.cfg.reset_pose,
-                grip=self.cfg.grip,
-                enable_wall=self.cfg.enable_wall,
-                max_episode_seconds=self.cfg.max_episode_seconds,
-                reset_wait_seconds=self.cfg.reset_wait_seconds,
-            )
+            if hasattr(self._writer, "record_session_config"):
+                # legacy/연습 전용. scene 포맷은 세션 설정을 파일에 넣지 않는다
+                # -- 통제 변수는 Notion §4 레지스트리가 정본 (운영 규칙 ≠ 스키마).
+                self._writer.record_session_config(
+                    reset_pose=self.cfg.reset_pose,
+                    grip=self.cfg.grip,
+                    enable_wall=self.cfg.enable_wall,
+                    max_episode_seconds=self.cfg.max_episode_seconds,
+                    reset_wait_seconds=self.cfg.reset_wait_seconds,
+                )
         except Exception as e:  # noqa: BLE001
             # Covers both robot/camera/GELLO connect failures and writer
             # creation failing (e.g. task file exists without --resume) --
@@ -977,7 +1074,14 @@ class CollectionWorker(QThread):
 
                     # 버퍼를 떼어 백그라운드 저장으로 넘기고 즉시 홈 복귀 진행.
                     # episode_saved/episode_list_changed는 saver가 emit.
-                    self.saver.enqueue_save(self._writer.detach_buffer(), self._pending_success)
+                    if self.cfg.scene_mode:
+                        instr, iid = self._episode_slot
+                        self.saver.enqueue_save(
+                            self._writer.detach_buffer(), self._pending_success,
+                            instruction=instr, instruction_id=iid)
+                    else:
+                        self.saver.enqueue_save(
+                            self._writer.detach_buffer(), self._pending_success)
                     self._episode_count += 1
 
                     if outcome == "quit":
