@@ -111,11 +111,12 @@ win._set_live_maximized("wrist")
 assert win.live_boxes["agent"].isHidden() and not win.live_boxes["wrist"].isHidden()
 assert win.live_view_combo.currentData() == "wrist"     # 콤보 동기화
 a = captured["a"]
-assert a[100, 500].tolist() == [90, 90, 90]             # 본체 = wrist
-assert a[400, 50].tolist() == [40, 40, 40]              # 좌하단 PiP = agent
+assert a[100, 100].tolist() == [90, 90, 90]             # 본체 = wrist
+assert a[470, 630].tolist() == [40, 40, 40]             # 우하단 PiP = agent
+assert a[470, 20].tolist() == [90, 90, 90]              # 좌하단은 본체 그대로
 # 어느 카메라 프레임이 와도 합성이 갱신된다
 win._update_live_view("agent", np.full((480, 640, 3), 41, np.uint8))
-assert captured["a"][400, 50].tolist() == [41, 41, 41]
+assert captured["a"][470, 630].tolist() == [41, 41, 41]
 win.live_views["wrist"].set_frame = orig_set
 win._set_live_maximized(None)                           # 나란히 복원
 assert not win.live_boxes["agent"].isHidden()

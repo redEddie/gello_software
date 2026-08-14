@@ -5180,10 +5180,23 @@ class WorkspaceWindow(QMainWindow):
         if small is not None:
             small = self._with_grid(other, small)
             h, w = canvas.shape[:2]
-            tw = max(2, w * 28 // 100)
+            # 오른쪽 아래, 정사각 크롭 밖의 '남는 띠'에 최대한 맞춘다 --
+            # 그 영역은 어차피 변환에서 잘려나가는 부분이라 가려도 잃는 게
+            # 없다. 띠가 너무 좁으면(크롭이 프레임 대부분) 32% 폭으로.
+            p = self._crop_params.get(m, {})
+            side = min(w, h)
+            zoom = float(p.get("zoom", 1.0))
+            if zoom > 1.0:
+                side = max(16, round(side / zoom))
+            sc = w / 640
+            cx0 = min(max((w - side) // 2 + round(p.get("x", 0) * sc), 0),
+                      w - side)
+            band = w - (cx0 + side)
+            tw = band - 14 if band >= 140 else w * 32 // 100
+            tw = max(2, min(tw, w - 20))
             th = max(2, small.shape[0] * tw // small.shape[1])
             sm = cv2.resize(small, (tw, th))
-            y0, x0 = h - th - 10, 10
+            y0, x0 = h - th - 8, w - tw - 8
             canvas[y0:y0 + th, x0:x0 + tw] = sm
             cv2.rectangle(canvas, (x0 - 1, y0 - 1), (x0 + tw, y0 + th),
                           (255, 255, 255), 1)
