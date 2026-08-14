@@ -330,6 +330,10 @@ def describe_schema(cfg: DatasetSchemaConfig) -> str:
         obs_rows.append(("ee_ori", "(T, 3) float32  -- axis-angle"))
     if schema.save_joint_velocities:
         obs_rows.append(("joint_velocities", "(T, 7) float32"))
+    if schema.save_agentview_depth:
+        obs_rows.append(("agentview_depth", "(T, H, W) uint16 mm · 원본 해상도 · lzf"))
+    if schema.save_eye_in_hand_depth:
+        obs_rows.append(("eye_in_hand_depth", "(T, H, W) uint16 mm · 원본 해상도 · lzf"))
     if schema.save_timestamp:
         obs_rows.append(("timestamp", "(T,) float64  -- wall-clock seconds"))
 
@@ -477,6 +481,8 @@ def schema_from_episode(grp: Any) -> DatasetSchemaConfig:
         save_ee_ori="ee_ori" in obs_keys,
         save_joint_velocities="joint_velocities" in obs_keys,
         save_timestamp="timestamp" in obs_keys,
+        save_agentview_depth="agentview_depth" in obs_keys,
+        save_eye_in_hand_depth="eye_in_hand_depth" in obs_keys,
         action_column_name_overrides=overrides,
     )
 
@@ -659,6 +665,8 @@ class LiberoEpisodeBuffer:
         self.gripper_closed: list[bool] = []
         self.joint_velocities: list[np.ndarray] = []
         self.timestamps: list[float] = []
+        self.agentview_depth: list[np.ndarray] = []
+        self.eye_in_hand_depth: list[np.ndarray] = []
         self.commanded_joint_positions: list[np.ndarray] = []
         self.commanded_gripper: list[float] = []
 
@@ -677,6 +685,8 @@ class LiberoEpisodeBuffer:
         timestamp: Optional[float] = None,
         commanded_joint_positions: Optional[np.ndarray] = None,
         commanded_gripper: Optional[float] = None,
+        agentview_depth: Optional[np.ndarray] = None,
+        eye_in_hand_depth: Optional[np.ndarray] = None,
     ) -> None:
         self.joint_states.append(np.asarray(joint_positions, dtype=np.float32))
         self.gripper_states.append(np.array([gripper_position], dtype=np.float32))
@@ -697,6 +707,16 @@ class LiberoEpisodeBuffer:
             self.joint_velocities.append(np.asarray(joint_velocities, dtype=np.float32))
         if self.schema.save_timestamp and timestamp is not None:
             self.timestamps.append(float(timestamp))
+        # depth 는 crop/resize 없이 원본 해상도 그대로 (#17: 원본 보관소 원칙,
+        # D455 는 RGB-depth 픽셀 대응이 원래 안 맞아 RGB 크롭을 따라가면
+        # 오히려 거짓 정렬이 된다). .copy() 는 RGB 와 같은 이유 -- 드라이버
+        # 프레임 풀에 대한 뷰를 그대로 쌓으면 몇 프레임 뒤 덮어써진다.
+        if self.schema.save_agentview_depth and agentview_depth is not None:
+            self.agentview_depth.append(
+                np.asarray(agentview_depth, dtype=np.uint16).copy())
+        if self.schema.save_eye_in_hand_depth and eye_in_hand_depth is not None:
+            self.eye_in_hand_depth.append(
+                np.asarray(eye_in_hand_depth, dtype=np.uint16).copy())
 
     def _process_image(self, img: np.ndarray, role: str = "agent") -> np.ndarray:
         """Returns a frame this buffer owns, resized if the schema asks for it.
@@ -891,6 +911,15 @@ def write_episode_payload(
         obs.create_dataset(
             "timestamp", data=np.array(buf.timestamps, dtype=np.float64)
         )
+    # 무손실 필수 (#17) -- JPEG 류 손실 압축은 depth 값을 파괴한다.
+    if schema.save_agentview_depth and buf.agentview_depth:
+        obs.create_dataset("agentview_depth",
+                           data=np.stack(buf.agentview_depth),
+                           compression="lzf")
+    if schema.save_eye_in_hand_depth and buf.eye_in_hand_depth:
+        obs.create_dataset("eye_in_hand_depth",
+                           data=np.stack(buf.eye_in_hand_depth),
+                           compression="lzf")
     # Raw teleop command stream -- written whenever the caller supplied it,
     # independent of the schema and of which action space `actions` used:
     # realized-trajectory actions zero out wherever the follower is blocked

@@ -817,6 +817,10 @@ class DatasetSchemaDialog(QDialog):
     _EXTRA_FIELDS = [
         ("save_joint_velocities", "Joint velocities (관절 속도) -- 제어루프에서 이미 계산됨, 추가 비용 없음"),
         ("save_timestamp", "Timestamp (프레임별 wall-clock 시각) -- 프레임 간격 검증용"),
+        ("save_agentview_depth",
+         "Agentview depth (uint16 mm, 무손실) -- 에피소드당 +수십 MB, USB 대역 주의 (#17)"),
+        ("save_eye_in_hand_depth",
+         "Eye-in-hand depth (uint16 mm, 무손실) -- D405 근거리 정밀 depth (#17)"),
     ]
     def __init__(self, parent: QWidget, cfg: DatasetSchemaConfig) -> None:
         super().__init__(parent)

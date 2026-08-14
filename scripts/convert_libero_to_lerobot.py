@@ -416,9 +416,19 @@ def _is_success(grp) -> bool:
     return bool(v) if v is not None else False
 
 
+# 변환기가 실제로 소비하는 obs 키 (_build_features 참조). 스키마 일치 검사를
+# 이 집합으로 좁혀야 소비하지 않는 부가 필드(depth #17, timestamp 등)가
+# 있는 에피소드와 없는 에피소드를 한 데이터셋으로 변환할 수 있다 --
+# frozenset 전체 비교는 "부가 필드 추가 = 기존 데이터와 변환 불가"를 만든다.
+_CONSUMED_OBS_KEYS = frozenset({
+    "agentview_rgb", "eye_in_hand_rgb", "joint_states", "gripper_states",
+    "commanded_joint_states", "commanded_gripper_states",
+})
+
+
 def _episode_schema(grp: h5py.Group) -> dict:
     obs = grp["obs"]
-    obs_keys = frozenset(obs.keys())
+    obs_keys = frozenset(obs.keys()) & _CONSUMED_OBS_KEYS
     action_space = grp.attrs.get("action_space", ACTION_SPACE_EE_DELTA)
     base_cols = action_column_names(action_space)
     action_dim = grp["actions"].shape[1]

@@ -262,6 +262,13 @@ class CollectionWorker(QThread):
         self._slot_instruction_id = config.instruction_id
         self._episode_slot = (self._slot_instruction, self._slot_instruction_id)
         self._ref_enqueued = False  # scene 기준 사진 자동 캡처는 세션당 1회 시도
+        # depth 를 켤 카메라 역할 (#17) -- 스키마 플래그에서 한 번 파생.
+        sch = getattr(config, "schema", None)
+        self._depth_roles = {
+            role for role, flag in (
+                ("agent", getattr(sch, "save_agentview_depth", False)),
+                ("wrist", getattr(sch, "save_eye_in_hand_depth", False)))
+            if flag}
         # GUI 스레드에서 시그널을 미리 connect할 수 있도록 여기서 생성;
         # writer 주입/start()는 run()에서 (h5py 접근 직렬화는 saver가 소유).
         self.saver = EpisodeSaver()
@@ -475,6 +482,10 @@ class CollectionWorker(QThread):
                 self._cam_stale_run[cam_key] = 0
             self._cam_last_fp[cam_key] = fp
             out[cam_key] = frame
+        for cam_key in self._depth_roles:       # (#17) 스키마가 켠 역할만
+            cam = self._robot.cameras.get(cam_key)
+            if cam is not None:
+                out[f"_{cam_key}_depth"] = cam.read_latest_depth()
         return out
 
     # ------------------------------------------------------------------ ramp
@@ -945,6 +956,8 @@ class CollectionWorker(QThread):
                 timestamp=time.time(),
                 commanded_joint_positions=q_cmd[:7],
                 commanded_gripper=float(action["gripper.pos"]),
+                agentview_depth=obs.get("_agent_depth"),
+                eye_in_hand_depth=obs.get("_wrist_depth"),
             )
             self._emit_frames(obs)
             n = i + 1
@@ -1193,12 +1206,15 @@ class CollectionWorker(QThread):
                 # busy" ConnectionError 로 나온다. 기록 루프는 어차피
                 # read_latest() 로 cfg.fps(기본 20Hz)에서만 집어가므로 30fps
                 # 캡처로 충분하다.
+                # depth (#17): 스키마가 켠 역할만 스트림을 올린다 -- 캠당
+                # +~176Mbps 라 기본은 꺼짐. 값은 카메라 ASIC 이 계산한다.
                 cameras={
                     role: RealSenseCameraConfig(
                         serial_number_or_name=serial,
                         fps=_STATION.camera(role).fps,
                         width=_STATION.camera(role).width,
                         height=_STATION.camera(role).height,
+                        use_depth=role in self._depth_roles,
                     )
                     for role, serial in (
                         ("agent", self.cfg.agent_camera_serial),
