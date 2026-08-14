@@ -38,9 +38,32 @@ RAMP_STEP = 0.05      # rad/tick 램프 (수집기·정책 클라이언트와 �
 MAX_STEP_RAD = 0.50   # 재생 틱당 명령-실측 괴리 상한 (정책 클라이언트와 동일)
 
 
+def _episode_names(f: h5py.File) -> list:
+    root = f["data"] if "data" in f else f
+    return sorted(k for k in root if k.startswith(("episode_", "demo_")))
+
+
 def load_trajectory(path: Path, episode: str) -> dict:
-    """(T,7) 관절 명령 + (T,) 그리퍼 명령 + 부가정보. 두 포맷 공통."""
-    with h5py.File(path, "r") as f:
+    """(T,7) 관절 명령 + (T,) 그리퍼 명령 + 부가정보. 두 포맷 공통.
+
+    파일 잠금(수집/재압축 중)과 없는 에피소드 이름은 traceback 대신
+    원인과 다음 행동이 보이는 SystemExit 로 끝낸다.
+    """
+    try:
+        h = h5py.File(path, "r")
+    except BlockingIOError:
+        raise SystemExit(
+            f"[replay] {path.name} 이 사용 중입니다 (수집 세션이나 재압축이 "
+            "잠그고 있음). 끝난 뒤 다시 시도하세요.") from None
+    except OSError as e:
+        raise SystemExit(f"[replay] 파일을 열지 못했습니다: {path} ({e})") from None
+    with h as f:
+        if episode not in f and not ("data" in f and episode in f["data"]):
+            names = _episode_names(f)
+            shown = ", ".join(names[:8]) + (" ..." if len(names) > 8 else "")
+            raise SystemExit(
+                f"[replay] {path.name} 에 {episode!r} 가 없습니다.\n"
+                f"  있는 에피소드({len(names)}개): {shown}")
         grp = f[episode] if episode in f else f["data"][episode]
         obs = grp["obs"]
         if "commanded_joint_states" in obs:

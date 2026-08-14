@@ -1,0 +1,123 @@
+"""3×3 격자 오버레이 + 실로봇 재생 버튼 검증 (offscreen)."""
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+
+WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
+sys.path.insert(0, WT)
+sys.path.insert(0, WT + "/experiments")
+sys.argv = ["t"]
+
+from PyQt6.QtWidgets import QApplication  # noqa: E402
+
+app = QApplication(sys.argv)
+
+from gello.grid_overlay import (  # noqa: E402
+    DEFAULT_CORNERS, active_corners, draw_grid, grid_segments,
+    load_grid_store, save_grid_store,
+)
+
+TMP = Path(tempfile.mkdtemp(prefix="grid_"))
+
+# ---- 1. grid_overlay 단위 ----
+segs = grid_segments([[0, 0], [1, 0], [1, 1], [0, 1]], 300, 300)
+assert len(segs) == 8  # 세로 4 + 가로 4
+# 항등 사각형이면 1/3 위치의 세로선은 x=100
+xs = sorted(s[0][0] for s in segs[::2])
+assert xs == [0, 100, 200, 300], xs
+img = np.full((240, 320, 3), 30, np.uint8)
+out = draw_grid(img, DEFAULT_CORNERS, 80)
+assert out.shape == img.shape and out.dtype == np.uint8
+assert (out != img).any() and (img == 30).all()  # 사본에만 그림
+sp = TMP / "grids.json"
+st = load_grid_store(sp)
+st["grids"]["g1"] = DEFAULT_CORNERS
+st["active"] = "g1"
+st["live_on"] = True
+st["alpha"] = 42
+save_grid_store(st, sp)
+st2 = load_grid_store(sp)
+assert active_corners(st2) == DEFAULT_CORNERS and st2["alpha"] == 42
+assert load_grid_store(TMP / "none.json")["grids"] == {}
+print("1 통과: 격자 계산(원근 항등 검증)·그리기·저장 왕복")
+
+import collect_workspace as cw  # noqa: E402
+
+# ---- 2. 편집 다이얼로그: 정렬/변환/저장/불러오기 ----
+saved = {}
+cw.save_grid_store = lambda store, path=None: saved.update(store)
+bg = np.full((240, 320, 3), 50, np.uint8)
+store = {"active": None, "live_on": False, "alpha": 60, "grids": {}}
+dlg = cw.GridEditorDialog(None, bg, store)
+dlg.canvas.corners = [[0.2, 0.10], [0.8, 0.30], [0.9, 0.9], [0.1, 0.9]]
+dlg._align(0, 1, 1)
+assert dlg.canvas.corners[0][1] == dlg.canvas.corners[1][1] == 0.20
+dlg._align(0, 3, 0)     # 좌 정렬: 1·4번 x 평균
+assert dlg.canvas.corners[0][0] == dlg.canvas.corners[3][0]
+dlg._undo()             # 좌 정렬 취소
+assert dlg.canvas.corners[0][0] == 0.2
+dlg.canvas.full_grid = False
+dlg._transform()
+assert dlg.canvas.full_grid
+dlg.name_edit.setText("front_cam")
+dlg._save()
+assert saved["active"] == "front_cam"
+assert saved["grids"]["front_cam"][0] == [0.2, 0.20]
+dlg.load_combo.setCurrentIndex(dlg.load_combo.findText("front_cam"))
+dlg.canvas.corners = [list(c) for c in cw.DEFAULT_CORNERS]
+dlg._load_selected()
+assert dlg.canvas.corners[0] == [0.2, 0.20]
+print("2 통과: 정렬(y 평균)·변환 플래그·저장(active 지정)·불러오기")
+
+# ---- 3. 윈도우: 라이브 오버레이 + 재생 버튼 가드 ----
+infos, warns = [], []
+cw.WorkspaceWindow._refresh_cameras = lambda self: None
+cw.WorkspaceWindow._restart_previews = lambda self: None
+cw.QMessageBox.warning = staticmethod(
+    lambda *a, **k: warns.append(a[2] if len(a) > 2 else ""))
+cw.QMessageBox.information = staticmethod(
+    lambda *a, **k: infos.append(a[2] if len(a) > 2 else ""))
+win = cw.WorkspaceWindow(None)
+win._grid_store = {"active": "g", "live_on": True, "alpha": 60,
+                   "grids": {"g": cw.DEFAULT_CORNERS}}
+win.grid_live_check.setChecked(True)
+frame = np.full((480, 640, 3), 20, np.uint8)
+shown = win._with_grid("agent", frame)
+assert (shown != frame).any() and (frame == 20).all()
+assert win._with_grid("wrist", frame) is frame  # wrist 는 그대로
+win.grid_live_check.setChecked(False)
+assert win._with_grid("agent", frame) is frame
+print("3 통과: agent 라이브만 오버레이, 체크 해제 시 원본")
+
+# 재생 가드: 선택 없음 -> 안내, 세션 중 -> 경고
+win._on_replay_selected()
+assert infos and "하나만" in infos[-1]
+win.worker = object()
+win._replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
+assert warns and "세션" in warns[-1]
+win.worker = None
+# 배속 다이얼로그 취소 -> 프로세스 없음
+cw.QInputDialog.getDouble = staticmethod(lambda *a, **k: (0.5, False))
+win._replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
+assert win.replay_process is None
+# 승인 경로: 확인 Yes -> QProcess 시작 (더미 프로그램으로 교체)
+cw.QInputDialog.getDouble = staticmethod(lambda *a, **k: (0.5, True))
+cw.QMessageBox.warning = staticmethod(
+    lambda *a, **k: cw.QMessageBox.StandardButton.Yes)
+real_repl = cw.REPLAY_SCRIPT
+cw.sys = sys
+win._replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
+assert win.replay_process is not None
+args = win.replay_process.arguments()
+assert args[0] == real_repl and args[1].endswith("x.hdf5")
+assert args[2] == "episode_000" and args[3:] == ["--speed", "0.5", "--yes"]
+win.replay_process.kill()
+win.replay_process.waitForFinished(3000)
+print("4 통과: 재생 가드(선택/세션/취소) + 명령행 구성")
+
+print("\n격자 + 실로봇 재생 검증 통과")
+import os  # noqa: E402
+
+os._exit(0)

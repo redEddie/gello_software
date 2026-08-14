@@ -464,14 +464,36 @@ class PipelineDialog(QDialog):
         acct_row.addWidget(acct_btn)
         layout.addLayout(acct_row)
 
+        # 삭제 보호 게이트: Hub 에서 사라질 에피소드가 있으면(rebuild 로
+        # 교체 시 실제 삭제) 이해했다는 체크 없이는 시작 버튼이 열리지
+        # 않는다. legacy 파일을 old_data/ 로 치워 둔 상태에서 옛 repo 를
+        # 대상으로 돌리면 수백 개가 조용히 사라지는 사고의 마지막 잠금이다.
+        self.shrink_ack = None
+        if plan.get("shrunk"):
+            self.shrink_ack = QCheckBox(tr(
+                "Hub에서 에피소드 {n}개가 삭제되는 것을 확인했습니다 "
+                "(로컬에 없는 에피소드는 재빌드 후 Hub에서 사라집니다)")
+                .format(n=plan["shrunk"]))
+            self.shrink_ack.setStyleSheet("color:#e74c3c; font-weight:bold;")
+            layout.addWidget(self.shrink_ack)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                                    | QDialogButtonBox.StandardButton.Cancel)
         self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
         self._ok.setText(tr("시작하고 퇴근"))
-        self._ok.setEnabled(action != "blocked")
+        self._action_ok = action != "blocked"
+        self._update_ok_enabled()
+        if self.shrink_ack is not None:
+            self.shrink_ack.toggled.connect(self._update_ok_enabled)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _update_ok_enabled(self, *_args) -> None:
+        ok = self._action_ok
+        if self.shrink_ack is not None and not self.shrink_ack.isChecked():
+            ok = False
+        self._ok.setEnabled(ok)
 
     def _on_account(self) -> None:
         HfAccountDialog(self).exec()
@@ -687,6 +709,12 @@ class PlanEditDialog(QDialog):
         add_scene_btn = QPushButton(tr("scene 추가"))
         add_scene_btn.clicked.connect(self._on_add_scene)
         srow.addWidget(add_scene_btn)
+        del_scene_btn = QPushButton(tr("scene 삭제"))
+        del_scene_btn.setToolTip(tr(
+            "이 scene 을 계획에서 뺍니다. 이미 수집한 파일은 지워지지 않지만 "
+            "계획 대조가 사라집니다."))
+        del_scene_btn.clicked.connect(self._on_del_scene)
+        srow.addWidget(del_scene_btn)
         json_btn = QPushButton(tr("JSON 직접 편집..."))
         json_btn.setToolTip(tr("note 등 폼이 다루지 않는 필드를 고칠 때 씁니다."))
         json_btn.clicked.connect(self._on_raw_edit)
@@ -707,6 +735,15 @@ class PlanEditDialog(QDialog):
         del_btn = QPushButton(tr("선택 행 삭제"))
         del_btn.clicked.connect(self._on_del_row)
         rrow.addWidget(del_btn)
+        up_btn = QPushButton("▲")
+        up_btn.setMaximumWidth(36)
+        up_btn.setToolTip(tr("선택 행을 위로 (표시 순서만 -- ID 는 안 바뀝니다)"))
+        up_btn.clicked.connect(lambda: self._move_row(-1))
+        rrow.addWidget(up_btn)
+        down_btn = QPushButton("▼")
+        down_btn.setMaximumWidth(36)
+        down_btn.clicked.connect(lambda: self._move_row(+1))
+        rrow.addWidget(down_btn)
         rrow.addStretch(1)
         col.addLayout(rrow)
 
@@ -765,6 +802,7 @@ class PlanEditDialog(QDialog):
         self.tree.addTopLevelItem(it)
         instr = QLineEdit(row["instr"])
         instr.setPlaceholderText(tr("예) pick up the blue cup and place it on the blue bowl"))
+        instr.textChanged.connect(self._check_dups)   # 중복은 저장 전에 보이게
         self.tree.setItemWidget(it, 1, instr)
         spin = QSpinBox()
         spin.setRange(1, 999)
@@ -798,6 +836,51 @@ class PlanEditDialog(QDialog):
     def _on_del_row(self) -> None:
         for it in self.tree.selectedItems():
             self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(it))
+        self._check_dups()
+
+    def _move_row(self, delta: int) -> None:
+        idx = self.tree.indexOfTopLevelItem(self.tree.currentItem())
+        j = idx + delta
+        if idx < 0 or not 0 <= j < self.tree.topLevelItemCount():
+            return
+        rows = self._collect_rows()
+        rows[idx], rows[j] = rows[j], rows[idx]
+        self.tree.clear()
+        for r in rows:
+            self._add_row(r)
+        self.tree.setCurrentItem(self.tree.topLevelItem(j))
+
+    def _check_dups(self, *_args) -> None:
+        instrs = [r["instr"] for r in self._collect_rows() if r["instr"]]
+        dup = sorted({s for s in instrs if instrs.count(s) > 1})
+        if dup:
+            self.error_label.setText(tr(
+                "같은 문장이 여러 행에 있습니다: {s}").format(s=dup[0][:60]))
+        elif self.error_label.text().startswith(tr("같은 문장이")):
+            self.error_label.setText("")
+
+    def _on_del_scene(self) -> None:
+        sid = self._cur_sid
+        if sid is None:
+            return
+        ans = QMessageBox.question(
+            self, tr("scene 삭제"),
+            tr("{s} 를 계획에서 뺄까요? (수집 파일은 그대로 남습니다)")
+            .format(s=sid))
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        i = self._scene_order.index(sid)
+        self._scene_order.remove(sid)
+        self._work.pop(sid, None)
+        self._cur_sid = None
+        self.scene_combo.blockSignals(True)
+        self.scene_combo.removeItem(i)
+        self.scene_combo.blockSignals(False)
+        self.tree.clear()
+        if self._scene_order:
+            self._cur_sid = self.scene_combo.currentText() or None
+            if self._cur_sid:
+                self._load_rows(self._cur_sid)
 
     def _on_add_scene(self) -> None:
         used = [int(m.group(1)) for sid in self._scene_order
@@ -825,11 +908,13 @@ class PlanEditDialog(QDialog):
         raw = json.loads(json.dumps(self._raw))     # 부가 필드 보존용 사본
         raw.setdefault("plan_version", 1)
         by_id = {s.get("scene_id"): s for s in raw["scenes"]}
+        # scene 목록은 폼이 정본 -- 폼에서 지운 scene 은 파일에서도 빠진다
+        raw["scenes"] = []
         for sid in self._scene_order:
             sc = by_id.get(sid)
             if sc is None:
                 sc = {"scene_id": sid, "slots": []}
-                raw["scenes"].append(sc)
+            raw["scenes"].append(sc)
             old = {sl.get("instruction_id"): sl
                    for sl in sc.get("slots", []) if isinstance(sl, dict)}
             rows = self._work.get(sid, [])
@@ -874,6 +959,7 @@ class _GridCanvas(QLabel):
     """
 
     changed = pyqtSignal()
+    drag_started = pyqtSignal()     # 실행취소 스냅샷 시점
     HANDLE_PX = 22          # 위젯 픽셀 기준 잡기 반경
 
     def __init__(self, background: np.ndarray, corners: list) -> None:
@@ -938,6 +1024,8 @@ class _GridCanvas(QLabel):
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._drag = self._pick(event.position())
+        if self._drag is not None:
+            self.drag_started.emit()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
         if self._drag is None:
@@ -979,10 +1067,13 @@ class GridEditorDialog(QDialog):
 
         row = QHBoxLayout()
         for text, slot, tip in (
-                ("위 정렬", lambda: self._align(0, 1), "1·2번 꼭짓점을 같은 높이로"),
-                ("아래 정렬", lambda: self._align(3, 2), "4·3번 꼭짓점을 같은 높이로"),
+                ("위 정렬", lambda: self._align(0, 1, 1), "1·2번 꼭짓점을 같은 높이로"),
+                ("아래 정렬", lambda: self._align(3, 2, 1), "4·3번 꼭짓점을 같은 높이로"),
+                ("좌 정렬", lambda: self._align(0, 3, 0), "1·4번 꼭짓점을 같은 가로 위치로"),
+                ("우 정렬", lambda: self._align(1, 2, 0), "2·3번 꼭짓점을 같은 가로 위치로"),
                 ("변환 (3×3 다시 그리기)", self._transform,
-                 "현재 꼭짓점으로 내부 격자선을 원근 계산해 그립니다")):
+                 "현재 꼭짓점으로 내부 격자선을 원근 계산해 그립니다"),
+                ("실행취소", self._undo, "마지막 드래그/정렬 하나를 되돌립니다")):
             b = QPushButton(tr(text))
             b.setToolTip(tr(tip))
             b.clicked.connect(slot)
@@ -1014,13 +1105,27 @@ class GridEditorDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         col.addWidget(buttons)
+        self._undo_stack: list = []
         self.canvas.changed.connect(lambda: self.status_label.setText(""))
+        self.canvas.drag_started.connect(self._push_undo)
         self.canvas.render_grid()
 
-    def _align(self, i: int, j: int) -> None:
+    def _push_undo(self) -> None:
+        self._undo_stack.append([list(c) for c in self.canvas.corners])
+        del self._undo_stack[:-20]      # 최근 20단계면 충분
+
+    def _undo(self) -> None:
+        if not self._undo_stack:
+            return
+        self.canvas.corners = self._undo_stack.pop()
+        self.canvas.full_grid = True
+        self.canvas.render_grid()
+
+    def _align(self, i: int, j: int, axis: int) -> None:
+        self._push_undo()
         c = self.canvas.corners
-        y = (c[i][1] + c[j][1]) / 2
-        c[i][1] = c[j][1] = y
+        v = (c[i][axis] + c[j][axis]) / 2
+        c[i][axis] = c[j][axis] = v
         self.canvas.render_grid()
 
     def _transform(self) -> None:
@@ -1308,6 +1413,10 @@ class WorkspaceWindow(QMainWindow):
             "로봇 노드가 켜져 있어야 하고, 로봇이 실제로 움직입니다."))
         self.gallery_replay_btn.clicked.connect(self._on_gallery_replay)
         row.addWidget(self.gallery_replay_btn)
+        self.gallery_replay_stop_btn = QPushButton(tr("중단"))
+        self.gallery_replay_stop_btn.setEnabled(False)
+        self.gallery_replay_stop_btn.clicked.connect(self._on_replay_stop)
+        row.addWidget(self.gallery_replay_stop_btn)
         col.addLayout(row)
         self.gallery_list = QListWidget()
         self.gallery_list.setViewMode(QListWidget.ViewMode.IconMode)
@@ -1349,6 +1458,12 @@ class WorkspaceWindow(QMainWindow):
         self._gallery_episodes = []
         if not path:
             self.gallery_status.setText(tr("표시할 scene 파일이 없습니다"))
+            return
+        if self.active_file_path is not None and Path(path) == self.active_file_path:
+            # HDF5 잠금 -- 실패한 로드 대신 이유와 다음 행동을 말한다
+            self.gallery_status.setText(tr(
+                "수집 세션이 이 scene 파일을 사용 중입니다 — 세션을 종료하면 "
+                "갤러리가 열립니다. (현황은 Collect 페이지 slot 패널에)"))
             return
         self.gallery_status.setText(tr("불러오는 중... (첫 로드는 썸네일 생성으로 수 초)"))
         if self._gallery_loader is not None:
@@ -1489,6 +1604,7 @@ class WorkspaceWindow(QMainWindow):
         self.grid_alpha_slider.setValue(int(self._grid_store.get("alpha", 60)))
         self.grid_alpha_slider.setMaximumWidth(140)
         self.grid_alpha_slider.valueChanged.connect(self._on_grid_alpha)
+        self.grid_alpha_slider.sliderReleased.connect(self._on_grid_alpha_done)
         grow.addWidget(self.grid_alpha_slider)
         self.grid_alpha_label = QLabel(
             tr("{v}%").format(v=self.grid_alpha_slider.value()))
@@ -1796,6 +1912,17 @@ class WorkspaceWindow(QMainWindow):
         root = Path(self.root_edit.text().strip() or ".")
         try:
             path = root / scene_filename(sid)
+            if self.active_file_path is not None and path == self.active_file_path:
+                # 세션이 파일을 쥐고 있다 -- 캐시 요약으로 대신한다
+                counts = self._session_slot_counts()
+                lines = [tr("{s} — 수집 세션 진행 중 (배치도는 오른쪽 패널에)")
+                         .format(s=sid)]
+                if counts:
+                    lines.append("slot: " + "  ".join(
+                        f"{iid} {c.get('usable', 0)}/{c.get('total', 0)}"
+                        for iid, c in sorted(counts.items())))
+                self.scene_info.setText("\n".join(lines))
+                return
             md = read_scene_metadata(path)
             counts = count_by_slot(path)
             lines = [describe_scene(md)]
@@ -1808,6 +1935,10 @@ class WorkspaceWindow(QMainWindow):
                     f"{s.instruction_id} {counts.get(s.instruction_id, {}).get('usable', 0)}"
                     f"/{s.target}" for s in plan.slots_for(sid)))
             self.scene_info.setText("\n".join(lines))
+        except BlockingIOError:
+            self.scene_info.setText(tr(
+                "(다른 프로세스가 파일을 사용 중입니다 — 재압축/변환이 끝난 "
+                "뒤 새로고침하세요)"))
         except Exception as e:  # noqa: BLE001
             self.scene_info.setText(f"(scene 정보 읽기 실패: {type(e).__name__}: {e})")
 
@@ -1983,12 +2114,16 @@ class WorkspaceWindow(QMainWindow):
         sid = self._configure_scene_id()
         if plan is not None and sid is not None:
             counts: dict = {}
-            p = self._selected_scene_path()
-            if p is not None and p.exists():
-                try:
-                    counts = count_by_slot(p)
-                except Exception:  # noqa: BLE001 -- HDF5 잠금 등
-                    counts = {}
+            if self._scene_session and sid == self._session_scene_id():
+                # 세션이 파일을 쥐고 있다 -- saver 가 보내준 캐시로 센다
+                counts = self._session_slot_counts()
+            else:
+                p = self._selected_scene_path()
+                if p is not None and p.exists():
+                    try:
+                        counts = count_by_slot(p)
+                    except Exception:  # noqa: BLE001 -- HDF5 잠금 등
+                        counts = {}
             for s in plan.slots_for(sid):
                 c = counts.get(s.instruction_id, {}).get("usable", 0)
                 combo.addItem(
@@ -2334,13 +2469,21 @@ class WorkspaceWindow(QMainWindow):
         relabel_btn.clicked.connect(self._on_relabel_selected)
         col.addWidget(relabel_btn)
 
+        rrow = QHBoxLayout()
         robot_replay_btn = QPushButton(tr("선택 재생 (실로봇)"))
         robot_replay_btn.setToolTip(tr(
             "기록된 관절 명령을 같은 주기로 다시 보내 에피소드를 실로봇에서 "
             "재현합니다.\n로봇 노드가 켜져 있어야 하고, 로봇이 실제로 "
             "움직입니다. 주변을 비우세요."))
         robot_replay_btn.clicked.connect(self._on_replay_selected)
-        col.addWidget(robot_replay_btn)
+        rrow.addWidget(robot_replay_btn, 1)
+        self.replay_stop_btn = QPushButton(tr("재생 중단"))
+        self.replay_stop_btn.setEnabled(False)
+        self.replay_stop_btn.setToolTip(tr(
+            "재생을 즉시 끊습니다. 로봇은 현재 포즈에서 정지 상태를 유지합니다."))
+        self.replay_stop_btn.clicked.connect(self._on_replay_stop)
+        rrow.addWidget(self.replay_stop_btn)
+        col.addLayout(rrow)
 
         del_btn = QPushButton(tr("선택한 에피소드 삭제"))
         del_btn.setToolTip(tr(
@@ -2569,6 +2712,29 @@ class WorkspaceWindow(QMainWindow):
                 grid.addWidget(lab, row, c)
                 store[key] = lab
         col.addWidget(box)
+
+        # 계획 진행률 -- scene×slot 전체가 한눈에. 카운트는 언제나 scene
+        # 파일에서 센다 (세션이 쥔 파일만 캐시로 대신).
+        plan_box = QGroupBox(tr("수집 계획 진행률"))
+        pcol = QVBoxLayout(plan_box)
+        self.plan_progress_tree = QTreeWidget()
+        self.plan_progress_tree.setHeaderLabels(
+            [tr("scene / slot"), tr("수집"), tr("목표"), tr("문장")])
+        self.plan_progress_tree.setRootIsDecorated(True)
+        self.plan_progress_tree.header().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Stretch)
+        self.plan_progress_tree.setMinimumHeight(160)
+        pcol.addWidget(self.plan_progress_tree)
+        prow = QHBoxLayout()
+        self.plan_progress_label = QLabel("")
+        self.plan_progress_label.setStyleSheet("color:#888;")
+        prow.addWidget(self.plan_progress_label, 1)
+        pb = QPushButton(tr("새로고침"))
+        pb.clicked.connect(self._refresh_plan_progress)
+        prow.addWidget(pb)
+        pcol.addLayout(prow)
+        col.addWidget(plan_box)
+
         self.disk_box = QGroupBox(tr("디스크"))
         dform = QFormLayout(self.disk_box)
         self.disk_label = QLabel("-")
@@ -3786,6 +3952,7 @@ class WorkspaceWindow(QMainWindow):
             act.setChecked(True)
         if key == "stats":
             self._refresh_stats()
+            self._refresh_plan_progress()
             if not self._stats:
                 self._refresh_analysis()
         elif key == "dataset":
@@ -4199,10 +4366,13 @@ class WorkspaceWindow(QMainWindow):
         self._regrid_live()
 
     def _on_grid_alpha(self, val: int) -> None:
+        # 드래그 중에는 화면만 갱신하고, 저장은 놓을 때 한 번(_on_grid_alpha_done).
         self.grid_alpha_label.setText(tr("{v}%").format(v=val))
         self._grid_store["alpha"] = int(val)
-        save_grid_store(self._grid_store)
         self._regrid_live()
+
+    def _on_grid_alpha_done(self) -> None:
+        save_grid_store(self._grid_store)
 
     def _regrid_live(self) -> None:
         """마지막 프레임으로 agent 뷰를 다시 그린다 -- 멈춘 화면에서도
@@ -4596,6 +4766,7 @@ class WorkspaceWindow(QMainWindow):
         if self._scene_session:
             # 저장/재판정마다 saver 가 새 목록을 보내온다 -- slot 카운트 갱신
             self._refresh_slot_panel()
+            self._refresh_start_plan_combo()   # Configure 쪽 카운트도 동기화
 
     @pyqtSlot(dict)
     def _on_summary(self, summary) -> None:
@@ -4680,6 +4851,57 @@ class WorkspaceWindow(QMainWindow):
             count = tr("저장 {s}").format(s=self._cumulative["saved"])
         self.sb_right.setText(
             f"{self._fps_value:.0f} fps   |   {count}   |   {self.root_edit.text()}")
+
+    def _refresh_plan_progress(self) -> None:
+        """Statistics 의 계획 진행률 표 -- 계획 × 실제 scene 파일 대조."""
+        tree = getattr(self, "plan_progress_tree", None)
+        if tree is None:
+            return
+        tree.clear()
+        plan = self._current_plan()
+        if plan is None:
+            self.plan_progress_label.setText(
+                tr("Configure 에서 수집 계획을 선택하세요."))
+            return
+        root = Path(self.root_edit.text().strip() or ".")
+        done = total = 0
+        for sp in plan.scenes:
+            path = root / scene_filename(sp.scene_id)
+            counts: dict = {}
+            note = ""
+            if self._scene_session and sp.scene_id == self._session_scene_id():
+                counts = self._session_slot_counts()
+                note = tr(" (세션 중 — 캐시)")
+            elif path.exists():
+                try:
+                    counts = count_by_slot(path)
+                except Exception:  # noqa: BLE001 -- 잠금 등
+                    note = tr(" (파일 사용 중)")
+            else:
+                note = tr(" (파일 없음)")
+            s_done = s_total = 0
+            top = QTreeWidgetItem([f"{sp.scene_id}{note}", "", "", ""])
+            for s in sp.slots:
+                c = counts.get(s.instruction_id, {}).get("usable", 0)
+                s_done += min(c, s.target)
+                s_total += s.target
+                it = QTreeWidgetItem(
+                    [f"  {s.instruction_id}", str(c), str(s.target),
+                     s.instruction])
+                if c >= s.target:
+                    for col_i in range(4):
+                        it.setForeground(col_i, Qt.GlobalColor.darkGreen)
+                top.addChild(it)
+            top.setText(1, str(s_done))
+            top.setText(2, str(s_total))
+            done += s_done
+            total += s_total
+            tree.addTopLevelItem(top)
+        tree.expandAll()
+        pct = (100 * done // total) if total else 0
+        self.plan_progress_label.setText(
+            tr("전체 {d}/{t} ({p}%) — {n}").format(
+                d=done, t=total, p=pct, n=plan.path.name))
 
     def _refresh_stats(self) -> None:
         for stats, labels in ((self._session, self.stats_labels),
@@ -5088,10 +5310,17 @@ class WorkspaceWindow(QMainWindow):
                                 tr("수집 세션 중에는 실로봇 재생을 할 수 "
                                    "없습니다. 먼저 세션을 종료하세요."))
             return
+        busy = self._busy_reason()
+        if busy:
+            QMessageBox.warning(self, tr("재생 불가"),
+                                tr("{w} 이(가) 파일을 사용 중입니다. 끝난 뒤 "
+                                   "다시 시도하세요.").format(w=busy))
+            return
         if self.replay_process is not None and \
                 self.replay_process.state() != QProcess.ProcessState.NotRunning:
             QMessageBox.information(self, tr("이미 재생 중"),
-                                    tr("이전 재생이 끝나기를 기다리세요."))
+                                    tr("이전 재생이 끝나기를 기다리거나 '재생 "
+                                       "중단'을 누르세요."))
             return
         speed, ok = QInputDialog.getDouble(
             self, tr("실로봇 재생"),
@@ -5121,9 +5350,28 @@ class WorkspaceWindow(QMainWindow):
         self.replay_process = proc
         self.log(f"[실로봇 재생] ▶ {Path(path).name} / {demo} ({speed:g}x)")
         proc.start()
+        self._set_replay_stop_enabled(True)
+
+    def _on_replay_stop(self) -> None:
+        """재생 하위 프로세스를 끊는다. 로봇 노드의 레퍼런스 필터가 현재
+        포즈를 유지하므로(Ctrl-C 와 동일) 팔이 낙하하지는 않는다."""
+        proc = self.replay_process
+        if proc is None or proc.state() == QProcess.ProcessState.NotRunning:
+            return
+        self.log(tr("[실로봇 재생] 중단 요청 — 현재 포즈에서 정지합니다"))
+        proc.terminate()
+        if not proc.waitForFinished(2000):
+            proc.kill()
+
+    def _set_replay_stop_enabled(self, on: bool) -> None:
+        for b in (getattr(self, "replay_stop_btn", None),
+                  getattr(self, "gallery_replay_stop_btn", None)):
+            if b is not None:
+                b.setEnabled(on)
 
     def _on_replay_finished(self, code: int, _status) -> None:
         self.replay_process = None
+        self._set_replay_stop_enabled(False)
         self.log(tr("[실로봇 재생] {r} (exit={c})").format(
             r=tr("완료") if code == 0 else tr("중단/실패 — 로그 확인"), c=code))
 

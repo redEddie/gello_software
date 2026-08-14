@@ -49,8 +49,17 @@ def active_corners(store: dict) -> "list | None":
     return store["grids"].get(store.get("active") or "")
 
 
+# 매 프레임(라이브 20~30Hz) 호출되므로 호모그래피 계산은 캐시한다 --
+# 꼭짓점은 편집할 때만 바뀐다. 키 몇 개면 충분해 크기만 느슨하게 막는다.
+_SEG_CACHE: dict = {}
+
+
 def grid_segments(corners, w: int, h: int, n: int = 3) -> list:
     """픽셀 선분 [((x1,y1),(x2,y2)), ...] -- 세로 n+1개 + 가로 n+1개."""
+    key = (tuple(tuple(c) for c in corners), w, h, n)
+    hit = _SEG_CACHE.get(key)
+    if hit is not None:
+        return hit
     import cv2
 
     src = np.float32([[0, 0], [1, 0], [1, 1], [0, 1]])
@@ -67,6 +76,9 @@ def grid_segments(corners, w: int, h: int, n: int = 3) -> list:
         a, b, c, d = mapped[4 * i: 4 * i + 4]
         segs.append((tuple(np.int32(a)), tuple(np.int32(b))))   # 세로선
         segs.append((tuple(np.int32(c)), tuple(np.int32(d))))   # 가로선
+    if len(_SEG_CACHE) > 64:
+        _SEG_CACHE.clear()
+    _SEG_CACHE[key] = segs
     return segs
 
 
