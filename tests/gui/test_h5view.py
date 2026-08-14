@@ -33,9 +33,19 @@ def find(item, name):
     return None
 
 
+assert names[0] == "metadata", names                # metadata 가 맨 위
 meta = find(root, "metadata")
 dlg.tree.setCurrentItem(meta)
 assert "scene_id" in dlg.detail.toPlainText()      # attrs 표시
+# attrs 가 트리에 @항목으로 직접 보인다 (다이어그램과 같은 모양)
+attr_names = [meta.child(i).text(0) for i in range(meta.childCount())]
+for want in ("@scene_id", "@description", "@objects", "@layout",
+             "@next_episode_idx", "@dataset_version"):
+    assert want in attr_names, (want, attr_names)
+sid_item = next(meta.child(i) for i in range(meta.childCount())
+                if meta.child(i).text(0) == "@scene_id")
+dlg.tree.setCurrentItem(sid_item)
+assert "S000" in dlg.detail.toPlainText()
 ep = find(root, "episode_000")
 img = find(find(ep, "obs"), "agentview_rgb")
 dlg.tree.setCurrentItem(img)

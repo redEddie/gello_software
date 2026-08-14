@@ -1010,7 +1010,9 @@ class Hdf5TreeDialog(QDialog):
         self.tree.expandToDepth(0)
 
     def _populate(self, node, parent_item) -> None:
-        for key in node:
+        # metadata 를 맨 위로 -- 파일을 여는 사람이 먼저 찾는 것이 scene
+        # 정의다 (HDF5 그룹은 순서가 없어 뷰어가 정렬을 정한다).
+        for key in sorted(node, key=lambda k: (k != "metadata", k)):
             obj = node[key]
             if isinstance(obj, h5py.Group):
                 it = QTreeWidgetItem(
@@ -1021,6 +1023,7 @@ class Hdf5TreeDialog(QDialog):
                 it.setFont(0, f)
                 it.setData(0, Qt.ItemDataRole.UserRole, obj.name)
                 parent_item.addChild(it)
+                self._add_attr_items(obj, it)
                 self._populate(obj, it)
             else:
                 shape = " × ".join(str(s) for s in obj.shape) or tr("스칼라")
@@ -1030,6 +1033,19 @@ class Hdf5TreeDialog(QDialog):
                 it = QTreeWidgetItem([key, info])
                 it.setData(0, Qt.ItemDataRole.UserRole, obj.name)
                 parent_item.addChild(it)
+                self._add_attr_items(obj, it)
+
+    def _add_attr_items(self, obj, parent_item) -> None:
+        """attrs 를 트리에 '@이름' 회색 항목으로 직접 보여준다 -- myHDF5 는
+        오른쪽 패널에만 보여줘서 'scene_id 가 없다'는 오해가 실제로 있었다."""
+        for k in sorted(obj.attrs):
+            s = str(obj.attrs[k])
+            it = QTreeWidgetItem(
+                [f"@{k}", s[:80] + ("…" if len(s) > 80 else "")])
+            for c in (0, 1):
+                it.setForeground(c, Qt.GlobalColor.gray)
+            it.setData(0, Qt.ItemDataRole.UserRole, ("attr", obj.name, k))
+            parent_item.addChild(it)
 
     def _on_select(self, item, _prev=None) -> None:
         self.preview.clear()
@@ -1037,6 +1053,16 @@ class Hdf5TreeDialog(QDialog):
             return
         h5path = item.data(0, Qt.ItemDataRole.UserRole)
         if not h5path:
+            return
+        if isinstance(h5path, tuple) and h5path[0] == "attr":
+            _tag, owner, key = h5path
+            try:
+                with h5py.File(self._path, "r") as f:
+                    v = f[owner].attrs[key]
+                self.detail.setPlainText(
+                    f"attr: {owner}/@{key}\n타입: {type(v).__name__}\n\n{v}")
+            except Exception as e:  # noqa: BLE001
+                self.detail.setPlainText(f"{type(e).__name__}: {e}")
             return
         try:
             with h5py.File(self._path, "r") as f:
