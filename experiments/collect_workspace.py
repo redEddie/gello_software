@@ -201,6 +201,51 @@ def _new_stats() -> dict:
             "frames": 0, "t0": time.monotonic()}
 
 
+def _depth_colormap(z: np.ndarray, zmax: float, zmin: float = 0.05) -> np.ndarray:
+    """depth(m) → JET 컬러맵(가까움=빨강) + 오른쪽 척도 바.
+
+    라이브 Depth 탭과 HDF5 뷰어의 depth 미리보기가 같은 매핑을 쓰게 하는
+    단일 지점. 무측정/범위 밖은 검정.
+    """
+    import cv2
+
+    valid = (z > zmin) & (z <= zmax)
+    norm = np.zeros(z.shape, np.uint8)
+    norm[valid] = (255 * (1.0 - z[valid] / zmax)).astype(np.uint8)
+    rgb = cv2.cvtColor(cv2.applyColorMap(norm, cv2.COLORMAP_JET),
+                       cv2.COLOR_BGR2RGB)
+    rgb[~valid] = 0
+    return _draw_depth_scale(rgb, zmax)
+
+
+def _draw_depth_scale(rgb: np.ndarray, zmax: float) -> np.ndarray:
+    """오른쪽 세로 컬러바 + 거리 눈금(m). 너무 작은 이미지에는 그리지 않는다."""
+    import cv2
+
+    h, w = rgb.shape[:2]
+    if w < 240 or h < 160:
+        return rgb
+    bar_h, bar_w = int(h * 0.72), 18
+    x0, y0 = w - bar_w - 10, (h - bar_h) // 2
+    t = np.linspace(0.0, 1.0, bar_h, dtype=np.float32)     # 0=위=가까움
+    col = (255 * (1.0 - t)).astype(np.uint8).reshape(-1, 1)
+    bar = cv2.cvtColor(cv2.applyColorMap(np.repeat(col, bar_w, 1),
+                                         cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB)
+    rgb[y0:y0 + bar_h, x0:x0 + bar_w] = bar
+    cv2.rectangle(rgb, (x0 - 1, y0 - 1), (x0 + bar_w, y0 + bar_h),
+                  (255, 255, 255), 1)
+    for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
+        y = y0 + int(frac * (bar_h - 1))
+        cv2.line(rgb, (x0 - 5, y), (x0 - 1, y), (255, 255, 255), 1)
+        label = f"{frac * zmax:.2f}m"
+        # 검정 외곽선 + 흰 글자 -- 어느 배경에서든 읽히게
+        for color, thick in (((0, 0, 0), 3), ((255, 255, 255), 1)):
+            cv2.putText(rgb, label, (x0 - 62, y + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, thick,
+                        cv2.LINE_AA)
+    return rgb
+
+
 def _grid_overlay(img):
     """1/8 간격 격자를 절반 밝기로 덧그린다 -- 수평/중앙 확인용. 사본에만."""
     out = img.copy()
@@ -1099,21 +1144,14 @@ class Hdf5TreeDialog(QDialog):
                         lines.append("")
                         lines.append(tr("(이미지 미리보기)"))
                     elif obj.dtype == np.uint16 and obj.ndim in (2, 3):
-                        # depth (#17): mm 값 -> JET 컬러맵 (가까움=빨강)
-                        import cv2
-
-                        z = (obj[0] if obj.ndim == 3 else obj[...]).astype(float)
+                        # depth (#17): mm -> m 변환 후 라이브 Depth 탭과 같은
+                        # 컬러맵 + 척도 바
+                        z = (obj[0] if obj.ndim == 3 else obj[...]) / 1000.0
                         valid = z > 0
                         zmax = float(np.percentile(z[valid], 98)) if valid.any() else 1.0
-                        norm = np.zeros(z.shape, np.uint8)
-                        if valid.any():
-                            norm[valid] = (255 * (1 - np.clip(z[valid] / zmax, 0, 1))
-                                           ).astype(np.uint8)
-                        arr = cv2.cvtColor(cv2.applyColorMap(norm, cv2.COLORMAP_JET),
-                                           cv2.COLOR_BGR2RGB)
-                        arr[~valid] = 0
+                        arr = _depth_colormap(z.astype(np.float32), zmax)
                         lines.append("")
-                        lines.append(tr("(depth 첫 프레임 미리보기 · ~{m:.0f}mm 까지)")
+                        lines.append(tr("(depth 첫 프레임 · 척도 ~{m:.2f}m)")
                                      .format(m=zmax))
                     elif obj.size and obj.size <= self.PREVIEW_ELEMS:
                         lines.append("")
@@ -3835,6 +3873,10 @@ class WorkspaceWindow(QMainWindow):
         col.setContentsMargins(4, 4, 4, 4)
         self.depth_view = VideoView()
         self.depth_view.setText(tr("탭에 들어오면 depth 스트림을 켭니다"))
+        # 마우스가 가리키는 지점의 실거리 표시 (eventFilter 에서 처리)
+        self.depth_view.setMouseTracking(True)
+        self.depth_view.installEventFilter(self)
+        self._depth_cursor = None
         col.addWidget(self.depth_view, 1)
         row = QHBoxLayout()
         row.addWidget(QLabel(tr("카메라")))
@@ -3898,7 +3940,7 @@ class WorkspaceWindow(QMainWindow):
         msg = tr("depth 스트림 여는 중... ({s})").format(s=serial)
         self.cloud_status.setText(msg)
         self.depth_status.setText(msg)
-        w = DepthCloudWorker(serial)
+        w = DepthCloudWorker(serial, mode=self._depth_consumer or "cloud")
         w.cloud_ready.connect(self._on_cloud)
         w.depth_ready.connect(self._on_depth_img)
         w.error.connect(self._on_depth_error)
@@ -3951,8 +3993,27 @@ class WorkspaceWindow(QMainWindow):
         if self._depth_consumer == "depth":
             self._render_depth()
 
+    def _depth_uv(self, pos) -> "tuple | None":
+        """depth_view 위젯 좌표 -> depth 이미지 픽셀 좌표 (밖이면 None).
+
+        VideoView 는 KeepAspectRatio + 중앙 정렬이라 스케일과 여백을
+        되짚어야 한다.
+        """
+        z = self._depth_img
+        if z is None:
+            return None
+        h, w = z.shape[:2]
+        lw = max(1, self.depth_view.width())
+        lh = max(1, self.depth_view.height())
+        s = min(lw / w, lh / h)
+        u = int((pos.x() - (lw - w * s) / 2) / s)
+        v = int((pos.y() - (lh - h * s) / 2) / s)
+        if 0 <= u < w and 0 <= v < h:
+            return (u, v)
+        return None
+
     def _render_depth(self) -> None:
-        """depth(m) → JET 컬러맵. 가까움=빨강, 최대 거리 밖/무측정=검정."""
+        """depth(m) → JET 컬러맵 + 척도 바 + 커서 지점 실거리."""
         z = self._depth_img
         if z is None:
             return
@@ -3960,18 +4021,26 @@ class WorkspaceWindow(QMainWindow):
 
         zmax = self.depth_range_slider.value() / 100.0
         self.depth_range_label.setText(f"{zmax:.1f} m")
-        valid = (z > 0.05) & (z <= zmax)
-        # 가까울수록 큰 값 -> JET 의 빨강. 0..255 로 정규화.
-        norm = np.zeros(z.shape, np.uint8)
-        norm[valid] = (255 * (1.0 - z[valid] / zmax)).astype(np.uint8)
-        bgr = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        rgb[~valid] = 0
-        self.depth_view.set_frame(rgb)
-        n_ok = int(valid.sum())
+        frame = _depth_colormap(z, zmax)
+        cursor_txt = ""
+        if self._depth_cursor is not None:
+            u, v = self._depth_cursor
+            zval = float(z[v, u])
+            label = f"{zval:.3f} m" if zval > 0.001 else tr("무측정")
+            cursor_txt = tr(" · 커서 ({u},{v}) = {d}").format(u=u, v=v, d=label)
+            cv2.circle(frame, (u, v), 7, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (u - 11, v), (u + 11, v), (255, 255, 255), 1)
+            cv2.line(frame, (u, v - 11), (u, v + 11), (255, 255, 255), 1)
+            for color, thick in (((0, 0, 0), 3), ((255, 255, 255), 1)):
+                cv2.putText(frame, label, (min(u + 12, z.shape[1] - 90), max(v - 10, 16)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, thick,
+                            cv2.LINE_AA)
+        self.depth_view.set_frame(frame)
+        n_ok = int(((z > 0.05) & (z <= zmax)).sum())
         self.depth_status.setText(
-            tr("유효 픽셀 {p}% · 범위 0.05~{m:.1f} m · 기록 여부는 Settings "
-               "스키마(#17)").format(p=round(100 * n_ok / z.size), m=zmax))
+            tr("유효 픽셀 {p}% · 범위 0.05~{m:.1f} m{c} · 기록 여부는 Settings "
+               "스키마(#17)").format(p=round(100 * n_ok / z.size), m=zmax,
+                                     c=cursor_txt))
 
     def _render_cloud(self) -> None:
         """포인트클라우드 → 고정 시점 직교 투영 이미지 (numpy 래스터라이즈)."""
@@ -4013,6 +4082,10 @@ class WorkspaceWindow(QMainWindow):
             self._depth_consumer = None
         if self._depth_consumer is not None:
             self._start_cloud()     # 이미 같은 카메라로 돌고 있으면 유지
+            if self._cloud_worker is not None:
+                # 보이는 탭 것만 계산하도록 워커 모드 전환 (사용자 요구:
+                # depth 계산도 그 탭에 들어갔을 때만)
+                self._cloud_worker.mode = self._depth_consumer
         elif self._cloud_worker is not None:
             self._stop_cloud()
         on = idx == self._layout_tab_index
@@ -7215,6 +7288,17 @@ class WorkspaceWindow(QMainWindow):
         teleoperating. Skipped while a modal dialog is open so Esc still
         closes dialogs normally.
         """
+        if obj is getattr(self, "depth_view", None):
+            # Depth 뷰 위에서 마우스가 가리키는 지점의 실거리 표시
+            if (event.type() == QEvent.Type.MouseMove
+                    and self._depth_img is not None):
+                self._depth_cursor = self._depth_uv(event.position())
+                self._render_depth()
+            elif event.type() == QEvent.Type.Leave \
+                    and self._depth_cursor is not None:
+                self._depth_cursor = None
+                self._render_depth()
+            return False
         if (
             event.type() == QEvent.Type.KeyPress
             and self.worker is not None

@@ -113,6 +113,44 @@ win._on_center_tab_changed(0)
 assert win._depth_consumer is None
 print("6 통과: Depth 탭 -- 진입/이탈, 컬러맵 렌더, 범위 슬라이더")
 
+# ---- 7. 척도 바: 큰 프레임엔 그려지고 작은 프레임엔 생략 ----
+big = np.full((480, 640), 0.6, np.float32)
+out = cw._depth_colormap(big, 1.2)
+bar = out[120:360, 640 - 28:640 - 10]        # 오른쪽 컬러바 영역
+assert bar.std() > 20, "척도 바가 안 그려짐"    # 그라데이션 존재
+small = cw._depth_colormap(np.full((48, 64), 0.6, np.float32), 1.2)
+assert small.shape == (48, 64, 3)              # 작은 입력은 바 생략, 무오류
+print("7 통과: depth 척도 바 (대형 프레임 표시 / 소형 생략)")
+
+# ---- 8. 커서 거리 표시 + 워커 모드 게이팅 ----
+win._depth_img = np.full((48, 64), 0.6, np.float32)
+
+
+class _P:                                      # QPointF 흉내
+    def __init__(self, x, y):
+        self._x, self._y = x, y
+
+    def x(self):
+        return self._x
+
+    def y(self):
+        return self._y
+
+
+uv = win._depth_uv(_P(5.0, 30.0))              # 라벨 안쪽 -> 픽셀 좌표
+assert uv is not None and 0 <= uv[0] < 64 and 0 <= uv[1] < 48
+assert win._depth_uv(_P(-30.0, -30.0)) is None  # 프레임 밖
+win._depth_cursor = (10, 20)
+win._render_depth()
+assert "커서 (10,20)" in win.depth_status.text()
+assert "0.600 m" in win.depth_status.text()
+win._depth_cursor = None
+from gello.gui_widgets import DepthCloudWorker  # noqa: E402
+
+assert DepthCloudWorker("x", mode="depth").mode == "depth"
+assert DepthCloudWorker("x").mode == "cloud"
+print("8 통과: 커서 지점 실거리 표시 + 워커 계산 모드(탭별)")
+
 print("\n다양성 추천 + Point Cloud 검증 통과")
 import os  # noqa: E402
 

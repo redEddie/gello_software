@@ -600,11 +600,15 @@ class DepthCloudWorker(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, serial: str, stride: int = 3,
-                 interval_ms: int = 400) -> None:
+                 interval_ms: int = 400, mode: str = "cloud") -> None:
         super().__init__()
         self.serial = serial
         self.stride = stride
         self.interval_ms = interval_ms
+        # "cloud" | "depth" -- 보이는 탭에 필요한 계산만 한다. cloud 는
+        # 정렬(rs.align)+역투영까지, depth 는 원본 depth 프레임만. GUI 가
+        # 탭 전환 때 바꾼다 (단순 속성 읽기라 락 불필요).
+        self.mode = mode
         self._running = True
 
     def stop(self) -> None:
@@ -639,26 +643,38 @@ class DepthCloudWorker(QThread):
             vs, us = np.mgrid[0:480:s, 0:640:s].astype(np.float32)
             while self._running:
                 try:
-                    frames = align.process(pipe.wait_for_frames(2000))
-                    dfr, cfr = frames.get_depth_frame(), frames.get_color_frame()
-                    if not dfr or not cfr:
+                    frames = pipe.wait_for_frames(2000)
+                    depth_only = self.mode == "depth"
+                    if not depth_only:
+                        frames = align.process(frames)  # 정렬은 cloud 만 필요
+                    dfr = frames.get_depth_frame()
+                    if not dfr:
                         continue
                     z_full = (np.asanyarray(dfr.get_data()).astype(np.float32)
                               * scale)
-                    z = z_full[::s, ::s]
-                    rgb = np.asanyarray(cfr.get_data())[::s, ::s]
+                    if depth_only:
+                        rgb = None
+                    else:
+                        cfr = frames.get_color_frame()
+                        if not cfr:
+                            continue
+                        rgb = np.asanyarray(cfr.get_data())[::s, ::s]
                 except Exception as e:  # noqa: BLE001
                     if self._running:
                         self.error.emit(f"{type(e).__name__}: {e}")
                     break
-                valid = (z > 0.05) & (z < 2.0)
-                zf = z[valid]
-                pts = np.stack([(us[valid] - intr.ppx) * zf / intr.fx,
-                                (vs[valid] - intr.ppy) * zf / intr.fy,
-                                zf], axis=1).astype(np.float32)
-                if self._running:
-                    self.depth_ready.emit(z_full)
-                    self.cloud_ready.emit(pts, rgb[valid])
+                if depth_only:
+                    if self._running:
+                        self.depth_ready.emit(z_full)
+                else:
+                    z = z_full[::s, ::s]
+                    valid = (z > 0.05) & (z < 2.0)
+                    zf = z[valid]
+                    pts = np.stack([(us[valid] - intr.ppx) * zf / intr.fx,
+                                    (vs[valid] - intr.ppy) * zf / intr.fy,
+                                    zf], axis=1).astype(np.float32)
+                    if self._running:
+                        self.cloud_ready.emit(pts, rgb[valid])
                 self.msleep(self.interval_ms)
         finally:
             try:
