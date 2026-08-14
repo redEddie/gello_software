@@ -68,6 +68,35 @@ assert win._cloud_worker is None
 win.worker = None
 print("3 통과: 탭 진입/이탈 가드 + 합성 클라우드 렌더 + 세션 차단")
 
+# ---- 4. GUI 추천 받기: 다이얼로그 + NewScene 자동 채움 ----
+rdlg = cw.RecommendDialog(None, [base], props, "S001")
+assert len(rdlg._radios) == 3 and rdlg._radios[0].isChecked()
+rdlg._radios[1].setChecked(True)
+rdlg._accept()
+assert rdlg.picked is not None
+assert rdlg.picked.objects == rdlg._recs[1][0].objects
+nd = cw.NewSceneDialog(None, "S001")
+nd._apply_recommendation(rdlg.picked)
+assert set(nd._checked_ids()) == set(rdlg.picked.objects)
+want_zones = {o: s["zone"] for o, s in
+              rdlg.picked.layout["placements"].items()}
+assert nd._placements == want_zones
+assert nd.preview.text()                     # 격자 미리보기 갱신됨
+# seed 바꿔 다시 추천 -> 카드 재구성
+rdlg2 = cw.RecommendDialog(None, [base], props, "S001")
+first = [m.objects for m, _ in rdlg2._recs]
+rdlg2.seed_spin.setValue(7)
+rdlg2._fill()
+assert len(rdlg2._radios) == 3
+print("4 통과: 추천 다이얼로그(선택/재추천) + NewScene 자동 채움")
+
+# ---- 5. Point Cloud 카메라 선택 ----
+assert win.cloud_cam_combo.currentData() == "agent"
+win.cloud_cam_combo.setCurrentIndex(1)       # 워커 없음 -> 전환은 다음 진입 때
+assert win.cloud_cam_combo.currentData() == "wrist"
+assert win._cloud_worker is None
+print("5 통과: 클라우드 카메라 콤보 (닫힌 탭에서는 지연 반영)")
+
 print("\n다양성 추천 + Point Cloud 검증 통과")
 import os  # noqa: E402
 

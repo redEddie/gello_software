@@ -63,6 +63,7 @@ from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -161,7 +162,8 @@ from gello.collection_plan import (  # noqa: E402
     load_plan,
 )
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
-from gello.props import load_props  # noqa: E402
+from gello.props import load_props, props_by_id  # noqa: E402
+from gello.scene_diversity import recommend  # noqa: E402
 from gello.robots.franka_fr3 import FR3_RESET_POSES  # noqa: E402
 from gello.scene_format import (  # noqa: E402
     INSTRUCTION_ID_RE,
@@ -1360,6 +1362,88 @@ class GridEditorDialog(QDialog):
         self.status_label.setText(tr("{n} 저장됨 (active)").format(n=name))
 
 
+class RecommendDialog(QDialog):
+    """scene 다양성 추천안 3개 중 하나 고르기 (#33 GUI).
+
+    추천 계산은 gello.scene_diversity 가 전담한다 -- 여기는 seed 를 바꿔
+    다시 뽑고, 격자 미리보기로 비교해 하나를 고르는 껍데기다.
+    """
+
+    def __init__(self, parent, existing: list, props: dict,
+                 scene_id: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("scene 추천 — 기존 {n}개와 가장 다른 배치")
+                            .format(n=len(existing)))
+        self.setMinimumSize(560, 620)
+        self._existing = existing
+        self._props = props
+        self._scene_id = scene_id
+        self.picked = None      # accept 시 SceneMetadata
+        self._recs: list = []
+        self._radios: list = []
+
+        col = QVBoxLayout(self)
+        top = QHBoxLayout()
+        top.addWidget(QLabel(tr("seed")))
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 9999)
+        top.addWidget(self.seed_spin)
+        again = QPushButton(tr("다시 추천"))
+        again.clicked.connect(self._fill)
+        top.addWidget(again)
+        top.addStretch(1)
+        col.addLayout(top)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._cards = QWidget()
+        self._cards_col = QVBoxLayout(self._cards)
+        scroll.setWidget(self._cards)
+        col.addWidget(scroll, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        col.addWidget(buttons)
+        self._fill()
+
+    def _fill(self) -> None:
+        while self._cards_col.count():
+            it = self._cards_col.takeAt(0)
+            if it.widget() is not None:
+                it.widget().deleteLater()
+        self._radios = []
+        self._recs = recommend(self._existing, self._props, k=3,
+                               seed=self.seed_spin.value(),
+                               scene_id=self._scene_id)
+        # 라디오가 카드(QGroupBox)마다 흩어져 있으면 부모 단위 자동 배타가
+        # 안 걸린다 -- 공용 버튼 그룹으로 묶는다.
+        group = QButtonGroup(self)
+        for i, (md, dist) in enumerate(self._recs, 1):
+            box = QGroupBox()
+            bc = QVBoxLayout(box)
+            rb = QRadioButton(tr("추천 {i} — 기존과의 최소 거리 {d}")
+                              .format(i=i, d=dist))
+            group.addButton(rb)
+            rb.setChecked(i == 1)
+            self._radios.append(rb)
+            bc.addWidget(rb)
+            view = SceneInfoView()
+            view.setText(describe_scene(md))
+            bc.addWidget(view)
+            self._cards_col.addWidget(box)
+        self._cards_col.addStretch(1)
+
+    def _accept(self) -> None:
+        for rb, (md, _d) in zip(self._radios, self._recs):
+            if rb.isChecked():
+                self.picked = md
+                break
+        super().accept()
+
+
 class NewSceneDialog(QDialog):
     """새 scene 구성 — 소품 선택 + 3×3 존 배치 + 설명.
 
@@ -1371,20 +1455,30 @@ class NewSceneDialog(QDialog):
     상태로 오른쪽 3×3 격자 칸을 누르면 그 존에 배치된다. [0,0]=왼쪽 위.
     """
 
-    def __init__(self, parent, scene_id: str) -> None:
+    def __init__(self, parent, scene_id: str,
+                 data_root: "Path | None" = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("새 Scene 구성 — {sid}").format(sid=scene_id))
         self.setMinimumWidth(720)
         self._scene_id = scene_id
+        self._data_root = data_root
         self._placements: dict = {}
         self.metadata = None  # accept 시 SceneMetadata
 
         layout = QVBoxLayout(self)
+        hrow = QHBoxLayout()
         hint = QLabel(tr(
             "① 포함할 물체를 체크  ② 목록에서 물체를 클릭해 선택  "
             "③ 오른쪽 격자 칸을 눌러 그 존에 배치  ([0,0]=왼쪽 위)"))
         hint.setWordWrap(True)
-        layout.addWidget(hint)
+        hrow.addWidget(hint, 1)
+        rec_btn = QPushButton(tr("추천 받기..."))
+        rec_btn.setToolTip(tr(
+            "기존 scene 들과 가장 다른 소품 조합·배치 3안을 추천받아\n"
+            "체크·배치를 자동으로 채웁니다 (#33, 다양성 최대화)."))
+        rec_btn.clicked.connect(self._on_recommend)
+        hrow.addWidget(rec_btn)
+        layout.addLayout(hrow)
 
         mid = QHBoxLayout()
         self.prop_list = QListWidget()
@@ -1433,6 +1527,36 @@ class NewSceneDialog(QDialog):
         return [self.prop_list.item(i).data(Qt.ItemDataRole.UserRole)
                 for i in range(self.prop_list.count())
                 if self.prop_list.item(i).checkState() == Qt.CheckState.Checked]
+
+    def _on_recommend(self) -> None:
+        existing = []
+        skipped = 0
+        if self._data_root is not None:
+            for p in iter_scene_files(self._data_root):
+                try:
+                    existing.append(read_scene_metadata(p))
+                except Exception:  # noqa: BLE001 -- 세션이 쥔 파일 등
+                    skipped += 1
+        dlg = RecommendDialog(self, existing, props_by_id(), self._scene_id)
+        if skipped:
+            dlg.setWindowTitle(dlg.windowTitle()
+                               + tr(" (읽지 못한 파일 {n}개 제외)").format(n=skipped))
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.picked is not None:
+            self._apply_recommendation(dlg.picked)
+
+    def _apply_recommendation(self, md) -> None:
+        """추천안을 체크박스·배치에 반영한다. 이후 손으로 고칠 수 있다."""
+        want = set(md.objects)
+        self.prop_list.blockSignals(True)
+        for i in range(self.prop_list.count()):
+            it = self.prop_list.item(i)
+            oid = it.data(Qt.ItemDataRole.UserRole)
+            it.setCheckState(Qt.CheckState.Checked if oid in want
+                             else Qt.CheckState.Unchecked)
+        self.prop_list.blockSignals(False)
+        self._placements = {oid: list(spec["zone"]) for oid, spec
+                            in md.layout.get("placements", {}).items()}
+        self._refresh()
 
     def _assign(self, rc) -> None:
         it = self.prop_list.currentItem()
@@ -2173,7 +2297,7 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("경로 오류"),
                                 tr("저장 경로를 확인하세요: {e}").format(e=e))
             return
-        dlg = NewSceneDialog(self, sid)
+        dlg = NewSceneDialog(self, sid, data_root=root)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.metadata is not None:
             self._pending_scene_meta = dlg.metadata
             self._on_scene_selected()
@@ -3656,6 +3780,15 @@ class WorkspaceWindow(QMainWindow):
         self.cloud_view.setText(tr("탭에 들어오면 depth 스트림을 켭니다"))
         col.addWidget(self.cloud_view, 1)
         row = QHBoxLayout()
+        row.addWidget(QLabel(tr("카메라")))
+        self.cloud_cam_combo = QComboBox()
+        self.cloud_cam_combo.addItem("Agent", "agent")
+        self.cloud_cam_combo.addItem("Wrist", "wrist")
+        self.cloud_cam_combo.setToolTip(tr(
+            "포인트클라우드를 읽을 카메라. 탭이 열려 있으면 즉시 전환합니다."))
+        self.cloud_cam_combo.currentIndexChanged.connect(self._on_cloud_cam_changed)
+        row.addWidget(self.cloud_cam_combo)
+        row.addSpacing(12)
         row.addWidget(QLabel(tr("회전")))
         self.cloud_yaw = QSlider(Qt.Orientation.Horizontal)
         self.cloud_yaw.setRange(-80, 80)
@@ -3681,12 +3814,19 @@ class WorkspaceWindow(QMainWindow):
             self.cloud_view.clear_frame(
                 tr("수집 세션 중에는 사용할 수 없습니다 — 세션 종료 후 다시 여세요"))
             return
-        serial = self._combo_serial(self.agent_combo)
+        role = self.cloud_cam_combo.currentData() or "agent"
+        combo = self.agent_combo if role == "agent" else self.wrist_combo
+        serial = self._combo_serial(combo)
         if not serial:
-            self.cloud_view.clear_frame(tr("Configure 에서 agent 카메라를 선택하세요"))
+            self.cloud_view.clear_frame(
+                tr("Configure 에서 {r} 카메라를 선택하세요").format(r=role))
             return
         # depth 파이프라인은 RGB 미리보기와 같은 장치를 두 번 열 수 없다.
-        self._cloud_previews_were_on = bool(self.agent_preview or self.wrist_preview)
+        # OR-누적: 카메라 전환 재시작 때(미리보기 이미 내려간 상태) 복원
+        # 약속을 잊지 않게 한다. 플래그는 실제 복원 때 리셋된다.
+        self._cloud_previews_were_on = (self._cloud_previews_were_on
+                                        or bool(self.agent_preview
+                                                or self.wrist_preview))
         self._stop_previews_async()
         self.cloud_status.setText(tr("depth 스트림 여는 중... ({s})").format(s=serial))
         w = DepthCloudWorker(serial)
@@ -3695,6 +3835,13 @@ class WorkspaceWindow(QMainWindow):
             tr("depth 오류: {m}").format(m=m)))
         w.start()
         self._cloud_worker = w
+
+    def _on_cloud_cam_changed(self, *_args) -> None:
+        if self._cloud_worker is None:      # 탭이 닫혀 있으면 다음 진입 때 반영
+            return
+        self._stop_cloud(restore_previews=False)  # 복원 약속(플래그)은 유지된다
+        self.cloud_view.clear_frame(tr("카메라 전환 중..."))
+        self._start_cloud()
 
     def _stop_cloud(self, restore_previews: bool = True) -> None:
         w = self._cloud_worker
@@ -3706,6 +3853,7 @@ class WorkspaceWindow(QMainWindow):
         self.cloud_status.setText(tr("depth 스트림 종료"))
         if restore_previews and self._cloud_previews_were_on \
                 and self.worker is None:
+            self._cloud_previews_were_on = False
             # 파이프라인이 놓이는 데 잠깐 걸린다 -- 바로 열면 busy.
             QTimer.singleShot(700, lambda: (
                 self._restart_previews() if self.worker is None
