@@ -111,12 +111,17 @@ win._set_live_maximized("wrist")
 assert win.live_boxes["agent"].isHidden() and not win.live_boxes["wrist"].isHidden()
 assert win.live_view_combo.currentData() == "wrist"     # 콤보 동기화
 a = captured["a"]
-assert a[100, 100].tolist() == [90, 90, 90]             # 본체 = wrist
-assert a[470, 630].tolist() == [40, 40, 40]             # 우하단 PiP = agent
-assert a[470, 20].tolist() == [90, 90, 90]              # 좌하단은 본체 그대로
+assert a[100, 100].tolist() == [90, 90, 90]             # 본체(상단) = wrist
+# PiP 는 크롭 밖 빈 띠가 넓은 쪽(좌/우) 아래에 앉는다 -- 한쪽 모서리는
+# PiP(40), 반대쪽 모서리는 본체(90)여야 한다
+corners = {"L": a[470, 20].tolist(), "R": a[470, 630].tolist()}
+pip_side = next(k for k, v in corners.items() if v == [40, 40, 40])
+main_side = "R" if pip_side == "L" else "L"
+assert corners[main_side] == [90, 90, 90], corners
 # 어느 카메라 프레임이 와도 합성이 갱신된다
 win._update_live_view("agent", np.full((480, 640, 3), 41, np.uint8))
-assert captured["a"][470, 630].tolist() == [41, 41, 41]
+col = 20 if pip_side == "L" else 630
+assert captured["a"][470, col].tolist() == [41, 41, 41]
 win.live_views["wrist"].set_frame = orig_set
 win._set_live_maximized(None)                           # 나란히 복원
 assert not win.live_boxes["agent"].isHidden()
