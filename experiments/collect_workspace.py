@@ -37,6 +37,8 @@ old wizard so both could share them without one importing the other's window.
 from __future__ import annotations
 
 import os
+import re
+import webbrowser
 
 # Must run before numpy/cv2/h5py are imported -- see gello/gui_widgets.py for
 # why this GUI caps the BLAS/OpenCV thread pools at 1.
@@ -152,6 +154,7 @@ from gello.libero_format import (  # noqa: E402
     save_crop_params,
 )
 from gello.collection_plan import (  # noqa: E402
+    PLANS_DIR,
     check_scene_against_plan,
     list_plans,
     load_plan,
@@ -955,6 +958,129 @@ class PlanEditDialog(QDialog):
         self._path.write_text(text, encoding="utf-8")
         self.warnings = plan.warnings
         super().accept()
+
+
+class Hdf5TreeDialog(QDialog):
+    """HDF5 내부 구조 뷰어 — myHDF5(h5web)처럼 트리 + attrs + 미리보기.
+
+    구조(이름·shape·dtype·압축·attrs)는 열 때 한 번 읽고 파일을 바로
+    닫는다 — 뷰어가 파일을 쥔 채로 있으면 수집/재압축과 부딪힌다. 값·이미지
+    미리보기만 항목을 클릭할 때 잠깐 다시 연다.
+    """
+
+    PREVIEW_ELEMS = 120     # 이 개수 이하의 수치 데이터셋은 값을 그대로 보여준다
+
+    def __init__(self, parent, path: Path) -> None:
+        super().__init__(parent)
+        self._path = Path(path)
+        self.setWindowTitle(tr("HDF5 구조 — {n}").format(n=self._path.name))
+        self.resize(960, 620)
+        col = QVBoxLayout(self)
+        split = QSplitter(Qt.Orientation.Horizontal)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels([tr("이름"), tr("정보")])
+        self.tree.setColumnWidth(0, 300)
+        self.tree.currentItemChanged.connect(self._on_select)
+        split.addWidget(self.tree)
+        right = QWidget()
+        rcol = QVBoxLayout(right)
+        self.preview = QLabel()
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setMinimumHeight(200)
+        rcol.addWidget(self.preview)
+        self.detail = QPlainTextEdit()
+        self.detail.setReadOnly(True)
+        self.detail.setStyleSheet(
+            "font-family: 'DejaVu Sans Mono', monospace; font-size: 12px;")
+        rcol.addWidget(self.detail, 1)
+        split.addWidget(right)
+        split.setSizes([420, 540])
+        col.addWidget(split, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        col.addWidget(buttons)
+        try:
+            with h5py.File(self._path, "r") as f:
+                self._populate(f, self.tree.invisibleRootItem())
+        except BlockingIOError:
+            self.detail.setPlainText(tr(
+                "파일이 사용 중입니다 (수집 세션/재압축). 끝난 뒤 다시 여세요."))
+        except OSError as e:
+            self.detail.setPlainText(tr("파일을 열지 못했습니다: {e}").format(e=e))
+        self.tree.expandToDepth(0)
+
+    def _populate(self, node, parent_item) -> None:
+        for key in node:
+            obj = node[key]
+            if isinstance(obj, h5py.Group):
+                it = QTreeWidgetItem(
+                    [key, tr("그룹 · 항목 {n} · attrs {a}")
+                     .format(n=len(obj), a=len(obj.attrs))])
+                f = it.font(0)
+                f.setBold(True)
+                it.setFont(0, f)
+                it.setData(0, Qt.ItemDataRole.UserRole, obj.name)
+                parent_item.addChild(it)
+                self._populate(obj, it)
+            else:
+                shape = " × ".join(str(s) for s in obj.shape) or tr("스칼라")
+                info = f"{shape} · {obj.dtype}"
+                if obj.compression:
+                    info += f" · {obj.compression}"
+                it = QTreeWidgetItem([key, info])
+                it.setData(0, Qt.ItemDataRole.UserRole, obj.name)
+                parent_item.addChild(it)
+
+    def _on_select(self, item, _prev=None) -> None:
+        self.preview.clear()
+        if item is None:
+            return
+        h5path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not h5path:
+            return
+        try:
+            with h5py.File(self._path, "r") as f:
+                obj = f[h5path]
+                lines = [f"경로: {h5path}"]
+                if isinstance(obj, h5py.Dataset):
+                    lines.append(f"shape: {tuple(obj.shape)}   dtype: {obj.dtype}")
+                    lines.append(f"압축: {obj.compression or '-'}   "
+                                 f"chunks: {obj.chunks or '-'}")
+                    nbytes = obj.size * obj.dtype.itemsize
+                    lines.append(f"크기(비압축): {nbytes / 1e6:.1f} MB")
+                if len(obj.attrs):
+                    lines.append("")
+                    lines.append("── attrs " + "─" * 30)
+                    for k in sorted(obj.attrs):
+                        v = obj.attrs[k]
+                        s = str(v)
+                        lines.append(f"{k}: {s[:500]}" + ("…" if len(s) > 500 else ""))
+                if isinstance(obj, h5py.Dataset):
+                    arr = None
+                    if obj.dtype == np.uint8 and obj.ndim == 4 and obj.shape[-1] == 3:
+                        arr = obj[0]
+                        lines.append("")
+                        lines.append(tr("(첫 프레임 미리보기)"))
+                    elif obj.dtype == np.uint8 and obj.ndim == 3 and obj.shape[-1] == 3:
+                        arr = obj[...]
+                        lines.append("")
+                        lines.append(tr("(이미지 미리보기)"))
+                    elif obj.size and obj.size <= self.PREVIEW_ELEMS:
+                        lines.append("")
+                        lines.append("── 값 " + "─" * 32)
+                        lines.append(np.array2string(
+                            np.asarray(obj[...]), precision=4, threshold=200))
+                    if arr is not None:
+                        pix = np_to_pixmap(np.ascontiguousarray(arr))
+                        self.preview.setPixmap(pix.scaled(
+                            self.preview.width(), max(200, self.preview.height()),
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation))
+                self.detail.setPlainText("\n".join(lines))
+        except BlockingIOError:
+            self.detail.setPlainText(tr("파일이 사용 중이라 값을 읽지 못했습니다."))
+        except Exception as e:  # noqa: BLE001
+            self.detail.setPlainText(f"{type(e).__name__}: {e}")
 
 
 class _GridCanvas(QLabel):
@@ -1788,6 +1914,17 @@ class WorkspaceWindow(QMainWindow):
         self.plan_edit_btn.setMaximumWidth(32)
         self.plan_edit_btn.clicked.connect(self._on_edit_plan)
         prow.addWidget(self.plan_edit_btn)
+        plan_new_btn = QPushButton("+")
+        plan_new_btn.setToolTip(tr("새 계획 파일 만들기 (이름을 정하면 빈 계획이 "
+                                   "생기고 바로 편집이 열립니다)"))
+        plan_new_btn.setMaximumWidth(32)
+        plan_new_btn.clicked.connect(self._on_new_plan)
+        prow.addWidget(plan_new_btn)
+        plan_del_btn = QPushButton("🗑")
+        plan_del_btn.setToolTip(tr("선택한 계획 파일 삭제 (git 이력에는 남습니다)"))
+        plan_del_btn.setMaximumWidth(32)
+        plan_del_btn.clicked.connect(self._on_delete_plan)
+        prow.addWidget(plan_del_btn)
         sc_form.addRow(tr("수집 계획"), plan_row)
         self.scene_iid_edit = QLineEdit(self._recents.most_recent("instruction_id", "I000"))
         self.scene_iid_edit.setToolTip(tr("시작 slot 의 instruction ID (예: I000). "
@@ -2187,6 +2324,65 @@ class WorkspaceWindow(QMainWindow):
             self.log(f"[계획] {Path(data).name} 로드 실패: {type(e).__name__}: {e}")
             return None
 
+    def _refresh_plan_combo(self, select: "str | None" = None) -> None:
+        """계획 파일 목록을 다시 읽는다. select 로 파일명을 주면 그걸 고른다."""
+        keep = select or self.plan_combo.currentText()
+        self.plan_combo.blockSignals(True)
+        self.plan_combo.clear()
+        self.plan_combo.addItem(tr("(계획 없음 — 자유 입력)"), None)
+        for p in list_plans():
+            self.plan_combo.addItem(p.name, str(p))
+        idx = self.plan_combo.findText(keep)
+        self.plan_combo.setCurrentIndex(max(0, idx))
+        self.plan_combo.blockSignals(False)
+        self._on_plan_selected()
+
+    def _on_new_plan(self) -> None:
+        name, ok = QInputDialog.getText(
+            self, tr("새 수집 계획"),
+            tr("계획 이름 (영문/숫자/-/_, 확장자 없이):"))
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            QMessageBox.warning(self, tr("이름 오류"),
+                                tr("영문·숫자·-·_ 만 쓸 수 있습니다."))
+            return
+        path = PLANS_DIR / f"{name}.json"
+        if path.exists():
+            QMessageBox.warning(self, tr("이미 있음"),
+                                tr("{n} 이 이미 있습니다. 드롭다운에서 "
+                                   "선택하세요.").format(n=path.name))
+            return
+        PLANS_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"plan_version": 1, "scenes": []},
+                                   ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+        self.log(f"[계획] 새 계획 생성: {path.name}")
+        self._refresh_plan_combo(select=path.name)
+        self._on_edit_plan()    # 빈 계획은 쓸모없으니 바로 편집으로
+
+    def _on_delete_plan(self) -> None:
+        data = self.plan_combo.currentData()
+        if not data:
+            QMessageBox.information(self, tr("계획 없음"),
+                                    tr("삭제할 계획 파일을 먼저 선택하세요."))
+            return
+        p = Path(data)
+        ans = QMessageBox.question(
+            self, tr("계획 삭제"),
+            tr("{n} 을(를) 삭제할까요?\n수집 파일에는 영향이 없고, git 이력"
+               "에서 되살릴 수 있습니다.").format(n=p.name))
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            p.unlink()
+        except OSError as e:
+            QMessageBox.warning(self, tr("삭제 실패"), str(e))
+            return
+        self.log(f"[계획] 삭제: {p.name}")
+        self._refresh_plan_combo(select="")
+
     def _on_edit_plan(self) -> None:
         data = self.plan_combo.currentData()
         if not data:
@@ -2485,6 +2681,13 @@ class WorkspaceWindow(QMainWindow):
                       ("구조 확인", self._on_show_structure,
                        "선택한 *파일*의 에피소드 수·용량·이미지 압축·재압축 이력과\n"
                        "첫 에피소드의 데이터 구조를 보여줍니다.")),
+                     (("HDF5 트리 뷰어", self._on_hdf5_tree,
+                       "선택한 파일의 전체 내부 구조(그룹/데이터셋/attrs)를\n"
+                       "트리로 탐색합니다. 데이터셋을 클릭하면 shape·dtype·압축과\n"
+                       "이미지 미리보기/값 미리보기가 나옵니다 (myHDF5 스타일)."),
+                      ("myHDF5 (웹)", self._on_myhdf5,
+                       "브라우저에서 myhdf5.hdfgroup.org 를 엽니다.\n"
+                       "파일을 창에 끌어다 놓으면 같은 구조를 웹에서 봅니다.")),
                      (("실패만 선택", self._on_select_failed,
                        "success=False 로 표시된 에피소드를 모두 선택합니다.\n"
                        "선택만 하고 지우지 않습니다."),
@@ -5318,6 +5521,25 @@ class WorkspaceWindow(QMainWindow):
             if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
                 return label
         return ""
+
+    def _on_hdf5_tree(self) -> None:
+        path = self._selected_file()
+        if path is None:
+            QMessageBox.information(self, tr("선택 필요"),
+                                    tr("트리로 볼 파일을 먼저 선택하세요."))
+            return
+        if self.active_file_path is not None and path == self.active_file_path:
+            QMessageBox.information(self, tr("파일 사용 중"), tr(
+                "수집 세션이 이 파일을 쥐고 있습니다 — 세션 종료 후 여세요."))
+            return
+        Hdf5TreeDialog(self, path).exec()
+
+    def _on_myhdf5(self) -> None:
+        webbrowser.open("https://myhdf5.hdfgroup.org/")
+        path = self._selected_file()
+        if path is not None:
+            self.log(tr("[myHDF5] 브라우저 창에 파일을 끌어다 놓으세요: {p}")
+                     .format(p=path))
 
     def _on_relabel_selected(self) -> None:
         """scene 에피소드의 quality_status 를 성공↔실패로 뒤집는다.

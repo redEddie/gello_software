@@ -80,7 +80,11 @@ cw.WorkspaceWindow._refresh_cameras = lambda self: None
 cw.WorkspaceWindow._restart_previews = lambda self: None
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
-assert win.plan_combo.currentText() == "pilot.json", win.plan_combo.currentText()
+# recents 기본값에 의존하지 않는다 -- 다른 테스트/실사용이 최근 계획을
+# 바꿔 놓을 수 있다. 명시적으로 pilot 을 고른다.
+_pi = win.plan_combo.findText("pilot.json")
+assert _pi > 0
+win.plan_combo.setCurrentIndex(_pi)
 # scene 세션을 흉내 -- 세션 중엔 파일이 잠기므로(HDF5 잠금) 워커 cfg 의
 # scene_id + saver 캐시로 계산한다. 사본에서 캐시를 만들어 주입.
 import shutil  # noqa: E402

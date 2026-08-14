@@ -133,6 +133,10 @@ def check_scene_against_plan(plan: CollectionPlan, scene_id: str,
     slots = {s.instruction_id: s.instruction for s in plan.slots_for(scene_id)}
     seen: set = set()
     for ep in episodes:
+        # 큐레이션에서 뺀 에피소드(bad_data 등)는 계획 대조 대상이 아니다 --
+        # 계획 밖 slot 을 폐기 처리하면 경고도 함께 사라져야 한다.
+        if ep.get("quality_status") in ("bad_data", "retake", "deprecated"):
+            continue
         iid = ep.get("instruction_id", "")
         instr = ep.get("instruction", "")
         key = (iid, instr)

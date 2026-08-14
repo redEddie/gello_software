@@ -123,6 +123,27 @@ _, _, _, err2 = win._scene_config_from_ui()
 assert err2 is None or "계획" not in err2, err2   # 남는 오류는 scene 선택뿐
 print("6 통과: 계획 선택 시 자유 입력 잠금 + 계획 밖 시작 문장 거부")
 
+# ---- 7. 계획 파일 새로 만들기 / 삭제 ----
+cw.QInputDialog.getText = staticmethod(lambda *a, **k: ("tmp-uitest", True))
+cw.QMessageBox.question = staticmethod(
+    lambda *a, **k: cw.QMessageBox.StandardButton.Yes)
+win._on_edit_plan = lambda: None        # 모달 편집 열림 방지
+new_path = cw.PLANS_DIR / "tmp-uitest.json"
+new_path.unlink(missing_ok=True)
+try:
+    win._on_new_plan()
+    assert new_path.exists()
+    assert win.plan_combo.currentText() == "tmp-uitest.json"
+    assert json.loads(new_path.read_text())["scenes"] == []
+    win._on_delete_plan()
+    assert not new_path.exists()
+    assert win.plan_combo.findText("tmp-uitest.json") < 0
+finally:
+    new_path.unlink(missing_ok=True)
+    # 실사용 recents 오염 복구 -- 생성 시 tmp-uitest 가 최근 계획으로 남는다
+    win._recents.add("plan_file", "pilot.json")
+print("7 통과: 계획 파일 생성(+선택) / 삭제(+목록 갱신)")
+
 print("\n계획 폼 + 드롭다운 검증 통과")
 import os  # noqa: E402
 
