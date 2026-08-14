@@ -121,6 +121,7 @@ from gello.gui_widgets import (  # noqa: E402
     REPACK_SCRIPT,
     CameraPreviewWorker,
     DatasetSchemaDialog,
+    DepthCloudWorker,
     GalleryLoadWorker,
     DeltaBar,
     EpisodeLoadWorker,
@@ -1518,6 +1519,11 @@ class WorkspaceWindow(QMainWindow):
         self.active_episode_cache: list | None = None
         self.agent_preview: CameraPreviewWorker | None = None
         self.wrist_preview: CameraPreviewWorker | None = None
+        # Point Cloud 탭 전용 depth 워커 -- 탭이 보일 때만 산다 (안정성).
+        self._cloud_worker: DepthCloudWorker | None = None
+        self._cloud_pts = None
+        self._cloud_rgb = None
+        self._cloud_previews_were_on = False
         self._play_loader: EpisodeLoadWorker | None = None
         self._play_frames: dict = {"agent": None, "wrist": None}
         self._play_key = None
@@ -1875,9 +1881,10 @@ class WorkspaceWindow(QMainWindow):
             self._build_layout_tab(), tr("레이아웃"))
         self._gallery_tab_index = self.center_tabs.addTab(
             self._build_gallery_tab(), tr("Gallery"))
+        self._cloud_tab_index = self.center_tabs.addTab(
+            self._build_cloud_tab(), tr("Point Cloud"))
         self.center_tabs.currentChanged.connect(self._on_center_tab_changed)
-        for title, why in ((tr("Depth"), tr("깊이 스트림을 아직 수집하지 않습니다.")),
-                           (tr("Point Cloud"), tr("포인트클라우드 렌더러가 없습니다."))):
+        for title, why in ((tr("Depth"), tr("깊이 스트림을 아직 수집하지 않습니다.")),):
             ph = QLabel(tr("{t} — {m}\n\n{w}").format(t=title, m=TODO_MARK, w=why))
             ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
             ph.setStyleSheet(TODO_STYLE)
@@ -3633,8 +3640,121 @@ class WorkspaceWindow(QMainWindow):
             shown = _grid_overlay(shown)
         self.layout_overlay_views[role].set_frame(shown)
 
+    # -------------------------------------------------------- point cloud
+    def _build_cloud_tab(self) -> QWidget:
+        """agent 카메라의 depth 포인트클라우드 뷰 (탭이 보일 때만 스트림).
+
+        depth 는 상시로 켜 두면 USB 대역·안정성을 잡아먹으므로, 이 탭에
+        들어올 때 RGB 미리보기를 잠깐 내리고 depth 워커를 올린다. 탭을
+        떠나면 반대로 되돌린다 (수집 세션과는 아예 공존 불가 -- 세션 중엔
+        안내만 보여준다).
+        """
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(4, 4, 4, 4)
+        self.cloud_view = VideoView()
+        self.cloud_view.setText(tr("탭에 들어오면 depth 스트림을 켭니다"))
+        col.addWidget(self.cloud_view, 1)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr("회전")))
+        self.cloud_yaw = QSlider(Qt.Orientation.Horizontal)
+        self.cloud_yaw.setRange(-80, 80)
+        self.cloud_yaw.setValue(25)
+        self.cloud_yaw.valueChanged.connect(lambda *_: self._render_cloud())
+        row.addWidget(self.cloud_yaw, 1)
+        row.addWidget(QLabel(tr("기울임")))
+        self.cloud_pitch = QSlider(Qt.Orientation.Horizontal)
+        self.cloud_pitch.setRange(-80, 80)
+        self.cloud_pitch.setValue(-30)
+        self.cloud_pitch.valueChanged.connect(lambda *_: self._render_cloud())
+        row.addWidget(self.cloud_pitch, 1)
+        col.addLayout(row)
+        self.cloud_status = QLabel("")
+        self.cloud_status.setStyleSheet("color:#888;")
+        col.addWidget(self.cloud_status)
+        return w
+
+    def _start_cloud(self) -> None:
+        if self._cloud_worker is not None:
+            return
+        if self.worker is not None:
+            self.cloud_view.clear_frame(
+                tr("수집 세션 중에는 사용할 수 없습니다 — 세션 종료 후 다시 여세요"))
+            return
+        serial = self._combo_serial(self.agent_combo)
+        if not serial:
+            self.cloud_view.clear_frame(tr("Configure 에서 agent 카메라를 선택하세요"))
+            return
+        # depth 파이프라인은 RGB 미리보기와 같은 장치를 두 번 열 수 없다.
+        self._cloud_previews_were_on = bool(self.agent_preview or self.wrist_preview)
+        self._stop_previews_async()
+        self.cloud_status.setText(tr("depth 스트림 여는 중... ({s})").format(s=serial))
+        w = DepthCloudWorker(serial)
+        w.cloud_ready.connect(self._on_cloud)
+        w.error.connect(lambda m: self.cloud_status.setText(
+            tr("depth 오류: {m}").format(m=m)))
+        w.start()
+        self._cloud_worker = w
+
+    def _stop_cloud(self, restore_previews: bool = True) -> None:
+        w = self._cloud_worker
+        if w is None:
+            return
+        self._cloud_worker = None
+        w.stop()
+        w.wait(3000)
+        self.cloud_status.setText(tr("depth 스트림 종료"))
+        if restore_previews and self._cloud_previews_were_on \
+                and self.worker is None:
+            # 파이프라인이 놓이는 데 잠깐 걸린다 -- 바로 열면 busy.
+            QTimer.singleShot(700, lambda: (
+                self._restart_previews() if self.worker is None
+                and self._cloud_worker is None else None))
+
+    @pyqtSlot(object, object)
+    def _on_cloud(self, pts, rgb) -> None:
+        self._cloud_pts, self._cloud_rgb = pts, rgb
+        self._render_cloud()
+        self.cloud_status.setText(
+            tr("점 {n:,}개 · 회전/기울임 슬라이더로 시점 변경").format(n=len(pts)))
+
+    def _render_cloud(self) -> None:
+        """포인트클라우드 → 고정 시점 직교 투영 이미지 (numpy 래스터라이즈)."""
+        pts, rgb = self._cloud_pts, self._cloud_rgb
+        if pts is None or len(pts) == 0:
+            return
+        yaw = np.deg2rad(self.cloud_yaw.value())
+        pitch = np.deg2rad(self.cloud_pitch.value())
+        cy, sy = np.cos(yaw), np.sin(yaw)
+        cp, sp = np.cos(pitch), np.sin(pitch)
+        ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+        rx = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
+        p = (pts - pts.mean(axis=0)) @ (rx @ ry).T
+        h_out, w_out = 480, 640
+        # 로버스트 범위(2/98 퍼센타일)로 스케일 -- 튀는 점이 화면을 줄이지 않게
+        lo = np.percentile(p[:, :2], 2, axis=0)
+        hi = np.percentile(p[:, :2], 98, axis=0)
+        span = np.maximum(hi - lo, 1e-6)
+        s = 0.92 * min(w_out / span[0], h_out / span[1])
+        u = ((p[:, 0] - (lo[0] + hi[0]) / 2) * s + w_out / 2).astype(np.int32)
+        v = ((p[:, 1] - (lo[1] + hi[1]) / 2) * s + h_out / 2).astype(np.int32)
+        keep = (u >= 0) & (u < w_out - 1) & (v >= 0) & (v < h_out - 1)
+        u, v, z = u[keep], v[keep], p[keep, 2]
+        c = rgb[keep]
+        order = np.argsort(-z)              # 먼 점부터 -- 가까운 점이 덮어쓴다
+        u, v, c = u[order], v[order], c[order]
+        canvas = np.full((h_out, w_out, 3), 16, np.uint8)
+        for du, dv in ((0, 0), (1, 0), (0, 1), (1, 1)):   # 2×2 점
+            canvas[v + dv, u + du] = c
+        self.cloud_view.set_frame(canvas)
+
     def _on_center_tab_changed(self, idx: int) -> None:
         """레이아웃 탭이 보이는 동안만 하단 로그를 접고 슬라이드쇼를 돌린다."""
+        cloud_on = idx == getattr(self, "_cloud_tab_index", -1)
+        if cloud_on:
+            self._start_cloud()
+        elif self._cloud_worker is not None:
+            self._stop_cloud()
         on = idx == self._layout_tab_index
         self.bottom_tabs.setVisible(not on)
         if on:
@@ -4778,6 +4898,7 @@ class WorkspaceWindow(QMainWindow):
         # can take a second or two on a flaky link -- waited for inline it just
         # looked like the app had died. Ask them to stop, then keep the UI
         # alive and retry on a timer until they are actually gone.
+        self._stop_cloud(restore_previews=False)   # depth 도 카메라를 놓아야 한다
         self._stop_previews_async()
         if self._previews_busy():
             if self._connect_wait_since is None:
@@ -6889,6 +7010,7 @@ class WorkspaceWindow(QMainWindow):
         self._play_timer.stop()
         if self._play_loader is not None:
             self._play_loader.wait(3000)
+        self._stop_cloud(restore_previews=False)
         self._stop_previews_blocking()
         if self.worker is not None and self.worker.isRunning():
             self.worker.cmd_quit()

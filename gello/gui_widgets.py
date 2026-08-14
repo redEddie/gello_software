@@ -585,6 +585,84 @@ class CameraPreviewWorker(QThread):
                 pass
 
 
+class DepthCloudWorker(QThread):
+    """RealSense depth+color 를 읽어 다운샘플된 포인트클라우드를 내보낸다.
+
+    Point Cloud 탭이 보일 때만 산다 -- depth 스트림은 상시로 켜 두면
+    USB 대역/안정성을 잡아먹으므로, 탭 진입에 켜고 이탈에 끈다 (RGB
+    미리보기와 같은 카메라를 쓸 수 없어 GUI 가 미리보기를 잠깐 내리고
+    이 워커를 올린다). 미리보기가 파이프라인을 놓는 데 시간이 걸리므로
+    열기는 몇 번 재시도한다.
+    """
+
+    cloud_ready = pyqtSignal(object, object)   # points (N,3) f32, colors (N,3) u8
+    error = pyqtSignal(str)
+
+    def __init__(self, serial: str, stride: int = 3,
+                 interval_ms: int = 400) -> None:
+        super().__init__()
+        self.serial = serial
+        self.stride = stride
+        self.interval_ms = interval_ms
+        self._running = True
+
+    def stop(self) -> None:
+        self._running = False
+
+    def run(self) -> None:  # noqa: C901
+        import pyrealsense2 as rs
+
+        pipe = rs.pipeline()
+        cfg = rs.config()
+        cfg.enable_device(self.serial)
+        cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+        cfg.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 30)
+        profile = None
+        for attempt in range(6):        # 미리보기가 놓기를 기다린다
+            if not self._running:
+                return
+            try:
+                profile = pipe.start(cfg)
+                break
+            except RuntimeError as e:
+                if attempt == 5:
+                    self.error.emit(f"카메라 열기 실패: {e}")
+                    return
+                self.msleep(500)
+        try:
+            align = rs.align(rs.stream.color)
+            scale = profile.get_device().first_depth_sensor().get_depth_scale()
+            intr = profile.get_stream(rs.stream.color) \
+                .as_video_stream_profile().get_intrinsics()
+            s = self.stride
+            vs, us = np.mgrid[0:480:s, 0:640:s].astype(np.float32)
+            while self._running:
+                try:
+                    frames = align.process(pipe.wait_for_frames(2000))
+                    dfr, cfr = frames.get_depth_frame(), frames.get_color_frame()
+                    if not dfr or not cfr:
+                        continue
+                    z = np.asanyarray(dfr.get_data())[::s, ::s] * scale
+                    rgb = np.asanyarray(cfr.get_data())[::s, ::s]
+                except Exception as e:  # noqa: BLE001
+                    if self._running:
+                        self.error.emit(f"{type(e).__name__}: {e}")
+                    break
+                valid = (z > 0.05) & (z < 2.0)
+                zf = z[valid]
+                pts = np.stack([(us[valid] - intr.ppx) * zf / intr.fx,
+                                (vs[valid] - intr.ppy) * zf / intr.fy,
+                                zf], axis=1).astype(np.float32)
+                if self._running:
+                    self.cloud_ready.emit(pts, rgb[valid])
+                self.msleep(self.interval_ms)
+        finally:
+            try:
+                pipe.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 class HfAccountDialog(QDialog):
     """Switch between stored HF accounts, or add one by pasting a token.
 
