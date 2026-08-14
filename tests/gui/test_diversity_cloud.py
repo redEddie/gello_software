@@ -154,7 +154,8 @@ win._depth_cursor = (999, 999)
 win._render_depth()
 assert win._depth_cursor is None
 assert "커서" not in win.depth_status.text()
-print("8 통과: 커서 지점 실거리 표시 + 경계 가드 + 워커 계산 모드(탭별)")
+assert not win.cloud_view._square_guide and not win.depth_view._square_guide
+print("8 통과: 커서 실거리 + 경계 가드 + 워커 모드 + 크롭 가이드 미적용")
 
 print("\n다양성 추천 + Point Cloud 검증 통과")
 import os  # noqa: E402

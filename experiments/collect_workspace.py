@@ -3849,6 +3849,8 @@ class WorkspaceWindow(QMainWindow):
         col.setContentsMargins(4, 4, 4, 4)
         self.cloud_view = VideoView()
         self.cloud_view.setText(tr("탭에 들어오면 depth 스트림을 켭니다"))
+        # 크롭 가이드는 학습 프레이밍용 -- 3D 뷰에는 의미가 없고 어둡게만 보인다
+        self.cloud_view.set_square_guide(False)
         col.addWidget(self.cloud_view, 1)
         row = QHBoxLayout()
         row.addWidget(QLabel(tr("카메라")))
@@ -3890,6 +3892,8 @@ class WorkspaceWindow(QMainWindow):
         col.setContentsMargins(4, 4, 4, 4)
         self.depth_view = VideoView()
         self.depth_view.setText(tr("탭에 들어오면 depth 스트림을 켭니다"))
+        # depth 는 원본 해상도 그대로 기록/표시 -- 크롭 가이드 비적용
+        self.depth_view.set_square_guide(False)
         # 마우스가 가리키는 지점의 실거리 표시 (eventFilter 에서 처리)
         self.depth_view.setMouseTracking(True)
         self.depth_view.installEventFilter(self)
