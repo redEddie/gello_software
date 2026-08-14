@@ -3553,6 +3553,16 @@ class WorkspaceWindow(QMainWindow):
                 self.right_fields[key] = lab
             col.addWidget(box)
 
+        # 지금 수집 중인 scene 의 물체 배치(3×3)를 세션 내내 보여준다 --
+        # 물체를 제자리에 되돌릴 때 Configure 로 오갈 필요가 없게.
+        scene_box = QGroupBox(tr("Scene 배치 (수집 중)"))
+        sv = QVBoxLayout(scene_box)
+        sv.setContentsMargins(6, 6, 6, 6)
+        self.right_scene_view = SceneInfoView()
+        self.right_scene_view.setText(tr("(scene 세션 없음)"))
+        sv.addWidget(self.right_scene_view)
+        col.addWidget(scene_box)
+
         sysbox = QGroupBox(f"System ({TODO_MARK})")
         sform = QFormLayout(sysbox)
         for label in ("CPU", "GPU", "Memory"):
@@ -4324,6 +4334,18 @@ class WorkspaceWindow(QMainWindow):
             self.slot_instr_edit.setText(cfg.language_instruction)
             self.slot_current_label.setText(
                 f"{cfg.instruction_id}: {cfg.language_instruction}")
+            # 오른쪽 배치도 -- 이어찍기는 metadata 가 파일에만 있으므로 워커가
+            # 파일을 쥐기 전인 지금 읽어 둔다.
+            md = scene_meta
+            if md is None and scene_sid:
+                try:
+                    md = read_scene_metadata(
+                        Path(cfg.data_root) / scene_filename(scene_sid))
+                except Exception:  # noqa: BLE001
+                    md = None
+            self._set_right_scene(md, scene_sid)
+        else:
+            self._set_right_scene(None)
 
         w = CollectionWorker(cfg)
         w.state_changed.connect(self._on_state)
@@ -4557,6 +4579,18 @@ class WorkspaceWindow(QMainWindow):
         # 모든 종료 경로에서 오는 finished(_on_worker_finished)가 맡는다.
         self.log(f"[세션 요약] {summary}")
 
+    def _set_right_scene(self, md, sid=None) -> None:
+        """오른쪽 패널의 '수집 중 scene 배치도'를 갱신한다."""
+        if not hasattr(self, "right_scene_view"):
+            return
+        if md is not None:
+            self.right_scene_view.setText(describe_scene(md))
+        elif sid:
+            self.right_scene_view.setText(
+                tr("{s} — 배치 정보를 읽지 못했습니다").format(s=sid))
+        else:
+            self.right_scene_view.setText(tr("(scene 세션 없음)"))
+
     @pyqtSlot()
     def _on_worker_finished(self) -> None:
         """워커 run()이 어떤 경로로든 끝나면 세션을 해제한다.
@@ -4574,6 +4608,7 @@ class WorkspaceWindow(QMainWindow):
         self.active_episode_cache = None
         was_scene = self._scene_session
         self._scene_session = False
+        self._set_right_scene(None)
         self._set_running(False)
         self._refresh_dataset_tree()
         if was_scene:
