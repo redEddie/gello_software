@@ -1042,8 +1042,12 @@ class Hdf5TreeDialog(QDialog):
             s = str(obj.attrs[k])
             it = QTreeWidgetItem(
                 [f"@{k}", s[:80] + ("…" if len(s) > 80 else "")])
-            for c in (0, 1):
-                it.setForeground(c, Qt.GlobalColor.gray)
+            # 회색은 '비활성/숨김'으로 읽힌다 (실사용 피드백) -- 기울임꼴만으로
+            # 데이터셋과 구분하고 색은 그대로 둔다.
+            f = it.font(0)
+            f.setItalic(True)
+            it.setFont(0, f)
+            it.setFont(1, f)
             it.setData(0, Qt.ItemDataRole.UserRole, ("attr", obj.name, k))
             parent_item.addChild(it)
 
