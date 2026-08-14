@@ -97,6 +97,22 @@ assert win.cloud_cam_combo.currentData() == "wrist"
 assert win._cloud_worker is None
 print("5 통과: 클라우드 카메라 콤보 (닫힌 탭에서는 지연 반영)")
 
+# ---- 6. Depth 탭: 소비자 전환 + 컬러맵 렌더 ----
+win._on_center_tab_changed(win._depth_tab_index)
+assert win._depth_consumer == "depth" and win._cloud_worker is None
+z = np.full((48, 64), 0.6, np.float32)
+z[:10] = 0.0            # 무측정
+z[20:30] = 5.0          # 최대 거리 밖
+win._on_depth_img(z)
+assert win.depth_view.pixmap() is not None
+assert "유효 픽셀" in win.depth_status.text()
+win.depth_range_slider.setValue(50)          # 0.5m -> 0.6m 픽셀도 무효
+win._render_depth()
+assert "0.5 m" in win.depth_range_label.text()
+win._on_center_tab_changed(0)
+assert win._depth_consumer is None
+print("6 통과: Depth 탭 -- 진입/이탈, 컬러맵 렌더, 범위 슬라이더")
+
 print("\n다양성 추천 + Point Cloud 검증 통과")
 import os  # noqa: E402
 

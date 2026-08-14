@@ -1098,6 +1098,23 @@ class Hdf5TreeDialog(QDialog):
                         arr = obj[...]
                         lines.append("")
                         lines.append(tr("(이미지 미리보기)"))
+                    elif obj.dtype == np.uint16 and obj.ndim in (2, 3):
+                        # depth (#17): mm 값 -> JET 컬러맵 (가까움=빨강)
+                        import cv2
+
+                        z = (obj[0] if obj.ndim == 3 else obj[...]).astype(float)
+                        valid = z > 0
+                        zmax = float(np.percentile(z[valid], 98)) if valid.any() else 1.0
+                        norm = np.zeros(z.shape, np.uint8)
+                        if valid.any():
+                            norm[valid] = (255 * (1 - np.clip(z[valid] / zmax, 0, 1))
+                                           ).astype(np.uint8)
+                        arr = cv2.cvtColor(cv2.applyColorMap(norm, cv2.COLORMAP_JET),
+                                           cv2.COLOR_BGR2RGB)
+                        arr[~valid] = 0
+                        lines.append("")
+                        lines.append(tr("(depth 첫 프레임 미리보기 · ~{m:.0f}mm 까지)")
+                                     .format(m=zmax))
                     elif obj.size and obj.size <= self.PREVIEW_ELEMS:
                         lines.append("")
                         lines.append("── 값 " + "─" * 32)
@@ -1648,6 +1665,9 @@ class WorkspaceWindow(QMainWindow):
         self._cloud_pts = None
         self._cloud_rgb = None
         self._cloud_previews_were_on = False
+        self._cloud_serial = ""            # 지금 depth 워커가 연 카메라
+        self._depth_consumer = None        # "cloud" | "depth" | None
+        self._depth_img = None
         self._play_loader: EpisodeLoadWorker | None = None
         self._play_frames: dict = {"agent": None, "wrist": None}
         self._play_key = None
@@ -2007,13 +2027,9 @@ class WorkspaceWindow(QMainWindow):
             self._build_gallery_tab(), tr("Gallery"))
         self._cloud_tab_index = self.center_tabs.addTab(
             self._build_cloud_tab(), tr("Point Cloud"))
+        self._depth_tab_index = self.center_tabs.addTab(
+            self._build_depth_tab(), tr("Depth"))
         self.center_tabs.currentChanged.connect(self._on_center_tab_changed)
-        for title, why in ((tr("Depth"), tr("깊이 스트림을 아직 수집하지 않습니다.")),):
-            ph = QLabel(tr("{t} — {m}\n\n{w}").format(t=title, m=TODO_MARK, w=why))
-            ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            ph.setStyleSheet(TODO_STYLE)
-            idx = self.center_tabs.addTab(ph, f"{title} ({TODO_MARK})")
-            self.center_tabs.setTabEnabled(idx, False)
 
     # --------------------------------------------------------------- left
     def _build_left(self) -> None:
@@ -3807,20 +3823,71 @@ class WorkspaceWindow(QMainWindow):
         col.addWidget(self.cloud_status)
         return w
 
+    def _build_depth_tab(self) -> QWidget:
+        """depth 컬러맵 라이브 뷰 -- Point Cloud 와 같은 워커·같은 수명주기.
+
+        스키마의 depth 기록(#17)과 별개다: 여기는 수집 전에 depth 품질과
+        범위를 눈으로 확인하는 뷰고, 기록 여부는 Settings 의 스키마
+        체크박스가 정한다.
+        """
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(4, 4, 4, 4)
+        self.depth_view = VideoView()
+        self.depth_view.setText(tr("탭에 들어오면 depth 스트림을 켭니다"))
+        col.addWidget(self.depth_view, 1)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr("카메라")))
+        self.depth_cam_combo = QComboBox()
+        self.depth_cam_combo.addItem("Agent", "agent")
+        self.depth_cam_combo.addItem("Wrist", "wrist")
+        self.depth_cam_combo.currentIndexChanged.connect(self._on_cloud_cam_changed)
+        row.addWidget(self.depth_cam_combo)
+        row.addSpacing(12)
+        row.addWidget(QLabel(tr("최대 거리")))
+        self.depth_range_slider = QSlider(Qt.Orientation.Horizontal)
+        self.depth_range_slider.setRange(30, 300)      # 0.3 ~ 3.0 m
+        self.depth_range_slider.setValue(120)
+        self.depth_range_slider.valueChanged.connect(
+            lambda *_: self._render_depth())
+        row.addWidget(self.depth_range_slider, 1)
+        self.depth_range_label = QLabel("1.2 m")
+        self.depth_range_label.setStyleSheet("color:#888;")
+        row.addWidget(self.depth_range_label)
+        col.addLayout(row)
+        self.depth_status = QLabel(tr(
+            "가까움=빨강, 멂=파랑, 검정=측정 불가. 기록 여부는 Settings 의 "
+            "스키마 체크박스(#17)가 정합니다."))
+        self.depth_status.setStyleSheet("color:#888;")
+        self.depth_status.setWordWrap(True)
+        col.addWidget(self.depth_status)
+        return w
+
+    def _depth_role_combo(self) -> QComboBox:
+        return (self.depth_cam_combo if self._depth_consumer == "depth"
+                else self.cloud_cam_combo)
+
+    def _depth_views(self) -> list:
+        return [self.cloud_view, self.depth_view]
+
     def _start_cloud(self) -> None:
-        if self._cloud_worker is not None:
-            return
         if self.worker is not None:
-            self.cloud_view.clear_frame(
-                tr("수집 세션 중에는 사용할 수 없습니다 — 세션 종료 후 다시 여세요"))
+            for v in self._depth_views():
+                v.clear_frame(tr("수집 세션 중에는 사용할 수 없습니다 — "
+                                 "세션 종료 후 다시 여세요"))
             return
-        role = self.cloud_cam_combo.currentData() or "agent"
+        role = self._depth_role_combo().currentData() or "agent"
         combo = self.agent_combo if role == "agent" else self.wrist_combo
         serial = self._combo_serial(combo)
         if not serial:
-            self.cloud_view.clear_frame(
-                tr("Configure 에서 {r} 카메라를 선택하세요").format(r=role))
+            for v in self._depth_views():
+                v.clear_frame(
+                    tr("Configure 에서 {r} 카메라를 선택하세요").format(r=role))
             return
+        if self._cloud_worker is not None:
+            if serial == self._cloud_serial:
+                return                      # 같은 카메라 -- 탭만 바뀐 것
+            self._stop_cloud(restore_previews=False)
         # depth 파이프라인은 RGB 미리보기와 같은 장치를 두 번 열 수 없다.
         # OR-누적: 카메라 전환 재시작 때(미리보기 이미 내려간 상태) 복원
         # 약속을 잊지 않게 한다. 플래그는 실제 복원 때 리셋된다.
@@ -3828,19 +3895,28 @@ class WorkspaceWindow(QMainWindow):
                                         or bool(self.agent_preview
                                                 or self.wrist_preview))
         self._stop_previews_async()
-        self.cloud_status.setText(tr("depth 스트림 여는 중... ({s})").format(s=serial))
+        msg = tr("depth 스트림 여는 중... ({s})").format(s=serial)
+        self.cloud_status.setText(msg)
+        self.depth_status.setText(msg)
         w = DepthCloudWorker(serial)
         w.cloud_ready.connect(self._on_cloud)
-        w.error.connect(lambda m: self.cloud_status.setText(
-            tr("depth 오류: {m}").format(m=m)))
+        w.depth_ready.connect(self._on_depth_img)
+        w.error.connect(self._on_depth_error)
         w.start()
         self._cloud_worker = w
+        self._cloud_serial = serial
+
+    def _on_depth_error(self, m: str) -> None:
+        text = tr("depth 오류: {m}").format(m=m)
+        self.cloud_status.setText(text)
+        self.depth_status.setText(text)
 
     def _on_cloud_cam_changed(self, *_args) -> None:
         if self._cloud_worker is None:      # 탭이 닫혀 있으면 다음 진입 때 반영
             return
         self._stop_cloud(restore_previews=False)  # 복원 약속(플래그)은 유지된다
-        self.cloud_view.clear_frame(tr("카메라 전환 중..."))
+        for v in self._depth_views():
+            v.clear_frame(tr("카메라 전환 중..."))
         self._start_cloud()
 
     def _stop_cloud(self, restore_previews: bool = True) -> None:
@@ -3848,9 +3924,11 @@ class WorkspaceWindow(QMainWindow):
         if w is None:
             return
         self._cloud_worker = None
+        self._cloud_serial = ""
         w.stop()
         w.wait(3000)
         self.cloud_status.setText(tr("depth 스트림 종료"))
+        self.depth_status.setText(tr("depth 스트림 종료"))
         if restore_previews and self._cloud_previews_were_on \
                 and self.worker is None:
             self._cloud_previews_were_on = False
@@ -3862,9 +3940,38 @@ class WorkspaceWindow(QMainWindow):
     @pyqtSlot(object, object)
     def _on_cloud(self, pts, rgb) -> None:
         self._cloud_pts, self._cloud_rgb = pts, rgb
-        self._render_cloud()
-        self.cloud_status.setText(
-            tr("점 {n:,}개 · 회전/기울임 슬라이더로 시점 변경").format(n=len(pts)))
+        if self._depth_consumer == "cloud":     # 보이는 탭만 렌더
+            self._render_cloud()
+            self.cloud_status.setText(
+                tr("점 {n:,}개 · 회전/기울임 슬라이더로 시점 변경").format(n=len(pts)))
+
+    @pyqtSlot(object)
+    def _on_depth_img(self, z) -> None:
+        self._depth_img = z
+        if self._depth_consumer == "depth":
+            self._render_depth()
+
+    def _render_depth(self) -> None:
+        """depth(m) → JET 컬러맵. 가까움=빨강, 최대 거리 밖/무측정=검정."""
+        z = self._depth_img
+        if z is None:
+            return
+        import cv2
+
+        zmax = self.depth_range_slider.value() / 100.0
+        self.depth_range_label.setText(f"{zmax:.1f} m")
+        valid = (z > 0.05) & (z <= zmax)
+        # 가까울수록 큰 값 -> JET 의 빨강. 0..255 로 정규화.
+        norm = np.zeros(z.shape, np.uint8)
+        norm[valid] = (255 * (1.0 - z[valid] / zmax)).astype(np.uint8)
+        bgr = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        rgb[~valid] = 0
+        self.depth_view.set_frame(rgb)
+        n_ok = int(valid.sum())
+        self.depth_status.setText(
+            tr("유효 픽셀 {p}% · 범위 0.05~{m:.1f} m · 기록 여부는 Settings "
+               "스키마(#17)").format(p=round(100 * n_ok / z.size), m=zmax))
 
     def _render_cloud(self) -> None:
         """포인트클라우드 → 고정 시점 직교 투영 이미지 (numpy 래스터라이즈)."""
@@ -3898,9 +4005,14 @@ class WorkspaceWindow(QMainWindow):
 
     def _on_center_tab_changed(self, idx: int) -> None:
         """레이아웃 탭이 보이는 동안만 하단 로그를 접고 슬라이드쇼를 돌린다."""
-        cloud_on = idx == getattr(self, "_cloud_tab_index", -1)
-        if cloud_on:
-            self._start_cloud()
+        if idx == getattr(self, "_cloud_tab_index", -1):
+            self._depth_consumer = "cloud"
+        elif idx == getattr(self, "_depth_tab_index", -1):
+            self._depth_consumer = "depth"
+        else:
+            self._depth_consumer = None
+        if self._depth_consumer is not None:
+            self._start_cloud()     # 이미 같은 카메라로 돌고 있으면 유지
         elif self._cloud_worker is not None:
             self._stop_cloud()
         on = idx == self._layout_tab_index

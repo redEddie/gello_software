@@ -596,6 +596,7 @@ class DepthCloudWorker(QThread):
     """
 
     cloud_ready = pyqtSignal(object, object)   # points (N,3) f32, colors (N,3) u8
+    depth_ready = pyqtSignal(object)           # (H,W) float32 m -- Depth 탭용 원해상도
     error = pyqtSignal(str)
 
     def __init__(self, serial: str, stride: int = 3,
@@ -642,7 +643,9 @@ class DepthCloudWorker(QThread):
                     dfr, cfr = frames.get_depth_frame(), frames.get_color_frame()
                     if not dfr or not cfr:
                         continue
-                    z = np.asanyarray(dfr.get_data())[::s, ::s] * scale
+                    z_full = (np.asanyarray(dfr.get_data()).astype(np.float32)
+                              * scale)
+                    z = z_full[::s, ::s]
                     rgb = np.asanyarray(cfr.get_data())[::s, ::s]
                 except Exception as e:  # noqa: BLE001
                     if self._running:
@@ -654,6 +657,7 @@ class DepthCloudWorker(QThread):
                                 (vs[valid] - intr.ppy) * zf / intr.fy,
                                 zf], axis=1).astype(np.float32)
                 if self._running:
+                    self.depth_ready.emit(z_full)
                     self.cloud_ready.emit(pts, rgb[valid])
                 self.msleep(self.interval_ms)
         finally:
