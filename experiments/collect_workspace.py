@@ -3927,8 +3927,10 @@ class WorkspaceWindow(QMainWindow):
                     tr("Configure 에서 {r} 카메라를 선택하세요").format(r=role))
             return
         if self._cloud_worker is not None:
-            if serial == self._cloud_serial:
+            if serial == self._cloud_serial and self._cloud_worker.isRunning():
                 return                      # 같은 카메라 -- 탭만 바뀐 것
+            # 다른 카메라거나, 오류로 죽은 워커가 남아 있는 경우(죽은 워커를
+            # '살아있다'고 믿으면 탭을 다시 들어와도 스트림이 영영 안 선다)
             self._stop_cloud(restore_previews=False)
         # depth 파이프라인은 RGB 미리보기와 같은 장치를 두 번 열 수 없다.
         # OR-누적: 카메라 전환 재시작 때(미리보기 이미 내려간 상태) 복원
@@ -4023,6 +4025,10 @@ class WorkspaceWindow(QMainWindow):
         self.depth_range_label.setText(f"{zmax:.1f} m")
         frame = _depth_colormap(z, zmax)
         cursor_txt = ""
+        if self._depth_cursor is not None:
+            u, v = self._depth_cursor
+            if not (0 <= u < z.shape[1] and 0 <= v < z.shape[0]):
+                self._depth_cursor = None   # 프레임 크기가 바뀐 뒤 남은 커서
         if self._depth_cursor is not None:
             u, v = self._depth_cursor
             zval = float(z[v, u])
@@ -5598,6 +5604,12 @@ class WorkspaceWindow(QMainWindow):
             # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
             self._refresh_scene_combo()
         self._restart_previews()
+        if self._depth_consumer is not None:
+            # 세션 동안 Depth/Point Cloud 탭에 머물러 있었다면 스트림을 다시
+            # 올린다 (세션 중엔 안내만 보였다). 미리보기가 뜨는 시간을 준다.
+            QTimer.singleShot(600, lambda: (
+                self._start_cloud() if self.worker is None
+                and self._depth_consumer is not None else None))
 
     # -------------------------------------------------------------- stats
     def _bump(self, key: str, n: int = 1) -> None:
@@ -7289,16 +7301,20 @@ class WorkspaceWindow(QMainWindow):
         closes dialogs normally.
         """
         if obj is getattr(self, "depth_view", None):
-            # Depth 뷰 위에서 마우스가 가리키는 지점의 실거리 표시
+            # Depth 뷰 위에서 마우스가 가리키는 지점의 실거리 표시.
+            # 마우스 이벤트만 소비하고 나머지(키 입력 등)는 아래 공용 단축키
+            # 처리로 흘려보낸다 -- 무조건 return 하면 이 뷰에 포커스가 있는
+            # 동안 Space/Esc 단축키가 죽는다.
             if (event.type() == QEvent.Type.MouseMove
                     and self._depth_img is not None):
                 self._depth_cursor = self._depth_uv(event.position())
                 self._render_depth()
-            elif event.type() == QEvent.Type.Leave \
+                return False
+            if event.type() == QEvent.Type.Leave \
                     and self._depth_cursor is not None:
                 self._depth_cursor = None
                 self._render_depth()
-            return False
+                return False
         if (
             event.type() == QEvent.Type.KeyPress
             and self.worker is not None

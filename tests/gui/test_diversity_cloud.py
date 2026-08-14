@@ -149,7 +149,12 @@ from gello.gui_widgets import DepthCloudWorker  # noqa: E402
 
 assert DepthCloudWorker("x", mode="depth").mode == "depth"
 assert DepthCloudWorker("x").mode == "cloud"
-print("8 통과: 커서 지점 실거리 표시 + 워커 계산 모드(탭별)")
+# 프레임 크기 변경 등으로 범위 밖에 남은 커서는 조용히 지운다
+win._depth_cursor = (999, 999)
+win._render_depth()
+assert win._depth_cursor is None
+assert "커서" not in win.depth_status.text()
+print("8 통과: 커서 지점 실거리 표시 + 경계 가드 + 워커 계산 모드(탭별)")
 
 print("\n다양성 추천 + Point Cloud 검증 통과")
 import os  # noqa: E402
