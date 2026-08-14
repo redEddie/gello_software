@@ -113,9 +113,21 @@ assert win.replay_process is not None
 args = win.replay_process.arguments()
 assert args[0] == real_repl and args[1].endswith("x.hdf5")
 assert args[2] == "episode_000" and args[3:] == ["--speed", "0.5", "--yes"]
-win.replay_process.kill()
-win.replay_process.waitForFinished(3000)
-print("4 통과: 재생 가드(선택/세션/취소) + 명령행 구성")
+# 재생 중에는 두 진입점 버튼이 '중단' 토글로 바뀐다
+assert "중단" in win.replay_btn.text()
+assert "중단" in win.gallery_replay_btn.text()
+proc = win.replay_process
+win._on_replay_selected()            # 토글: 재생 중 클릭 = 중단
+proc.waitForFinished(3000)
+for _ in range(20):                  # finished 시그널(큐잉) 전달
+    app.processEvents()
+    if win.replay_process is None:
+        break
+    import time
+    time.sleep(0.05)
+assert win.replay_process is None
+assert "중단" not in win.replay_btn.text()
+print("4 통과: 재생 가드 + 명령행 + 토글(재생↔중단) 왕복")
 
 print("\n격자 + 실로봇 재생 검증 통과")
 import os  # noqa: E402

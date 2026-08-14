@@ -562,6 +562,13 @@ def _relax_min_widths(root: QWidget) -> None:
     for lb in root.findChildren(QLabel):
         if lb.sizePolicy().horizontalPolicy() != QSizePolicy.Policy.Ignored:
             lb.setWordWrap(True)
+            # wordWrap 만으로는 QFormLayout 이 높이를 한 줄치로 줘서 두 줄째가
+            # 잘린다(오른쪽 패널 WIDE_FIELDS 에서 이미 확인된 Qt 동작).
+            # heightForWidth 를 켜야 접힌 만큼 세로가 확보된다.
+            sp = lb.sizePolicy()
+            sp.setHeightForWidth(True)
+            sp.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
+            lb.setSizePolicy(sp)
 
 
 def _shrinkable_combo(c: QComboBox) -> None:
@@ -1413,10 +1420,6 @@ class WorkspaceWindow(QMainWindow):
             "로봇 노드가 켜져 있어야 하고, 로봇이 실제로 움직입니다."))
         self.gallery_replay_btn.clicked.connect(self._on_gallery_replay)
         row.addWidget(self.gallery_replay_btn)
-        self.gallery_replay_stop_btn = QPushButton(tr("중단"))
-        self.gallery_replay_stop_btn.setEnabled(False)
-        self.gallery_replay_stop_btn.clicked.connect(self._on_replay_stop)
-        row.addWidget(self.gallery_replay_stop_btn)
         col.addLayout(row)
         self.gallery_list = QListWidget()
         self.gallery_list.setViewMode(QListWidget.ViewMode.IconMode)
@@ -1531,6 +1534,9 @@ class WorkspaceWindow(QMainWindow):
             self._play_episode(d[0], d[1])
 
     def _on_gallery_replay(self) -> None:
+        if self._replay_running():      # 토글: 재생 중이면 중단 버튼이다
+            self._on_replay_stop()
+            return
         picks = [item.data(Qt.ItemDataRole.UserRole)
                  for item in self.gallery_list.selectedItems()]
         picks = [d for d in picks if d]
@@ -2514,21 +2520,16 @@ class WorkspaceWindow(QMainWindow):
         relabel_btn.clicked.connect(self._on_relabel_selected)
         col.addWidget(relabel_btn)
 
-        rrow = QHBoxLayout()
-        robot_replay_btn = QPushButton(tr("선택 재생 (실로봇)"))
-        robot_replay_btn.setToolTip(tr(
+        # 재생 중에는 이 버튼 자체가 '■ 재생 중단' 으로 바뀐다 -- 별도 중단
+        # 버튼은 화면 밖으로 밀려 안 보이는 일이 있었다.
+        self.replay_btn = QPushButton(tr("선택 재생 (실로봇)"))
+        self.replay_btn.setToolTip(tr(
             "기록된 관절 명령을 같은 주기로 다시 보내 에피소드를 실로봇에서 "
             "재현합니다.\n로봇 노드가 켜져 있어야 하고, 로봇이 실제로 "
-            "움직입니다. 주변을 비우세요."))
-        robot_replay_btn.clicked.connect(self._on_replay_selected)
-        rrow.addWidget(robot_replay_btn, 1)
-        self.replay_stop_btn = QPushButton(tr("재생 중단"))
-        self.replay_stop_btn.setEnabled(False)
-        self.replay_stop_btn.setToolTip(tr(
-            "재생을 즉시 끊습니다. 로봇은 현재 포즈에서 정지 상태를 유지합니다."))
-        self.replay_stop_btn.clicked.connect(self._on_replay_stop)
-        rrow.addWidget(self.replay_stop_btn)
-        col.addLayout(rrow)
+            "움직입니다. 주변을 비우세요.\n재생 중에는 이 버튼이 '재생 중단'"
+            "이 됩니다 (중단 시 로봇은 현재 포즈 유지)."))
+        self.replay_btn.clicked.connect(self._on_replay_selected)
+        col.addWidget(self.replay_btn)
 
         del_btn = QPushButton(tr("선택한 에피소드 삭제"))
         del_btn.setToolTip(tr(
@@ -3847,11 +3848,22 @@ class WorkspaceWindow(QMainWindow):
         self.upper_split = QSplitter(Qt.Orientation.Horizontal)
         self.left_stack.setMinimumWidth(200)
         self.right_panel.setMinimumWidth(200)
+        # 배치도가 붙으면서 패널이 창보다 길어질 수 있다 -- 세로 스크롤로
+        # 감싼다 (가로는 원칙대로 없음, 내용이 접힌다).
+        _relax_min_widths(self.right_panel)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        right_scroll.setWidget(self.right_panel)
+        right_scroll.setMinimumWidth(200)
+        self.right_scroll = right_scroll
         self.center_tabs.setMinimumWidth(420)
         self.bottom_tabs.setMinimumHeight(90)
         self.upper_split.addWidget(self.left_stack)
         self.upper_split.addWidget(self.center_split)
-        self.upper_split.addWidget(self.right_panel)
+        self.upper_split.addWidget(self.right_scroll)
         # Only the center grows when the window does: the two side panels hold
         # text at a readable width, the camera is the thing worth more pixels.
         self.upper_split.setStretchFactor(0, 0)
@@ -3946,7 +3958,7 @@ class WorkspaceWindow(QMainWindow):
         m.addAction(self.act_toggle_bottom)
         self.act_toggle_right = QAction(tr("오른쪽 패널"), self, checkable=True, checked=True)
         self.act_toggle_right.triggered.connect(
-            lambda on: self.right_panel.setVisible(on))
+            lambda on: self.right_scroll.setVisible(on))
         m.addAction(self.act_toggle_right)
 
         m = mb.addMenu(tr("Tools"))
@@ -5331,7 +5343,14 @@ class WorkspaceWindow(QMainWindow):
         if self._relabel_episodes(by_file):
             self._refresh_dataset_tree()
 
+    def _replay_running(self) -> bool:
+        return (self.replay_process is not None and
+                self.replay_process.state() != QProcess.ProcessState.NotRunning)
+
     def _on_replay_selected(self) -> None:
+        if self._replay_running():      # 토글: 재생 중이면 중단 버튼이다
+            self._on_replay_stop()
+            return
         picks = [(Path(i.parent().data(0, Qt.ItemDataRole.UserRole)),
                   i.data(0, Qt.ItemDataRole.UserRole))
                  for i in self.dataset_tree.selectedItems()
@@ -5395,7 +5414,7 @@ class WorkspaceWindow(QMainWindow):
         self.replay_process = proc
         self.log(f"[실로봇 재생] ▶ {Path(path).name} / {demo} ({speed:g}x)")
         proc.start()
-        self._set_replay_stop_enabled(True)
+        self._set_replay_ui(True)
 
     def _on_replay_stop(self) -> None:
         """재생 하위 프로세스를 끊는다. 로봇 노드의 레퍼런스 필터가 현재
@@ -5408,15 +5427,21 @@ class WorkspaceWindow(QMainWindow):
         if not proc.waitForFinished(2000):
             proc.kill()
 
-    def _set_replay_stop_enabled(self, on: bool) -> None:
-        for b in (getattr(self, "replay_stop_btn", None),
-                  getattr(self, "gallery_replay_stop_btn", None)):
-            if b is not None:
-                b.setEnabled(on)
+    def _set_replay_ui(self, running: bool) -> None:
+        """재생/중단 토글 -- 두 진입점(Dataset·Gallery) 버튼이 함께 바뀐다."""
+        for b, idle_text in ((getattr(self, "replay_btn", None),
+                              tr("선택 재생 (실로봇)")),
+                             (getattr(self, "gallery_replay_btn", None),
+                              tr("실로봇 재생"))):
+            if b is None:
+                continue
+            b.setText(tr("■ 재생 중단") if running else idle_text)
+            b.setStyleSheet(
+                "background-color:#c0392b; color:white;" if running else "")
 
     def _on_replay_finished(self, code: int, _status) -> None:
         self.replay_process = None
-        self._set_replay_stop_enabled(False)
+        self._set_replay_ui(False)
         self.log(tr("[실로봇 재생] {r} (exit={c})").format(
             r=tr("완료") if code == 0 else tr("중단/실패 — 로그 확인"), c=code))
 
