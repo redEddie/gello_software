@@ -58,6 +58,16 @@ dlg._align(0, 3, 0)     # 좌 정렬: 1·4번 x 평균
 assert dlg.canvas.corners[0][0] == dlg.canvas.corners[3][0]
 dlg._undo()             # 좌 정렬 취소
 assert dlg.canvas.corners[0][0] == 0.2
+# 크롭 가이드: crop_params 없이 열면 비활성, 주면 켜지고 화면이 달라진다
+assert not dlg.crop_check.isEnabled()
+dlg2 = cw.GridEditorDialog(None, bg, dict(store),
+                           crop_params={"zoom": 1.2, "x": 10, "y": 0})
+assert dlg2.crop_check.isChecked() and dlg2.canvas.show_crop
+shaded = dlg2.canvas._crop_shade(bg.copy())
+assert shaded.shape == bg.shape and (shaded != bg).any()
+assert (shaded[0, 0] <= bg[0, 0]).all()      # 크롭 밖은 어두워진다
+dlg2.crop_check.setChecked(False)
+assert not dlg2.canvas.show_crop
 dlg.canvas.full_grid = False
 dlg._transform()
 assert dlg.canvas.full_grid

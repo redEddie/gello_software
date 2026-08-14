@@ -1130,6 +1130,8 @@ class _GridCanvas(QLabel):
         self._img = np.ascontiguousarray(background)
         self.corners = [list(c) for c in corners]
         self.full_grid = True
+        self.crop_params: "dict | None" = None   # {"zoom","x","y"} -- agent 크롭
+        self.show_crop = False
         self._drag: "int | None" = None
         self._fit = (1.0, 0, 0)     # scale, x-offset, y-offset (위젯 좌표계)
         self.setMinimumSize(480, 360)
@@ -1145,6 +1147,8 @@ class _GridCanvas(QLabel):
             out = draw_grid(self._img, self.corners, 80)
         else:
             out = self._img.copy()
+        if self.show_crop and self.crop_params:
+            out = self._crop_shade(out)
         pts = np.int32([[c[0] * w, c[1] * h] for c in self.corners])
         cv2.polylines(out, [pts.reshape(-1, 1, 2)], True, (80, 255, 140),
                       max(1, round(w / 320)), cv2.LINE_AA)
@@ -1162,6 +1166,29 @@ class _GridCanvas(QLabel):
         self.setPixmap(pix.scaled(sw, sh,
                                   Qt.AspectRatioMode.KeepAspectRatio,
                                   Qt.TransformationMode.SmoothTransformation))
+
+    def _crop_shade(self, img: np.ndarray) -> np.ndarray:
+        """변환 파이프라인의 정사각 크롭 밖을 어둡게 -- 라이브 뷰의 크롭
+        가이드(VideoView._decorate)와 같은 수식이라 보이는 영역이 일치한다."""
+        import cv2
+
+        h, w = img.shape[:2]
+        side = min(w, h)
+        z = float(self.crop_params.get("zoom", 1.0))
+        if z > 1.0:
+            side = max(16, round(side / z))
+        sc = w / 640
+        x0 = min(max((w - side) // 2
+                     + round(self.crop_params.get("x", 0) * sc), 0), w - side)
+        y0 = min(max((h - side) // 2
+                     + round(self.crop_params.get("y", 0) * sc), 0), h - side)
+        img[:y0] //= 2
+        img[y0 + side:] //= 2
+        img[y0:y0 + side, :x0] //= 2
+        img[y0:y0 + side, x0 + side:] //= 2
+        cv2.rectangle(img, (x0, y0), (x0 + side - 1, y0 + side - 1),
+                      (255, 255, 255), 1)
+        return img
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().resizeEvent(event)
@@ -1212,10 +1239,12 @@ class GridEditorDialog(QDialog):
     Live 오버레이가 바로 이 격자를 쓴다.
     """
 
-    def __init__(self, parent, background: np.ndarray, store: dict) -> None:
+    def __init__(self, parent, background: np.ndarray, store: dict,
+                 crop_params: "dict | None" = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("3×3 격자 편집"))
         self._store = store
+        self._crop_params = crop_params
         corners = active_corners(store) or DEFAULT_CORNERS
         col = QVBoxLayout(self)
         hint = QLabel(tr(
@@ -1241,6 +1270,14 @@ class GridEditorDialog(QDialog):
             b.setToolTip(tr(tip))
             b.clicked.connect(slot)
             row.addWidget(b)
+        self.crop_check = QCheckBox(tr("크롭 가이드"))
+        self.crop_check.setToolTip(tr(
+            "LeRobot 변환 때 남는 정사각 영역 밖을 어둡게 표시합니다.\n"
+            "격자(물체 배치)가 학습 화면 안에 들어오는지 확인용."))
+        self.crop_check.setEnabled(crop_params is not None)
+        self.crop_check.setChecked(crop_params is not None)
+        self.crop_check.toggled.connect(self._on_crop_toggled)
+        row.addWidget(self.crop_check)
         row.addStretch(1)
         col.addLayout(row)
 
@@ -1271,6 +1308,12 @@ class GridEditorDialog(QDialog):
         self._undo_stack: list = []
         self.canvas.changed.connect(lambda: self.status_label.setText(""))
         self.canvas.drag_started.connect(self._push_undo)
+        self.canvas.crop_params = crop_params
+        self.canvas.show_crop = self.crop_check.isChecked()
+        self.canvas.render_grid()
+
+    def _on_crop_toggled(self, on: bool) -> None:
+        self.canvas.show_crop = bool(on)
         self.canvas.render_grid()
 
     def _push_undo(self) -> None:
@@ -4679,7 +4722,8 @@ class WorkspaceWindow(QMainWindow):
             bg = np.full((480, 640, 3), 60, np.uint8)
             self.log(tr("[격자] 카메라 프레임이 없어 회색 배경에서 편집합니다 — "
                         "미리보기를 켜면 실제 화면 위에서 맞출 수 있습니다."))
-        dlg = GridEditorDialog(self, bg, self._grid_store)
+        dlg = GridEditorDialog(self, bg, self._grid_store,
+                               crop_params=dict(self._crop_params["agent"]))
         dlg.exec()
         self._grid_store = load_grid_store()    # 저장 결과를 다시 정본에서
         self._regrid_live()
