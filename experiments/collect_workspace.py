@@ -5582,6 +5582,9 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(int, str)
     def _on_connected(self, n_episodes, path) -> None:
+        # 세션이 붙었다 = 노드가 살아 응답했다 (연결 검증이 노드 경유).
+        self.lights["node"].set("ok", tr("정상"))
+        self.right_fields["node"].setText(tr("정상"))
         # 연결되면 카메라 화면으로 따라간다. 버튼을 누른 시점이 아니라 여기인
         # 이유는, 연결이 미리보기 정리를 기다리거나 실패할 수 있기 때문이다 --
         # 그때 Live 로 옮겨두면 아무것도 안 나오는 탭을 보게 된다.
@@ -7204,10 +7207,20 @@ class WorkspaceWindow(QMainWindow):
         ])
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.readyReadStandardOutput.connect(self._on_node_output)
-        proc.finished.connect(lambda c, _s: self.log(f"[노드] 종료 (exit={c})"))
+        proc.finished.connect(self._on_node_finished)
         self.node_process = proc
         self.log("[노드] 시작합니다...")
+        # 인디케이터는 세션 중 장애 신호(node_status)로만 갱신되고 있어서,
+        # 노드가 잘 떠 있어도 '노드 -' 로 남았다 (실화면에서 확인된 혼란).
+        # GUI 가 켠 시점/종료 시점에도 갱신한다.
+        self.lights["node"].set("busy", tr("시작 중"))
+        self.right_fields["node"].setText(tr("시작 중"))
         proc.start()
+
+    def _on_node_finished(self, code: int, _status) -> None:
+        self.log(f"[노드] 종료 (exit={code})")
+        self.lights["node"].set("off", "-")
+        self.right_fields["node"].setText("-")
 
     def _on_node_output(self) -> None:
         if self.node_process is None:
