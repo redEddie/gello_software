@@ -5199,6 +5199,7 @@ class WorkspaceWindow(QMainWindow):
             return
         root = Path(self.root_edit.text().strip() or ".")
         done = total = 0
+        skipped: list = []
         for sp in plan.scenes:
             path = root / scene_filename(sp.scene_id)
             counts: dict = {}
@@ -5212,7 +5213,11 @@ class WorkspaceWindow(QMainWindow):
                 except Exception:  # noqa: BLE001 -- 잠금 등
                     note = tr(" (파일 사용 중)")
             else:
-                note = tr(" (파일 없음)")
+                # 파일이 없는(아직 안 찍었거나 지운) scene 은 표에 넣지
+                # 않는다 -- 지운 파일의 slot 목록이 계속 보이는 것이
+                # 혼란스럽다는 실사용 피드백. 개수는 아래 요약에 남긴다.
+                skipped.append(sp.scene_id)
+                continue
             s_done = s_total = 0
             top = QTreeWidgetItem([f"{sp.scene_id}{note}", "", "", ""])
             for s in sp.slots:
@@ -5233,9 +5238,12 @@ class WorkspaceWindow(QMainWindow):
             tree.addTopLevelItem(top)
         tree.expandAll()
         pct = (100 * done // total) if total else 0
-        self.plan_progress_label.setText(
-            tr("전체 {d}/{t} ({p}%) — {n}").format(
-                d=done, t=total, p=pct, n=plan.path.name))
+        text = tr("전체 {d}/{t} ({p}%) — {n}").format(
+            d=done, t=total, p=pct, n=plan.path.name)
+        if skipped:
+            text += tr("  ·  파일 없는 scene {n}개 표시 안 함 ({s})").format(
+                n=len(skipped), s=", ".join(skipped[:4]))
+        self.plan_progress_label.setText(text)
 
     def _refresh_stats(self) -> None:
         for stats, labels in ((self._session, self.stats_labels),
