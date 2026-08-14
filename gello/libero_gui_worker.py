@@ -1246,13 +1246,17 @@ class CollectionWorker(QThread):
         self._teleop.connect()
 
     def _reset_wait(self) -> str:
-        """Returns "ok", "quit", or "go_home"."""
+        """Returns "ok", "quit", or "go_home".
+
+        시간이 아니라 사람이 끝낸다 -- '리셋 완료' 버튼(Enter)을 눌러야만
+        다음으로 진행 (2026-08-14 사용자 결정: 자동 진행은 물체 배치가
+        끝나기 전에 게이트로 넘어가는 사고를 만든다). reset_countdown 은
+        남은 시간 대신 경과 시간을 싣는다. cfg.reset_wait_seconds 는 더
+        이상 진행에 쓰이지 않는다.
+        """
         self.state_changed.emit("reset_wait")
-        end = time.monotonic() + self.cfg.reset_wait_seconds
+        t0 = time.monotonic()
         while True:
-            remain = end - time.monotonic()
-            if remain <= 0:
-                return "ok"
             cmd = self._poll_cmd()
             if cmd:
                 if cmd[0] == "skip_reset_wait":
@@ -1261,7 +1265,7 @@ class CollectionWorker(QThread):
                     return "quit"
                 if cmd[0] == "go_home":
                     return "go_home"
-            self.reset_countdown.emit(max(0.0, remain))
+            self.reset_countdown.emit(time.monotonic() - t0)
             try:
                 # 리셋 중에도 라이브 뷰는 살아 있어야 한다 -- 물체를 되돌리는
                 # 그 시간이 화면을 가장 많이 보는 시간이다.

@@ -326,7 +326,7 @@ STATE_LABELS = {
     "recording": "기록 중",
 }
 SHORTCUT_HINTS = {
-    "reset_wait": "Enter: 대기 건너뛰기   Esc: 직전 에피소드 판정 뒤집기",
+    "reset_wait": "Enter: 리셋 완료 — 계속   Esc: 직전 에피소드 판정 뒤집기",
     "gate": "Space: 텔레옵 시작   Enter: 자동 정렬 다시",
     "recording": "Space: 성공으로 끝내기   Esc: 실패로 끝내기   Del: 폐기",
 }
@@ -2274,7 +2274,11 @@ class WorkspaceWindow(QMainWindow):
         self.eplen_edit = QLineEdit("20")
         sform.addRow(tr("에피소드 길이(s)"), self.eplen_edit)
         self.resetwait_edit = QLineEdit("10")
-        sform.addRow(tr("리셋 대기(s)"), self.resetwait_edit)
+        self.resetwait_edit.setEnabled(False)
+        self.resetwait_edit.setToolTip(tr(
+            "더 이상 사용하지 않습니다 — 리셋 대기는 시간으로 끝나지 않고 "
+            "'리셋 완료' 버튼(Enter)으로만 끝납니다."))
+        sform.addRow(tr("리셋 대기(s) (미사용)"), self.resetwait_edit)
         self.wall_check = QCheckBox(tr("관절 한계 벽 사용"))
         self.wall_check.setChecked(True)
         sform.addRow(self.wall_check)
@@ -2871,7 +2875,10 @@ class WorkspaceWindow(QMainWindow):
         self.match_btn = QPushButton(tr("자동 정렬 다시 (Enter)"))
         self.match_btn.setEnabled(False)
         self.match_btn.clicked.connect(lambda: self._cmd("cmd_auto_match_pose"))
-        self.skip_btn = QPushButton(tr("리셋 대기 건너뛰기"))
+        self.skip_btn = QPushButton(tr("리셋 완료 — 계속 (Enter)"))
+        self.skip_btn.setToolTip(tr(
+            "물체를 제자리에 놓은 뒤 누르세요. 리셋 대기는 자동으로 끝나지 "
+            "않습니다 -- 이 버튼(또는 Enter)을 눌러야 게이트로 넘어갑니다."))
         self.skip_btn.clicked.connect(lambda: self._cmd("cmd_skip_reset_wait"))
         self.save_ok_btn = QPushButton(tr("저장 (성공)"))
         self.save_ok_btn.setStyleSheet("background-color:#2ecc71; color:white; font-weight:bold;")
@@ -4736,7 +4743,7 @@ class WorkspaceWindow(QMainWindow):
                "  기록 중        Delete       폐기\n"
                "  자세 정렬 중   Enter        자동 정렬 다시 (대략 맞춘 뒤에만)\n"
                "  리셋 대기 중   Esc          직전 에피소드 판정 뒤집기\n"
-               "  리셋 대기 중   Enter        대기 건너뛰기\n\n"
+               "  리셋 대기 중   Enter        리셋 완료 — 계속\n\n"
                "지금 쓸 수 있는 키는 Collect 패널 아래에 초록색으로 표시됩니다.")))
         m.addSeparator()
         m.addAction(tr("정보"), lambda: QMessageBox.information(
@@ -5559,7 +5566,9 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(float)
     def _on_countdown(self, seconds) -> None:
-        self.state_label.setText(tr("리셋 대기 {s:.0f}s").format(s=seconds))
+        # 자동 진행이 없어졌으므로 카운트다운이 아니라 경과 시간이다.
+        self.state_label.setText(
+            tr("리셋 중 {s:.0f}s 경과 — 배치 후 Enter").format(s=seconds))
 
     @pyqtSlot(bool)
     def _on_node_status(self, ok) -> None:

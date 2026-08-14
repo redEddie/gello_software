@@ -125,21 +125,34 @@ t2.join(3)
 assert r2["r"] == "ok"
 print("3 통과: 자동정렬 꺼짐 -- 발동 없이 수동 게이트")
 
-# ---- 4. 리셋 대기 중에도 프레임이 흐른다 ----
+# ---- 4. 리셋 대기: 자동 종료 없음, 버튼으로만 끝, 프레임은 흐른다 ----
 w3 = make_worker()
 frames = []
 w3.frames_ready.connect(lambda a, b: frames.append(1))
-t0 = time.monotonic()
-r = w3._reset_wait()
-assert r == "ok" and time.monotonic() - t0 >= 0.35
+r4 = {}
+t4 = threading.Thread(target=lambda: r4.update(r=w3._reset_wait()))
+t4.start()
+time.sleep(0.6)          # cfg 의 0.4s 를 지나도
+assert t4.is_alive(), "리셋 대기가 시간 경과로 저절로 끝남"
+w3.cmd_skip_reset_wait()
+t4.join(3)
+assert r4["r"] == "ok"
+app.processEvents()
 assert len(frames) >= 2, f"리셋 중 프레임 {len(frames)}회"
-# _get_obs 가 죽어도 카운트다운은 계속
+# _get_obs 가 죽어도 루프는 계속되고 버튼으로 끝난다
 w3b = make_worker()
 def boom():
     raise RuntimeError("cam")
 w3b._get_obs = boom
-assert w3b._reset_wait() == "ok"
-print(f"4 통과: 리셋 중 프레임 {len(frames)}회 + obs 오류에도 카운트다운 지속")
+r4b = {}
+t4b = threading.Thread(target=lambda: r4b.update(r=w3b._reset_wait()))
+t4b.start()
+time.sleep(0.3)
+assert t4b.is_alive()
+w3b.cmd_skip_reset_wait()
+t4b.join(3)
+assert r4b["r"] == "ok"
+print(f"4 통과: 자동 종료 없음 + 버튼 종료 + 프레임 {len(frames)}회 + obs 오류 내성")
 
 # ---- 5. GUI: 게이트에서 자세 맞을 때만 Start 활성 ----
 import collect_workspace as cw  # noqa: E402
