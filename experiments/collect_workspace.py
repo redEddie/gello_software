@@ -4402,14 +4402,18 @@ class WorkspaceWindow(QMainWindow):
 
     def _set_running(self, running: bool) -> None:
         savable = running and not self._no_dataset_session
-        for key in ("record", "discard", "home"):
+        for key in ("discard", "home"):
             self.tb_actions[key].setEnabled(running)
         for key in ("save", "savefail"):
             self.tb_actions[key].setEnabled(savable)
         self.tb_actions["connect"].setEnabled(not running)
         self.tb_actions["disconnect"].setEnabled(running)
-        for b in (self.start_btn, self.skip_btn, self.discard_btn, self.home_btn):
+        for b in (self.skip_btn, self.discard_btn, self.home_btn):
             b.setEnabled(running)
+        if not running:
+            self._gate_ok = False
+        # Start(기록 시작)는 게이트 자세 조건까지 본다 -- 아래 헬퍼가 전담.
+        self._update_start_controls(running)
         for b in (self.save_ok_btn, self.save_ng_btn):
             b.setEnabled(savable)
         self.no_dataset_check.setEnabled(not running)
@@ -4431,6 +4435,21 @@ class WorkspaceWindow(QMainWindow):
                                  tr("연결됨") if running else tr("끊김"))
         self.right_fields["robot"].setText(tr("연결됨") if running else tr("끊김"))
 
+    def _update_start_controls(self, running: "bool | None" = None) -> None:
+        """Start Teleop 버튼/툴바는 게이트 상태에선 자세가 맞아야만 열린다.
+
+        자동 정렬이 켜져 있어도 같다 -- 정렬은 리더가 범위(GATE_RAD) 안에
+        들어와야 발동하므로, 그 전에 시작을 눌러도 워커가 거부만 한다.
+        버튼을 잠가서 '왜 안 되는지'를 누르기 전에 보이게 한다.
+        """
+        if running is None:
+            running = self.worker is not None
+        ok = running and (self._current_state != "gate" or self._gate_ok)
+        self.start_btn.setEnabled(ok)
+        act = getattr(self, "tb_actions", {}).get("record")
+        if act is not None:
+            act.setEnabled(ok)
+
     # ------------------------------------------------------ worker slots
     @pyqtSlot(str)
     def _on_state(self, state: str) -> None:
@@ -4441,7 +4460,11 @@ class WorkspaceWindow(QMainWindow):
             self._last_saved_name = None
             self._pending_verdict_toggle = False
             self.verdict_label.setText("")
+        if state == "gate" and self._current_state != "gate":
+            # 새 게이트: 첫 gate_status 가 올 때까지 시작을 잠근다.
+            self._gate_ok = False
         self._current_state = state
+        self._update_start_controls()
         self.state_label.setText(STATE_LABELS.get(state, state))
         self.shortcut_hint.setText(SHORTCUT_HINTS.get(state, ""))
         self.right_fields["state"].setText(state)
@@ -4477,6 +4500,7 @@ class WorkspaceWindow(QMainWindow):
         # 게이트 상태의 힌트도 all_ok에 따라 바꾼다.
         self._gate_ok = all_ok
         self.match_btn.setEnabled(all_ok)
+        self._update_start_controls()
         if self._current_state == "gate":
             self.shortcut_hint.setText(
                 "Space: 텔레옵 시작   Enter: 자동 정렬 다시" if all_ok
@@ -6197,7 +6221,13 @@ class WorkspaceWindow(QMainWindow):
             state = self._current_state
             if key == Qt.Key.Key_Space:
                 if state == "gate":
-                    self._cmd("cmd_start_teleop")
+                    # 버튼과 같은 조건: 자세가 맞아야 시작 (워커도 거부하지만
+                    # 이유를 먼저 보여준다).
+                    if self._gate_ok:
+                        self._cmd("cmd_start_teleop")
+                    else:
+                        self.log("[GATE] 아직 자세가 맞지 않아 시작할 수 없습니다 "
+                                 "-- 리더를 팔로워 자세에 맞추세요.")
                     return True
                 if state == "recording" and not self._no_dataset_session:
                     self._save(True)

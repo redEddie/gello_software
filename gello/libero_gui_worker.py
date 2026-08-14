@@ -755,15 +755,12 @@ class CollectionWorker(QThread):
         """
         self.state_changed.emit("gate")
         deadline = time.monotonic() + timeout
-        if self.cfg.auto_match_pose:
-            # Pull the leader onto the reset pose before handing control back,
-            # so every episode starts from the same joint configuration.
-            outcome = self._auto_match_pose()
-            if outcome in ("quit", "go_home"):
-                return outcome
-            if outcome == "start_teleop":
-                self._teleop.cancel_pose_match()
-                return "ok"
+        # 자동 정렬이 켜져 있어도 무조건 당기지 않는다: 리더가 느슨한 게이트
+        # (GATE_RAD) 안으로 들어온 뒤에만 정렬한다 -- 버튼 경로와 같은 모터
+        # 보호 전제. 예전에는 게이트 진입 즉시 당겼는데, 리더가 멀리 놓여
+        # 있으면 전 구간을 모터로 끌고 오는 셈이었다.
+        auto_pending = self.cfg.auto_match_pose
+        auto_warned = False
         try:
             while True:
                 cmd = self._poll_cmd()
@@ -781,6 +778,19 @@ class CollectionWorker(QThread):
                     self.log_message.emit(
                         f"[GATE] 아직 자세가 맞지 않습니다 (최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
                     )
+                run_auto = False
+                if auto_pending:
+                    if all_ok:
+                        # 켜 둔 자동 정렬은 범위에 들어온 첫 순간 한 번만 발동.
+                        auto_pending = False
+                        run_auto = True
+                    elif not auto_warned:
+                        auto_warned = True
+                        self.log_message.emit(
+                            f"[자동정렬] 리더가 아직 범위 밖입니다 "
+                            f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad) "
+                            f"-- 가까이 가져오면 자동 정렬합니다"
+                        )
                 if cmd and cmd[0] == "auto_match_pose":
                     # Motor-protection precondition: only ever pull via the
                     # leader's own motors once the loose manual gate already
@@ -793,21 +803,23 @@ class CollectionWorker(QThread):
                             f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
                         )
                     else:
-                        outcome = self._auto_match_pose()
-                        if outcome in ("quit", "go_home"):
-                            return outcome
-                        if outcome == "start_teleop":
-                            # Operator started teleop mid-align -- the pull
-                            # is already released (see _auto_match_pose), so
-                            # just honor it like a normal Start Teleop click.
-                            return "ok"
-                        # outcome == "ok": converged, and per _auto_match_pose's
-                        # contract the leader is left TORQUE-HELD at the target
-                        # (not released) -- the loop just keeps looping, still
-                        # in "gate", holding the matched pose until the operator
-                        # actually clicks Start Teleop (or quits/goes home). The
-                        # `finally` below releases it whichever way this
-                        # function ends up returning.
+                        run_auto = True
+                if run_auto:
+                    outcome = self._auto_match_pose()
+                    if outcome in ("quit", "go_home"):
+                        return outcome
+                    if outcome == "start_teleop":
+                        # Operator started teleop mid-align -- the pull
+                        # is already released (see _auto_match_pose), so
+                        # just honor it like a normal Start Teleop click.
+                        return "ok"
+                    # outcome == "ok": converged, and per _auto_match_pose's
+                    # contract the leader is left TORQUE-HELD at the target
+                    # (not released) -- the loop just keeps looping, still
+                    # in "gate", holding the matched pose until the operator
+                    # actually clicks Start Teleop (or quits/goes home). The
+                    # `finally` below releases it whichever way this
+                    # function ends up returning.
                 if time.monotonic() > deadline:
                     self.log_message.emit(f"[GATE] {timeout:.0f}s 시간 초과")
                     return "quit"
@@ -1218,6 +1230,12 @@ class CollectionWorker(QThread):
                 if cmd[0] == "go_home":
                     return "go_home"
             self.reset_countdown.emit(max(0.0, remain))
+            try:
+                # 리셋 중에도 라이브 뷰는 살아 있어야 한다 -- 물체를 되돌리는
+                # 그 시간이 화면을 가장 많이 보는 시간이다.
+                self._emit_frames(self._get_obs())
+            except Exception:  # noqa: BLE001 -- 일시적 카메라/노드 오류로
+                pass           # 카운트다운을 멈추지 않는다
             time.sleep(0.1)
 
     def _wait_node_recovery(self) -> bool:
