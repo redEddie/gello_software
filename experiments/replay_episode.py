@@ -102,7 +102,14 @@ def main() -> None:
 
     robot = FR3ZMQRobot(FR3ZMQRobotConfig(
         id="fr3", host=STATION.node.host, port=STATION.node.port, cameras={}))
-    robot.connect()
+    try:
+        robot.connect()
+    except Exception as e:
+        raise SystemExit(
+            f"[replay] 로봇 노드에 연결하지 못했습니다 "
+            f"({STATION.node.host}:{STATION.node.port}, {type(e).__name__}).\n"
+            "  노드를 먼저 띄우세요 -- GUI '노드 시작' 또는\n"
+            "  (pylibfranka-venv) python experiments/launch_nodes.py --robot fr3")
 
     def joints(obs) -> np.ndarray:
         return np.array([obs[k] for k in JOINT_KEYS[:7]])
