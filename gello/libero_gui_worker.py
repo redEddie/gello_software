@@ -824,6 +824,10 @@ class CollectionWorker(QThread):
                         # is already released (see _auto_match_pose), so
                         # just honor it like a normal Start Teleop click.
                         return "ok"
+                    if outcome == "out_of_range" and self.cfg.auto_match_pose:
+                        # 이탈로 중단됐다 -- 범위에 다시 들어오면 자동 재시도.
+                        auto_pending = True
+                        auto_warned = False
                     # outcome == "ok": converged, and per _auto_match_pose's
                     # contract the leader is left TORQUE-HELD at the target
                     # (not released) -- the loop just keeps looping, still
@@ -866,10 +870,11 @@ class CollectionWorker(QThread):
 
         Returns "ok" (converged-and-held, timed-out-and-released, or the
         assist isn't available so there's nothing to do -- all three just
-        resume the caller's gate loop), "start_teleop" (aborted-and-released,
-        caller should proceed to start teleop), "quit", or "go_home" (both
-        release before returning, since either leaves the gate state for
-        good).
+        resume the caller's gate loop), "out_of_range" (the operator pulled
+        the leader back outside GATE_RAD mid-align -- released, caller may
+        re-arm), "start_teleop" (aborted-and-released, caller should proceed
+        to start teleop), "quit", or "go_home" (both release before
+        returning, since either leaves the gate state for good).
         """
         try:
             self._teleop.start_pose_match(self._reset_q)
@@ -885,7 +890,18 @@ class CollectionWorker(QThread):
                 if interrupt == "start_teleop":
                     self.log_message.emit("[자동정렬] 텔레옵 시작으로 중단")
                 return interrupt
-            self._emit_gate_status()  # keep the delta bars live during the pull
+            delta, all_ok = self._emit_gate_status()  # delta bars live during the pull
+            if not all_ok:
+                # 조작자가 정렬 중에 리더를 도로 범위 밖으로 끌었다 -- 모터가
+                # 사람 손과 싸우게 두지 않는다. 홀드를 풀고 게이트로 돌아간다
+                # (범위에 다시 들어오면 호출자가 재시도한다).
+                self._teleop.cancel_pose_match()
+                self.log_message.emit(
+                    f"[자동정렬] 리더가 범위 밖으로 벗어나 정렬을 중단합니다 "
+                    f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
+                )
+                self.pose_match_status.emit(float(delta.max()), True)
+                return "out_of_range"
             status = self._teleop.pose_match_status()
             err = status["error"]
             done = bool(status["done"])

@@ -27,6 +27,7 @@ class FakeTeleop:
         self.leader_q = np.full(7, 1.5)      # 팔로워(0)에서 멀리
         self.match_started = 0
         self.cancelled = 0
+        self.match_done = True               # False 면 정렬이 계속 진행 중
 
     def get_action(self):
         d = {k: float(self.leader_q[i]) for i, k in enumerate(JOINT_KEYS[:7])}
@@ -40,7 +41,7 @@ class FakeTeleop:
         self.cancelled += 1
 
     def pose_match_status(self):
-        return {"error": 0.0, "done": True}
+        return {"error": 0.0, "done": self.match_done}
 
 
 def make_worker():
@@ -80,6 +81,32 @@ t.join(3)
 assert not t.is_alive() and result["r"] == "ok"
 assert w._teleop.cancelled >= 1        # finally 에서 홀드 해제
 print("2 통과: 범위 진입 -- 자동정렬 1회 + start 통과 + 홀드 해제")
+
+# ---- 2b. 정렬 중 범위 이탈 -> 중단, 복귀 -> 자동 재시도 ----
+wb = make_worker()
+logs_b = []
+wb.log_message.connect(logs_b.append)
+wb._teleop.leader_q = np.full(7, GATE_RAD * 0.5)   # 범위 안에서 시작
+wb._teleop.match_done = False                       # 정렬이 진행 중인 상태 유지
+rb = {}
+tb = threading.Thread(target=lambda: rb.update(r=wb._pose_gate(timeout=30)))
+tb.start()
+time.sleep(0.3)
+assert wb._teleop.match_started == 1                # 정렬 발동
+wb._teleop.leader_q = np.full(7, 1.5)               # 정렬 중 범위 밖으로 끌기
+time.sleep(0.3)
+app.processEvents()
+assert tb.is_alive(), "이탈 중단 후 게이트로 못 돌아옴"
+assert any("범위 밖으로 벗어나 정렬을 중단" in m for m in logs_b), logs_b
+assert wb._teleop.cancelled >= 1                    # 홀드 해제됨
+wb._teleop.match_done = True
+wb._teleop.leader_q = np.full(7, GATE_RAD * 0.5)    # 다시 범위 안으로
+time.sleep(0.3)
+assert wb._teleop.match_started == 2, "복귀 후 자동 재시도 안 됨"
+wb.cmd_start_teleop()
+tb.join(3)
+assert rb["r"] == "ok"
+print("2b 통과: 정렬 중 이탈 -> 중단(홀드 해제) -> 복귀 시 자동 재시도")
 
 # ---- 3. 자동정렬 꺼짐: 발동 없음, 수동 게이트만 ----
 import dataclasses  # noqa: E402
