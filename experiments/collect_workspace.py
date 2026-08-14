@@ -1969,6 +1969,24 @@ class WorkspaceWindow(QMainWindow):
             return None, None, False, tr("시작 slot ID 형식이 틀렸습니다 (예: I000).")
         if not collector:
             return None, None, False, tr("수집자 식별자를 입력하세요 (에피소드 필수 attr).")
+        # 계획이 선택돼 있으면 시작 slot 은 계획의 (ID, 문장) 쌍이어야 한다 --
+        # 자유 입력이 계획 밖 slot 을 만들던 구멍의 마지막 잠금. 새 문장은
+        # ✎ 편집으로 계획에 추가하고, 자유 수집은 '(계획 없음)' 을 고른다.
+        plan = self._current_plan()
+        if plan is not None:
+            psid = self._configure_scene_id()
+            slots = plan.slots_for(psid) if psid else ()
+            if not slots:
+                return None, None, False, tr(
+                    "계획({p})에 scene {s} 가 없습니다. ✎ 편집으로 scene 을 "
+                    "추가하거나, 자유 수집이면 수집 계획을 '(계획 없음)' 으로 "
+                    "바꾸세요.").format(p=plan.path.name, s=psid)
+            if not any(s.instruction_id == iid and s.instruction == lang
+                       for s in slots):
+                return None, None, False, tr(
+                    "시작 문장은 '계획 문장' 드롭다운에서 선택하세요. "
+                    "({i}: {t!r} 는 계획에 없습니다 — 새 문장은 ✎ 편집으로 "
+                    "계획에 먼저 추가)").format(i=iid, t=lang[:40])
         sid = self.scene_combo.currentData()
         if sid is None:
             if self._pending_scene_meta is None:
@@ -2109,8 +2127,16 @@ class WorkspaceWindow(QMainWindow):
         keep = combo.currentData()
         combo.blockSignals(True)
         combo.clear()
-        combo.addItem(tr("(직접 입력)"), None)
         plan = self._current_plan()
+        # 계획이 있으면 문장은 계획에서만 고른다 -- 자유 입력이 계획 밖
+        # slot(문장-ID 갈라짐)을 실데이터에 만들었다. 새 문장은 ✎ 편집으로
+        # 계획에 먼저 추가한다. 계획이 없을 때만 직접 입력을 연다.
+        combo.addItem(tr("(계획에서 선택)") if plan is not None
+                      else tr("(직접 입력)"), None)
+        self.lang_edit.setReadOnly(plan is not None)
+        self.scene_iid_edit.setReadOnly(plan is not None)
+        for w in (self.lang_edit, self.scene_iid_edit):
+            w.setStyleSheet("color:#888;" if plan is not None else "")
         sid = self._configure_scene_id()
         if plan is not None and sid is not None:
             counts: dict = {}
@@ -2194,8 +2220,15 @@ class WorkspaceWindow(QMainWindow):
         combo = self.slot_plan_combo
         combo.blockSignals(True)
         combo.clear()
-        combo.addItem(tr("(직접 입력)"), None)
         plan = self._current_plan()
+        # Configure 쪽과 같은 규칙: 계획이 있으면 드롭다운에서만 고른다.
+        combo.addItem(tr("(계획에서 선택)") if plan is not None
+                      else tr("(직접 입력)"), None)
+        if hasattr(self, "slot_iid_edit"):
+            self.slot_iid_edit.setReadOnly(plan is not None)
+            self.slot_instr_edit.setReadOnly(plan is not None)
+            for w in (self.slot_iid_edit, self.slot_instr_edit):
+                w.setStyleSheet("color:#888;" if plan is not None else "")
         # 세션 중이므로 파일을 다시 열지 않는다(HDF5 잠금) -- scene ID 는
         # 워커 설정에서, 에피소드·카운트는 saver 가 보내준 캐시에서.
         sid = self._session_scene_id() if self._scene_session else None
@@ -2257,6 +2290,18 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("slot 오류"),
                                 tr("따옴표 없는 순수 문장을 입력하세요."))
             return
+        # 계획이 있으면 계획의 (ID, 문장) 쌍만 적용 가능 -- 자유 입력이
+        # 계획 밖 slot 을 만들던 구멍을 세션 중에도 막는다.
+        plan = self._current_plan()
+        sid = self._session_scene_id()
+        if plan is not None and sid is not None:
+            slots = plan.slots_for(sid)
+            if slots and not any(s.instruction_id == iid
+                                 and s.instruction == instr for s in slots):
+                QMessageBox.warning(self, tr("slot 오류"), tr(
+                    "계획에 없는 slot 입니다 ({i}). '계획 slot' 드롭다운에서 "
+                    "고르세요 — 새 문장은 계획을 먼저 수정하세요.").format(i=iid))
+                return
         self.worker.cmd_set_slot(instr, iid)
         self.slot_current_label.setText(f"{iid}: {instr}")
         self._recents.add("instruction_id", iid)

@@ -110,6 +110,19 @@ assert d and win.scene_iid_edit.text() == d[0] and win.lang_edit.text() == d[1]
 assert "/" in combo.itemText(1)          # 카운트 표기 c/target
 print(f"5 통과: 계획 문장 드롭다운 ({n_slots}개) + ID/문장 자동 채움")
 
+# ---- 6. 계획 선택 시: 자유 입력 잠금 + 계획 밖 문장 연결 거부 ----
+assert win.lang_edit.isReadOnly() and win.scene_iid_edit.isReadOnly()
+win.collector_edit.setText("t")
+win.lang_edit.setText("open the top drawer")     # 계획에 없는 문장 (주입)
+win.scene_iid_edit.setText("I009")
+_, _, _, err = win._scene_config_from_ui()
+assert err and "계획" in err, err
+combo.setCurrentIndex(1)                          # 계획 문장으로 복귀
+win._on_start_plan_pick()   # 인덱스가 그대로면 시그널이 없어 직접 호출
+_, _, _, err2 = win._scene_config_from_ui()
+assert err2 is None or "계획" not in err2, err2   # 남는 오류는 scene 선택뿐
+print("6 통과: 계획 선택 시 자유 입력 잠금 + 계획 밖 시작 문장 거부")
+
 print("\n계획 폼 + 드롭다운 검증 통과")
 import os  # noqa: E402
 
