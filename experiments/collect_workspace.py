@@ -1964,6 +1964,8 @@ class WorkspaceWindow(QMainWindow):
         live_col.setContentsMargins(4, 4, 4, 4)
         self.live_split = QSplitter(Qt.Orientation.Horizontal)
         self.live_views = {}
+        self.live_boxes = {}
+        self._live_maximized: "str | None" = None
         for key, title in (("agent", "Agent (정면)"), ("wrist", "Wrist (손목)")):
             box = QGroupBox(tr(title))
             inner = QVBoxLayout(box)
@@ -1971,8 +1973,11 @@ class WorkspaceWindow(QMainWindow):
             view = VideoView()
             view.setText(tr("카메라를 선택하세요"))
             view.set_crop_guide(**self._crop_params[key])
+            view.setToolTip(tr("더블클릭: 이 카메라 최대화 / 복원"))
+            view.installEventFilter(self)
             inner.addWidget(view)
             self.live_views[key] = view
+            self.live_boxes[key] = box
             self.live_split.addWidget(box)
         self.live_split.setSizes([600, 600])
         live_col.addWidget(self.live_split, 1)
@@ -1982,6 +1987,17 @@ class WorkspaceWindow(QMainWindow):
             "LeRobot 변환은 가운데 정사각만 남깁니다. 켜면 그 바깥이 어둡게 표시됩니다."))
         self.square_guide_check.toggled.connect(self._on_square_guide)
         grow = QHBoxLayout()
+        grow.addWidget(QLabel(tr("보기")))
+        # 한 카메라를 전체로 키우고 반대쪽을 왼쪽 아래 PiP 로 겹친다 --
+        # 뷰 더블클릭으로도 토글된다.
+        self.live_view_combo = QComboBox()
+        self.live_view_combo.addItem(tr("나란히"), None)
+        self.live_view_combo.addItem(tr("Agent 최대"), "agent")
+        self.live_view_combo.addItem(tr("Wrist 최대"), "wrist")
+        self.live_view_combo.currentIndexChanged.connect(
+            lambda *_: self._set_live_maximized(self.live_view_combo.currentData()))
+        grow.addWidget(self.live_view_combo)
+        grow.addSpacing(16)
         grow.addWidget(self.square_guide_check)
         grow.addSpacing(16)
         # 3×3 워크스페이스 격자 -- 편집은 격자 편집 다이얼로그, 여기는 표시만.
@@ -5134,11 +5150,67 @@ class WorkspaceWindow(QMainWindow):
         self._dying_previews = []
 
     def _on_preview_frame(self, role: str, frame) -> None:
-        self.live_views[role].set_frame(self._with_grid(role, frame))
-        self._last_cam_frame[role] = frame      # 격자 없는 원본을 저장
+        self._update_live_view(role, frame)
         if self.center_tabs.currentIndex() == self._layout_tab_index:
             self._layout_update_role(role)
         self._fps_count += 1
+
+    def _update_live_view(self, role: str, frame) -> None:
+        """라이브 프레임 공용 경로 -- 원본 캐시 + (나란히/최대화 PiP) 표시."""
+        self._last_cam_frame[role] = frame      # 격자·PiP 없는 원본을 저장
+        if self._live_maximized is None:
+            self.live_views[role].set_frame(self._with_grid(role, frame))
+        else:
+            self._render_live_pip()             # 어느 카메라 프레임이 와도 갱신
+
+    def _render_live_pip(self) -> None:
+        """최대화 모드: 주 카메라 전체 + 반대 카메라를 왼쪽 아래 PiP 로."""
+        m = self._live_maximized
+        if m is None:
+            return
+        main = self._last_cam_frame.get(m)
+        if main is None:
+            return
+        import cv2
+
+        canvas = self._with_grid(m, main)
+        canvas = main.copy() if canvas is main else np.ascontiguousarray(canvas)
+        other = "wrist" if m == "agent" else "agent"
+        small = self._last_cam_frame.get(other)
+        if small is not None:
+            small = self._with_grid(other, small)
+            h, w = canvas.shape[:2]
+            tw = max(2, w * 28 // 100)
+            th = max(2, small.shape[0] * tw // small.shape[1])
+            sm = cv2.resize(small, (tw, th))
+            y0, x0 = h - th - 10, 10
+            canvas[y0:y0 + th, x0:x0 + tw] = sm
+            cv2.rectangle(canvas, (x0 - 1, y0 - 1), (x0 + tw, y0 + th),
+                          (255, 255, 255), 1)
+            cv2.putText(canvas, other, (x0 + 4, y0 + 16),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+                        cv2.LINE_AA)
+        self.live_views[m].set_frame(canvas)
+
+    def _set_live_maximized(self, role: "str | None") -> None:
+        if role == self._live_maximized:
+            return
+        self._live_maximized = role
+        for r, box in self.live_boxes.items():
+            box.setVisible(role is None or r == role)
+        idx = 0 if role is None else self.live_view_combo.findData(role)
+        if idx >= 0 and self.live_view_combo.currentIndex() != idx:
+            self.live_view_combo.blockSignals(True)
+            self.live_view_combo.setCurrentIndex(idx)
+            self.live_view_combo.blockSignals(False)
+        if role is None:
+            # 나란히 복귀 -- 두 뷰 모두 마지막 프레임으로 다시 그린다
+            for r in ("agent", "wrist"):
+                f = self._last_cam_frame.get(r)
+                if f is not None:
+                    self.live_views[r].set_frame(self._with_grid(r, f))
+        else:
+            self._render_live_pip()
 
     def _with_grid(self, role: str, frame):
         """agent 라이브 화면에만 워크스페이스 3×3 격자를 덧그린다 (사본)."""
@@ -5169,6 +5241,9 @@ class WorkspaceWindow(QMainWindow):
     def _regrid_live(self) -> None:
         """마지막 프레임으로 agent 뷰를 다시 그린다 -- 멈춘 화면에서도
         체크박스/슬라이더가 즉시 반영되게."""
+        if self._live_maximized is not None:
+            self._render_live_pip()
+            return
         frame = self._last_cam_frame.get("agent")
         if frame is not None:
             self.live_views["agent"].set_frame(self._with_grid("agent", frame))
@@ -5443,8 +5518,7 @@ class WorkspaceWindow(QMainWindow):
         for role, rgb in (("agent", agent_rgb), ("wrist", wrist_rgb)):
             if rgb is None:
                 continue
-            self.live_views[role].set_frame(self._with_grid(role, rgb))
-            self._last_cam_frame[role] = rgb    # 격자 없는 원본을 저장
+            self._update_live_view(role, rgb)
             if layout_on:
                 self._layout_update_role(role)
         self._fps_count += 1
@@ -7300,6 +7374,13 @@ class WorkspaceWindow(QMainWindow):
         teleoperating. Skipped while a modal dialog is open so Esc still
         closes dialogs normally.
         """
+        if event.type() == QEvent.Type.MouseButtonDblClick:
+            # 라이브 뷰 더블클릭 = 그 카메라 최대화/복원 토글
+            for r, v in getattr(self, "live_views", {}).items():
+                if obj is v:
+                    self._set_live_maximized(
+                        None if self._live_maximized == r else r)
+                    return True
         if obj is getattr(self, "depth_view", None):
             # Depth 뷰 위에서 마우스가 가리키는 지점의 실거리 표시.
             # 마우스 이벤트만 소비하고 나머지(키 입력 등)는 아래 공용 단축키

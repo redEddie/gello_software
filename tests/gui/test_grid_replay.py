@@ -101,6 +101,27 @@ win.grid_live_check.setChecked(False)
 assert win._with_grid("agent", frame) is frame
 print("3 통과: agent 라이브만 오버레이, 체크 해제 시 원본")
 
+# ---- 3b. 카메라 최대화(PiP): wrist 전체 + agent 좌하단 겹침 ----
+win._last_cam_frame["agent"] = np.full((480, 640, 3), 40, np.uint8)
+win._last_cam_frame["wrist"] = np.full((480, 640, 3), 90, np.uint8)
+captured = {}
+orig_set = win.live_views["wrist"].set_frame
+win.live_views["wrist"].set_frame = lambda arr: captured.update(a=arr)
+win._set_live_maximized("wrist")
+assert win.live_boxes["agent"].isHidden() and not win.live_boxes["wrist"].isHidden()
+assert win.live_view_combo.currentData() == "wrist"     # 콤보 동기화
+a = captured["a"]
+assert a[100, 500].tolist() == [90, 90, 90]             # 본체 = wrist
+assert a[400, 50].tolist() == [40, 40, 40]              # 좌하단 PiP = agent
+# 어느 카메라 프레임이 와도 합성이 갱신된다
+win._update_live_view("agent", np.full((480, 640, 3), 41, np.uint8))
+assert captured["a"][400, 50].tolist() == [41, 41, 41]
+win.live_views["wrist"].set_frame = orig_set
+win._set_live_maximized(None)                           # 나란히 복원
+assert not win.live_boxes["agent"].isHidden()
+assert win.live_view_combo.currentIndex() == 0
+print("3b 통과: 최대화 PiP 합성(본체/겹침/양쪽 갱신) + 복원 + 콤보 동기화")
+
 # 재생 가드: 선택 없음 -> 안내, 세션 중 -> 경고
 win._on_replay_selected()
 assert infos and "하나만" in infos[-1]
