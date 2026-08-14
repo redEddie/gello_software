@@ -6462,11 +6462,15 @@ class WorkspaceWindow(QMainWindow):
         """
         self.dataset_tree.clearSelection()
         n = 0
+        # legacy 는 번역된 '실패', scene 은 quality_status 원문('failed')이
+        # 상태 컬럼에 실린다 -- 둘 다 잡아야 한다 (scene 실패가 선택되지
+        # 않던 실사용 버그).
+        fail_labels = {tr("실패"), "failed"}
         for i in range(self.dataset_tree.topLevelItemCount()):
             parent = self.dataset_tree.topLevelItem(i)
             for j in range(parent.childCount()):
                 child = parent.child(j)
-                if child.text(2) == tr("실패"):
+                if child.text(2) in fail_labels:
                     child.setSelected(True)
                     parent.setExpanded(True)
                     n += 1

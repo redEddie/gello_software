@@ -121,6 +121,25 @@ assert abs(sizes[0] - sizes[1]) <= max(sizes) * 0.2
 assert win.live_view_combo.currentIndex() == 0
 print("3b 통과: 좌우 최대화(비율 88/12) 왕복 + 겹침 없음 + 콤보 동기화")
 
+# ---- 3c. '실패만 선택' -- scene(failed)과 legacy(실패) 표기 모두 ----
+from PyQt6.QtWidgets import QTreeWidgetItem  # noqa: E402
+
+win.dataset_tree.clear()
+sp = QTreeWidgetItem(["scene_099.hdf5", "", "scene"])
+win.dataset_tree.addTopLevelItem(sp)
+for name, q in (("episode_000", "success"), ("episode_001", "failed")):
+    sp.addChild(QTreeWidgetItem([name, "10", q]))
+lp = QTreeWidgetItem(["t_demo.hdf5", "", ""])
+win.dataset_tree.addTopLevelItem(lp)
+lp.addChild(QTreeWidgetItem(["  demo_0", "10", cw.tr("실패")]))
+win._on_select_failed()
+sel = [i.text(0) for i in win.dataset_tree.selectedItems()]
+assert "episode_001" in sel, sel                 # scene 실패 선택됨
+assert any("demo_0" in s for s in sel), sel      # legacy 실패도
+assert "episode_000" not in sel                  # 성공은 제외
+win.dataset_tree.clear()   # 합성 항목(UserRole 없음)이 뒤 재생 가드 테스트에
+print("3c 통과: 실패만 선택이 scene 'failed' 표기도 잡음")   # 안 섞이게
+
 # 재생 가드: 선택 없음 -> 안내, 세션 중 -> 경고
 win._on_replay_selected()
 assert infos and "하나만" in infos[-1]
