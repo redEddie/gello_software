@@ -101,32 +101,25 @@ win.grid_live_check.setChecked(False)
 assert win._with_grid("agent", frame) is frame
 print("3 통과: agent 라이브만 오버레이, 체크 해제 시 원본")
 
-# ---- 3b. 카메라 최대화(PiP): wrist 전체 + agent 좌하단 겹침 ----
+# ---- 3b. 카메라 최대화: 좌우 배치 유지, 스플리터 비율만 (겹침 없음) ----
 win._last_cam_frame["agent"] = np.full((480, 640, 3), 40, np.uint8)
 win._last_cam_frame["wrist"] = np.full((480, 640, 3), 90, np.uint8)
-captured = {}
-orig_set = win.live_views["wrist"].set_frame
-win.live_views["wrist"].set_frame = lambda arr: captured.update(a=arr)
 win._set_live_maximized("wrist")
-assert win.live_boxes["agent"].isHidden() and not win.live_boxes["wrist"].isHidden()
+sizes = win.live_split.sizes()
+assert sizes[1] > sizes[0] * 4, sizes                   # wrist 크게, agent 아주 작게
+assert not win.live_boxes["agent"].isHidden()           # 둘 다 보인다 (겹침 없음)
 assert win.live_view_combo.currentData() == "wrist"     # 콤보 동기화
-a = captured["a"]
-assert a[100, 100].tolist() == [90, 90, 90]             # 본체(상단) = wrist
-# PiP 는 크롭 밖 빈 띠가 넓은 쪽(좌/우) 아래에 앉는다 -- 한쪽 모서리는
-# PiP(40), 반대쪽 모서리는 본체(90)여야 한다
-corners = {"L": a[470, 20].tolist(), "R": a[470, 630].tolist()}
-pip_side = next(k for k, v in corners.items() if v == [40, 40, 40])
-main_side = "R" if pip_side == "L" else "L"
-assert corners[main_side] == [90, 90, 90], corners
-# 어느 카메라 프레임이 와도 합성이 갱신된다
+# 프레임은 각자 자기 뷰로만 간다 (합성 없음)
 win._update_live_view("agent", np.full((480, 640, 3), 41, np.uint8))
-col = 20 if pip_side == "L" else 630
-assert captured["a"][470, col].tolist() == [41, 41, 41]
-win.live_views["wrist"].set_frame = orig_set
+assert win.live_views["agent"].pixmap() is not None
+win._set_live_maximized("agent")
+sizes = win.live_split.sizes()
+assert sizes[0] > sizes[1] * 4, sizes                   # 반대 선택 시 반대로
 win._set_live_maximized(None)                           # 나란히 복원
-assert not win.live_boxes["agent"].isHidden()
+sizes = win.live_split.sizes()
+assert abs(sizes[0] - sizes[1]) <= max(sizes) * 0.2
 assert win.live_view_combo.currentIndex() == 0
-print("3b 통과: 최대화 PiP 합성(본체/겹침/양쪽 갱신) + 복원 + 콤보 동기화")
+print("3b 통과: 좌우 최대화(비율 88/12) 왕복 + 겹침 없음 + 콤보 동기화")
 
 # 재생 가드: 선택 없음 -> 안내, 세션 중 -> 경고
 win._on_replay_selected()

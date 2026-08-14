@@ -1974,6 +1974,7 @@ class WorkspaceWindow(QMainWindow):
             view.setText(tr("카메라를 선택하세요"))
             view.set_crop_guide(**self._crop_params[key])
             view.setToolTip(tr("더블클릭: 이 카메라 최대화 / 복원"))
+            view.setMinimumSize(60, 45)   # 최대화 시 반대쪽이 아주 작아질 수 있게
             view.installEventFilter(self)
             inner.addWidget(view)
             self.live_views[key] = view
@@ -5156,80 +5157,28 @@ class WorkspaceWindow(QMainWindow):
         self._fps_count += 1
 
     def _update_live_view(self, role: str, frame) -> None:
-        """라이브 프레임 공용 경로 -- 원본 캐시 + (나란히/최대화 PiP) 표시."""
-        self._last_cam_frame[role] = frame      # 격자·PiP 없는 원본을 저장
-        if self._live_maximized is None:
-            self.live_views[role].set_frame(self._with_grid(role, frame))
-        else:
-            self._render_live_pip()             # 어느 카메라 프레임이 와도 갱신
-
-    def _render_live_pip(self) -> None:
-        """최대화 모드: 주 카메라 전체 + 반대 카메라를 왼쪽 아래 PiP 로."""
-        m = self._live_maximized
-        if m is None:
-            return
-        main = self._last_cam_frame.get(m)
-        if main is None:
-            return
-        import cv2
-
-        canvas = self._with_grid(m, main)
-        canvas = main.copy() if canvas is main else np.ascontiguousarray(canvas)
-        other = "wrist" if m == "agent" else "agent"
-        small = self._last_cam_frame.get(other)
-        if small is not None:
-            small = self._with_grid(other, small)
-            h, w = canvas.shape[:2]
-            # 정사각 크롭 밖의 '남는 띠'(변환에서 잘려나가는 영역) 중 더
-            # 넓은 쪽 아래에 최대한 맞춘다 -- 크롭 x 오프셋에 따라 띠는
-            # 왼쪽에 생기기도 한다. 양쪽 다 좁으면 32% 폭 우하단 폴백.
-            p = self._crop_params.get(m, {})
-            side = min(w, h)
-            zoom = float(p.get("zoom", 1.0))
-            if zoom > 1.0:
-                side = max(16, round(side / zoom))
-            sc = w / 640
-            cx0 = min(max((w - side) // 2 + round(p.get("x", 0) * sc), 0),
-                      w - side)
-            band_l, band_r = cx0, w - (cx0 + side)
-            if max(band_l, band_r) >= 140:
-                tw = max(band_l, band_r) - 14
-                on_left = band_l > band_r
-            else:
-                tw = w * 32 // 100
-                on_left = False
-            tw = max(2, min(tw, w - 20))
-            th = max(2, small.shape[0] * tw // small.shape[1])
-            sm = cv2.resize(small, (tw, th))
-            y0 = h - th - 8
-            x0 = 8 if on_left else w - tw - 8
-            canvas[y0:y0 + th, x0:x0 + tw] = sm
-            cv2.rectangle(canvas, (x0 - 1, y0 - 1), (x0 + tw, y0 + th),
-                          (255, 255, 255), 1)
-            cv2.putText(canvas, other, (x0 + 4, y0 + 16),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
-                        cv2.LINE_AA)
-        self.live_views[m].set_frame(canvas)
+        """라이브 프레임 공용 경로 -- 원본 캐시 + 표시 (겹침 없음)."""
+        self._last_cam_frame[role] = frame      # 격자 없는 원본을 저장
+        self.live_views[role].set_frame(self._with_grid(role, frame))
 
     def _set_live_maximized(self, role: "str | None") -> None:
+        """좌우 배치는 유지하고 스플리터 비율만 바꾼다 -- 최대화한 쪽이
+        ~88%, 반대쪽은 아주 작게. 겹침(PiP) 없음. 경계는 드래그로도 조절."""
         if role == self._live_maximized:
             return
         self._live_maximized = role
-        for r, box in self.live_boxes.items():
-            box.setVisible(role is None or r == role)
+        total = max(self.live_split.width(), 800)
+        if role is None:
+            self.live_split.setSizes([total // 2, total // 2])
+        else:
+            big, small = int(total * 0.88), max(90, int(total * 0.12))
+            self.live_split.setSizes([big, small] if role == "agent"
+                                     else [small, big])
         idx = 0 if role is None else self.live_view_combo.findData(role)
         if idx >= 0 and self.live_view_combo.currentIndex() != idx:
             self.live_view_combo.blockSignals(True)
             self.live_view_combo.setCurrentIndex(idx)
             self.live_view_combo.blockSignals(False)
-        if role is None:
-            # 나란히 복귀 -- 두 뷰 모두 마지막 프레임으로 다시 그린다
-            for r in ("agent", "wrist"):
-                f = self._last_cam_frame.get(r)
-                if f is not None:
-                    self.live_views[r].set_frame(self._with_grid(r, f))
-        else:
-            self._render_live_pip()
 
     def _with_grid(self, role: str, frame):
         """agent 라이브 화면에만 워크스페이스 3×3 격자를 덧그린다 (사본)."""
@@ -5260,9 +5209,6 @@ class WorkspaceWindow(QMainWindow):
     def _regrid_live(self) -> None:
         """마지막 프레임으로 agent 뷰를 다시 그린다 -- 멈춘 화면에서도
         체크박스/슬라이더가 즉시 반영되게."""
-        if self._live_maximized is not None:
-            self._render_live_pip()
-            return
         frame = self._last_cam_frame.get("agent")
         if frame is not None:
             self.live_views["agent"].set_frame(self._with_grid("agent", frame))
