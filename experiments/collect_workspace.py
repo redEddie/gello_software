@@ -54,7 +54,8 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-from PyQt6.QtCore import QEvent, QProcess, QSize, Qt, QThread, QTimer, pyqtSlot
+from PyQt6.QtCore import (QEvent, QProcess, QSize, Qt, QThread, QTimer,
+                          pyqtSignal, pyqtSlot)
 from PyQt6.QtGui import QAction, QActionGroup, QFont, QIcon, QTextCursor
 from PyQt6 import sip
 from PyQt6.QtWidgets import (
@@ -71,6 +72,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -128,6 +130,15 @@ from gello.gui_widgets import (  # noqa: E402
     clean_stream_lines,
     hf_account,
     is_progress_line,
+    np_to_pixmap,
+)
+from gello.grid_overlay import (  # noqa: E402
+    DEFAULT_CORNERS,
+    active_corners,
+    draw_grid,
+    grid_segments,
+    load_grid_store,
+    save_grid_store,
 )
 from gello.i18n import tr  # noqa: E402
 from gello.libero_format import (  # noqa: E402
@@ -167,6 +178,7 @@ PYLIBFRANKA_PYTHON = STATION.node.python_path
 LAUNCH_NODES_SCRIPT = str(Path(__file__).resolve().parent / "launch_nodes.py")
 CONVERT_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "convert_libero_to_lerobot.py")
 UPLOAD_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "upload_to_hub.py")
+REPLAY_SCRIPT = str(Path(__file__).resolve().parent / "replay_episode.py")
 RUNME_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "runme.sh")
 # LIBERO 초기 배치 참조 이미지. 리모트에는 zip 만 올라가고(3.9MB), 풀린
 # png 들은 .gitignore 의 *.png 에 걸린다. GUI 가 뜰 때 zip 이 바뀌었으면 다시
@@ -640,6 +652,189 @@ class PlanEditDialog(QDialog):
         super().accept()
 
 
+class _GridCanvas(QLabel):
+    """격자 편집 캔버스 — 배경 이미지 위에서 꼭짓점 4개를 드래그한다.
+
+    꼭짓점은 정규화 좌표(0..1)로 들고 있어 배경 해상도와 무관하다.
+    드래그 중에는 외곽선·핸들만 갱신하고, 내부 3×3 선은 '변환' 버튼이
+    다시 그린다 (full_grid 플래그).
+    """
+
+    changed = pyqtSignal()
+    HANDLE_PX = 22          # 위젯 픽셀 기준 잡기 반경
+
+    def __init__(self, background: np.ndarray, corners: list) -> None:
+        super().__init__()
+        self._img = np.ascontiguousarray(background)
+        self.corners = [list(c) for c in corners]
+        self.full_grid = True
+        self._drag: "int | None" = None
+        self._fit = (1.0, 0, 0)     # scale, x-offset, y-offset (위젯 좌표계)
+        self.setMinimumSize(480, 360)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMouseTracking(False)
+
+    # ---- 렌더 ----
+    def render_grid(self) -> None:
+        import cv2
+
+        h, w = self._img.shape[:2]
+        if self.full_grid:
+            out = draw_grid(self._img, self.corners, 80)
+        else:
+            out = self._img.copy()
+        pts = np.int32([[c[0] * w, c[1] * h] for c in self.corners])
+        cv2.polylines(out, [pts.reshape(-1, 1, 2)], True, (80, 255, 140),
+                      max(1, round(w / 320)), cv2.LINE_AA)
+        r = max(4, round(w / 90))
+        for i, (x, y) in enumerate(pts):
+            cv2.circle(out, (int(x), int(y)), r, (255, 80, 80), -1, cv2.LINE_AA)
+            cv2.putText(out, "1234"[i], (int(x) + r + 2, int(y) - r),
+                        cv2.FONT_HERSHEY_SIMPLEX, w / 1200,
+                        (255, 220, 220), 1, cv2.LINE_AA)
+        pix = np_to_pixmap(out)
+        avail_w, avail_h = max(1, self.width()), max(1, self.height())
+        scale = min(avail_w / w, avail_h / h)
+        sw, sh = max(1, round(w * scale)), max(1, round(h * scale))
+        self._fit = (scale, (avail_w - sw) // 2, (avail_h - sh) // 2)
+        self.setPixmap(pix.scaled(sw, sh,
+                                  Qt.AspectRatioMode.KeepAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self.render_grid()
+
+    # ---- 좌표 변환/드래그 ----
+    def _to_norm(self, pos) -> "tuple[float, float]":
+        scale, ox, oy = self._fit
+        h, w = self._img.shape[:2]
+        return ((pos.x() - ox) / (w * scale), (pos.y() - oy) / (h * scale))
+
+    def _pick(self, pos) -> "int | None":
+        scale, ox, oy = self._fit
+        h, w = self._img.shape[:2]
+        best, best_d = None, self.HANDLE_PX
+        for i, (cx, cy) in enumerate(self.corners):
+            dx = cx * w * scale + ox - pos.x()
+            dy = cy * h * scale + oy - pos.y()
+            d = (dx * dx + dy * dy) ** 0.5
+            if d < best_d:
+                best, best_d = i, d
+        return best
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self._drag = self._pick(event.position())
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._drag is None:
+            return
+        x, y = self._to_norm(event.position())
+        self.corners[self._drag] = [min(1.0, max(0.0, x)),
+                                    min(1.0, max(0.0, y))]
+        self.full_grid = False      # 내부선은 '변환'이 다시 계산한다
+        self.render_grid()
+        self.changed.emit()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self._drag = None
+
+
+class GridEditorDialog(QDialog):
+    """워크스페이스 3×3 격자 편집 — 드래그·정렬·변환·저장/불러오기.
+
+    배경은 호출 시점의 agent 카메라 프레임(없으면 레이아웃 스틸/회색판).
+    저장하면 workspace_grids.json 의 해당 이름에 기록되고 active 로 지정돼
+    Live 오버레이가 바로 이 격자를 쓴다.
+    """
+
+    def __init__(self, parent, background: np.ndarray, store: dict) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("3×3 격자 편집"))
+        self._store = store
+        corners = active_corners(store) or DEFAULT_CORNERS
+        col = QVBoxLayout(self)
+        hint = QLabel(tr(
+            "꼭짓점(1=좌상, 2=우상, 3=우하, 4=좌하)을 드래그해 작업면에 맞추고 "
+            "'변환'으로 내부 3×3 선을 다시 그립니다. 정렬 버튼은 위/아래 두 "
+            "꼭짓점의 높이를 맞춥니다."))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#888;")
+        col.addWidget(hint)
+        self.canvas = _GridCanvas(background, corners)
+        col.addWidget(self.canvas, 1)
+
+        row = QHBoxLayout()
+        for text, slot, tip in (
+                ("위 정렬", lambda: self._align(0, 1), "1·2번 꼭짓점을 같은 높이로"),
+                ("아래 정렬", lambda: self._align(3, 2), "4·3번 꼭짓점을 같은 높이로"),
+                ("변환 (3×3 다시 그리기)", self._transform,
+                 "현재 꼭짓점으로 내부 격자선을 원근 계산해 그립니다")):
+            b = QPushButton(tr(text))
+            b.setToolTip(tr(tip))
+            b.clicked.connect(slot)
+            row.addWidget(b)
+        row.addStretch(1)
+        col.addLayout(row)
+
+        srow = QHBoxLayout()
+        self.load_combo = QComboBox()
+        for name in sorted(store["grids"]):
+            self.load_combo.addItem(name)
+        srow.addWidget(self.load_combo, 1)
+        load_btn = QPushButton(tr("불러오기"))
+        load_btn.clicked.connect(self._load_selected)
+        srow.addWidget(load_btn)
+        srow.addSpacing(16)
+        self.name_edit = QLineEdit(store.get("active") or "default")
+        self.name_edit.setPlaceholderText(tr("저장 이름"))
+        srow.addWidget(self.name_edit, 1)
+        save_btn = QPushButton(tr("저장"))
+        save_btn.setToolTip(tr("이 이름으로 저장하고 active 격자로 지정합니다."))
+        save_btn.clicked.connect(self._save)
+        srow.addWidget(save_btn)
+        col.addLayout(srow)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color:#2ecc71;")
+        col.addWidget(self.status_label)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        col.addWidget(buttons)
+        self.canvas.changed.connect(lambda: self.status_label.setText(""))
+        self.canvas.render_grid()
+
+    def _align(self, i: int, j: int) -> None:
+        c = self.canvas.corners
+        y = (c[i][1] + c[j][1]) / 2
+        c[i][1] = c[j][1] = y
+        self.canvas.render_grid()
+
+    def _transform(self) -> None:
+        self.canvas.full_grid = True
+        self.canvas.render_grid()
+
+    def _load_selected(self) -> None:
+        name = self.load_combo.currentText()
+        corners = self._store["grids"].get(name)
+        if not corners:
+            return
+        self.canvas.corners = [list(c) for c in corners]
+        self.canvas.full_grid = True
+        self.canvas.render_grid()
+        self.name_edit.setText(name)
+        self.status_label.setText(tr("{n} 불러옴").format(n=name))
+
+    def _save(self) -> None:
+        name = self.name_edit.text().strip() or "default"
+        self._store["grids"][name] = [list(c) for c in self.canvas.corners]
+        self._store["active"] = name
+        save_grid_store(self._store)
+        if self.load_combo.findText(name) < 0:
+            self.load_combo.addItem(name)
+        self.status_label.setText(tr("{n} 저장됨 (active)").format(n=name))
+
+
 class NewSceneDialog(QDialog):
     """새 scene 구성 — 소품 선택 + 3×3 존 배치 + 설명.
 
@@ -779,6 +974,8 @@ class WorkspaceWindow(QMainWindow):
 
         self.worker: CollectionWorker | None = None
         self.node_process: QProcess | None = None
+        self.replay_process: QProcess | None = None
+        self._grid_store = load_grid_store()
         self.repack_process: QProcess | None = None
         self.convert_process: QProcess | None = None
         self.upload_process: QProcess | None = None
@@ -892,6 +1089,12 @@ class WorkspaceWindow(QMainWindow):
         self.gallery_relabel_btn = QPushButton(tr("선택 재판정"))
         self.gallery_relabel_btn.clicked.connect(self._on_gallery_relabel)
         row.addWidget(self.gallery_relabel_btn)
+        self.gallery_replay_btn = QPushButton(tr("실로봇 재생"))
+        self.gallery_replay_btn.setToolTip(tr(
+            "선택한 에피소드의 관절 명령을 실로봇에 다시 보냅니다.\n"
+            "로봇 노드가 켜져 있어야 하고, 로봇이 실제로 움직입니다."))
+        self.gallery_replay_btn.clicked.connect(self._on_gallery_replay)
+        row.addWidget(self.gallery_replay_btn)
         col.addLayout(row)
         self.gallery_list = QListWidget()
         self.gallery_list.setViewMode(QListWidget.ViewMode.IconMode)
@@ -999,6 +1202,17 @@ class WorkspaceWindow(QMainWindow):
         if d:
             self._play_episode(d[0], d[1])
 
+    def _on_gallery_replay(self) -> None:
+        picks = [item.data(Qt.ItemDataRole.UserRole)
+                 for item in self.gallery_list.selectedItems()]
+        picks = [d for d in picks if d]
+        if len(picks) != 1:
+            QMessageBox.information(
+                self, tr("선택 필요"),
+                tr("실로봇 재생은 에피소드 하나만 선택하세요."))
+            return
+        self._replay_on_robot(picks[0][0], picks[0][1])
+
     def _on_gallery_relabel(self) -> None:
         by_file: dict = {}
         for item in self.gallery_list.selectedItems():
@@ -1046,7 +1260,32 @@ class WorkspaceWindow(QMainWindow):
         self.square_guide_check.setToolTip(tr(
             "LeRobot 변환은 가운데 정사각만 남깁니다. 켜면 그 바깥이 어둡게 표시됩니다."))
         self.square_guide_check.toggled.connect(self._on_square_guide)
-        live.layout().addWidget(self.square_guide_check)
+        grow = QHBoxLayout()
+        grow.addWidget(self.square_guide_check)
+        grow.addSpacing(16)
+        # 3×3 워크스페이스 격자 -- 편집은 격자 편집 다이얼로그, 여기는 표시만.
+        self.grid_live_check = QCheckBox(tr("3×3 격자"))
+        self.grid_live_check.setChecked(bool(self._grid_store.get("live_on")))
+        self.grid_live_check.setToolTip(tr(
+            "저장된 워크스페이스 격자를 agent 라이브 화면에 겹쳐 보입니다.\n"
+            "물체를 어느 칸(A1..C3)에 놓을지 확인하는 용도입니다."))
+        self.grid_live_check.toggled.connect(self._on_grid_live_toggled)
+        grow.addWidget(self.grid_live_check)
+        self.grid_alpha_slider = QSlider(Qt.Orientation.Horizontal)
+        self.grid_alpha_slider.setRange(10, 100)
+        self.grid_alpha_slider.setValue(int(self._grid_store.get("alpha", 60)))
+        self.grid_alpha_slider.setMaximumWidth(140)
+        self.grid_alpha_slider.valueChanged.connect(self._on_grid_alpha)
+        grow.addWidget(self.grid_alpha_slider)
+        self.grid_alpha_label = QLabel(
+            tr("{v}%").format(v=self.grid_alpha_slider.value()))
+        self.grid_alpha_label.setStyleSheet("color:#888;")
+        grow.addWidget(self.grid_alpha_label)
+        grid_edit_btn = QPushButton(tr("격자 편집..."))
+        grid_edit_btn.clicked.connect(self._on_edit_grid)
+        grow.addWidget(grid_edit_btn)
+        grow.addStretch(1)
+        live.layout().addLayout(grow)
         self._live_tab_index = self.center_tabs.addTab(live, tr("Live"))
 
         play = QWidget()
@@ -1833,6 +2072,14 @@ class WorkspaceWindow(QMainWindow):
             "변환은 success 만 내보냅니다.\nbad_data 등 다른 상태는 건드리지 않습니다."))
         relabel_btn.clicked.connect(self._on_relabel_selected)
         col.addWidget(relabel_btn)
+
+        robot_replay_btn = QPushButton(tr("선택 재생 (실로봇)"))
+        robot_replay_btn.setToolTip(tr(
+            "기록된 관절 명령을 같은 주기로 다시 보내 에피소드를 실로봇에서 "
+            "재현합니다.\n로봇 노드가 켜져 있어야 하고, 로봇이 실제로 "
+            "움직입니다. 주변을 비우세요."))
+        robot_replay_btn.clicked.connect(self._on_replay_selected)
+        col.addWidget(robot_replay_btn)
 
         del_btn = QPushButton(tr("선택한 에피소드 삭제"))
         del_btn.setToolTip(tr(
@@ -2878,6 +3125,12 @@ class WorkspaceWindow(QMainWindow):
         self.layout_grid_check.toggled.connect(
             lambda _on: self._layout_rerender())
         dform.addRow(self.layout_grid_check)
+        ws_grid_btn = QPushButton(tr("3×3 워크스페이스 격자 편집..."))
+        ws_grid_btn.setToolTip(tr(
+            "카메라에 비친 작업면의 꼭짓점 4개를 드래그해 3×3 격자를 만들고 "
+            "저장합니다.\nLive 탭의 '3×3 격자' 체크박스로 겹쳐 볼 수 있습니다."))
+        ws_grid_btn.clicked.connect(self._on_edit_grid)
+        dform.addRow(ws_grid_btn)
         col.addWidget(disp)
 
         # 크롭 정렬 -- 값은 640 폭 기준 px. 라이브 가이드·레이아웃 겹침·변환이
@@ -3651,11 +3904,54 @@ class WorkspaceWindow(QMainWindow):
         self._dying_previews = []
 
     def _on_preview_frame(self, role: str, frame) -> None:
-        self.live_views[role].set_frame(frame)
-        self._last_cam_frame[role] = frame
+        self.live_views[role].set_frame(self._with_grid(role, frame))
+        self._last_cam_frame[role] = frame      # 격자 없는 원본을 저장
         if self.center_tabs.currentIndex() == self._layout_tab_index:
             self._layout_update_role(role)
         self._fps_count += 1
+
+    def _with_grid(self, role: str, frame):
+        """agent 라이브 화면에만 워크스페이스 3×3 격자를 덧그린다 (사본)."""
+        if role != "agent" or not self.grid_live_check.isChecked():
+            return frame
+        corners = active_corners(self._grid_store)
+        if not corners:
+            return frame
+        return draw_grid(frame, corners, self.grid_alpha_slider.value())
+
+    def _on_grid_live_toggled(self, on: bool) -> None:
+        self._grid_store["live_on"] = bool(on)
+        save_grid_store(self._grid_store)
+        if on and active_corners(self._grid_store) is None:
+            self.log(tr("[격자] 저장된 격자가 없습니다 — '격자 편집...'에서 "
+                        "만들어 저장하세요."))
+        self._regrid_live()
+
+    def _on_grid_alpha(self, val: int) -> None:
+        self.grid_alpha_label.setText(tr("{v}%").format(v=val))
+        self._grid_store["alpha"] = int(val)
+        save_grid_store(self._grid_store)
+        self._regrid_live()
+
+    def _regrid_live(self) -> None:
+        """마지막 프레임으로 agent 뷰를 다시 그린다 -- 멈춘 화면에서도
+        체크박스/슬라이더가 즉시 반영되게."""
+        frame = self._last_cam_frame.get("agent")
+        if frame is not None:
+            self.live_views["agent"].set_frame(self._with_grid("agent", frame))
+
+    def _on_edit_grid(self) -> None:
+        bg = self._last_cam_frame.get("agent")
+        if bg is None:
+            bg = self._layout_ref.get("agent")
+        if bg is None:
+            bg = np.full((480, 640, 3), 60, np.uint8)
+            self.log(tr("[격자] 카메라 프레임이 없어 회색 배경에서 편집합니다 — "
+                        "미리보기를 켜면 실제 화면 위에서 맞출 수 있습니다."))
+        dlg = GridEditorDialog(self, bg, self._grid_store)
+        dlg.exec()
+        self._grid_store = load_grid_store()    # 저장 결과를 다시 정본에서
+        self._regrid_live()
 
     def _on_preview_error(self, role: str, msg: str) -> None:
         self.live_views[role].clear_frame(tr("미리보기 실패"))
@@ -3877,8 +4173,8 @@ class WorkspaceWindow(QMainWindow):
         for role, rgb in (("agent", agent_rgb), ("wrist", wrist_rgb)):
             if rgb is None:
                 continue
-            self.live_views[role].set_frame(rgb)
-            self._last_cam_frame[role] = rgb
+            self.live_views[role].set_frame(self._with_grid(role, rgb))
+            self._last_cam_frame[role] = rgb    # 격자 없는 원본을 저장
             if layout_on:
                 self._layout_update_role(role)
         self._fps_count += 1
@@ -4447,6 +4743,69 @@ class WorkspaceWindow(QMainWindow):
             return
         if self._relabel_episodes(by_file):
             self._refresh_dataset_tree()
+
+    def _on_replay_selected(self) -> None:
+        picks = [(Path(i.parent().data(0, Qt.ItemDataRole.UserRole)),
+                  i.data(0, Qt.ItemDataRole.UserRole))
+                 for i in self.dataset_tree.selectedItems()
+                 if i.parent() is not None]
+        if len(picks) != 1:
+            QMessageBox.information(
+                self, tr("선택 필요"),
+                tr("실로봇 재생은 에피소드 하나만 선택하세요."))
+            return
+        self._replay_on_robot(str(picks[0][0]), picks[0][1])
+
+    def _replay_on_robot(self, path: str, demo: str) -> None:
+        """Dataset 트리와 Gallery 가 공유하는 실로봇 재생 진입점.
+
+        replay_episode.py 를 --yes 로 하위 프로세스 실행한다 (램프·틱당
+        클램프 같은 안전장치는 스크립트 쪽에 있다). 로봇을 쥐는 것은 결국
+        로봇 노드 하나이므로, 여기서는 GUI 세션과의 충돌만 막는다.
+        """
+        if self.worker is not None:
+            QMessageBox.warning(self, tr("재생 불가"),
+                                tr("수집 세션 중에는 실로봇 재생을 할 수 "
+                                   "없습니다. 먼저 세션을 종료하세요."))
+            return
+        if self.replay_process is not None and \
+                self.replay_process.state() != QProcess.ProcessState.NotRunning:
+            QMessageBox.information(self, tr("이미 재생 중"),
+                                    tr("이전 재생이 끝나기를 기다리세요."))
+            return
+        speed, ok = QInputDialog.getDouble(
+            self, tr("실로봇 재생"),
+            tr("재생 배속 (0.1~1.0, 첫 재생은 0.5 권장)"),
+            0.5, 0.1, 1.0, 1)
+        if not ok:
+            return
+        ans = QMessageBox.warning(
+            self, tr("로봇이 움직입니다"),
+            tr("{d} ({f}) 을(를) {s}배속으로 실로봇에서 재현합니다.\n\n"
+               "· 로봇 노드가 켜져 있어야 합니다\n"
+               "· 로봇이 시작 포즈로 이동한 뒤 바로 재생됩니다\n"
+               "· 주변 공간을 비우고, 비상정지를 준비하세요\n\n"
+               "시작할까요?").format(d=demo, f=Path(path).name, s=speed),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        proc = QProcess(self)
+        proc.setProgram(sys.executable)
+        proc.setArguments([REPLAY_SCRIPT, path, demo,
+                           "--speed", f"{speed:g}", "--yes"])
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(
+            lambda: self._pipe(proc, "[실로봇 재생]", "log"))
+        proc.finished.connect(self._on_replay_finished)
+        self.replay_process = proc
+        self.log(f"[실로봇 재생] ▶ {Path(path).name} / {demo} ({speed:g}x)")
+        proc.start()
+
+    def _on_replay_finished(self, code: int, _status) -> None:
+        self.replay_process = None
+        self.log(tr("[실로봇 재생] {r} (exit={c})").format(
+            r=tr("완료") if code == 0 else tr("중단/실패 — 로그 확인"), c=code))
 
     def _relabel_episodes(self, by_file: dict) -> bool:
         """재판정 공용 코어 -- Dataset 트리와 Gallery 가 같은 것을 쓴다."""
