@@ -147,6 +147,41 @@ def hub_meta(repo_id: str) -> tuple[dict, dict, str]:
     return counts, lengths, ""
 
 
+def hub_episode_uids(repo_id: str) -> tuple:
+    """(uid 집합 | None, error). Hub 데이터셋의 ``meta/episode_uids.json``
+    사이드카(변환기가 scene 에피소드마다 남기는 출처)를 읽는다.
+
+    None = 사이드카가 없는 repo (legacy 수집분만 있는 데이터셋 등) -- "이
+    에피소드가 올라가 있는가" 를 에피소드 단위로 판정할 수 없다는 뜻이고,
+    호출자는 문장(task) 단위 판정으로 물러난다. 빈 집합과는 다르다.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+        from huggingface_hub.errors import RepositoryNotFoundError
+    except ImportError as e:
+        return None, f"의존성 없음: {e}"
+    try:
+        d = snapshot_download(repo_id, repo_type="dataset",
+                              allow_patterns=["meta/episode_uids.json"],
+                              force_download=True)
+    except RepositoryNotFoundError:
+        return set(), ""
+    except Exception as e:  # noqa: BLE001
+        return None, f"{type(e).__name__}: {e}"
+    p = Path(d) / "meta" / "episode_uids.json"
+    if not p.exists():
+        return None, ""
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return None, f"사이드카 읽기 실패: {e}"
+    uids: set = set()
+    for e in data.values() if isinstance(data, dict) else []:
+        if isinstance(e, dict) and e.get("episode_uid"):
+            uids.add(str(e["episode_uid"]))
+    return uids, ""
+
+
 def hub_tasks(repo_id: str) -> tuple[dict, str]:
     """{language_instruction: episode_count} -- hub_meta 의 개수만 필요한 호출자용."""
     counts, _, error = hub_meta(repo_id)

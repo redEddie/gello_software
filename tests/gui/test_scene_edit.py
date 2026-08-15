@@ -158,17 +158,31 @@ probs = verify_scene_file(scene)
 assert not probs, probs
 print("6 통과: check_scene_file 불변식 (연속 번호·slot E 연속·uid 일치) 통과")
 
-# ---- 7. 삭제 확인창: 목록 행 구성 + Hub 안내 (네트워크 스텁) ----
+# ---- 7. 삭제 확인창: 목록 + Hub 안내는 uid 단위 (네트워크 스텁 3경로) ----
 import gello.dataset_sync as _sync  # noqa: E402
 
-_sync.hub_meta = lambda repo: ({sc_eps[0]["instruction"]: 3}, {}, "")   # 올라가 있음
-rows, n_ok, note = win._describe_delete_targets(
-    {scene: [e["name"] for e in list_scene_episodes(scene)][:2]})
+cur = list_scene_episodes(scene)
+targets = {scene: [e["name"] for e in cur][:2]}
+uid0 = cur[0]["episode_uid"]
+have_repo = bool(win.repo_id_for("repo_id"))
+# (a) 사이드카에 이 uid 가 있음 -> "올라가 있음 + 재빌드"
+_sync.hub_episode_uids = lambda repo: ({uid0}, "")
+_sync.hub_meta = lambda repo: ({cur[0]["instruction"]: 99}, {}, "")
+rows, n_ok, note = win._describe_delete_targets(targets)
 assert len(rows) == 2 and all("EP-" in r_ for r_ in rows)
-assert n_ok >= 0
-if win.repo_id_for("repo_id"):
-    assert "재빌드" in note, note        # Hub 에 있는 task 면 재빌드 안내
-print(f"7 통과: 삭제 확인창 목록 {len(rows)}행 (성공 {n_ok}개, Hub 안내={'O' if note else '-'})")
+if have_repo:
+    assert "재빌드" in note and uid0 in note, note
+# (b) 사이드카는 있는데 이 uid 없음 -> 같은 문장이 있어도 "올라가 있지 않음"
+_sync.hub_episode_uids = lambda repo: ({"EP-S999-I000-E000"}, "")
+_, _, note_b = win._describe_delete_targets(targets)
+if have_repo:
+    assert "올라가 있지 않습니다" in note_b, note_b
+# (c) 사이드카 없음(legacy repo) -> 문장 일치는 '참고' 로만, 올라갔다고 하지 않음
+_sync.hub_episode_uids = lambda repo: (None, "")
+_, _, note_c = win._describe_delete_targets(targets)
+if have_repo:
+    assert "참고" in note_c and "올라갔다는 뜻은 아닙니다" in note_c, note_c
+print(f"7 통과: 확인창 목록 {len(rows)}행 + Hub 안내 uid 단위 3경로 (repo 설정={'O' if have_repo else '-'})")
 
 print("\nscene 편집(삭제·트림) 검증 통과")
 import os  # noqa: E402

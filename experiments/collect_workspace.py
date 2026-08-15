@@ -6341,6 +6341,7 @@ class WorkspaceWindow(QMainWindow):
         rows: list = []
         n_success = 0
         tasks: set = set()
+        uids: set = set()
         for path, names in by_file.items():
             eps: dict = {}
             try:
@@ -6373,6 +6374,8 @@ class WorkspaceWindow(QMainWindow):
                 instr = str(e.get("instruction", ""))
                 if instr:
                     tasks.add(instr)
+                if path.name.startswith("scene_") and e.get("episode_uid"):
+                    uids.add(str(e["episode_uid"]))
                 rows.append(f"  {e.get('episode_uid', n)}  [{q}]  {e.get('num_samples', '?')}f"
                             + (f"  {instr[:40]}" if instr else ""))
         hub_note = ""
@@ -6380,17 +6383,38 @@ class WorkspaceWindow(QMainWindow):
             repo = self.repo_id_for("repo_id")
         except Exception:  # noqa: BLE001
             repo = ""
-        if repo and tasks and not repo_id_error(repo):
+        if repo and (tasks or uids) and not repo_id_error(repo):
+            # 판정 단위는 에피소드(uid)다. Hub 의 meta/episode_uids.json 사이드카에
+            # 지울 uid 가 있을 때만 "올라가 있다" 고 말한다. 사이드카가 없는 repo
+            # (legacy 수집분만 있는 데이터셋)는 에피소드 단위 판정이 불가능하므로
+            # 문장(task) 단위 일치를 '참고' 로만 표시한다 -- 같은 문장의 legacy
+            # 에피소드가 있다고 이 에피소드가 올라간 것은 아니다 (실사용 혼란).
             try:
-                from gello.dataset_sync import hub_meta
+                from gello.dataset_sync import hub_episode_uids, hub_meta
 
-                hub, _lens, err = hub_meta(repo)
-                if not err:
-                    on_hub = [t for t in tasks if hub.get(t, 0) > 0]
-                    if on_hub:
-                        hub_note = tr("Hub({r})에 이미 올라간 task 입니다 ({k}개) — 다음 "
-                                      "전체 처리에서 '삭제됨' 으로 잡혀 재빌드(교체)가 "
-                                      "필요합니다.").format(r=repo, k=len(on_hub))
+                hub_uids, err = hub_episode_uids(repo)
+                if err:
+                    hub_note = ""
+                elif hub_uids is not None:
+                    hit = sorted(uids & hub_uids)
+                    if hit:
+                        hub_note = tr("Hub({r})에 이 에피소드 {k}개가 이미 올라가 "
+                                      "있습니다 ({u}{more}) — 다음 전체 처리에서 "
+                                      "'삭제됨' 으로 잡혀 재빌드(교체)가 필요합니다.")\
+                            .format(r=repo, k=len(hit), u=", ".join(hit[:3]),
+                                    more=" …" if len(hit) > 3 else "")
+                    else:
+                        hub_note = tr("Hub({r})에는 이 에피소드가 올라가 있지 않습니다 "
+                                      "(uid 대조).").format(r=repo)
+                else:
+                    hub, _lens, err2 = hub_meta(repo)
+                    if not err2:
+                        same = [t for t in tasks if hub.get(t, 0) > 0]
+                        if same:
+                            hub_note = tr("참고: Hub({r})에는 uid 사이드카가 없어 에피소드 "
+                                          "단위 확인이 안 됩니다. 같은 문장의 task {k}개가 "
+                                          "있지만(legacy 수집분일 수 있음) 이 에피소드가 "
+                                          "올라갔다는 뜻은 아닙니다.").format(r=repo, k=len(same))
             except Exception:  # noqa: BLE001 -- 오프라인 등: 안내 생략
                 hub_note = ""
         return rows, n_success, hub_note
