@@ -27,10 +27,12 @@ legacy(``<task>_demo.hdf5``, gello/libero_format.py)와의 의도적 차이:
   고친다. 외부 LIBERO/robomimic 리더 호환은 포기한다 -- 결정 사항.
 - instruction 은 따옴표로 감싸지 않는다. legacy 는 ``f'"{...}"'`` 로 감싸
   저장했고 읽는 쪽이 두 가지 방식으로 벗기고 있었다.
-- 에피소드는 immutable: 삭제도 재번호도 없다. 불량은 ``quality_status`` 로만
-  표시하고 실제 제외는 배포 단계 필터링에서 한다. 그래서 legacy 의
-  ``renumber_episodes`` 에 해당하는 것이 없고 ``next_episode_idx`` 는 단조
-  증가만 한다 -- episode ID 재사용 금지가 여기서 강제된다.
+- 프레임·instruction 은 편집하지 않는다. 1차 큐레이션은 ``quality_status``
+  재판정(변환이 success 만 내보냄), 실패·튀는 궤적은 푸시 전에 **삭제**
+  (2026-08-14 결정) -- legacy 와 같이 삭제 후 ``renumber_scene_episodes``
+  로 그룹 번호·episode_id·slot E번호(uid)를 다시 매긴다. uid 는 "그 slot 의
+  몇 번째" 로 완전히 파생되는 값이라 보존할 이력이 없다. 끝만 자르는
+  트림(episode_trim)도 허용.
 - 에피소드 안쪽 페이로드(obs/actions/rewards/dones 와 provenance attrs)는
   legacy 와 완전히 같다 (:func:`gello.libero_format.write_episode_payload`
   공유). 변환기가 두 포맷의 에피소드 내부를 같은 코드로 읽게 하기 위해서다.
@@ -443,8 +445,8 @@ class SceneWriter:
         idx = int(self._meta.attrs["next_episode_idx"])
         # slot(=instruction) 로컬 E번호: 각 slot 은 E000 부터 센다 (2026-08-13
         # 결정). 기존 같은 slot 에피소드의 uid E-부분 최대+1 로 계산 --
-        # 과거 파일(전역 번호 시절)에 이어붙여도 uid 가 충돌하지 않고,
-        # 삭제가 없는 포맷이라 번호 재사용도 불가능하다.
+        # 과거 파일(전역 번호 시절)에 이어붙여도 uid 가 충돌하지 않는다.
+        # 삭제 뒤에는 renumber 가 E 를 0..k-1 로 다시 채우므로 새 번호는 k.
         slot_idx = _next_slot_idx(self._file, self._meta, instruction_id)
         self._meta.attrs["next_episode_idx"] = idx + 1
         name = f"episode_{idx:03d}"
@@ -469,21 +471,24 @@ class SceneWriter:
     def delete_episode(self, name: str) -> None:
         """에피소드 삭제 (큐레이션: 실패·튀는 궤적을 푸시 전에 지운다).
 
-        legacy 와 달리 **번호를 다시 매기지 않는다** -- ``episode_NNN`` 이름과
-        ``next_episode_idx`` 는 단조 증가라 빈자리가 남을 뿐이고, 지운 uid 는
-        metadata ``deleted_uids`` 에 툼스톤으로 남겨 같은 slot 의 E번호가
-        재사용되지 않게 한다 (지운 에피소드가 이미 Hub 에 올라가 있을 수 있다;
-        같은 uid 가 다른 궤적으로 되살아나면 사이드카 대조가 깨진다).
+        legacy 와 같은 규칙 -- 지운 뒤 **번호를 다시 매긴다**: 그룹 이름
+        ``episode_000..N-1`` 연속, ``episode_id`` attr 도 맞추고, 각 slot 의
+        E번호(``slot_episode_idx``/``episode_uid``)도 순서대로 다시 부여한다.
+        uid 는 "그 slot 의 몇 번째" 로 완전히 파생되는 값이라 저장된 이력을
+        보존할 것이 없다 (2026-08-14 결정: 큐레이션은 보존 대상이 아니다).
+        지운 것이 이미 Hub 에 있으면 다음 전체 처리가 '삭제됨' 으로 잡아
+        재빌드를 요구한다 -- 그때 사이드카도 새 uid 로 다시 만들어진다.
         파일 크기는 재압축 전까지 줄지 않는다 (HDF5 특성).
         """
         if name not in self._file or not EPISODE_GROUP_RE.match(name):
             raise KeyError(f"{name!r} not found in {self.path}")
-        _delete_episode_group(self._file, self._meta, name)
+        del self._file[name]
+        renumber_scene_episodes(self._file, self._meta)
         self._file.flush()
 
     def set_quality_status(self, name: str, status: str) -> None:
-        """QA 재판정. 프레임·번호·instruction 은 immutable; 지우려면
-        delete_episode (툼스톤 삭제) 를 쓴다."""
+        """QA 재판정 (1차 큐레이션). 프레임·instruction 은 편집하지 않는다;
+        지우려면 delete_episode (삭제 후 renumber), 끝만 자르려면 트림."""
         if status not in QUALITY_STATUSES:
             raise ValueError(f"잘못된 quality_status: {status!r} (허용: {QUALITY_STATUSES})")
         if name not in self._file or not EPISODE_GROUP_RE.match(name):
@@ -529,59 +534,66 @@ def read_reference_image(path: Path) -> Optional[np.ndarray]:
         return None if ds is None else ds[...]
 
 
-def _deleted_uids(meta: h5py.Group) -> list:
-    raw = meta.attrs.get("deleted_uids")
-    if raw is None:
-        return []
-    try:
-        v = json.loads(str(raw))
-        return v if isinstance(v, list) else []
-    except (TypeError, ValueError):
-        return []
-
-
 def _next_slot_idx(f: h5py.File, meta: h5py.Group, instruction_id: str) -> int:
-    """slot(=instruction) 로컬 다음 E번호 = 살아 있는 에피소드 + 툼스톤의
-    같은-slot uid E-부분 최대 + 1. 삭제로 빈 번호가 생겨도 재사용하지 않는다."""
+    """slot(=instruction) 로컬 다음 E번호 = 같은 slot 의 살아 있는 에피소드
+    uid E-부분 최대 + 1. 삭제 후에는 renumber_scene_episodes 가 E 를 0..k-1 로
+    다시 채우므로 결과적으로 '그 slot 의 개수' 와 같다."""
     slot_idx = 0
-    uids = []
     for k in f.keys():
         if not EPISODE_GROUP_RE.match(k):
             continue
         g = f[k]
         if str(g.attrs.get("instruction_id", "")) != instruction_id:
             continue
-        uids.append(str(g.attrs.get("episode_uid", "")))
-    uids += [u for u in _deleted_uids(meta)
-             if f"-{instruction_id}-E" in u]
-    for u in uids:
-        m = re.search(r"-E(\d+)$", u)
+        m = re.search(r"-E(\d+)$", str(g.attrs.get("episode_uid", "")))
         if m:
             slot_idx = max(slot_idx, int(m.group(1)) + 1)
     return slot_idx
 
 
-def _delete_episode_group(f: h5py.File, meta: h5py.Group, name: str) -> None:
-    uid = str(f[name].attrs.get("episode_uid", ""))
-    del f[name]
-    if uid:
-        tomb = _deleted_uids(meta)
-        if uid not in tomb:
-            tomb.append(uid)
-        meta.attrs["deleted_uids"] = json.dumps(tomb)
+def renumber_scene_episodes(f: h5py.File, meta: h5py.Group) -> None:
+    """삭제로 생긴 빈자리를 메운다 -- legacy ``renumber_episodes`` 의 scene 판.
+
+    - 그룹 이름 ``episode_NNN`` 을 현재 번호 오름차순으로 0..N-1 재부여
+      (오름차순 처리라 임시 이름 없이 충돌 없음: k번째 에피소드의 현재 번호는
+      항상 k 이상이다)
+    - ``episode_id`` attr = 새 그룹 번호
+    - slot 별로 현재 순서대로 ``slot_episode_idx``/``episode_uid`` 재부여
+    - ``next_episode_idx`` = N
+    빈자리가 없으면 전부 no-op.
+    """
+    names = sorted((k for k in f.keys() if EPISODE_GROUP_RE.match(k)),
+                   key=lambda k: int(EPISODE_GROUP_RE.match(k).group(1)))
+    for new_idx, name in enumerate(names):
+        new_name = f"episode_{new_idx:03d}"
+        if name != new_name:
+            f.move(name, new_name)
+        f[new_name].attrs["episode_id"] = new_idx
+    meta.attrs["next_episode_idx"] = len(names)
+    sid = str(meta.attrs.get("scene_id", ""))
+    per_slot: dict = {}
+    for i in range(len(names)):
+        g = f[f"episode_{i:03d}"]
+        iid = str(g.attrs.get("instruction_id", ""))
+        e = per_slot.get(iid, 0)
+        per_slot[iid] = e + 1
+        g.attrs["slot_episode_idx"] = e
+        if sid and iid:
+            g.attrs["episode_uid"] = episode_uid(sid, iid, e)
 
 
 def delete_scene_episodes(path: Path, names: list) -> None:
-    """세션이 파일을 쥐고 있지 않을 때 GUI 가 직접 쓰는 삭제 경로 (툼스톤
-    규칙은 SceneWriter.delete_episode 와 동일). 이름 하나라도 없으면 아무것도
-    지우지 않고 KeyError."""
+    """세션이 파일을 쥐고 있지 않을 때 GUI 가 직접 쓰는 삭제 경로 (규칙은
+    SceneWriter.delete_episode 와 동일: 삭제 후 renumber). 이름 하나라도 없으면
+    아무것도 지우지 않고 KeyError."""
     with h5py.File(path, "a") as f:
         meta = f["metadata"]
         missing = [n for n in names if n not in f or not EPISODE_GROUP_RE.match(n)]
         if missing:
             raise KeyError(", ".join(missing))
         for n in names:
-            _delete_episode_group(f, meta, n)
+            del f[n]
+        renumber_scene_episodes(f, meta)
 
 
 def list_scene_episodes(path: Path) -> list[dict]:

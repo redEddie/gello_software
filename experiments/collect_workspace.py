@@ -6046,7 +6046,7 @@ class WorkspaceWindow(QMainWindow):
             return
         # ---- scene 파일 (scene-v1). 재생·재판정 UI 는 #31 갤러리에서 --
         # 여기서는 목록·개수·quality 확인 + 삭제/트림 대상 선택용. 삭제는
-        # 툼스톤 방식(번호 유지, uid 재사용 금지) -- _delete_episodes.
+        # legacy 와 같이 삭제 후 renumber -- _delete_episodes.
         for path in iter_scene_files(root):
             item = QTreeWidgetItem([path.name, "", "scene"])
             item.setData(0, Qt.ItemDataRole.UserRole, str(path))
@@ -6333,6 +6333,154 @@ class WorkspaceWindow(QMainWindow):
         if self._delete_episodes(by_file):
             self._refresh_dataset_tree()
 
+    def _describe_delete_targets(self, by_file: dict):
+        """삭제 확인창용: (행 목록, 성공 개수, Hub 안내문). 파일을 읽지 못하면
+        (세션이 쥔 파일 등) 캐시로 대신하고, 그것도 없으면 이름만 나열한다."""
+        from gello.scene_format import list_scene_episodes
+
+        rows: list = []
+        n_success = 0
+        tasks: set = set()
+        for path, names in by_file.items():
+            eps: dict = {}
+            try:
+                if path.name.startswith("scene_"):
+                    src = (self.active_episode_cache
+                           if (self.active_file_path is not None
+                               and path == self.active_file_path)
+                           else list_scene_episodes(path)) or []
+                    eps = {e["name"]: e for e in src}
+                else:
+                    with h5py.File(path, "r") as f:
+                        data = f["data"]
+                        for n in names:
+                            if n in data:
+                                g = data[n]
+                                ok = g.attrs.get("success", True)
+                                eps[n] = {"episode_uid": n, "instruction": "",
+                                          "quality_status": "success" if ok else "failed",
+                                          "num_samples": int(g.attrs.get("num_samples", 0))}
+            except Exception:  # noqa: BLE001 -- 잠금 등: 이름만
+                eps = {}
+            for n in names:
+                e = eps.get(n)
+                if e is None:
+                    rows.append(f"  {path.name} / {n}")
+                    continue
+                q = str(e.get("quality_status", "?"))
+                if q == "success":
+                    n_success += 1
+                instr = str(e.get("instruction", ""))
+                if instr:
+                    tasks.add(instr)
+                rows.append(f"  {e.get('episode_uid', n)}  [{q}]  {e.get('num_samples', '?')}f"
+                            + (f"  {instr[:40]}" if instr else ""))
+        hub_note = ""
+        try:
+            repo = self.repo_id_for("repo_id")
+        except Exception:  # noqa: BLE001
+            repo = ""
+        if repo and tasks and not repo_id_error(repo):
+            try:
+                from gello.dataset_sync import hub_meta
+
+                hub, _lens, err = hub_meta(repo)
+                if not err:
+                    on_hub = [t for t in tasks if hub.get(t, 0) > 0]
+                    if on_hub:
+                        hub_note = tr("Hub({r})에 이미 올라간 task 입니다 ({k}개) — 다음 "
+                                      "전체 처리에서 '삭제됨' 으로 잡혀 재빌드(교체)가 "
+                                      "필요합니다.").format(r=repo, k=len(on_hub))
+            except Exception:  # noqa: BLE001 -- 오프라인 등: 안내 생략
+                hub_note = ""
+        return rows, n_success, hub_note
+
+    def _delete_episodes(self, by_file: dict) -> bool:
+        """공용 삭제 경로. Dataset 패널과 Analysis 순위표가 같은 것을 쓴다 --
+        세션 소유 검사와 실행 중 작업 검사를 두 벌로 두면 반드시 갈라진다."""
+        busy = self._busy_reason()
+        if busy:
+            QMessageBox.warning(self, tr("삭제 불가"),
+                                tr("{job}이(가) 진행 중입니다. 끝난 뒤 삭제하세요.").format(job=busy))
+            return False
+        total = sum(len(v) for v in by_file.values())
+        # 확인창: 무엇을 지우는지(uid·문장·판정·프레임) 목록으로 보여주고,
+        # 성공분이 섞였으면 빨갛게, Hub 에 이미 올라간 task 면 재빌드 안내.
+        # "실패만 선택" 으로 고른 정상 경로에서는 경고가 뜨지 않는다 -- 손으로
+        # 잘못 고른 성공분만 눈에 띄게 하는 것이 목적이다.
+        rows, n_success, hub_note = self._describe_delete_targets(by_file)
+        detail = "\n".join(rows[:30]) + ("\n  …" if len(rows) > 30 else "")
+        notes = [tr("삭제 후 남은 에피소드는 번호가 다시 매겨집니다 (scene 은 slot E번호·uid 도).")]
+        if hub_note:
+            notes.append(hub_note)
+        notes.append(tr("파일 크기는 줄지 않습니다 (재압축 필요). 되돌릴 수 없습니다."))
+        title = tr("에피소드 삭제")
+        body = tr("에피소드 {n}개를 삭제합니다.\n\n{d}\n\n{notes}").format(
+            n=total, d=detail, notes="\n".join(notes))
+        if n_success:
+            body = tr("⚠ 성공(success) 에피소드 {k}개가 포함되어 있습니다 — "
+                      "정말 의도한 선택인지 확인하세요.\n\n").format(k=n_success) + body
+            if QMessageBox.warning(
+                    self, title, body,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                return False
+        elif QMessageBox.question(self, title, body) != QMessageBox.StandardButton.Yes:
+            return False
+
+        for path, names in by_file.items():
+            owned = self.active_file_path is not None and path == self.active_file_path
+            try:
+                with h5py.File(path, "r" if owned else "a") as f:
+                    for name in names:
+                        q = str(f[name].attrs.get("quality_status", ""))
+                        if q not in ("success", "failed"):
+                            skipped += 1
+                            continue
+                        new_ok = q != "success"
+                        if owned:
+                            # 세션 소유 파일은 saver 스레드가 유일한 쓰기 통로.
+                            self.worker.cmd_set_episode_success(name, new_ok)
+                        else:
+                            f[name].attrs["quality_status"] = (
+                                "success" if new_ok else "failed")
+                            f[name].attrs["success"] = new_ok
+                        flipped += 1
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.critical(self, tr("재판정 실패"),
+                                     f"{path.name}\n{type(e).__name__}: {e}")
+                return False
+        self.log(f"[재판정] {flipped}개 뒤집음"
+                 + (f", {skipped}개 건너뜀 (success/failed 아님)" if skipped else ""))
+        return True
+
+    def _on_delete_selected(self) -> None:
+        """Deletes the selected episode.
+
+        Two paths, because who owns the file decides who may touch it. h5py is
+        not thread-safe, so while a session has the file open, every
+        file-touching call goes through that session's saver thread -- deleting
+        behind its back would corrupt the file it is still writing into. When
+        no session owns the file, nothing else has it open and this window can
+        do it directly, which is the common case: curating yesterday's takes
+        should not require connecting a robot first.
+        """
+        # 파일별로 묶는다. 여러 개를 지울 때 이름 하나씩 지우고 매번 번호를 다시
+        # 매기면 두 번째부터는 이미 밀린 이름을 지우게 된다 -- 한 파일 안에서
+        # 전부 지운 뒤 renumber는 마지막에 한 번만.
+        by_file: dict = {}
+        for item in self.dataset_tree.selectedItems():
+            if item.parent() is None:
+                continue
+            p = item.parent().data(0, Qt.ItemDataRole.UserRole)
+            by_file.setdefault(Path(p), []).append(item.data(0, Qt.ItemDataRole.UserRole))
+        if not by_file:
+            QMessageBox.information(self, tr("선택 필요"),
+                                    tr("삭제할 에피소드를 선택하세요 (Ctrl/Shift로 여러 개)."))
+            return
+        if self._delete_episodes(by_file):
+            self._refresh_dataset_tree()
+
     def _delete_episodes(self, by_file: dict) -> bool:
         """공용 삭제 경로. Dataset 패널과 Analysis 순위표가 같은 것을 쓴다 --
         세션 소유 검사와 실행 중 작업 검사를 두 벌로 두면 반드시 갈라진다."""
@@ -6507,11 +6655,26 @@ class WorkspaceWindow(QMainWindow):
         # 진짜 삭제한다. 오클릭 대책은 되돌리기가 아니라 닿기 어렵게 두는 것
         # (이 항목은 Dataset 메뉴에만 있다) -- 반쯤 지워진 채 디스크만 차지하는
         # 휴지통은 결국 아무도 비우지 않는다.
+        # 이 파일의 에피소드가 Hub 에 이미 있으면 다음 전체 처리가 '삭제됨' 으로
+        # 잡아 재빌드(교체)를 요구한다 -- 지금 지우는 것이 리모트에 어떤 결과를
+        # 낳는지 삭제 순간에 알린다 (오프라인이면 안내 생략).
+        hub_line = tr("Hub 에 올린 사본은 지금은 그대로지만, 다음 전체 처리 때 "
+                      "로컬 기준으로 재빌드되어 교체됩니다.")
+        if path.name.startswith("scene_"):
+            try:
+                from gello.scene_format import list_scene_episodes
+
+                names = [e["name"] for e in list_scene_episodes(path)]
+                _rows, _n_ok, note = self._describe_delete_targets({path: names})
+                if note:
+                    hub_line = note
+            except Exception:  # noqa: BLE001 -- 잠금/오프라인: 기본 안내
+                pass
         confirm = QMessageBox.warning(
             self, tr("파일 삭제"),
             tr("{f}\n\n에피소드 {n}개, {mb:.1f} MB 를 완전히 삭제합니다.\n"
-               "되돌릴 수 없습니다. Hub에 올린 사본은 영향받지 않습니다.").format(
-                   f=path.name, n=st["episodes"], mb=st["size"] / 1e6),
+               "되돌릴 수 없습니다.\n{h}").format(
+                   f=path.name, n=st["episodes"], mb=st["size"] / 1e6, h=hub_line),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel)
         if confirm != QMessageBox.StandardButton.Yes:
