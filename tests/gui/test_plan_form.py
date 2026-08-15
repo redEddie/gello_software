@@ -66,7 +66,8 @@ s000 = json.loads(plan_copy.read_text())["scenes"][0]["slots"]
 ids = [s["instruction_id"] for s in s000]
 assert "I001" not in ids                 # 삭제됨
 assert ids[0] == "I000"                  # 남은 행 번호 불변
-assert s000[-1]["instruction_id"] == "I003"  # I001 재사용 금지 -> 다음 번호
+n0 = len(orig["scenes"][0]["slots"])          # 원본 슬롯 수
+assert s000[-1]["instruction_id"] == f"I{n0 + 1:03d}"  # 섹션2에서 +1, 지운 I001 재사용 금지 -> 그 다음
 print("3 통과: 행 삭제(번호 유지) + 지운 번호 재사용 금지")
 
 # ---- 4. scene 추가 + 검증 실패 시 파일 무변경 ----

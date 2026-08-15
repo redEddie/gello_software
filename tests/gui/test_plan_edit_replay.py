@@ -38,7 +38,7 @@ dlg2.editor.setPlainText(json.dumps(bad, ensure_ascii=False))
 dlg2._save()
 assert dlg2.error_label.text(), "오류 미표시"
 assert json.loads(plan_copy.read_text())["scenes"][0]["slots"][0]["target"] == 12
-assert len(json.loads(plan_copy.read_text())["scenes"][0]["slots"]) == 2
+assert len(json.loads(plan_copy.read_text())["scenes"][0]["slots"]) == len(data["scenes"][0]["slots"])  # 거부 -> 슬롯 수 불변
 print("2 통과: 규칙 위반 저장 거부 --", dlg2.error_label.text()[:50])
 
 # 3. 깨진 JSON -> 거부
