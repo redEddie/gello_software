@@ -180,7 +180,7 @@ GUI 통합(New Scene "추천 받기")은 후속.
   →학습→평가 한 바퀴 후 확장.
 - 아키텍처 전반: `docs/architecture.md` (GUI/워커/노드 구조와 타이밍).
 
-## 7. 2026-08-14 추가분 (scene-v2)
+## 7. 2026-08-14 추가분 (당일 scene-v2 브랜치에서 작업 후 scene-v1 으로 병합)
 
 GUI/도구가 scene-v1 대비 다음이 늘었다. 상세 사용법은 각 커밋 메시지와
 `tests/gui/README.md` 가 정본.
