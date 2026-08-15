@@ -14,6 +14,16 @@
           "instruction_id": "I001",
           "instruction": "pick up the white cup and place it on the blue bowl",
           "target": 10
+        },
+        {
+          "instruction_id": "I002",
+          "instruction": "pick up the blue cup and place it on the yellow bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I003",
+          "instruction": "pick up the white cup and place it on the yellow bowl",
+          "target": 10
         }
       ]
     },
