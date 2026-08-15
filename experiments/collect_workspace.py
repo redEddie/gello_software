@@ -170,6 +170,7 @@ from gello.scene_format import (  # noqa: E402
     SCENE_ID_RE,
     SceneMetadata,
     count_by_slot,
+    delete_scene_episodes,
     describe_scene,
     iter_scene_files,
     next_scene_id,
@@ -3018,9 +3019,10 @@ class WorkspaceWindow(QMainWindow):
 
         del_btn = QPushButton(tr("선택한 에피소드 삭제"))
         del_btn.setToolTip(tr(
-            "위에서 선택한 에피소드를 .hdf5 에서 실제로 지우고 번호를 다시 매깁니다.\n"
-            "되돌릴 수 없습니다. 수집 중이 아닌 파일이면 세션 없이도 삭제됩니다.\n"
-            "파일 통째 삭제는 Dataset 메뉴에 있습니다."))
+            "선택한 에피소드를 .hdf5 에서 실제로 지웁니다 (실패·튀는 궤적 큐레이션).\n"
+            "legacy 는 번호를 다시 매기고, scene 은 번호를 유지하고 지운 uid 를 "
+            "재사용 금지 목록에 남깁니다.\n되돌릴 수 없습니다. 수집 중이 아닌 "
+            "파일이면 세션 없이도 삭제됩니다. 파일 통째 삭제는 Dataset 메뉴에."))
         del_btn.setStyleSheet("background-color:#c0392b; color:white; padding:6px;")
         del_btn.clicked.connect(self._on_delete_selected)
         col.addWidget(del_btn)
@@ -6043,8 +6045,8 @@ class WorkspaceWindow(QMainWindow):
         if not root.is_dir():
             return
         # ---- scene 파일 (scene-v1). 재생·재판정 UI 는 #31 갤러리에서 --
-        # 여기서는 목록·개수·quality 확인용으로 보여준다. 에피소드는
-        # immutable 이라 삭제 버튼은 _delete_episodes 가 거부한다.
+        # 여기서는 목록·개수·quality 확인 + 삭제/트림 대상 선택용. 삭제는
+        # 툼스톤 방식(번호 유지, uid 재사용 금지) -- _delete_episodes.
         for path in iter_scene_files(root):
             item = QTreeWidgetItem([path.name, "", "scene"])
             item.setData(0, Qt.ItemDataRole.UserRole, str(path))
@@ -6339,23 +6341,25 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("삭제 불가"),
                                 tr("{job}이(가) 진행 중입니다. 끝난 뒤 삭제하세요.").format(job=busy))
             return False
-        scene_paths = [p for p in by_file if p.name.startswith("scene_")]
-        if scene_paths:
-            QMessageBox.warning(
-                self, tr("삭제 불가"),
-                tr("scene 에피소드는 지울 수 없습니다 (immutable 규격).\n"
-                   "불량은 quality_status 재판정으로 표시합니다 -- 변환이 "
-                   "success 만 내보내므로 학습에는 안 들어갑니다.\n대상: {p}")
-                .format(p=", ".join(p.name for p in scene_paths)))
-            return False
-
         total = sum(len(v) for v in by_file.values())
         detail = "\n".join(f"  {p.name}: {len(v)}개" for p, v in by_file.items())
+        has_scene = any(p.name.startswith("scene_") for p in by_file)
+        has_legacy = any(not p.name.startswith("scene_") for p in by_file)
+        # 두 포맷의 후처리가 다르다: legacy 는 번호를 다시 매기고, scene 은
+        # 이름·번호를 그대로 두고(빈자리 허용) 지운 uid 를 툼스톤으로 남긴다
+        # (E번호 재사용 금지). 확인 문구에 그 차이를 그대로 적는다.
+        notes = []
+        if has_legacy:
+            notes.append(tr("legacy: 남은 에피소드는 번호가 다시 매겨집니다."))
+        if has_scene:
+            notes.append(tr("scene: 번호는 그대로 두고(빈자리 허용) 지운 uid 는 "
+                            "재사용 금지 목록에 남습니다. 이미 Hub 에 올라간 "
+                            "에피소드라면 다음 전체 처리에서 '삭제' 로 잡힙니다."))
+        notes.append(tr("파일 크기는 줄지 않습니다 (재압축 필요). 되돌릴 수 없습니다."))
         if QMessageBox.question(
                 self, tr("에피소드 삭제"),
-                tr("에피소드 {n}개를 삭제합니다.\n\n{d}\n\n남은 에피소드는 번호가 다시 "
-                   "매겨집니다. 파일 크기는 줄지 않습니다 (재압축 필요).").format(
-                       n=total, d=detail)
+                tr("에피소드 {n}개를 삭제합니다.\n\n{d}\n\n{notes}").format(
+                    n=total, d=detail, notes="\n".join(notes))
         ) != QMessageBox.StandardButton.Yes:
             return False
 
@@ -6369,14 +6373,17 @@ class WorkspaceWindow(QMainWindow):
                 self.log(f"[삭제] {path.name}: {len(names)}개 요청 (세션 경유)")
                 continue
             try:
-                with h5py.File(path, "a") as f:
-                    data = f["data"]
-                    missing = [n for n in names if n not in data]
-                    if missing:
-                        raise KeyError(", ".join(missing))
-                    for name in names:
-                        del data[name]
-                    renumber_episodes(data)
+                if path.name.startswith("scene_"):
+                    delete_scene_episodes(path, names)
+                else:
+                    with h5py.File(path, "a") as f:
+                        data = f["data"]
+                        missing = [n for n in names if n not in data]
+                        if missing:
+                            raise KeyError(", ".join(missing))
+                        for name in names:
+                            del data[name]
+                        renumber_episodes(data)
                 self.log(f"[삭제] {path.name}: {len(names)}개 ({', '.join(sorted(names))})")
             except Exception as e:  # noqa: BLE001
                 QMessageBox.critical(self, tr("삭제 실패"), f"{path.name}\n{type(e).__name__}: {e}")

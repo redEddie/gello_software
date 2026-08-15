@@ -70,7 +70,7 @@ class TrimPlan:
     n_trim: int
     release_idx: int | None    # 마지막 그리퍼 변화가 *확립되는* 프레임 인덱스
     already: str | None        # 이미 자른 이력 (attrs["trimmed"])
-    scene: bool = False        # scene-v1 에피소드 -- 프레임은 immutable
+    scene: bool = False        # scene-v1 에피소드 (표시용; 처리 경로는 동일)
 
     @property
     def result_frames(self) -> int:
@@ -107,9 +107,9 @@ class TrimPlan:
 
     @property
     def blocked(self) -> str | None:
-        if self.scene:
-            return ("scene 에피소드는 immutable 입니다 — 프레임 편집(끝 다듬기) 불가. "
-                    "불량이면 quality_status 재판정을 쓰세요")
+        # scene 에피소드도 자른다 (2026-08-14 결정: 실패/튀는 궤적 삭제와 함께
+        # HDF5 큐레이션 편집 허용). 자르기는 프레임축 데이터셋만 줄이고
+        # uid·번호·instruction 은 손대지 않으므로 slot 계보에 영향이 없다.
         if self.n_trim <= 0:
             return "자를 프레임 수가 0입니다"
         if self.too_short:
@@ -196,11 +196,7 @@ def trim_tail(path: str, demo: str, n_trim: int) -> int:
         raise ValueError(plan.blocked)
     keep = plan.result_frames
     with h5py.File(path, "a") as f:
-        grp, scene = _episode_group(f, demo)
-        if scene:
-            # plan.blocked 가 먼저 막지만, 이중 방어 -- 프레임 편집은 scene
-            # immutable 규격 위반이다.
-            raise ValueError("scene 에피소드는 immutable — 끝 다듬기 불가")
+        grp, _scene = _episode_group(f, demo)   # 양포맷 동일 처리
         targets: list[str] = []
         grp.visititems(
             lambda name, obj: targets.append(name)

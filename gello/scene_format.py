@@ -445,16 +445,7 @@ class SceneWriter:
         # 결정). 기존 같은 slot 에피소드의 uid E-부분 최대+1 로 계산 --
         # 과거 파일(전역 번호 시절)에 이어붙여도 uid 가 충돌하지 않고,
         # 삭제가 없는 포맷이라 번호 재사용도 불가능하다.
-        slot_idx = 0
-        for k in self._file.keys():
-            if not EPISODE_GROUP_RE.match(k):
-                continue
-            g = self._file[k]
-            if str(g.attrs.get("instruction_id", "")) != instruction_id:
-                continue
-            m = re.search(r"-E(\d+)$", str(g.attrs.get("episode_uid", "")))
-            if m:
-                slot_idx = max(slot_idx, int(m.group(1)) + 1)
+        slot_idx = _next_slot_idx(self._file, self._meta, instruction_id)
         self._meta.attrs["next_episode_idx"] = idx + 1
         name = f"episode_{idx:03d}"
         grp = self._file.create_group(name)
@@ -475,9 +466,24 @@ class SceneWriter:
         buf.clear()
         return name
 
+    def delete_episode(self, name: str) -> None:
+        """에피소드 삭제 (큐레이션: 실패·튀는 궤적을 푸시 전에 지운다).
+
+        legacy 와 달리 **번호를 다시 매기지 않는다** -- ``episode_NNN`` 이름과
+        ``next_episode_idx`` 는 단조 증가라 빈자리가 남을 뿐이고, 지운 uid 는
+        metadata ``deleted_uids`` 에 툼스톤으로 남겨 같은 slot 의 E번호가
+        재사용되지 않게 한다 (지운 에피소드가 이미 Hub 에 올라가 있을 수 있다;
+        같은 uid 가 다른 궤적으로 되살아나면 사이드카 대조가 깨진다).
+        파일 크기는 재압축 전까지 줄지 않는다 (HDF5 특성).
+        """
+        if name not in self._file or not EPISODE_GROUP_RE.match(name):
+            raise KeyError(f"{name!r} not found in {self.path}")
+        _delete_episode_group(self._file, self._meta, name)
+        self._file.flush()
+
     def set_quality_status(self, name: str, status: str) -> None:
-        """QA 재판정. 에피소드에서 바뀔 수 있는 것은 이 attr 과 success 뿐이다 --
-        프레임·번호·instruction 은 immutable 이고, 삭제는 존재하지 않는다."""
+        """QA 재판정. 프레임·번호·instruction 은 immutable; 지우려면
+        delete_episode (툼스톤 삭제) 를 쓴다."""
         if status not in QUALITY_STATUSES:
             raise ValueError(f"잘못된 quality_status: {status!r} (허용: {QUALITY_STATUSES})")
         if name not in self._file or not EPISODE_GROUP_RE.match(name):
@@ -521,6 +527,61 @@ def read_reference_image(path: Path) -> Optional[np.ndarray]:
     with h5py.File(path, "r") as f:
         ds = f["metadata"].get("reference_image")
         return None if ds is None else ds[...]
+
+
+def _deleted_uids(meta: h5py.Group) -> list:
+    raw = meta.attrs.get("deleted_uids")
+    if raw is None:
+        return []
+    try:
+        v = json.loads(str(raw))
+        return v if isinstance(v, list) else []
+    except (TypeError, ValueError):
+        return []
+
+
+def _next_slot_idx(f: h5py.File, meta: h5py.Group, instruction_id: str) -> int:
+    """slot(=instruction) 로컬 다음 E번호 = 살아 있는 에피소드 + 툼스톤의
+    같은-slot uid E-부분 최대 + 1. 삭제로 빈 번호가 생겨도 재사용하지 않는다."""
+    slot_idx = 0
+    uids = []
+    for k in f.keys():
+        if not EPISODE_GROUP_RE.match(k):
+            continue
+        g = f[k]
+        if str(g.attrs.get("instruction_id", "")) != instruction_id:
+            continue
+        uids.append(str(g.attrs.get("episode_uid", "")))
+    uids += [u for u in _deleted_uids(meta)
+             if f"-{instruction_id}-E" in u]
+    for u in uids:
+        m = re.search(r"-E(\d+)$", u)
+        if m:
+            slot_idx = max(slot_idx, int(m.group(1)) + 1)
+    return slot_idx
+
+
+def _delete_episode_group(f: h5py.File, meta: h5py.Group, name: str) -> None:
+    uid = str(f[name].attrs.get("episode_uid", ""))
+    del f[name]
+    if uid:
+        tomb = _deleted_uids(meta)
+        if uid not in tomb:
+            tomb.append(uid)
+        meta.attrs["deleted_uids"] = json.dumps(tomb)
+
+
+def delete_scene_episodes(path: Path, names: list) -> None:
+    """세션이 파일을 쥐고 있지 않을 때 GUI 가 직접 쓰는 삭제 경로 (툼스톤
+    규칙은 SceneWriter.delete_episode 와 동일). 이름 하나라도 없으면 아무것도
+    지우지 않고 KeyError."""
+    with h5py.File(path, "a") as f:
+        meta = f["metadata"]
+        missing = [n for n in names if n not in f or not EPISODE_GROUP_RE.match(n)]
+        if missing:
+            raise KeyError(", ".join(missing))
+        for n in names:
+            _delete_episode_group(f, meta, n)
 
 
 def list_scene_episodes(path: Path) -> list[dict]:

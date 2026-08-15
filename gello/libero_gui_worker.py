@@ -146,11 +146,11 @@ class EpisodeSaver(QThread):
                 elif item[0] == "delete":
                     name = item[1]
                     if not hasattr(self._writer, "delete_episode"):
-                        # scene 포맷: 에피소드는 immutable -- 삭제가 존재하지
-                        # 않는다. 불량은 quality_status 재판정으로만 표시한다.
+                        # 삭제가 없는 writer (연습 모드의 NullTaskWriter 등).
+                        # scene 은 SceneWriter.delete_episode(툼스톤) 가 있다.
                         self.log_message.emit(
-                            f"[삭제 불가] {name}: scene 에피소드는 지울 수 없습니다 "
-                            "-- 실패로 재판정하세요 (quality_status)")
+                            f"[삭제 불가] {name}: 이 세션의 writer 는 삭제를 "
+                            "지원하지 않습니다")
                         continue
                     self._writer.delete_episode(name)
                     self.log_message.emit(f"[삭제] {name}")

@@ -106,6 +106,12 @@ def verify_scene_file(path: Path) -> list[str]:
 
         seen_ids: list[int] = []
         seen_uids: set = set()
+        tombstones: set = set()
+        if "metadata" in f and "deleted_uids" in f["metadata"].attrs:
+            try:
+                tombstones = set(json.loads(str(f["metadata"].attrs["deleted_uids"])))
+            except (TypeError, ValueError):
+                problems.append("metadata.deleted_uids 가 JSON 목록이 아니다")
         for name in ep_names:
             grp = f[name]
             for k in REQUIRED_EPISODE_ATTRS:
@@ -127,6 +133,10 @@ def verify_scene_file(path: Path) -> list[str]:
                 if uid in seen_uids:
                     problems.append(f"{name}: episode_uid 중복 {uid}")
                 seen_uids.add(uid)
+                # 삭제 툼스톤(metadata deleted_uids)에 있는 uid 가 살아 있으면
+                # 지운 번호가 되살아난 것 -- 재사용 금지 규칙 위반
+                if uid in tombstones:
+                    problems.append(f"{name}: 삭제된 uid 가 재사용됨 {uid}")
                 # E번호는 slot 로컬 (2026-08-13 결정) -- attr 이 있으면 uid 와
                 # 일치해야 한다 (없는 파일은 전역 번호 시절의 구형)
                 if "slot_episode_idx" in grp.attrs:

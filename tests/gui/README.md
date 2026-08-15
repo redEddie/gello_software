@@ -16,3 +16,4 @@ bash tests/gui/run_all.sh ~/lerobot-venv/bin/python
 | test_right_scene | 오른쪽 패널 scene 배치도 |
 | test_gate_reset | 게이트 자동정렬 범위 조건, Start 잠금, 리셋 중 프레임 |
 | test_plan_edit_replay | JSON 원문 편집기, replay 로더 양포맷 |
+| test_scene_edit | scene 삭제(툼스톤·uid 재사용 금지·세션 경유), 트림 양포맷, GUI 혼합 삭제 |
