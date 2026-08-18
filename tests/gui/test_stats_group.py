@@ -63,3 +63,33 @@ rows = task_table(stats)
 assert any(r_["scene"] == "S001" and r_["task"] == sentence for r_ in rows)
 assert any(r_["scene"] == "S000" and r_["task"] == sentence for r_ in rows)
 print(f"통과: (scene,문장) 그룹 분리 -- 그룹 {len(by_group)}개, S001 느린 궤적이 S000 기준으로 튀지 않음")
+
+# ---- GUI: 큐레이션 후보의 그룹 콤보 필터 ----
+sys.path.insert(0, WT + "/experiments")
+sys.argv = ["t"]
+from PyQt6.QtWidgets import QApplication  # noqa: E402
+
+app = QApplication(sys.argv)
+import collect_workspace as cw  # noqa: E402
+
+cw.WorkspaceWindow._refresh_cameras = lambda self: None
+cw.WorkspaceWindow._restart_previews = lambda self: None
+cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
+win = cw.WorkspaceWindow(None)
+win._stats = stats
+win._refresh_group_combo()
+assert win.group_combo.count() == 1 + len(by_group)
+i = next(k for k in range(win.group_combo.count())
+         if win.group_combo.itemData(k) == ("S001", sentence))
+assert i > 0
+win.group_combo.setCurrentIndex(i)          # -> _refresh_rank_list
+shown = [win.rank_tree.topLevelItem(k).data(0, cw.Qt.ItemDataRole.UserRole)
+         for k in range(win.rank_tree.topLevelItemCount())]
+assert shown and all(p.endswith("scene_001.hdf5") for p, _ in shown), shown
+assert len(shown) == len(s1)
+win.group_combo.setCurrentIndex(0)          # (전체)
+assert win.rank_tree.topLevelItemCount() == len(stats)
+print("통과: 큐레이션 후보 그룹 콤보 -- 한 그룹만 / 전체 복귀")
+import os  # noqa: E402
+
+os._exit(0)

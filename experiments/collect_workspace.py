@@ -4222,6 +4222,18 @@ class WorkspaceWindow(QMainWindow):
         row.addWidget(self.rank_combo, 1)
         fcol.addLayout(row)
 
+        # 그룹(scene·문장) 필터 -- 편차는 이미 그룹 단위로 계산되지만, 후보
+        # 목록도 한 그룹만 놓고 보아야 "이 작업 안에서 어떤 테이크가 튀나"가
+        # 읽힌다 (파일 선택은 scene 단위까지만 좁혀 주었다).
+        grow = QHBoxLayout()
+        grow.addWidget(QLabel(tr("그룹")))
+        self.group_combo = QComboBox()
+        _shrinkable_combo(self.group_combo)
+        self.group_combo.addItem(tr("(전체)"), None)
+        self.group_combo.currentIndexChanged.connect(self._refresh_rank_list)
+        grow.addWidget(self.group_combo, 1)
+        fcol.addLayout(grow)
+
         len_row = QHBoxLayout()
         len_row.addWidget(QLabel(tr("길이(초)")))
         self.len_min_spin = QSlider(Qt.Orientation.Horizontal)
@@ -5926,6 +5938,7 @@ class WorkspaceWindow(QMainWindow):
         self.len_max_spin.setValue(int(max(lens) * 10) + 5)
         self.len_min_spin.blockSignals(False)
         self.len_max_spin.blockSignals(False)
+        self._refresh_group_combo()
         self._refresh_rank_list()
 
     def _filtered_stats(self) -> list:
@@ -5943,7 +5956,33 @@ class WorkspaceWindow(QMainWindow):
             v = node.data(0, Qt.ItemDataRole.UserRole)
             path = v if isinstance(v, str) and v.endswith(".hdf5") else None
         out = [e for e in self._stats if lo <= e.seconds <= hi]
-        return [e for e in out if path is None or e.path == path]
+        out = [e for e in out if path is None or e.path == path]
+        grp = self.group_combo.currentData() if hasattr(self, "group_combo") else None
+        if grp is not None:
+            out = [e for e in out if e.group == grp]
+        return out
+
+    def _refresh_group_combo(self) -> None:
+        """Analysis 스캔 결과의 (scene·문장) 그룹으로 콤보를 채운다 -- 선택은
+        가능하면 유지한다 (새로고침마다 (전체) 로 튀지 않게)."""
+        if not hasattr(self, "group_combo"):
+            return
+        keep = self.group_combo.currentData()
+        groups = sorted({e.group for e in self._stats})
+        self.group_combo.blockSignals(True)
+        self.group_combo.clear()
+        self.group_combo.addItem(tr("(전체)"), None)
+        for g in groups:
+            n = sum(1 for e in self._stats if e.group == g)
+            label = (f"{g[0]} · {g[1]}" if g[0] else g[1])
+            self.group_combo.addItem(f"{label}  ({n})", g)
+        idx = 0
+        for i in range(self.group_combo.count()):
+            if self.group_combo.itemData(i) == keep:
+                idx = i
+                break
+        self.group_combo.setCurrentIndex(idx)
+        self.group_combo.blockSignals(False)
 
     def _refresh_rank_list(self) -> None:
         if not self._stats:
