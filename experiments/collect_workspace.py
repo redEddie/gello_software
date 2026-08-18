@@ -188,6 +188,17 @@ LAUNCH_NODES_SCRIPT = str(Path(__file__).resolve().parent / "launch_nodes.py")
 CONVERT_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "convert_libero_to_lerobot.py")
 UPLOAD_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "upload_to_hub.py")
 REPLAY_SCRIPT = str(Path(__file__).resolve().parent / "replay_episode.py")
+# 새 수집(scene 체계)의 Hub 저장소 기본값 (2026-08-18 결정). 변환본은
+# -lerobot, 원본 HDF5 는 접미사 없이. legacy repo(fr3-pick-place*, 728개)는
+# 재사용하지 않는다 -- 그쪽에 전체 처리를 돌리면 삭제 게이트가 뜬다.
+DEFAULT_REPOS = {
+    "repo_id": "knu-physical-ai/fr3-tabletop-lerobot",
+    "hdf5_repo_id": "knu-physical-ai/fr3-tabletop",
+}
+# recents 에 남아 있어도 기본값으로 되살리지 않을 옛 저장소들.
+LEGACY_REPOS = {
+    "knu-physical-ai/fr3-pick-place-lerobot", "knu-physical-ai/fr3-pick-place",
+}
 RUNME_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "runme.sh")
 # LIBERO 초기 배치 참조 이미지. 리모트에는 zip 만 올라가고(3.9MB), 풀린
 # png 들은 .gitignore 의 *.png 에 걸린다. GUI 가 뜰 때 zip 이 바뀌었으면 다시
@@ -3164,9 +3175,10 @@ class WorkspaceWindow(QMainWindow):
         means a bad run does not poison the next one.
         """
         for v in self._recents.get(key):
-            if repo_id_error(v) is None:
+            if repo_id_error(v) is None and v not in LEGACY_REPOS:
                 return v
-        return ""
+        # 아무것도 없거나 legacy 뿐이면 새 수집 저장소 기본값
+        return DEFAULT_REPOS.get(key, "")
 
     def repo_id_for(self, key: str) -> str:
         return self.repo_edits[key].text().strip()

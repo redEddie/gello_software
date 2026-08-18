@@ -171,6 +171,18 @@ GUI 통합(New Scene "추천 받기")은 후속.
 - **파생 가능한 것을 저장하지 않는다.** 빈 존, 소품 종류, collected 카운트.
 - h5py 는 비스레드안전 — 파일 접근은 EpisodeSaver 스레드로만 (기존 규칙).
 
+## 5b. Hub 저장소 (2026-08-18 확정)
+
+| 용도 | repo | 비고 |
+|---|---|---|
+| 학습·공유용 LeRobot 변환본 | `knu-physical-ai/fr3-tabletop-lerobot` | Upload 페이지 "LeRobot repo" 기본값 |
+| 원본 HDF5 백업 | `knu-physical-ai/fr3-tabletop` | Upload 페이지 "HDF5 repo" 기본값 |
+| legacy (재사용 금지) | `knu-physical-ai/fr3-pick-place-lerobot` / `fr3-pick-place` | 728개. 전체 처리 대상 아님 — 삭제 게이트가 막는다 |
+| pilot 시험본 | `knu-physical-ai/fr3-scene-pilot-lerobot` / `fr3-scene-pilot` | S000 4개짜리. 필요 시 삭제 |
+
+기본값은 `experiments/collect_workspace.py` 의 `DEFAULT_REPOS` 에 있고, recents 에
+legacy repo 만 남아 있어도 기본값으로 되살리지 않는다(`LEGACY_REPOS`).
+
 ## 6. 참고
 
 - Notion: [프로토콜 DB](https://app.notion.com/p/jeonchanwook/60b41bd2091f4e55aa383492f41e5875)
