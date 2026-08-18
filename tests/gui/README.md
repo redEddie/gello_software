@@ -17,3 +17,4 @@ bash tests/gui/run_all.sh ~/lerobot-venv/bin/python
 | test_gate_reset | 게이트 자동정렬 범위 조건, Start 잠금, 리셋 중 프레임 |
 | test_plan_edit_replay | JSON 원문 편집기, replay 로더 양포맷 |
 | test_scene_edit | scene 삭제 후 renumber(그룹·episode_id·slot E·uid), 트림 양포맷, GUI 혼합 삭제+확인창, 검사기 불변식 |
+| test_stats_group | Analysis 그룹 = (scene, 문장): 같은 문장도 scene 별 분리, legacy 는 문장 단위 |

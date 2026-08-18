@@ -70,7 +70,8 @@ class EpisodeStat:
     still_frac: float       # 거의 멈춰 있던 프레임 비율 (0~1)
     per_dim_sigma: np.ndarray = field(repr=False, default=None)
     per_dim_max: np.ndarray = field(repr=False, default=None)
-    task_dev: float = 0.0   # 같은 task 평균과의 차 (rad/frame). +면 급함, -면 느림
+    task_dev: float = 0.0   # 같은 (scene, task) 평균과의 차 (rad/frame). +면 급함, -면 느림
+    scene: str = ""         # scene-v1 의 scene_id (legacy 는 빈 문자열)
 
     @property
     def seconds(self) -> float:
@@ -79,6 +80,17 @@ class EpisodeStat:
     @property
     def key(self) -> tuple:
         return (self.path, self.demo)
+
+    @property
+    def group(self) -> tuple:
+        """일관성 비교 단위 = (scene, 문장). 같은 문장이라도 scene(물체 배치)이
+        다르면 궤적 길이·속도가 달라지는 게 정상이라 한 통계로 묶으면 안 된다
+        (2026-08-18 사용자 요청). legacy 는 scene 이 없어 문장 단위 그대로."""
+        return (self.scene, self.task)
+
+    @property
+    def group_label(self) -> str:
+        return f"{self.scene} · {self.task}" if self.scene else self.task
 
     @property
     def flagged(self) -> bool:
@@ -105,16 +117,19 @@ def scan_dataset(paths) -> list[EpisodeStat]:
                         task = json.loads(json.loads(info)["language_instruction"]) if info else Path(p).stem
                     except Exception:  # noqa: BLE001
                         task = Path(p).stem
-                    groups = [(n, data[n], task) for n in sorted(
+                    groups = [(n, data[n], task, "") for n in sorted(
                         data.keys(), key=lambda s: int(s.split("_")[1]))]
                 else:
                     # scene-v1: 에피소드는 루트 episode_NNN, task 는 에피소드
-                    # attrs 의 instruction (scene 이 달라도 같은 문장 = 같은 task)
+                    # attrs 의 instruction, 비교 그룹은 (scene_id, instruction).
                     names = sorted((k for k in f.keys() if _EPISODE_RE.match(k)),
                                    key=lambda s: int(s.split("_")[1]))
-                    groups = [(n, f[n], str(f[n].attrs.get("instruction", Path(p).stem)))
+                    sid = str(f["metadata"].attrs.get("scene_id", "")) \
+                        if "metadata" in f else ""
+                    groups = [(n, f[n], str(f[n].attrs.get("instruction", Path(p).stem)),
+                               str(f[n].attrs.get("scene_id", sid)))
                               for n in names]
-                for name, grp, task in groups:
+                for name, grp, task, scene in groups:
                     a = grp["actions"][:]
                     if a.ndim != 2 or a.shape[0] < 4:
                         continue
@@ -123,7 +138,7 @@ def scan_dataset(paths) -> list[EpisodeStat]:
                     vel = da.max(axis=1)
                     success = grp.attrs.get("success")
                     out.append(EpisodeStat(
-                        path=str(p), demo=name, task=task,
+                        path=str(p), demo=name, task=task, scene=scene,
                         n_frames=int(a.shape[0]),
                         success=None if success is None else bool(success),
                         mean_da=float(da.mean()),
@@ -141,10 +156,10 @@ def scan_dataset(paths) -> list[EpisodeStat]:
 
 
 def _add_task_dev(stats: list[EpisodeStat]) -> None:
-    """Deviation from the mean of the same task, as the operator asked for."""
+    """Deviation from the mean of the same (scene, task) group."""
     by_task: dict = {}
     for s in stats:
-        by_task.setdefault(s.task, []).append(s)
+        by_task.setdefault(s.group, []).append(s)
     for group in by_task.values():
         mu = float(np.mean([s.mean_da for s in group]))
         for s in group:
@@ -165,15 +180,15 @@ def summarize(stats: list[EpisodeStat]) -> dict:
     n_slow = sum(1 for s in stats if s.task_dev < -TASK_DEV_LIMIT)
     off = n_fast + n_slow
     if off == 0:
-        verdict = f"전부 자기 task 평균의 ±{TASK_DEV_LIMIT} 안 — 잘라낼 것 없음"
+        verdict = f"전부 자기 (scene·문장) 그룹 평균의 ±{TASK_DEV_LIMIT} 안 — 잘라낼 것 없음"
     else:
-        verdict = (f"자기 task 평균에서 {TASK_DEV_LIMIT} 넘게 벗어난 것 {off}개 "
+        verdict = (f"자기 (scene·문장) 그룹 평균에서 {TASK_DEV_LIMIT} 넘게 벗어난 것 {off}개 "
                    f"(급함 {n_fast} / 늘어짐 {n_slow}) — 재생해서 확인해보세요")
     per_dim = np.stack([s.per_dim_sigma for s in stats]).mean(axis=0)
     return {
         "n": len(stats),
         "frames": int(sum(s.n_frames for s in stats)),
-        "tasks": len({s.task for s in stats}),
+        "tasks": len({s.group for s in stats}),   # (scene, 문장) 그룹 수
         "p50": float(np.percentile(means, 50)),
         "p90": float(np.percentile(means, 90)),
         "p99": float(np.percentile(means, 99)),
@@ -193,12 +208,13 @@ def task_table(stats: list[EpisodeStat]) -> list[dict]:
     defect."""
     by: dict = {}
     for s in stats:
-        by.setdefault(s.task, []).append(s)
+        by.setdefault(s.group, []).append(s)
     rows = []
-    for task, group in by.items():
+    for (scene, task), group in by.items():
         means = np.array([s.mean_da for s in group])
         rows.append({
-            "task": task, "n": len(group),
+            "task": task, "scene": scene,
+            "label": group[0].group_label, "n": len(group),
             "mean": float(means.mean()), "median": float(np.median(means)),
             "travel": float(np.mean([s.travel for s in group])),
             "frames": int(sum(s.n_frames for s in group)),

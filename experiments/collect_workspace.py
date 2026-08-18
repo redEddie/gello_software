@@ -2986,7 +2986,7 @@ class WorkspaceWindow(QMainWindow):
                        "success=False 로 표시된 에피소드를 모두 선택합니다.\n"
                        "선택만 하고 지우지 않습니다."),
                       ("튀는 것만 선택", self._on_select_jerky,
-                       "같은 task 평균과 ±{d} 넘게 차이 나는 에피소드를 모두 선택합니다.\n"
+                       "같은 (scene·문장) 그룹 평균과 ±{d} 넘게 차이 나는 에피소드를 모두 선택합니다.\n"
                        "선택만 하고 지우지 않습니다. (Analysis 탭과 같은 기준)"))):
             row = QHBoxLayout()
             for text, slot, tip in pair:
@@ -4248,7 +4248,7 @@ class WorkspaceWindow(QMainWindow):
             self.rank_tree.setColumnWidth(c, 76)
         for c, tip in enumerate((
                 tr("파일 · 에피소드"),
-                tr("이 에피소드의 평균 |Δa| 에서 같은 task 평균을 뺀 값 (rad/frame).\n"
+                tr("이 에피소드의 평균 |Δa| 에서 같은 (scene·문장) 그룹 평균을 뺀 값 (rad/frame).\n"
                    "+ 는 그 작업의 보통 테이크보다 급하게, - 는 느리게 움직인 것.\n"
                    "±{d} 를 넘으면 빨강/파랑").format(d=TASK_DEV_LIMIT),
                 tr("속도가 {v} rad/frame 미만이던 프레임 비율 — 망설임").format(v=STILL_VEL),
@@ -4263,7 +4263,7 @@ class WorkspaceWindow(QMainWindow):
         # 열지 않고도 "몇이면 이상한가"를 알아야 하지만, 그게 목록을 밀어내면
         # 정작 봐야 할 후보가 안 보인다.
         cols_row = QHBoxLayout()
-        cols = QLabel(tr("같은 task 평균과의 차 — ±{d} 밖이면 급함(빨강)/느림(파랑)")
+        cols = QLabel(tr("같은 (scene·문장) 그룹 평균과의 차 — ±{d} 밖이면 급함(빨강)/느림(파랑)")
                       .format(d=TASK_DEV_LIMIT))
         cols.setStyleSheet("color:#888;")
         cols_row.addWidget(cols, 1)
@@ -4701,7 +4701,7 @@ class WorkspaceWindow(QMainWindow):
         m = mb.addMenu(tr("Dataset"))
         m.addAction(tr("새로고침"), self._refresh_dataset_tree)
         m.addAction(tr("실패만 선택"), self._on_select_failed)
-        m.addAction(tr("튀는 것만 선택 (task 평균과 ±0.0026 밖)"),
+        m.addAction(tr("튀는 것만 선택 (scene·문장 그룹 평균과 ±0.0026 밖)"),
                     self._on_select_jerky)
         m.addAction(tr("에피소드 삭제"), self._on_delete_selected)
         m.addAction(tr("파일 삭제"), self._on_delete_file)
@@ -5907,7 +5907,7 @@ class WorkspaceWindow(QMainWindow):
         dt = time.monotonic() - t0
         s = self._summary
         self.analysis_summary.setText(
-            tr("에피소드 {n}개 · {f:,}프레임 · task {t}개 · 길이 {a}~{b}프레임\n{v}").format(
+            tr("에피소드 {n}개 · {f:,}프레임 · 그룹(scene·문장) {t}개 · 길이 {a}~{b}프레임\n{v}").format(
                 n=s["n"], f=s["frames"], t=s["tasks"],
                 a=s["len_min"], b=s["len_max"], v=s["verdict"]))
         self.log(f"[분석] {len(files)}개 파일 / {s['n']}개 에피소드 ({dt:.2f}s) — {s['verdict']}")
@@ -5963,7 +5963,7 @@ class WorkspaceWindow(QMainWindow):
             item = QTreeWidgetItem([
                 f"{Path(e.path).stem[:22]} · {e.demo}",
                 f"{e.task_dev:+.4f}", f"{100 * e.still_frac:.0f}%",
-                f"{e.seconds:.1f}s", e.task[:34]])
+                f"{e.seconds:.1f}s", e.group_label[:40]])
             item.setData(0, Qt.ItemDataRole.UserRole, (e.path, e.demo))
             # 밴드 밖은 차이 칸만 물들인다 -- 행 전체를 칠하면 실패(빨강)와
             # 겹쳐서 둘 다 안 읽힌다.
@@ -6002,13 +6002,13 @@ class WorkspaceWindow(QMainWindow):
         stat = next((e for e in self._stats if e.key == (path, demo)), None)
         if stat is not None:
             self.analysis_summary.setText(
-                tr("{d} · {n}프레임 ({s:.1f}s) · 평균 |Δa| {m:.5f} · 같은 task 평균과 "
+                tr("{d} · {n}프레임 ({s:.1f}s) · 평균 |Δa| {m:.5f} · 같은 (scene·문장) 그룹 평균과 "
                    "{v:+.4f}{mark} · 멈춤 {p:.0f}%\n{t}").format(
                        d=demo, n=stat.n_frames, s=stat.seconds, m=stat.mean_da,
                        v=stat.task_dev,
                        mark=" (급함)" if stat.task_dev > TASK_DEV_LIMIT else (
                            " (느림)" if stat.task_dev < -TASK_DEV_LIMIT else ""),
-                       p=100 * stat.still_frac, t=stat.task))
+                       p=100 * stat.still_frac, t=stat.group_label))
             self.da_hist.set_values(
                 [e.mean_da for e in self._stats],
                 [(self._summary["p50"], tr("중앙값")), (stat.mean_da, tr("이 에피소드"))])
@@ -6635,12 +6635,12 @@ class WorkspaceWindow(QMainWindow):
                     # 접혀 있으면 "N개 선택됨"만 뜨고 무엇이 골렸는지 안 보인다.
                     parent.setExpanded(True)
                     n += 1
-        self.log(f"[큐레이션] 같은 task 평균과 {TASK_DEV_LIMIT} 넘게 차이 나는 "
+        self.log(f"[큐레이션] 같은 (scene·문장) 그룹 평균과 {TASK_DEV_LIMIT} 넘게 차이 나는 "
                  f"에피소드 {n}개를 선택했습니다." + ("" if n else " (없음)"))
         self.dataset_hint.setText(
             tr("튀는 에피소드 {n}개 선택됨 — 재생으로 확인한 뒤 '에피소드 삭제'로 지웁니다.")
             .format(n=n) if n else
-            tr("같은 task 평균과 {d} 넘게 차이 나는 에피소드가 없습니다 "
+            tr("같은 (scene·문장) 그룹 평균과 {d} 넘게 차이 나는 에피소드가 없습니다 "
                "(이 데이터셋은 균일합니다).").format(d=TASK_DEV_LIMIT))
 
     def _on_select_failed(self) -> None:
