@@ -52,26 +52,29 @@ print("3 통과: 깨진 JSON 거부")
 #    친절한 SystemExit 가 곧 검증 대상이다)
 from replay_episode import load_trajectory  # noqa: E402
 
-try:
-    t1 = load_trajectory(Path("/home/franka/libero_datasets/scene_000.hdf5"),
-                         "episode_000")
-    assert t1["q"].shape[1] == 7 and len(t1["grip"]) == len(t1["q"])
-    assert t1["source"] == "commanded_joint_states"
-    scene_note = f"scene({len(t1['q'])}f)"
-except SystemExit as e:
-    assert "사용 중" in str(e), e
-    scene_note = "scene(잠금 -- 친절 오류 확인)"
-legacy = sorted(Path("/home/franka/libero_datasets/old_data").glob("*_demo.hdf5"))
-if legacy:
-    import h5py
+# 실데이터에 의존하지 않는다 -- selftest 로 scene+legacy 파일을 만들어 검증
+import subprocess  # noqa: E402
 
-    with h5py.File(legacy[0]) as f:
-        demo = sorted(f["data"].keys())[0]
-    t2 = load_trajectory(legacy[0], demo)
-    assert t2["q"].shape[1] == 7
-    print(f"4 통과: replay 로더 {scene_note} + legacy({len(t2['q'])}f, {legacy[0].name})")
-else:
-    print(f"4 통과: replay 로더 {scene_note} — legacy 파일 없음, 생략")
+_d = Path(tempfile.mkdtemp(prefix="replay_"))
+subprocess.run([sys.executable, WT + "/scripts/check_scene_file.py",
+                "--selftest", "--keep", str(_d)], check=True, capture_output=True)
+t1 = load_trajectory(_d / "scene_000.hdf5", "episode_000")
+assert t1["q"].shape[1] == 7 and len(t1["grip"]) == len(t1["q"])
+assert t1["source"] == "commanded_joint_states"
+t2 = load_trajectory(_d / "selftest_task_demo.hdf5", "demo_0")
+assert t2["q"].shape[1] == 7
+# 없는 에피소드 / 없는 파일 -> 친절한 SystemExit
+try:
+    load_trajectory(_d / "scene_000.hdf5", "episode_999")
+    raise AssertionError("없는 에피소드가 통과됨")
+except SystemExit as e:
+    assert "가 없습니다" in str(e) and "episode_000" in str(e), e
+try:
+    load_trajectory(_d / "nope.hdf5", "episode_000")
+    raise AssertionError("없는 파일이 통과됨")
+except SystemExit as e:
+    assert "열지 못했습니다" in str(e), e
+print(f"4 통과: replay 로더 scene({len(t1['q'])}f) + legacy({len(t2['q'])}f) + 친절 오류 2종")
 
 print("\n계획 편집 + replay 로더 검증 통과")
 import os  # noqa: E402

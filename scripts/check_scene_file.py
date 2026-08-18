@@ -231,7 +231,7 @@ def selftest(keep: Path | None) -> None:
             "OBJ-CUP-WHT-01": {"zone": [0, 0]},
             "OBJ-BOWLS-YEL-01": {"zone": [1, 1]},
             "OBJ-DRAWER-01": {"zone": [2, 0]},
-            "OBJ-CUP-PPR-01": {"zone": [2, 2]},
+            "OBJ-CUP-WHT-02": {"zone": [2, 2]},
         },
         "relations": [["OBJ-CUP-BLU-01", "next_to", "OBJ-BOWLS-YEL-01"]],
     }
@@ -240,7 +240,7 @@ def selftest(keep: Path | None) -> None:
     md = SceneMetadata(
         scene_id=sid,
         objects=["OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01", "OBJ-BOWLS-YEL-01",
-                 "OBJ-DRAWER-01", "OBJ-CUP-PPR-01"],
+                 "OBJ-DRAWER-01", "OBJ-CUP-WHT-02"],
         layout=layout,
         description="컵 2개가 노란 그릇 양옆, 서랍장 왼쪽 아래. 종이컵은 어떤 instruction 에도 안 나오는 무시 대상.",
         station="selftest",
