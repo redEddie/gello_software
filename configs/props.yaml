@@ -24,7 +24,9 @@ props:
   - {id: OBJ-CUP-BLU-02, category: cup, color: blue, material: plastic}
 
   # 종이컵 -- 재질 variation 용. 소모품이라 교체 시 기존 것과 나란히 비교(§3)
-  - {id: OBJ-CUP-PPR-01, category: cup, color: white, material: paper}
+  # 2026-08-18 사용 안 함으로 결정 -- retired (기존 metadata 참조 없음이라 삭제해도
+  # 되지만, 규칙대로 남겨 둔다: ID 재발급 방지 + 나중에 다시 쓰면 플래그만 되돌림)
+  - {id: OBJ-CUP-PPR-01, category: cup, color: white, material: paper, retired: true}
 
   # 작은 그릇 6색
   - {id: OBJ-BOWLS-GRY-01, category: small_bowl, color: gray, material: plastic}
