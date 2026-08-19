@@ -24,6 +24,16 @@
           "instruction_id": "I003",
           "instruction": "pick up the white cup and place it on top of the drawer",
           "target": 10
+        },
+        {
+          "instruction_id": "I004",
+          "instruction": "open the top drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I005",
+          "instruction": "close the top drawer",
+          "target": 10
         }
       ]
     },
@@ -44,6 +54,46 @@
         {
           "instruction_id": "I002",
           "instruction": "pick up the white cup and place it next to the pink small bowl",
+          "target": 10
+        }
+      ]
+    },
+    {
+      "scene_id": "S002",
+      "slots": [
+        {
+          "instruction_id": "I000",
+          "instruction": "pick up the blue cup and place it on the yellow bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I001",
+          "instruction": "pick up the small green bowl and place it on the yellow bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I002",
+          "instruction": "pick up the small gray bowl and place it on the yellow bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I003",
+          "instruction": "pick up the blue cup and place it next to the small green bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I004",
+          "instruction": "pick up the blue cup and place it next to the small gray bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I005",
+          "instruction": "pick up the small green bowl and place it on the small gray bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I006",
+          "instruction": "pick up the small gray bowl and place it on the small green bowl",
           "target": 10
         }
       ]
