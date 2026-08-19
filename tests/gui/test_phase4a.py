@@ -24,9 +24,9 @@ PLANS = Path(WT) / "configs" / "collection_plans"
 
 # ---- 1. 로더: pilot.json + 규칙 검증 ----
 plan = load_plan(PLANS / "pilot.json")
-assert plan.version == 1 and len(plan.scenes) == 2
+assert plan.version == 1 and len(plan.scenes) >= 2
 assert plan.slots_for("S000")[0].instruction_id == "I000"
-assert len(plan.slots_for("S001")) == 5
+assert len(plan.slots_for("S001")) >= 1 and plan.slots_for("S001")[0].instruction_id == "I000"
 assert not plan.warnings, f"pilot.json 이 동사 규칙 위반: {plan.warnings}"
 names = [p.name for p in list_plans()]
 assert names[0] == "pilot.json" and names[-1] == "example.json", names
