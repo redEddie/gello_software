@@ -11,6 +11,22 @@ Multiple task files become one multi-task LeRobotDataset (LeRobot's native
 way to hold many tasks): each episode carries the source file's language
 instruction as its `task`.
 
+SCENE-V1 파일도 같은 명령으로 읽는다 (2026-08-13)
+--------------------------------------------------
+scene_*.hdf5 (파일=scene, instruction 은 에피소드 attrs) 는 내부 구조로
+자동 판별된다 -- 파일명이 아니라 metadata 그룹의 scene_id 로. 차이점:
+
+- task 는 에피소드 attrs 의 instruction (scene 이 달라도 같은 문장이면
+  같은 task 로 합쳐진다).
+- scene 포맷은 에피소드 삭제가 없으므로(immutable) 큐레이션은 여기서:
+  기본 quality_status=success 만 변환, --include-failed 로 failed 포함,
+  bad_data/retake/deprecated 는 상시 제외.
+- 변환 결과에 meta/episode_uids.json 사이드카를 유지한다: LeRobot
+  episode_index -> 출처(episode_uid/scene_id/instruction_id). 학습 로더는
+  이 파일을 모르지만, (a) 평가에서 scene 단위 실패 분석, (b) scene 파일의
+  --resume 스킵을 개수 산술이 아닌 uid 대조로 정확하게 하는 데 쓴다.
+  legacy 파일 에피소드도 출처(source_file/episode)는 기록된다.
+
 SCHEMA IS DETECTED FROM THE FILES, NOT HARDCODED
 --------------------------------------------------
 Since the GUI's "데이터셋 구조 사용자 지정" dialog (gello/dataset_schema.py) lets an
@@ -127,6 +143,11 @@ from gello.libero_format import (  # noqa: E402
     EYE_IN_HAND_CROP_X_SHIFT,
     action_column_names,
     resize_rgb,
+)
+from gello.scene_format import (  # noqa: E402
+    EPISODE_GROUP_RE,
+    QUALITY_FAILED,
+    QUALITY_SUCCESS,
 )
 
 # 학습 파이프라인이 DINOv3 를 쓰고 그 입력이 224x224 다. .hdf5 쪽 기본값
@@ -280,6 +301,67 @@ def _fail_integrity(root: Path, problems: list) -> None:
     )
 
 
+def _hub_commit_message(root: Path, repo_id: str, info: dict, replace: bool) -> str:
+    """Hub 커밋 메시지 -- 데이터셋이 자라는 것이 이력에서 읽히게.
+
+    예) ``scene-v1: +12 ep (S000 +10, S001 +2) → 총 47 ep / 9,812 fr · scenes S000-S001``
+    Hub 의 이전 총계는 dataset_sync.hub_meta 로, scene 별 증감은 사이드카
+    (meta/episode_uids.json) 의 uid 를 Hub 사본과 대조해 계산한다. 조회 실패
+    (오프라인·첫 푸시)면 로컬 총계만 적는다. 메시지가 틀려도 업로드를 막지는
+    않는다 -- 이력 가독성 목적이지 정합성 장치가 아니다.
+    """
+    total_ep = int(info.get("total_episodes", 0))
+    total_fr = int(info.get("total_frames", 0))
+    sidecar = root / "meta" / "episode_uids.json"
+    per_scene_local: dict = {}
+    local_uids: set = set()
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8")) if sidecar.exists() else {}
+        for e in data.values():
+            if isinstance(e, dict) and e.get("episode_uid"):
+                local_uids.add(e["episode_uid"])
+                sid = e.get("scene_id") or e["episode_uid"].split("-")[1]
+                per_scene_local[sid] = per_scene_local.get(sid, 0) + 1
+    except Exception:  # noqa: BLE001
+        data = {}
+    prev_total = None
+    hub_uids: set = set()
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from gello.dataset_sync import hub_episode_uids, hub_meta
+
+        counts, _lens, err = hub_meta(repo_id)
+        if not err:
+            prev_total = sum(counts.values())
+        hu, err2 = hub_episode_uids(repo_id)
+        if not err2 and hu:
+            hub_uids = hu
+    except Exception:  # noqa: BLE001
+        pass
+    parts = []
+    if prev_total is not None:
+        delta = total_ep - prev_total
+        parts.append(f"{delta:+d} ep" if delta else "±0 ep")
+    else:
+        parts.append(f"{total_ep} ep")
+    if per_scene_local:
+        per_scene_new: dict = {}
+        for e in data.values():
+            if isinstance(e, dict) and e.get("episode_uid") and e["episode_uid"] not in hub_uids:
+                sid = e.get("scene_id") or e["episode_uid"].split("-")[1]
+                per_scene_new[sid] = per_scene_new.get(sid, 0) + 1
+        if per_scene_new and hub_uids:
+            parts.append("(" + ", ".join(f"{k} +{v}" for k, v in sorted(per_scene_new.items())) + ")")
+        elif per_scene_local:
+            parts.append("(" + ", ".join(f"{k} {v}" for k, v in sorted(per_scene_local.items())) + ")")
+    tail = f"→ 총 {total_ep} ep / {total_fr:,} fr"
+    if per_scene_local:
+        ks = sorted(per_scene_local)
+        tail += f" · scenes {ks[0]}" + (f"-{ks[-1]}" if len(ks) > 1 else "")
+    kind = "rebuild(큐레이션 반영, 교체)" if replace else "scene-v1"
+    return f"{kind}: {' '.join(parts)} {tail}"
+
+
 def _verify_tag(repo_id: str) -> bool:
     """Check that the version tag lerobot reads actually points at what we pushed.
 
@@ -322,6 +404,65 @@ def _language_instruction(f: h5py.File) -> str:
     return lang
 
 
+# --------------------------------------------------------------- scene-v1
+# scene 파일(scene_*.hdf5)은 "파일=scene, instruction 은 에피소드 attrs" 라서
+# legacy 의 파일 레벨 problem_info 전제가 성립하지 않는다. 판별은 파일명이
+# 아니라 내부 구조로 한다 (경로에서 아무것도 역산하지 않는다는 원칙).
+
+def _is_scene_file(f: h5py.File) -> bool:
+    return "metadata" in f and "scene_id" in f["metadata"].attrs
+
+
+def _scene_convertible(f: h5py.File, include_failed: bool):
+    """변환 대상 scene 에피소드를 번호순으로 (name, grp, instruction) yield.
+
+    scene 포맷은 에피소드 삭제가 없으므로(immutable) 이 quality 필터가
+    큐레이션 관문이다: 기본 success 만, --include-failed 면 failed 까지.
+    bad_data/retake/deprecated 는 데이터 자체가 못 쓰는 것이라 항상 제외.
+    """
+    names = sorted((k for k in f.keys() if EPISODE_GROUP_RE.match(k)),
+                   key=lambda n: int(n.split("_")[1]))
+    allowed = {QUALITY_SUCCESS} | ({QUALITY_FAILED} if include_failed else set())
+    for name in names:
+        grp = f[name]
+        if str(grp.attrs.get("quality_status", "")) not in allowed:
+            continue
+        yield name, grp, str(grp.attrs["instruction"])
+
+
+def _load_uid_sidecar(root: Path, repo_id: str, resume: bool) -> dict:
+    """meta/episode_uids.json -- LeRobot episode_index -> 출처(episode_uid 등).
+
+    scene 단위 실패 분석과 scene 파일의 정확한 resume 스킵(uid 대조)을 위해
+    변환기가 유지하는 사이드카다. 학습 로더는 이 파일을 모른다(영향 0).
+    resume 인데 로컬에 없으면 Hub 에서 받아본다 -- 사이드카 도입 전 데이터셋
+    (legacy 전용)은 없는 것이 정상이므로 실패는 조용히 빈 dict.
+    """
+    local = root / "meta" / "episode_uids.json"
+    if local.exists():
+        try:
+            return json.loads(local.read_text())
+        except ValueError:
+            return {}
+    if resume:
+        try:
+            from huggingface_hub import hf_hub_download
+
+            p = hf_hub_download(repo_id, "meta/episode_uids.json",
+                                repo_type="dataset")
+            return json.loads(Path(p).read_text())
+        except Exception:  # noqa: BLE001 - 없는 것이 정상 케이스
+            return {}
+    return {}
+
+
+def _write_uid_sidecar(root: Path, records: dict) -> None:
+    out = root / "meta" / "episode_uids.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(records, ensure_ascii=False, indent=1,
+                              sort_keys=True))
+
+
 def _is_success(grp) -> bool:
     """True only for an episode explicitly marked successful.
 
@@ -336,9 +477,19 @@ def _is_success(grp) -> bool:
     return bool(v) if v is not None else False
 
 
+# 변환기가 실제로 소비하는 obs 키 (_build_features 참조). 스키마 일치 검사를
+# 이 집합으로 좁혀야 소비하지 않는 부가 필드(depth #17, timestamp 등)가
+# 있는 에피소드와 없는 에피소드를 한 데이터셋으로 변환할 수 있다 --
+# frozenset 전체 비교는 "부가 필드 추가 = 기존 데이터와 변환 불가"를 만든다.
+_CONSUMED_OBS_KEYS = frozenset({
+    "agentview_rgb", "eye_in_hand_rgb", "joint_states", "gripper_states",
+    "commanded_joint_states", "commanded_gripper_states",
+})
+
+
 def _episode_schema(grp: h5py.Group) -> dict:
     obs = grp["obs"]
-    obs_keys = frozenset(obs.keys())
+    obs_keys = frozenset(obs.keys()) & _CONSUMED_OBS_KEYS
     action_space = grp.attrs.get("action_space", ACTION_SPACE_EE_DELTA)
     base_cols = action_column_names(action_space)
     action_dim = grp["actions"].shape[1]
@@ -402,19 +553,29 @@ def _to_target(img: np.ndarray, target: int, zoom: float = 1.0,
                       y_shift=y_shift)
 
 
-def _scan_schema(hdf5_paths: list, only_success: bool) -> dict:
+def _scan_schema(hdf5_paths: list, only_success: bool,
+                 include_failed: bool = False) -> dict:
     """Pre-flight pass over every episode that will be converted -- cheap
     (attrs/group keys only, no array data) -- so a schema mismatch is caught
-    before LeRobotDataset.create() has written anything to --root."""
+    before LeRobotDataset.create() has written anything to --root.
+
+    변환 본문과 같은 필터를 적용해 "변환될 에피소드"만 본다: legacy 는
+    --only-success, scene 은 quality_status (기본 success 만)."""
     reference = None
     reference_loc = None
     for path in hdf5_paths:
         with h5py.File(path, "r") as f:
-            data = f["data"]
-            for name in sorted(data.keys(), key=lambda n: int(n.split("_")[1])):
-                grp = data[name]
-                if only_success and not _is_success(grp):
-                    continue
+            if _is_scene_file(f):
+                candidates = [(n, g) for n, g, _ in
+                              _scene_convertible(f, include_failed)]
+            else:
+                data = f["data"]
+                candidates = [
+                    (n, data[n])
+                    for n in sorted(data.keys(), key=lambda x: int(x.split("_")[1]))
+                    if not (only_success and not _is_success(data[n]))
+                ]
+            for name, grp in candidates:
                 schema = _episode_schema(grp)
                 if reference is None:
                     reference = schema
@@ -559,6 +720,11 @@ def main() -> None:
     p.add_argument("--root", type=Path, required=True, help="로컬에 LeRobotDataset을 만들 경로")
     p.add_argument("--fps", type=int, default=20)
     p.add_argument("--only-success", action="store_true", help="success=True인 에피소드만 포함")
+    p.add_argument(
+        "--include-failed", action="store_true",
+        help="scene 파일 전용: quality_status=failed 에피소드도 변환에 포함한다. "
+             "scene 포맷은 에피소드 삭제가 없으므로(immutable) 이 필터가 큐레이션 "
+             "관문이다 -- 기본은 success 만, bad_data/retake/deprecated 는 항상 제외.")
     p.add_argument("--image-writer-threads", type=int, default=4)
     p.add_argument(
         "--resume",
@@ -632,6 +798,8 @@ def main() -> None:
         ds.meta = SimpleNamespace(info=info)
         print(f"업로드만 진행: {info_dict['total_episodes']}개 에피소드, "
               f"{info_dict['total_frames']} 프레임 -> {args.repo_id}", flush=True)
+        commit_msg = _hub_commit_message(root, args.repo_id, info_dict, bool(args.replace))
+        print(f"Hub 커밋 메시지: {commit_msg}", flush=True)
         if args.replace:
             # 재빌드한 결과로 Hub을 통째로 교체한다. push_to_hub는 새/바뀐 파일만
             # 올리고 사라진 파일은 지우지 않으므로, 그것만으로는 지운 에피소드의
@@ -647,7 +815,7 @@ def main() -> None:
                 repo_id=args.repo_id, folder_path=str(root), repo_type="dataset",
                 ignore_patterns=["images/", ".cache/**"],
                 delete_patterns=["data/**", "videos/**", "meta/**"],
-                commit_message="rebuild: 큐레이션 반영 (삭제 포함)",
+                commit_message=commit_msg,
             )
             # upload_folder는 태그를 건드리지 않는다. lerobot이 읽는 건 태그이므로
             # 여기서 옮기지 않으면 교체한 내용이 보이지 않는다.
@@ -663,7 +831,32 @@ def main() -> None:
             # 비교체 푸시에서 만든다).
             _merge_card_tags(args.repo_id)
         else:
-            ds.push_to_hub(private=args.private, tags=DATASET_TAGS)
+            # lerobot 의 push_to_hub 는 commit_message 를 받지 않아 이력이 전부
+            # 'Upload dataset' 으로 남는다. 같은 일(폴더 업로드 -> 카드 -> 태그)을
+            # 직접 하되 메시지를 붙인다 -- 데이터셋이 자라는 것이 Hub 이력에서
+            # 읽히게 (사용자 요청 2026-08-19).
+            from huggingface_hub import HfApi
+            from lerobot.datasets.utils import create_lerobot_dataset_card
+
+            api = HfApi()
+            api.create_repo(repo_id=args.repo_id, repo_type="dataset",
+                            private=bool(args.private), exist_ok=True)
+            api.upload_folder(
+                repo_id=args.repo_id, folder_path=str(root), repo_type="dataset",
+                ignore_patterns=["images/", ".cache/**"],
+                commit_message=commit_msg,
+            )
+            card = create_lerobot_dataset_card(
+                tags=DATASET_TAGS, dataset_info=info, repo_id=args.repo_id)
+            card.push_to_hub(repo_id=args.repo_id, repo_type="dataset",
+                             commit_message=f"card: {commit_msg}")
+            from huggingface_hub.errors import RevisionNotFoundError
+
+            try:
+                api.delete_tag(args.repo_id, tag=CODEBASE_VERSION, repo_type="dataset")
+            except RevisionNotFoundError:
+                pass
+            api.create_tag(args.repo_id, tag=CODEBASE_VERSION, repo_type="dataset")
         ok_tag = _verify_tag(args.repo_id)
         print(f"완료: https://huggingface.co/datasets/{args.repo_id}", flush=True)
         # 태그가 안 따라왔으면 성공이 아니다. lerobot은 태그를 읽으므로 올린
@@ -673,7 +866,8 @@ def main() -> None:
     # .hdf5 는 견고한 원본, LeRobot 사본은 실사용 크기 -- 둘을 갈라두면 원본을
     # 다시 찍지 않고도 학습용 해상도를 바꿀 수 있다.
     image_size = args.image_size
-    schema = _scan_schema(args.hdf5_paths, args.only_success)
+    schema = _scan_schema(args.hdf5_paths, args.only_success,
+                          include_failed=args.include_failed)
     features, state_parts, cmd_parts = _build_features(schema, image_size)
     print(
         f"감지된 스키마: action_space={schema['action_space']!r} "
@@ -709,11 +903,101 @@ def main() -> None:
     has_agent = "observation.images.agent" in features
     has_wrist = "observation.images.wrist" in features
 
+    def _convert_episode(path, name, grp, task) -> int:
+        """에피소드 하나를 ds 에 추가한다. 두 포맷 공통 -- 에피소드 안쪽
+        페이로드(obs/actions/attrs)가 동일하게 만들어져 있어서(scene 전환 시
+        write_episode_payload 공유) legacy demo_N 과 scene episode_NNN 이
+        같은 코드로 읽힌다. task 는 LeRobot 의 task 문자열: legacy 는 파일
+        레벨 instruction, scene 은 에피소드 attrs 의 instruction (scene 이
+        달라도 같은 문장이면 같은 task 로 합쳐진다 -- scene 구분은 uid
+        사이드카로 복원)."""
+        obs = grp["obs"]
+        if has_agent:
+            _check_image_shape(path, name, obs, "agentview_rgb", image_size)
+        if has_wrist:
+            _check_image_shape(path, name, obs, "eye_in_hand_rgb", image_size)
+        # 이 에피소드가 수집될 때의 크롭 정렬. 조작자가 GUI 에서 맞춘
+        # 프레이밍을 그대로 재현한다. 없는 옛 파일은 기본값 (wrist 는
+        # 측정된 D405 좌측 이미저 오프셋).
+        try:
+            cp = json.loads(grp.attrs["crop_params"])
+        except (KeyError, ValueError, TypeError):
+            cp = {}
+        ap = cp.get("agent", {}) if isinstance(cp, dict) else {}
+        wp = cp.get("wrist", {}) if isinstance(cp, dict) else {}
+        agent_crop = dict(zoom=ap.get("zoom", 1.0),
+                          x_shift=ap.get("x", 0), y_shift=ap.get("y", 0))
+        wrist_crop = dict(zoom=wp.get("zoom", 1.0),
+                          x_shift=wp.get("x", EYE_IN_HAND_CROP_X_SHIFT),
+                          y_shift=wp.get("y", 0))
+        state_arrays = [obs[part][:] for part in state_parts]
+        cmd_arrays = [obs[part][:] for part in cmd_parts]
+        agent_rgb = obs["agentview_rgb"][:] if has_agent else None
+        wrist_rgb = obs["eye_in_hand_rgb"][:] if has_wrist else None
+        actions = grp["actions"][:]
+        actions_ee = grp["actions_ee"][:] if schema["has_actions_ee"] else None
+        n = actions.shape[0]
+        for t in range(n):
+            frame = {"action": actions[t].astype("float32"), "task": task}
+            if state_arrays:
+                frame["observation.state"] = np.concatenate(
+                    [arr[t] for arr in state_arrays]
+                ).astype("float32")
+            if cmd_arrays:
+                frame["observation.commanded_state"] = np.concatenate(
+                    [arr[t] for arr in cmd_arrays]
+                ).astype("float32")
+            if actions_ee is not None:
+                frame["action_ee"] = actions_ee[t].astype("float32")
+            if has_agent:
+                frame["observation.images.agent"] = _to_target(
+                    agent_rgb[t], image_size, **agent_crop)
+            if has_wrist:
+                frame["observation.images.wrist"] = _to_target(
+                    wrist_rgb[t], image_size, **wrist_crop)
+            ds.add_frame(frame)
+        ds.save_episode()
+        return n
+
     n_episodes = 0
     n_skipped = 0
     n_already = 0
+    # LeRobot episode_index -> 출처 매핑 (episode_uid 사이드카). resume 이면
+    # 기존 매핑에 이어 쓴다 -- scene 파일의 스킵은 개수 산술이 아니라 이
+    # uid 집합과의 대조로 정확하게 한다.
+    uid_records = _load_uid_sidecar(Path(args.root), args.repo_id, args.resume)
+    existing_uids = {e["episode_uid"] for e in uid_records.values()
+                     if isinstance(e, dict) and e.get("episode_uid")}
+    next_index = ds.meta.total_episodes if args.resume else 0
     for path in args.hdf5_paths:
         with h5py.File(path, "r") as f:
+            if _is_scene_file(f):
+                scene_id = str(f["metadata"].attrs["scene_id"])
+                conv = list(_scene_convertible(f, args.include_failed))
+                total_eps = sum(1 for k in f.keys() if EPISODE_GROUP_RE.match(k))
+                n_skipped += total_eps - len(conv)
+                print(f"{path.name}: scene={scene_id}, "
+                      f"변환 대상 {len(conv)}/{total_eps} episodes")
+                for name, grp, instruction in conv:
+                    uid = str(grp.attrs["episode_uid"])
+                    if args.resume and not args.force_all and uid in existing_uids:
+                        n_already += 1
+                        continue
+                    n = _convert_episode(path, name, grp, instruction)
+                    uid_records[str(next_index)] = {
+                        "episode_uid": uid,
+                        "scene_id": scene_id,
+                        "instruction_id": str(grp.attrs["instruction_id"]),
+                        "instruction": instruction,
+                        "quality_status": str(grp.attrs.get("quality_status", "")),
+                        "source_file": path.name,
+                        "source_episode": name,
+                    }
+                    next_index += 1
+                    n_episodes += 1
+                    print(f"  {name} ({n} frames, {uid}) converted")
+                continue
+
             task = _language_instruction(f)
             data = f["data"]
             demo_names = sorted(data.keys(), key=lambda n: int(n.split("_")[1]))
@@ -724,7 +1008,15 @@ def main() -> None:
             # sides append in demo order and never reorder, so the count of this
             # task's episodes already present is exactly how many to skip.
             if args.resume and not args.force_all:
-                have = _task_episode_count(ds, task)
+                # 같은 문장(task)이 scene 파일에서도 올라갈 수 있다. legacy
+                # 스킵 산술은 'task 개수 = 이 legacy 파일의 선두 N개' 전제라,
+                # scene 출신 에피소드(사이드카에 instruction 기록)를 빼고
+                # 세야 한다 -- 안 빼면 have 가 부풀어 SystemExit 로 오탐.
+                scene_sourced = sum(
+                    1 for e in uid_records.values()
+                    if isinstance(e, dict) and e.get("episode_uid")
+                    and e.get("instruction") == task)
+                have = _task_episode_count(ds, task) - scene_sourced
                 if have:
                     if have > len(demo_names):
                         raise SystemExit(
@@ -743,52 +1035,11 @@ def main() -> None:
                 if args.only_success and not _is_success(grp):
                     n_skipped += 1
                     continue
-                obs = grp["obs"]
-                if has_agent:
-                    _check_image_shape(path, name, obs, "agentview_rgb", image_size)
-                if has_wrist:
-                    _check_image_shape(path, name, obs, "eye_in_hand_rgb", image_size)
-                # 이 에피소드가 수집될 때의 크롭 정렬. 조작자가 GUI 에서 맞춘
-                # 프레이밍을 그대로 재현한다. 없는 옛 파일은 기본값 (wrist 는
-                # 측정된 D405 좌측 이미저 오프셋).
-                try:
-                    cp = json.loads(grp.attrs["crop_params"])
-                except (KeyError, ValueError, TypeError):
-                    cp = {}
-                ap = cp.get("agent", {}) if isinstance(cp, dict) else {}
-                wp = cp.get("wrist", {}) if isinstance(cp, dict) else {}
-                agent_crop = dict(zoom=ap.get("zoom", 1.0),
-                                  x_shift=ap.get("x", 0), y_shift=ap.get("y", 0))
-                wrist_crop = dict(zoom=wp.get("zoom", 1.0),
-                                  x_shift=wp.get("x", EYE_IN_HAND_CROP_X_SHIFT),
-                                  y_shift=wp.get("y", 0))
-                state_arrays = [obs[part][:] for part in state_parts]
-                cmd_arrays = [obs[part][:] for part in cmd_parts]
-                agent_rgb = obs["agentview_rgb"][:] if has_agent else None
-                wrist_rgb = obs["eye_in_hand_rgb"][:] if has_wrist else None
-                actions = grp["actions"][:]
-                actions_ee = grp["actions_ee"][:] if schema["has_actions_ee"] else None
-                n = actions.shape[0]
-                for t in range(n):
-                    frame = {"action": actions[t].astype("float32"), "task": task}
-                    if state_arrays:
-                        frame["observation.state"] = np.concatenate(
-                            [arr[t] for arr in state_arrays]
-                        ).astype("float32")
-                    if cmd_arrays:
-                        frame["observation.commanded_state"] = np.concatenate(
-                            [arr[t] for arr in cmd_arrays]
-                        ).astype("float32")
-                    if actions_ee is not None:
-                        frame["action_ee"] = actions_ee[t].astype("float32")
-                    if has_agent:
-                        frame["observation.images.agent"] = _to_target(
-                            agent_rgb[t], image_size, **agent_crop)
-                    if has_wrist:
-                        frame["observation.images.wrist"] = _to_target(
-                            wrist_rgb[t], image_size, **wrist_crop)
-                    ds.add_frame(frame)
-                ds.save_episode()
+                n = _convert_episode(path, name, grp, task)
+                uid_records[str(next_index)] = {
+                    "source_file": path.name, "source_episode": name,
+                }
+                next_index += 1
                 n_episodes += 1
                 print(f"  {name} ({n} frames, success={success}) converted")
 
@@ -799,7 +1050,9 @@ def main() -> None:
     fixed = repair_metadata(Path(args.root))
     if fixed:
         print(f"[검증] {fixed}", flush=True)
-    print(f"\n완료: {n_episodes}개 에피소드 변환, {n_skipped}개 건너뜀 (--only-success)"
+    # push 전에 써야 push_to_hub(폴더 업로드)에 사이드카가 실린다.
+    _write_uid_sidecar(Path(args.root), uid_records)
+    print(f"\n완료: {n_episodes}개 에피소드 변환, {n_skipped}개 건너뜀 (필터)"
           + (f", {n_already}개는 이미 데이터셋에 있어 제외" if n_already else "")
           + f" -> {args.root}")
 

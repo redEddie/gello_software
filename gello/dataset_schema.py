@@ -88,6 +88,15 @@ class DatasetSchemaConfig:
     save_joint_velocities: bool = False
     save_timestamp: bool = False
 
+    # Off by default (issue #17): depth 는 카메라 ASIC 이 이미 계산하는 값이라
+    # 호스트 연산은 공짜지만 데이터는 이미지급이다 -- 캠당 640x480 uint16 로
+    # 에피소드당 수십 MB, USB 대역 +~176Mbps. 무손실(lzf)로 원본 해상도
+    # 그대로 저장하고 crop/resize 는 하지 않는다 (RGB-depth 픽셀 대응은
+    # D455 에서 원래 안 맞으므로, 원시 저장 + 필요할 때 후처리가 일관적).
+    # LeRobot 변환은 depth 를 무시한다 -- HDF5 원본 보관소에만 남는다.
+    save_agentview_depth: bool = False
+    save_eye_in_hand_depth: bool = False
+
     # 고정 빈 dict = 내장 이름(joint1.pos .. joint7.pos, gripper.pos) 사용.
     # 내장 이름이 곧 observation 의 열 이름이라, Hugging Face 뷰어가 obs 와
     # action 을 같은 축에 짝지어 그려준다. 필드는 남겨두지만 GUI 에서는 고를 수

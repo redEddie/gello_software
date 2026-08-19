@@ -33,6 +33,7 @@ from gello.lerobot_plugin import (
 )
 from gello.libero_format import LiberoTaskWriter, NullTaskWriter
 from gello.robots.franka_fr3 import FR3_RESET_POSES
+from gello.scene_format import QUALITY_FAILED, QUALITY_SUCCESS, SceneMetadata, SceneWriter
 from gello.station import load_station
 
 GATE_RAD = 0.5  # run_env.py / gello_match_pose.py's start-gate threshold
@@ -88,11 +89,21 @@ class EpisodeSaver(QThread):
     def set_writer(self, writer) -> None:
         self._writer = writer
 
-    def enqueue_save(self, buf, success) -> None:
-        self._q.put(("save", buf, success))
+    def enqueue_save(self, buf, success, instruction=None, instruction_id=None) -> None:
+        """instruction/instruction_id 는 scene 모드 전용 -- 에피소드가 끝난
+        시점의 slot 을 워커가 캡처해서 싣는다. 저장은 백그라운드라 조작자가
+        다음 slot 으로 넘어간 뒤 실행될 수 있는데, 그때 writer 의 현재 상태가
+        아니라 "그 에피소드가 실제 수행한 문장"이 찍혀야 한다 (SceneWriter 가
+        instruction 을 저장 시점 명시 인자로만 받는 이유와 같은 경합)."""
+        self._q.put(("save", buf, success, instruction, instruction_id))
 
     def enqueue_delete(self, name: str) -> None:
         self._q.put(("delete", name))
+
+    def enqueue_set_reference(self, img) -> None:
+        """scene 기준 사진 후보 (h5py 는 saver 스레드 전용이라 큐 경유).
+        이미 있으면(수동 촬영본 등) 건드리지 않는다."""
+        self._q.put(("set_ref", img))
 
     def enqueue_set_success(self, name: str, success: bool) -> None:
         """Re-label an already-saved episode. Goes through the same queue as
@@ -111,13 +122,21 @@ class EpisodeSaver(QThread):
                 break
             try:
                 if item[0] == "save":
-                    _, buf, success = item
+                    _, buf, success, instruction, instruction_id = item
                     n = len(buf)
                     waiting = self._q.qsize()
                     self.save_status.emit(
                         f"저장 중... {n}프레임" + (f" (+대기 {waiting})" if waiting else ""))
                     t0 = time.monotonic()
-                    name = self._writer.save_buffer(buf, success=success)
+                    if instruction is not None:
+                        # scene 모드: SceneWriter.save_buffer 는 instruction 을
+                        # 저장 시점 명시 인자로 요구한다. 라벨(success) 없는
+                        # 에피소드는 여기서 규격이 거부한다(아래 except 로 감).
+                        name = self._writer.save_buffer(
+                            buf, success=success,
+                            instruction=instruction, instruction_id=instruction_id)
+                    else:
+                        name = self._writer.save_buffer(buf, success=success)
                     dt = time.monotonic() - t0
                     if name:
                         self.episode_saved.emit(name, n)
@@ -126,12 +145,31 @@ class EpisodeSaver(QThread):
                     self.save_status.emit("")
                 elif item[0] == "delete":
                     name = item[1]
+                    if not hasattr(self._writer, "delete_episode"):
+                        # 삭제가 없는 writer (연습 모드의 NullTaskWriter 등).
+                        # scene 은 SceneWriter.delete_episode(툼스톤) 가 있다.
+                        self.log_message.emit(
+                            f"[삭제 불가] {name}: 이 세션의 writer 는 삭제를 "
+                            "지원하지 않습니다")
+                        continue
                     self._writer.delete_episode(name)
                     self.log_message.emit(f"[삭제] {name}")
                     self.episode_list_changed.emit(self._writer.list_episodes())
+                elif item[0] == "set_ref":
+                    img = item[1]
+                    if (hasattr(self._writer, "set_reference_image")
+                            and not getattr(self._writer, "has_reference_image", True)):
+                        self._writer.set_reference_image(img)
+                        self.log_message.emit(
+                            "[SCENE] 기준 사진을 첫 에피소드의 agentview 로 캡처했습니다")
                 elif item[0] == "set_success":
                     _, name, success = item
-                    self._writer.set_episode_success(name, success)
+                    if hasattr(self._writer, "set_episode_success"):
+                        self._writer.set_episode_success(name, success)
+                    else:
+                        # SceneWriter: 같은 재판정이 quality_status 로 표현된다.
+                        self._writer.set_quality_status(
+                            name, QUALITY_SUCCESS if success else QUALITY_FAILED)
                     self.log_message.emit(
                         f"[판정] {name} -> {'성공' if success else '실패'}")
                     self.episode_list_changed.emit(self._writer.list_episodes())
@@ -164,12 +202,31 @@ class WorkerConfig:
     # episode-to-episode -- deliberate variation, not sloppiness.
     auto_match_pose: bool = True
     resume: bool = False
+    # ---- scene 모드 (scene-v1) ----
+    # scene_metadata(새 scene) 또는 scene_id+scene_resume(이어찍기)가 주어지면
+    # LiberoTaskWriter 대신 SceneWriter 로 기록한다. 이때 task_name 은 쓰이지
+    # 않고(파일명은 scene_id 에서 나온다), language_instruction 과
+    # instruction_id 가 시작 slot 이 된다. slot 은 수집 중 cmd_set_slot 으로
+    # 바뀔 수 있고, 에피소드에는 "기록 시작 시점의 slot" 이 찍힌다.
+    scene_metadata: Optional[SceneMetadata] = None
+    scene_id: Optional[str] = None
+    scene_resume: bool = False
+    instruction_id: str = ""      # scene 모드 시작 slot 의 ID (예: "I000")
+    collector: str = ""           # scene 모드 필수 attr -- 수집자 식별자
     agent_camera_serial: str = AGENT_CAMERA_SERIAL
     wrist_camera_serial: str = WRIST_CAMERA_SERIAL
     schema: DatasetSchemaConfig = field(default_factory=DatasetSchemaConfig)
     # 카메라별 정사각 크롭 정렬 (GUI Layout 페이지에서 조정). None 이면 기본값.
     # 에피소드마다 attrs["crop_params"] 로 찍힌다.
     crop_params: dict | None = None
+
+    @property
+    def scene_mode(self) -> bool:
+        # no_dataset(연습) 이 scene 지정보다 우선한다 -- 연습 모드의 계약은
+        # "파일을 만들지 않는다" 이고 그건 scene 에서도 그대로여야 한다.
+        return not self.no_dataset and (
+            self.scene_metadata is not None or self.scene_id is not None
+        )
 
 
 class CollectionWorker(QThread):
@@ -198,6 +255,20 @@ class CollectionWorker(QThread):
         self._writer: Optional[LiberoTaskWriter] = None
         self._reset_q = FR3_RESET_POSES[self.cfg.reset_pose]
         self._episode_count = 0
+        # scene 모드 slot 상태. cmd_set_slot 으로 바뀌고, 에피소드에는
+        # "기록 시작 시점의 slot"(_episode_slot 캡처본)이 찍힌다 -- 저장이
+        # 백그라운드라 저장 시점의 현재 slot 을 읽으면 안 된다.
+        self._slot_instruction = config.language_instruction
+        self._slot_instruction_id = config.instruction_id
+        self._episode_slot = (self._slot_instruction, self._slot_instruction_id)
+        self._ref_enqueued = False  # scene 기준 사진 자동 캡처는 세션당 1회 시도
+        # depth 를 켤 카메라 역할 (#17) -- 스키마 플래그에서 한 번 파생.
+        sch = getattr(config, "schema", None)
+        self._depth_roles = {
+            role for role, flag in (
+                ("agent", getattr(sch, "save_agentview_depth", False)),
+                ("wrist", getattr(sch, "save_eye_in_hand_depth", False)))
+            if flag}
         # GUI 스레드에서 시그널을 미리 connect할 수 있도록 여기서 생성;
         # writer 주입/start()는 run()에서 (h5py 접근 직렬화는 saver가 소유).
         self.saver = EpisodeSaver()
@@ -233,6 +304,15 @@ class CollectionWorker(QThread):
     def cmd_set_episode_success(self, name: str, success: bool) -> None:
         self.saver.enqueue_set_success(name, success)
 
+    def cmd_set_slot(self, instruction: str, instruction_id: str) -> None:
+        """scene 모드: 현재 slot(수행할 instruction)을 바꾼다.
+
+        기록 중에 도착하면 진행 중인 에피소드에는 영향이 없고 다음
+        에피소드부터 적용된다 -- 에피소드에 찍히는 slot 은 기록 *시작*
+        시점의 캡처본이다 (_record_episode 참고).
+        """
+        self._cmds.put(("set_slot", instruction, instruction_id))
+
     def cmd_delete_episode(self, name: str) -> None:
         self._cmds.put(("delete_episode", name))
 
@@ -251,10 +331,18 @@ class CollectionWorker(QThread):
         thread-safe); pending saves queued before this delete commit first."""
         self.saver.enqueue_delete(name)
 
+    def _handle_set_slot(self, instruction: str, instruction_id: str) -> None:
+        """delete_episode 처럼 상태와 무관한 인라인 커맨드 -- 모든 드레인
+        지점에서 처리한다. 파일을 만지지 않으므로 워커 스레드에서 안전하다."""
+        self._slot_instruction = instruction
+        self._slot_instruction_id = instruction_id
+        self.log_message.emit(f"[SLOT] {instruction_id}: {instruction}")
+
     def _poll_cmd(self, block: bool = False, timeout: float = 0.0) -> Optional[tuple]:
-        """Pops queued commands, servicing ``delete_episode`` inline (it doesn't
-        belong to any particular state), and returns the newest remaining
-        state-machine command (start_teleop/save/discard/skip/quit), if any.
+        """Pops queued commands, servicing ``delete_episode``/``set_slot``
+        inline (they don't belong to any particular state), and returns the
+        newest remaining state-machine command (start_teleop/save/discard/
+        skip/quit), if any.
         """
         result = None
         try:
@@ -263,6 +351,9 @@ class CollectionWorker(QThread):
                 block = False  # only the first get() honors block/timeout
                 if cmd[0] == "delete_episode":
                     self._handle_delete_episode(cmd[1])
+                    continue
+                if cmd[0] == "set_slot":
+                    self._handle_set_slot(cmd[1], cmd[2])
                     continue
                 result = cmd  # last one wins if several piled up
         except queue.Empty:
@@ -287,6 +378,8 @@ class CollectionWorker(QThread):
                 cmd = self._cmds.get_nowait()
                 if cmd[0] == "delete_episode":
                     self._handle_delete_episode(cmd[1])
+                elif cmd[0] == "set_slot":
+                    self._handle_set_slot(cmd[1], cmd[2])
                 elif cmd[0] == "quit":
                     quit_seen = True
                 elif cmd[0] == "go_home":
@@ -315,6 +408,8 @@ class CollectionWorker(QThread):
                 cmd = self._cmds.get_nowait()
                 if cmd[0] == "delete_episode":
                     self._handle_delete_episode(cmd[1])
+                elif cmd[0] == "set_slot":
+                    self._handle_set_slot(cmd[1], cmd[2])
                 elif cmd[0] == "quit":
                     quit_seen = True
                 elif cmd[0] == "go_home":
@@ -387,6 +482,10 @@ class CollectionWorker(QThread):
                 self._cam_stale_run[cam_key] = 0
             self._cam_last_fp[cam_key] = fp
             out[cam_key] = frame
+        for cam_key in self._depth_roles:       # (#17) 스키마가 켠 역할만
+            cam = self._robot.cameras.get(cam_key)
+            if cam is not None:
+                out[f"_{cam_key}_depth"] = cam.read_latest_depth()
         return out
 
     # ------------------------------------------------------------------ ramp
@@ -667,15 +766,12 @@ class CollectionWorker(QThread):
         """
         self.state_changed.emit("gate")
         deadline = time.monotonic() + timeout
-        if self.cfg.auto_match_pose:
-            # Pull the leader onto the reset pose before handing control back,
-            # so every episode starts from the same joint configuration.
-            outcome = self._auto_match_pose()
-            if outcome in ("quit", "go_home"):
-                return outcome
-            if outcome == "start_teleop":
-                self._teleop.cancel_pose_match()
-                return "ok"
+        # 자동 정렬이 켜져 있어도 무조건 당기지 않는다: 리더가 느슨한 게이트
+        # (GATE_RAD) 안으로 들어온 뒤에만 정렬한다 -- 버튼 경로와 같은 모터
+        # 보호 전제. 예전에는 게이트 진입 즉시 당겼는데, 리더가 멀리 놓여
+        # 있으면 전 구간을 모터로 끌고 오는 셈이었다.
+        auto_pending = self.cfg.auto_match_pose
+        auto_warned = False
         try:
             while True:
                 cmd = self._poll_cmd()
@@ -693,6 +789,19 @@ class CollectionWorker(QThread):
                     self.log_message.emit(
                         f"[GATE] 아직 자세가 맞지 않습니다 (최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
                     )
+                run_auto = False
+                if auto_pending:
+                    if all_ok:
+                        # 켜 둔 자동 정렬은 범위에 들어온 첫 순간 한 번만 발동.
+                        auto_pending = False
+                        run_auto = True
+                    elif not auto_warned:
+                        auto_warned = True
+                        self.log_message.emit(
+                            f"[자동정렬] 리더가 아직 범위 밖입니다 "
+                            f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad) "
+                            f"-- 가까이 가져오면 자동 정렬합니다"
+                        )
                 if cmd and cmd[0] == "auto_match_pose":
                     # Motor-protection precondition: only ever pull via the
                     # leader's own motors once the loose manual gate already
@@ -705,21 +814,27 @@ class CollectionWorker(QThread):
                             f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
                         )
                     else:
-                        outcome = self._auto_match_pose()
-                        if outcome in ("quit", "go_home"):
-                            return outcome
-                        if outcome == "start_teleop":
-                            # Operator started teleop mid-align -- the pull
-                            # is already released (see _auto_match_pose), so
-                            # just honor it like a normal Start Teleop click.
-                            return "ok"
-                        # outcome == "ok": converged, and per _auto_match_pose's
-                        # contract the leader is left TORQUE-HELD at the target
-                        # (not released) -- the loop just keeps looping, still
-                        # in "gate", holding the matched pose until the operator
-                        # actually clicks Start Teleop (or quits/goes home). The
-                        # `finally` below releases it whichever way this
-                        # function ends up returning.
+                        run_auto = True
+                if run_auto:
+                    outcome = self._auto_match_pose()
+                    if outcome in ("quit", "go_home"):
+                        return outcome
+                    if outcome == "start_teleop":
+                        # Operator started teleop mid-align -- the pull
+                        # is already released (see _auto_match_pose), so
+                        # just honor it like a normal Start Teleop click.
+                        return "ok"
+                    if outcome == "out_of_range" and self.cfg.auto_match_pose:
+                        # 이탈로 중단됐다 -- 범위에 다시 들어오면 자동 재시도.
+                        auto_pending = True
+                        auto_warned = False
+                    # outcome == "ok": converged, and per _auto_match_pose's
+                    # contract the leader is left TORQUE-HELD at the target
+                    # (not released) -- the loop just keeps looping, still
+                    # in "gate", holding the matched pose until the operator
+                    # actually clicks Start Teleop (or quits/goes home). The
+                    # `finally` below releases it whichever way this
+                    # function ends up returning.
                 if time.monotonic() > deadline:
                     self.log_message.emit(f"[GATE] {timeout:.0f}s 시간 초과")
                     return "quit"
@@ -755,10 +870,11 @@ class CollectionWorker(QThread):
 
         Returns "ok" (converged-and-held, timed-out-and-released, or the
         assist isn't available so there's nothing to do -- all three just
-        resume the caller's gate loop), "start_teleop" (aborted-and-released,
-        caller should proceed to start teleop), "quit", or "go_home" (both
-        release before returning, since either leaves the gate state for
-        good).
+        resume the caller's gate loop), "out_of_range" (the operator pulled
+        the leader back outside GATE_RAD mid-align -- released, caller may
+        re-arm), "start_teleop" (aborted-and-released, caller should proceed
+        to start teleop), "quit", or "go_home" (both release before
+        returning, since either leaves the gate state for good).
         """
         try:
             self._teleop.start_pose_match(self._reset_q)
@@ -774,7 +890,18 @@ class CollectionWorker(QThread):
                 if interrupt == "start_teleop":
                     self.log_message.emit("[자동정렬] 텔레옵 시작으로 중단")
                 return interrupt
-            self._emit_gate_status()  # keep the delta bars live during the pull
+            delta, all_ok = self._emit_gate_status()  # delta bars live during the pull
+            if not all_ok:
+                # 조작자가 정렬 중에 리더를 도로 범위 밖으로 끌었다 -- 모터가
+                # 사람 손과 싸우게 두지 않는다. 홀드를 풀고 게이트로 돌아간다
+                # (범위에 다시 들어오면 호출자가 재시도한다).
+                self._teleop.cancel_pose_match()
+                self.log_message.emit(
+                    f"[자동정렬] 리더가 범위 밖으로 벗어나 정렬을 중단합니다 "
+                    f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
+                )
+                self.pose_match_status.emit(float(delta.max()), True)
+                return "out_of_range"
             status = self._teleop.pose_match_status()
             err = status["error"]
             done = bool(status["done"])
@@ -794,6 +921,9 @@ class CollectionWorker(QThread):
         """Returns (outcome, n_frames); outcome is "save", "discard", "quit", or "go_home"."""
         self.state_changed.emit("recording")
         self._writer.start_episode()
+        # 이 에피소드에 찍힐 slot 을 기록 시작 시점에 캡처한다. 이후
+        # cmd_set_slot 이 와도(다음 에피소드 준비) 이 에피소드에는 무영향.
+        self._episode_slot = (self._slot_instruction, self._slot_instruction_id)
         self._cam_stale = {}  # per-episode, see _get_obs
         self._cam_stale_run = {}
         self._cam_stale_max_run = {}
@@ -821,6 +951,14 @@ class CollectionWorker(QThread):
             self._robot.send_action(action)
             obs = self._get_obs()
 
+            # scene 기준 사진(§6 "사진 1장 필수"): 세션 첫 기록 프레임의
+            # agentview 를 자동 캡처 후보로 보낸다. 이미 있으면 saver 가 무시.
+            if (self.cfg.scene_mode and not self._ref_enqueued
+                    and obs.get("agent") is not None):
+                self._ref_enqueued = True
+                self.saver.enqueue_set_reference(
+                    np.ascontiguousarray(obs["agent"]))
+
             q = self._joint_vec(obs)
             q_cmd = self._joint_vec(action)
             self._writer.add_frame(
@@ -834,6 +972,8 @@ class CollectionWorker(QThread):
                 timestamp=time.time(),
                 commanded_joint_positions=q_cmd[:7],
                 commanded_gripper=float(action["gripper.pos"]),
+                agentview_depth=obs.get("_agent_depth"),
+                eye_in_hand_depth=obs.get("_wrist_depth"),
             )
             self._emit_frames(obs)
             n = i + 1
@@ -877,6 +1017,22 @@ class CollectionWorker(QThread):
             self._connect()
             if self.cfg.no_dataset:
                 self._writer = NullTaskWriter(schema=self.cfg.schema)
+            elif self.cfg.scene_mode:
+                # scene 모드: 파일명·instruction 은 config 의 task_name 이 아니라
+                # scene metadata 와 저장 시점 slot 에서 나온다. 소품 인벤토리
+                # 검증(미등록 ID 거부)은 SceneMetadata.validate 가 한다.
+                from gello.props import active_prop_ids
+
+                self._writer = SceneWriter(
+                    root=self.cfg.data_root,
+                    scene_id=self.cfg.scene_id,
+                    metadata=self.cfg.scene_metadata,
+                    resume=self.cfg.scene_resume,
+                    schema=self.cfg.schema,
+                    crop_params=self.cfg.crop_params,
+                    collector=self.cfg.collector,
+                    known_prop_ids=active_prop_ids(),
+                )
             else:
                 self._writer = LiberoTaskWriter(
                     root=self.cfg.data_root,
@@ -886,13 +1042,16 @@ class CollectionWorker(QThread):
                     schema=self.cfg.schema,
                     crop_params=self.cfg.crop_params,
                 )
-            self._writer.record_session_config(
-                reset_pose=self.cfg.reset_pose,
-                grip=self.cfg.grip,
-                enable_wall=self.cfg.enable_wall,
-                max_episode_seconds=self.cfg.max_episode_seconds,
-                reset_wait_seconds=self.cfg.reset_wait_seconds,
-            )
+            if hasattr(self._writer, "record_session_config"):
+                # legacy/연습 전용. scene 포맷은 세션 설정을 파일에 넣지 않는다
+                # -- 통제 변수는 Notion §4 레지스트리가 정본 (운영 규칙 ≠ 스키마).
+                self._writer.record_session_config(
+                    reset_pose=self.cfg.reset_pose,
+                    grip=self.cfg.grip,
+                    enable_wall=self.cfg.enable_wall,
+                    max_episode_seconds=self.cfg.max_episode_seconds,
+                    reset_wait_seconds=self.cfg.reset_wait_seconds,
+                )
         except Exception as e:  # noqa: BLE001
             # Covers both robot/camera/GELLO connect failures and writer
             # creation failing (e.g. task file exists without --resume) --
@@ -977,7 +1136,14 @@ class CollectionWorker(QThread):
 
                     # 버퍼를 떼어 백그라운드 저장으로 넘기고 즉시 홈 복귀 진행.
                     # episode_saved/episode_list_changed는 saver가 emit.
-                    self.saver.enqueue_save(self._writer.detach_buffer(), self._pending_success)
+                    if self.cfg.scene_mode:
+                        instr, iid = self._episode_slot
+                        self.saver.enqueue_save(
+                            self._writer.detach_buffer(), self._pending_success,
+                            instruction=instr, instruction_id=iid)
+                    else:
+                        self.saver.enqueue_save(
+                            self._writer.detach_buffer(), self._pending_success)
                     self._episode_count += 1
 
                     if outcome == "quit":
@@ -1056,12 +1222,15 @@ class CollectionWorker(QThread):
                 # busy" ConnectionError 로 나온다. 기록 루프는 어차피
                 # read_latest() 로 cfg.fps(기본 20Hz)에서만 집어가므로 30fps
                 # 캡처로 충분하다.
+                # depth (#17): 스키마가 켠 역할만 스트림을 올린다 -- 캠당
+                # +~176Mbps 라 기본은 꺼짐. 값은 카메라 ASIC 이 계산한다.
                 cameras={
                     role: RealSenseCameraConfig(
                         serial_number_or_name=serial,
                         fps=_STATION.camera(role).fps,
                         width=_STATION.camera(role).width,
                         height=_STATION.camera(role).height,
+                        use_depth=role in self._depth_roles,
                     )
                     for role, serial in (
                         ("agent", self.cfg.agent_camera_serial),
@@ -1077,13 +1246,17 @@ class CollectionWorker(QThread):
         self._teleop.connect()
 
     def _reset_wait(self) -> str:
-        """Returns "ok", "quit", or "go_home"."""
+        """Returns "ok", "quit", or "go_home".
+
+        시간이 아니라 사람이 끝낸다 -- '리셋 완료' 버튼(Enter)을 눌러야만
+        다음으로 진행 (2026-08-14 사용자 결정: 자동 진행은 물체 배치가
+        끝나기 전에 게이트로 넘어가는 사고를 만든다). reset_countdown 은
+        남은 시간 대신 경과 시간을 싣는다. cfg.reset_wait_seconds 는 더
+        이상 진행에 쓰이지 않는다.
+        """
         self.state_changed.emit("reset_wait")
-        end = time.monotonic() + self.cfg.reset_wait_seconds
+        t0 = time.monotonic()
         while True:
-            remain = end - time.monotonic()
-            if remain <= 0:
-                return "ok"
             cmd = self._poll_cmd()
             if cmd:
                 if cmd[0] == "skip_reset_wait":
@@ -1092,7 +1265,13 @@ class CollectionWorker(QThread):
                     return "quit"
                 if cmd[0] == "go_home":
                     return "go_home"
-            self.reset_countdown.emit(max(0.0, remain))
+            self.reset_countdown.emit(time.monotonic() - t0)
+            try:
+                # 리셋 중에도 라이브 뷰는 살아 있어야 한다 -- 물체를 되돌리는
+                # 그 시간이 화면을 가장 많이 보는 시간이다.
+                self._emit_frames(self._get_obs())
+            except Exception:  # noqa: BLE001 -- 일시적 카메라/노드 오류로
+                pass           # 카운트다운을 멈추지 않는다
             time.sleep(0.1)
 
     def _wait_node_recovery(self) -> bool:

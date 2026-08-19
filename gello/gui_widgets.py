@@ -486,7 +486,10 @@ class EpisodeLoadWorker(QThread):
     def run(self) -> None:
         try:
             with h5py.File(self.path, "r") as f:
-                obs = f["data"][self.demo]["obs"]
+                # legacy 는 data/demo_N, scene(scene-v1)은 루트의 episode_NNN.
+                # 에피소드 안쪽 페이로드는 동일해서 그룹만 찾으면 같은 코드다.
+                grp = f[self.demo] if self.demo in f else f["data"][self.demo]
+                obs = grp["obs"]
                 agent = obs["agentview_rgb"][:] if "agentview_rgb" in obs else None
                 wrist = obs["eye_in_hand_rgb"][:] if "eye_in_hand_rgb" in obs else None
         except Exception as e:  # noqa: BLE001
@@ -496,6 +499,32 @@ class EpisodeLoadWorker(QThread):
             self.failed.emit(tr("이 에피소드에는 이미지가 없습니다."))
             return
         self.loaded.emit(self.path, self.demo, agent, wrist)
+
+
+class GalleryLoadWorker(QThread):
+    """scene 갤러리(#31)용: 썸네일 캐시 생성 + 에피소드 요약을 UI 스레드
+    밖에서 읽는다. 첫 로드에서 에피소드 수만큼 프레임을 읽으므로(예: 50개
+    ≈ 수 초) 타이머 콜백에 넣지 않는다. 캐시가 차면 이후에는 목록 조회뿐."""
+
+    loaded = pyqtSignal(str, list, object)  # scene_path, episodes(+thumb), ref_thumb|None
+    failed = pyqtSignal(str)
+
+    def __init__(self, scene_path: str) -> None:
+        super().__init__()
+        self.scene_path = scene_path
+
+    def run(self) -> None:
+        try:
+            from gello.scene_format import read_scene_metadata
+            from gello.scene_gallery import build_gallery, reference_thumb
+
+            episodes = build_gallery(self.scene_path)
+            sid = read_scene_metadata(Path(self.scene_path)).scene_id
+            ref = reference_thumb(self.scene_path, sid)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(f"{type(e).__name__}: {e}")
+            return
+        self.loaded.emit(self.scene_path, episodes, ref)
 
 
 class CameraPreviewWorker(QThread):
@@ -552,6 +581,104 @@ class CameraPreviewWorker(QThread):
         finally:
             try:
                 cam.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+class DepthCloudWorker(QThread):
+    """RealSense depth+color 를 읽어 다운샘플된 포인트클라우드를 내보낸다.
+
+    Point Cloud 탭이 보일 때만 산다 -- depth 스트림은 상시로 켜 두면
+    USB 대역/안정성을 잡아먹으므로, 탭 진입에 켜고 이탈에 끈다 (RGB
+    미리보기와 같은 카메라를 쓸 수 없어 GUI 가 미리보기를 잠깐 내리고
+    이 워커를 올린다). 미리보기가 파이프라인을 놓는 데 시간이 걸리므로
+    열기는 몇 번 재시도한다.
+    """
+
+    cloud_ready = pyqtSignal(object, object)   # points (N,3) f32, colors (N,3) u8
+    depth_ready = pyqtSignal(object)           # (H,W) float32 m -- Depth 탭용 원해상도
+    error = pyqtSignal(str)
+
+    def __init__(self, serial: str, stride: int = 3,
+                 interval_ms: int = 400, mode: str = "cloud") -> None:
+        super().__init__()
+        self.serial = serial
+        self.stride = stride
+        self.interval_ms = interval_ms
+        # "cloud" | "depth" -- 보이는 탭에 필요한 계산만 한다. cloud 는
+        # 정렬(rs.align)+역투영까지, depth 는 원본 depth 프레임만. GUI 가
+        # 탭 전환 때 바꾼다 (단순 속성 읽기라 락 불필요).
+        self.mode = mode
+        self._running = True
+
+    def stop(self) -> None:
+        self._running = False
+
+    def run(self) -> None:  # noqa: C901
+        import pyrealsense2 as rs
+
+        pipe = rs.pipeline()
+        cfg = rs.config()
+        cfg.enable_device(self.serial)
+        cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+        cfg.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 30)
+        profile = None
+        for attempt in range(6):        # 미리보기가 놓기를 기다린다
+            if not self._running:
+                return
+            try:
+                profile = pipe.start(cfg)
+                break
+            except RuntimeError as e:
+                if attempt == 5:
+                    self.error.emit(f"카메라 열기 실패: {e}")
+                    return
+                self.msleep(500)
+        try:
+            align = rs.align(rs.stream.color)
+            scale = profile.get_device().first_depth_sensor().get_depth_scale()
+            intr = profile.get_stream(rs.stream.color) \
+                .as_video_stream_profile().get_intrinsics()
+            s = self.stride
+            vs, us = np.mgrid[0:480:s, 0:640:s].astype(np.float32)
+            while self._running:
+                try:
+                    frames = pipe.wait_for_frames(2000)
+                    depth_only = self.mode == "depth"
+                    if not depth_only:
+                        frames = align.process(frames)  # 정렬은 cloud 만 필요
+                    dfr = frames.get_depth_frame()
+                    if not dfr:
+                        continue
+                    z_full = (np.asanyarray(dfr.get_data()).astype(np.float32)
+                              * scale)
+                    if depth_only:
+                        rgb = None
+                    else:
+                        cfr = frames.get_color_frame()
+                        if not cfr:
+                            continue
+                        rgb = np.asanyarray(cfr.get_data())[::s, ::s]
+                except Exception as e:  # noqa: BLE001
+                    if self._running:
+                        self.error.emit(f"{type(e).__name__}: {e}")
+                    break
+                if depth_only:
+                    if self._running:
+                        self.depth_ready.emit(z_full)
+                else:
+                    z = z_full[::s, ::s]
+                    valid = (z > 0.05) & (z < 2.0)
+                    zf = z[valid]
+                    pts = np.stack([(us[valid] - intr.ppx) * zf / intr.fx,
+                                    (vs[valid] - intr.ppy) * zf / intr.fy,
+                                    zf], axis=1).astype(np.float32)
+                    if self._running:
+                        self.cloud_ready.emit(pts, rgb[valid])
+                self.msleep(self.interval_ms)
+        finally:
+            try:
+                pipe.stop()
             except Exception:  # noqa: BLE001
                 pass
 
@@ -710,6 +837,10 @@ class DatasetSchemaDialog(QDialog):
     _EXTRA_FIELDS = [
         ("save_joint_velocities", "Joint velocities (관절 속도) -- 제어루프에서 이미 계산됨, 추가 비용 없음"),
         ("save_timestamp", "Timestamp (프레임별 wall-clock 시각) -- 프레임 간격 검증용"),
+        ("save_agentview_depth",
+         "Agentview depth (uint16 mm, 무손실) -- 에피소드당 +수십 MB, USB 대역 주의 (#17)"),
+        ("save_eye_in_hand_depth",
+         "Eye-in-hand depth (uint16 mm, 무손실) -- D405 근거리 정밀 depth (#17)"),
     ]
     def __init__(self, parent: QWidget, cfg: DatasetSchemaConfig) -> None:
         super().__init__(parent)

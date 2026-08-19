@@ -174,29 +174,29 @@ class FrankaFR3Robot(Robot):
         use_gripper: bool = True,
         read_only: bool = False,
         enforce_rt: bool = True,
-        # 2026-07-28: briefly raised max_joint_velocity/acceleration to 1.5/6.0
-        # (from 1.0/4.0) to cut the step-response lag that made tracking feel
-        # "buffered". Reverted back to 1.0/4.0 after a live
-        # joint_motion_generator_acceleration_discontinuity abort: this
-        # control loop's dt is a hardcoded constant, not measured actual
-        # elapsed time (see _control_loop), so any tick that runs long --
-        # e.g. the ZMQ server thread holding the GIL at the wrong moment --
-        # makes the filter's own q_cmd/qd_cmd bookkeeping diverge from what
-        # was really sent, and that divergence scales with how large
-        # a_max/v_max are. filter_wn alone (8 -> 10) still gives a real,
-        # smaller improvement (~10-15% faster settling) without raising the
-        # saturation ceiling that amplifies timing jitter. If reflexes
-        # persist even at these original limits, the dt-jitter issue itself
-        # needs fixing (measure real elapsed time per tick instead of
-        # assuming a constant), not another bump to these numbers.
-        max_joint_velocity: float = 1.0,
-        max_joint_acceleration: float = 4.0,
+        # 이력:
+        # - 2026-07-28: 1.5/6.0 으로 올렸다가 joint_motion_generator_
+        #   acceleration_discontinuity 반사로 1.0/4.0 으로 되돌림. 원인은 제어
+        #   루프가 dt 를 1ms 상수로 가정해, 틱이 늘어지는 순간(ZMQ 스레드의
+        #   GIL 등) 필터 내부 상태(q_cmd/qd_cmd)와 실제로 보낸 것이 어긋나고
+        #   그 오차가 v_max/a_max 가 클수록 커졌기 때문.
+        # - 2026-08-19 재검토: 오프라인 시뮬로 보면 반사의 유력한 원인은 dt 가
+        #   아니라 속도 상한에 닿는 순간의 가속 꺾임(a_max -> 0 in 1ms = 저크
+        #   a_max*1000; a_max=6 이면 J2 한계 3750 초과)이었다. 그래서 dt 는
+        #   상수 그대로 두고, v_max 접근 테이퍼(아래 _control_loop)를 넣어
+        #   저크를 j_max 안에 가둔 뒤 1.5/6.0 을 다시 적용. 텔레옵이 답답하고
+        #   J6 같은 손목이 먼저 상한에 걸려 경로가 휘던 느낌이 이유. 문제가
+        #   보이면 이 커밋 하나를 revert 하면 이전 동작(1.0/4.0, wn 10).
+        max_joint_velocity: float = 1.5,
+        max_joint_acceleration: float = 6.0,
         # Below franka::kMaxJointJerk (5000) with margin. The ActiveControl API
         # does NOT run libfranka's limitRate()/lowpassFilter() -- only the
         # blocking Robot::control() path does -- so this filter is the only
         # thing keeping the command inside the robot's reflex limits.
         max_joint_jerk: float = 3000.0,
-        filter_wn: float = 10.0,
+        # 2026-08-19: 10 -> 14. 리더를 따라잡는 반응성(임계감쇠라 오버슈트
+        # 없음). 더 올리면 20Hz 리더 계단을 그대로 실어 손목이 거칠어진다.
+        filter_wn: float = 14.0,
         home_gripper: bool = False,
         collision_torque: Optional[list] = None,  # None -> FR3_COLLISION_TORQUE
         collision_force: float = 100.0,
@@ -438,6 +438,12 @@ class FrankaFR3Robot(Robot):
             cmd = pf.JointPositions(list(q_cmd))
             ctrl.writeOnce(cmd)
 
+            # dt 는 상수 1ms 로 둔다 (2026-08-19 검토). 틱을 하나 놓치면 로봇
+            # 타임라인에서는 명령이 한 틱 정지했다가 재개되는데, 실측 dt 로
+            # '2ms 어치' 를 한 번에 보내면 그 재개 점프가 두 배가 되어 가속
+            # 불연속을 오히려 키운다. 상수 dt 는 궤적이 1ms 늦어질 뿐 점프가
+            # 작다 -- 로봇이 보는 것은 명령 스트림이지 필터의 시간 인식이
+            # 아니다.
             dt = self._dt
             acc_prev = np.zeros(7)
             while not self._stop.is_set():
@@ -461,6 +467,14 @@ class FrankaFR3Robot(Robot):
                 acc_target = np.clip(
                     self._kp * err - self._kd * qd_cmd, -self._a_max, self._a_max
                 )
+                # 속도 상한에 닿기 전에 가속을 미리 줄인다: 저크 j_max 로 감속해
+                # 정확히 v_max 에서 가속 0 이 되려면 |acc| <= sqrt(2 j (v_max - |qd|)).
+                # 없으면 v_max 에 닿는 순간 가속이 a_max -> 0 으로 한 틱에 꺾여
+                # 저크 a_max/dt (a_max=6 이면 6000 rad/s^3, J2 한계 3750 초과)
+                # 가 로봇에 그대로 보인다 -- 상한을 올릴수록 위험한 지점.
+                acc_up = np.sqrt(np.maximum(2.0 * self._j_max * (self._v_max - qd_cmd), 0.0))
+                acc_dn = np.sqrt(np.maximum(2.0 * self._j_max * (self._v_max + qd_cmd), 0.0))
+                acc_target = np.clip(acc_target, -acc_dn, acc_up)
                 dacc_max = self._j_max * dt
                 acc = np.clip(acc_target, acc_prev - dacc_max, acc_prev + dacc_max)
 

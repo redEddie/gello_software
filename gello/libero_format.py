@@ -330,6 +330,10 @@ def describe_schema(cfg: DatasetSchemaConfig) -> str:
         obs_rows.append(("ee_ori", "(T, 3) float32  -- axis-angle"))
     if schema.save_joint_velocities:
         obs_rows.append(("joint_velocities", "(T, 7) float32"))
+    if schema.save_agentview_depth:
+        obs_rows.append(("agentview_depth", "(T, H, W) uint16 mm · 원본 해상도 · lzf"))
+    if schema.save_eye_in_hand_depth:
+        obs_rows.append(("eye_in_hand_depth", "(T, H, W) uint16 mm · 원본 해상도 · lzf"))
     if schema.save_timestamp:
         obs_rows.append(("timestamp", "(T,) float64  -- wall-clock seconds"))
 
@@ -477,6 +481,8 @@ def schema_from_episode(grp: Any) -> DatasetSchemaConfig:
         save_ee_ori="ee_ori" in obs_keys,
         save_joint_velocities="joint_velocities" in obs_keys,
         save_timestamp="timestamp" in obs_keys,
+        save_agentview_depth="agentview_depth" in obs_keys,
+        save_eye_in_hand_depth="eye_in_hand_depth" in obs_keys,
         action_column_name_overrides=overrides,
     )
 
@@ -659,6 +665,8 @@ class LiberoEpisodeBuffer:
         self.gripper_closed: list[bool] = []
         self.joint_velocities: list[np.ndarray] = []
         self.timestamps: list[float] = []
+        self.agentview_depth: list[np.ndarray] = []
+        self.eye_in_hand_depth: list[np.ndarray] = []
         self.commanded_joint_positions: list[np.ndarray] = []
         self.commanded_gripper: list[float] = []
 
@@ -677,6 +685,8 @@ class LiberoEpisodeBuffer:
         timestamp: Optional[float] = None,
         commanded_joint_positions: Optional[np.ndarray] = None,
         commanded_gripper: Optional[float] = None,
+        agentview_depth: Optional[np.ndarray] = None,
+        eye_in_hand_depth: Optional[np.ndarray] = None,
     ) -> None:
         self.joint_states.append(np.asarray(joint_positions, dtype=np.float32))
         self.gripper_states.append(np.array([gripper_position], dtype=np.float32))
@@ -697,6 +707,16 @@ class LiberoEpisodeBuffer:
             self.joint_velocities.append(np.asarray(joint_velocities, dtype=np.float32))
         if self.schema.save_timestamp and timestamp is not None:
             self.timestamps.append(float(timestamp))
+        # depth 는 crop/resize 없이 원본 해상도 그대로 (#17: 원본 보관소 원칙,
+        # D455 는 RGB-depth 픽셀 대응이 원래 안 맞아 RGB 크롭을 따라가면
+        # 오히려 거짓 정렬이 된다). .copy() 는 RGB 와 같은 이유 -- 드라이버
+        # 프레임 풀에 대한 뷰를 그대로 쌓으면 몇 프레임 뒤 덮어써진다.
+        if self.schema.save_agentview_depth and agentview_depth is not None:
+            self.agentview_depth.append(
+                np.asarray(agentview_depth, dtype=np.uint16).copy())
+        if self.schema.save_eye_in_hand_depth and eye_in_hand_depth is not None:
+            self.eye_in_hand_depth.append(
+                np.asarray(eye_in_hand_depth, dtype=np.uint16).copy())
 
     def _process_image(self, img: np.ndarray, role: str = "agent") -> np.ndarray:
         """Returns a frame this buffer owns, resized if the schema asks for it.
@@ -748,6 +768,181 @@ def _mark_close_on_exec(f: h5py.File) -> None:
         fcntl.fcntl(fd, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
     except Exception:  # noqa: BLE001
         pass
+
+
+def write_episode_payload(
+    grp: h5py.Group,
+    buf: LiberoEpisodeBuffer,
+    schema: DatasetSchemaConfig,
+    success: Optional[bool] = None,
+) -> int:
+    """One episode's shared on-disk payload: the ``actions``/``rewards``/
+    ``dones`` datasets, the ``obs/`` group, and the per-episode provenance
+    attrs (``num_samples``, ``action_space``, ``crop_params``, ``station``,
+    ...).
+
+    legacy 포맷(``<task>_demo.hdf5`` 의 ``demo_N``)과 scene 포맷
+    (``scene_XXX.hdf5`` 의 ``episode_NNN``, gello/scene_format.py)이 이 함수를
+    공유한다 -- 에피소드 안쪽 구조가 같아야 변환기가 두 포맷을 같은 코드로
+    읽는다. 여기 없는 attrs(instruction, episode_uid 등)는 각 포맷의 writer 가
+    이 함수 호출 뒤에 얹는다.
+
+    Caller owns group creation, file flush and buffer lifetime. Returns the
+    frame count ``n`` (the caller rejects buffers with fewer than 2 frames
+    before creating the group).
+    """
+    n = len(buf)
+    if schema.action_space == ACTION_SPACE_JOINT_DELTA:
+        q = np.stack(buf.joint_states)  # (n, 7)
+        actions = np.zeros((n, 8), dtype=np.float32)
+        for t in range(n - 1):
+            actions[t] = compute_joint_delta_action(
+                q[t], q[t + 1], buf.gripper_closed[t]
+            )
+        # Terminal frame: no further motion recorded; hold gripper state.
+        actions[n - 1, :7] = 0.0
+        actions[n - 1, 7] = 1.0 if buf.gripper_closed[-1] else -1.0
+    elif schema.action_space == ACTION_SPACE_JOINT_ABSOLUTE:
+        # The leader's command, verbatim -- see compute_joint_absolute_action
+        # for why the follower's realized joint_states must not be used here.
+        # No terminal-frame special case is needed: unlike a realized-next-
+        # state target, a command exists at every frame including the last.
+        if len(buf.commanded_joint_positions) != n:
+            raise ValueError(
+                "action_space='joint_absolute' needs commanded_joint_positions "
+                f"on every frame (got {len(buf.commanded_joint_positions)} of {n}). "
+                "The GUI worker supplies them; a caller that does not must use "
+                "a different action space."
+            )
+        q_cmd = np.stack(buf.commanded_joint_positions)  # (n, 7)
+        actions = np.zeros((n, 8), dtype=np.float32)
+        for t in range(n):
+            actions[t] = compute_joint_absolute_action(
+                q_cmd[t], buf.gripper_closed[t]
+            )
+    elif schema.action_space == ACTION_SPACE_EE_ABSOLUTE:
+        ee = np.stack(buf.ee_pos_quat)  # (n, 7)
+        actions = np.zeros((n, 7), dtype=np.float32)
+        for t in range(n - 1):
+            actions[t] = compute_ee_absolute_action(
+                ee[t + 1], buf.gripper_closed[t]
+            )
+        # Terminal frame: no further target recorded; hold current pose.
+        actions[n - 1, :3] = ee[n - 1, :3]
+        actions[n - 1, 3:6] = _quat_to_axis_angle(*ee[n - 1, 3:7])
+        actions[n - 1, 6] = 1.0 if buf.gripper_closed[-1] else -1.0
+    else:
+        ee = np.stack(buf.ee_pos_quat)  # (n, 7)
+        actions = np.zeros((n, 7), dtype=np.float32)
+        for t in range(n - 1):
+            actions[t] = compute_delta_action(
+                ee[t], ee[t + 1], buf.gripper_closed[t]
+            )
+        actions[n - 1, :6] = 0.0
+        actions[n - 1, 6] = 1.0 if buf.gripper_closed[-1] else -1.0
+
+    # Every branch above always ends with gripper as the last column,
+    # in -1=open/+1=close (robosuite Panda convention) -- remap to
+    # 0=open/1=closed here in one place, matching obs/gripper_states'
+    # convention, if the operator asked action to match obs.
+    if schema.gripper_action_match_obs:
+        actions[:, -1] = (actions[:, -1] + 1.0) / 2.0
+
+    # ... then strip it here in one place rather than duplicating the
+    # flag check in all four branches.
+    if not schema.action_include_gripper:
+        actions = actions[:, :-1]
+
+    grp.attrs["num_samples"] = n
+    if success is not None:
+        grp.attrs["success"] = bool(success)
+    # Per-episode provenance: which action space this demo's `actions`
+    # was computed with, and which obs fields are actually present
+    # (readers should not assume the full original LIBERO obs set --
+    # --resume lets a file mix schemas episode-to-episode if the
+    # operator changed the "사용자 지정" config between sessions).
+    grp.attrs["action_space"] = schema.action_space
+    grp.attrs["gripper_action_convention"] = "01" if schema.gripper_action_match_obs else "pm1"
+    grp.attrs["action_column_names"] = json.dumps(resolved_action_column_names(schema))
+    # 이 에피소드의 이미지에 (원본 저장이면 변환 시점에) 적용할/된 정사각
+    # 크롭 정렬. buf 의 것을 쓴다 -- 백그라운드 저장 중 writer 쪽 값이
+    # 바뀌어도 찍히는 값은 그 에피소드가 실제로 쓰던 것이어야 한다.
+    grp.attrs["crop_params"] = json.dumps(buf.crop_params)
+    # 어느 스테이션에서 찍었는지. 형식은 v0 에서 고정이라 코드 버전은 남기지
+    # 않지만, 스테이션은 하드웨어가 바뀌면 같이 바뀐다 -- 카메라를 교체하거나
+    # 두 번째 스테이션이 생기면 프레이밍이 갈리는 지점이 여기다.
+    grp.attrs["station"] = load_station().name
+
+    obs = grp.create_group("obs")
+    if schema.save_agentview_rgb:
+        obs.create_dataset(
+            "agentview_rgb",
+            data=np.stack(buf.agentview_rgb),
+            compression="lzf",
+        )
+    if schema.save_eye_in_hand_rgb:
+        obs.create_dataset(
+            "eye_in_hand_rgb",
+            data=np.stack(buf.eye_in_hand_rgb),
+            compression="lzf",
+        )
+    if schema.save_joint_states:
+        obs.create_dataset("joint_states", data=np.stack(buf.joint_states))
+    if schema.save_gripper_states:
+        obs.create_dataset(
+            "gripper_states", data=np.stack(buf.gripper_states)
+        )
+    if schema.save_ee_states or schema.save_ee_pos or schema.save_ee_ori:
+        ee = np.stack(buf.ee_pos_quat)  # (n, 7)
+        ee_ori = np.stack([_quat_to_axis_angle(*q[3:7]) for q in ee]).astype(np.float32)
+        ee_pos = ee[:, :3].astype(np.float32)
+        if schema.save_ee_states:
+            ee_states = np.concatenate([ee_pos, ee_ori], axis=1).astype(np.float32)
+            obs.create_dataset("ee_states", data=ee_states)
+        if schema.save_ee_pos:
+            obs.create_dataset("ee_pos", data=ee_pos)
+        if schema.save_ee_ori:
+            obs.create_dataset("ee_ori", data=ee_ori)
+    if schema.save_joint_velocities and buf.joint_velocities:
+        obs.create_dataset(
+            "joint_velocities", data=np.stack(buf.joint_velocities)
+        )
+    if schema.save_timestamp and buf.timestamps:
+        obs.create_dataset(
+            "timestamp", data=np.array(buf.timestamps, dtype=np.float64)
+        )
+    # 무손실 필수 (#17) -- JPEG 류 손실 압축은 depth 값을 파괴한다.
+    if schema.save_agentview_depth and buf.agentview_depth:
+        obs.create_dataset("agentview_depth",
+                           data=np.stack(buf.agentview_depth),
+                           compression="lzf")
+    if schema.save_eye_in_hand_depth and buf.eye_in_hand_depth:
+        obs.create_dataset("eye_in_hand_depth",
+                           data=np.stack(buf.eye_in_hand_depth),
+                           compression="lzf")
+    # Raw teleop command stream -- written whenever the caller supplied it,
+    # independent of the schema and of which action space `actions` used:
+    # realized-trajectory actions zero out wherever the follower is blocked
+    # by contact, and the command is the only record of what the operator
+    # was actually asking for there. Tiny (7+1 floats/frame), so never
+    # worth a schema toggle. See scripts/derive_commanded_ee_actions.py.
+    if len(buf.commanded_joint_positions) == n:
+        obs.create_dataset(
+            "commanded_joint_states",
+            data=np.stack(buf.commanded_joint_positions),
+        )
+    if len(buf.commanded_gripper) == n:
+        obs.create_dataset(
+            "commanded_gripper_states",
+            data=np.array(buf.commanded_gripper, dtype=np.float32).reshape(-1, 1),
+        )
+
+    grp.create_dataset("actions", data=actions)
+    grp.create_dataset("rewards", data=np.zeros(n, dtype=np.float32))
+    dones = np.zeros(n, dtype=np.float32)
+    dones[-1] = 1.0
+    grp.create_dataset("dones", data=dones)
+    return n
 
 
 class NullTaskWriter:
@@ -989,152 +1184,11 @@ class LiberoTaskWriter:
             buf.clear()
             return None
 
-        schema = self.schema
-        if schema.action_space == ACTION_SPACE_JOINT_DELTA:
-            q = np.stack(buf.joint_states)  # (n, 7)
-            actions = np.zeros((n, 8), dtype=np.float32)
-            for t in range(n - 1):
-                actions[t] = compute_joint_delta_action(
-                    q[t], q[t + 1], buf.gripper_closed[t]
-                )
-            # Terminal frame: no further motion recorded; hold gripper state.
-            actions[n - 1, :7] = 0.0
-            actions[n - 1, 7] = 1.0 if buf.gripper_closed[-1] else -1.0
-        elif schema.action_space == ACTION_SPACE_JOINT_ABSOLUTE:
-            # The leader's command, verbatim -- see compute_joint_absolute_action
-            # for why the follower's realized joint_states must not be used here.
-            # No terminal-frame special case is needed: unlike a realized-next-
-            # state target, a command exists at every frame including the last.
-            if len(buf.commanded_joint_positions) != n:
-                raise ValueError(
-                    "action_space='joint_absolute' needs commanded_joint_positions "
-                    f"on every frame (got {len(buf.commanded_joint_positions)} of {n}). "
-                    "The GUI worker supplies them; a caller that does not must use "
-                    "a different action space."
-                )
-            q_cmd = np.stack(buf.commanded_joint_positions)  # (n, 7)
-            actions = np.zeros((n, 8), dtype=np.float32)
-            for t in range(n):
-                actions[t] = compute_joint_absolute_action(
-                    q_cmd[t], buf.gripper_closed[t]
-                )
-        elif schema.action_space == ACTION_SPACE_EE_ABSOLUTE:
-            ee = np.stack(buf.ee_pos_quat)  # (n, 7)
-            actions = np.zeros((n, 7), dtype=np.float32)
-            for t in range(n - 1):
-                actions[t] = compute_ee_absolute_action(
-                    ee[t + 1], buf.gripper_closed[t]
-                )
-            # Terminal frame: no further target recorded; hold current pose.
-            actions[n - 1, :3] = ee[n - 1, :3]
-            actions[n - 1, 3:6] = _quat_to_axis_angle(*ee[n - 1, 3:7])
-            actions[n - 1, 6] = 1.0 if buf.gripper_closed[-1] else -1.0
-        else:
-            ee = np.stack(buf.ee_pos_quat)  # (n, 7)
-            actions = np.zeros((n, 7), dtype=np.float32)
-            for t in range(n - 1):
-                actions[t] = compute_delta_action(
-                    ee[t], ee[t + 1], buf.gripper_closed[t]
-                )
-            actions[n - 1, :6] = 0.0
-            actions[n - 1, 6] = 1.0 if buf.gripper_closed[-1] else -1.0
-
-        # Every branch above always ends with gripper as the last column,
-        # in -1=open/+1=close (robosuite Panda convention) -- remap to
-        # 0=open/1=closed here in one place, matching obs/gripper_states'
-        # convention, if the operator asked action to match obs.
-        if schema.gripper_action_match_obs:
-            actions[:, -1] = (actions[:, -1] + 1.0) / 2.0
-
-        # ... then strip it here in one place rather than duplicating the
-        # flag check in all four branches.
-        if not schema.action_include_gripper:
-            actions = actions[:, :-1]
-
         demo_idx = int(self._data.attrs["next_demo_idx"])
         self._data.attrs["next_demo_idx"] = demo_idx + 1
         name = f"demo_{demo_idx}"
         grp = self._data.create_group(name)
-        grp.attrs["num_samples"] = n
-        if success is not None:
-            grp.attrs["success"] = bool(success)
-        # Per-episode provenance: which action space this demo's `actions`
-        # was computed with, and which obs fields are actually present
-        # (readers should not assume the full original LIBERO obs set --
-        # --resume lets a file mix schemas episode-to-episode if the
-        # operator changed the "사용자 지정" config between sessions).
-        grp.attrs["action_space"] = schema.action_space
-        grp.attrs["gripper_action_convention"] = "01" if schema.gripper_action_match_obs else "pm1"
-        grp.attrs["action_column_names"] = json.dumps(resolved_action_column_names(schema))
-        # 이 에피소드의 이미지에 (원본 저장이면 변환 시점에) 적용할/된 정사각
-        # 크롭 정렬. buf 의 것을 쓴다 -- 백그라운드 저장 중 writer 쪽 값이
-        # 바뀌어도 찍히는 값은 그 에피소드가 실제로 쓰던 것이어야 한다.
-        grp.attrs["crop_params"] = json.dumps(buf.crop_params)
-        # 어느 스테이션에서 찍었는지. 형식은 v0 에서 고정이라 코드 버전은 남기지
-        # 않지만, 스테이션은 하드웨어가 바뀌면 같이 바뀐다 -- 카메라를 교체하거나
-        # 두 번째 스테이션이 생기면 프레이밍이 갈리는 지점이 여기다.
-        grp.attrs["station"] = load_station().name
-
-        obs = grp.create_group("obs")
-        if schema.save_agentview_rgb:
-            obs.create_dataset(
-                "agentview_rgb",
-                data=np.stack(buf.agentview_rgb),
-                compression="lzf",
-            )
-        if schema.save_eye_in_hand_rgb:
-            obs.create_dataset(
-                "eye_in_hand_rgb",
-                data=np.stack(buf.eye_in_hand_rgb),
-                compression="lzf",
-            )
-        if schema.save_joint_states:
-            obs.create_dataset("joint_states", data=np.stack(buf.joint_states))
-        if schema.save_gripper_states:
-            obs.create_dataset(
-                "gripper_states", data=np.stack(buf.gripper_states)
-            )
-        if schema.save_ee_states or schema.save_ee_pos or schema.save_ee_ori:
-            ee = np.stack(buf.ee_pos_quat)  # (n, 7)
-            ee_ori = np.stack([_quat_to_axis_angle(*q[3:7]) for q in ee]).astype(np.float32)
-            ee_pos = ee[:, :3].astype(np.float32)
-            if schema.save_ee_states:
-                ee_states = np.concatenate([ee_pos, ee_ori], axis=1).astype(np.float32)
-                obs.create_dataset("ee_states", data=ee_states)
-            if schema.save_ee_pos:
-                obs.create_dataset("ee_pos", data=ee_pos)
-            if schema.save_ee_ori:
-                obs.create_dataset("ee_ori", data=ee_ori)
-        if schema.save_joint_velocities and buf.joint_velocities:
-            obs.create_dataset(
-                "joint_velocities", data=np.stack(buf.joint_velocities)
-            )
-        if schema.save_timestamp and buf.timestamps:
-            obs.create_dataset(
-                "timestamp", data=np.array(buf.timestamps, dtype=np.float64)
-            )
-        # Raw teleop command stream -- written whenever the caller supplied it,
-        # independent of the schema and of which action space `actions` used:
-        # realized-trajectory actions zero out wherever the follower is blocked
-        # by contact, and the command is the only record of what the operator
-        # was actually asking for there. Tiny (7+1 floats/frame), so never
-        # worth a schema toggle. See scripts/derive_commanded_ee_actions.py.
-        if len(buf.commanded_joint_positions) == n:
-            obs.create_dataset(
-                "commanded_joint_states",
-                data=np.stack(buf.commanded_joint_positions),
-            )
-        if len(buf.commanded_gripper) == n:
-            obs.create_dataset(
-                "commanded_gripper_states",
-                data=np.array(buf.commanded_gripper, dtype=np.float32).reshape(-1, 1),
-            )
-
-        grp.create_dataset("actions", data=actions)
-        grp.create_dataset("rewards", data=np.zeros(n, dtype=np.float32))
-        dones = np.zeros(n, dtype=np.float32)
-        dones[-1] = 1.0
-        grp.create_dataset("dones", data=dones)
+        write_episode_payload(grp, buf, self.schema, success=success)
 
         self._file.flush()
         buf.clear()
@@ -1213,12 +1267,21 @@ def hdf5_repack_status(path) -> dict:
     try:
         out["size"] = Path(path).stat().st_size
         with h5py.File(path, "r") as f:
-            data = f["data"]
-            out["episodes"] = len(data.keys())
-            out["marker"] = data.attrs.get(REPACK_MARKER_ATTR)
+            if "data" in f:
+                marker_grp = f["data"]        # legacy: 마커도 에피소드도 data/
+                container = f["data"]
+                episode_names = list(container.keys())
+            else:
+                # scene-v1: 마커는 metadata 그룹에, 에피소드는 루트에 있다.
+                # 에피소드 안쪽 페이로드는 legacy 와 동일해 아래 로직을 공유.
+                marker_grp = f["metadata"]
+                container = f
+                episode_names = [k for k in f.keys() if k.startswith("episode_")]
+            out["episodes"] = len(episode_names)
+            out["marker"] = marker_grp.attrs.get(REPACK_MARKER_ATTR)
             if isinstance(out["marker"], bytes):
                 out["marker"] = out["marker"].decode(errors="replace")
-            at_repack = data.attrs.get(REPACK_COUNT_ATTR)
+            at_repack = marker_grp.attrs.get(REPACK_COUNT_ATTR)
             if at_repack is not None:
                 out["new_since"] = max(0, out["episodes"] - int(at_repack))
                 out["deleted_since"] = max(0, int(at_repack) - out["episodes"])
@@ -1233,8 +1296,8 @@ def hdf5_repack_status(path) -> dict:
             out["dead_bytes"] = max(0, out["size"] - _stored_bytes(f))
             out["dead_ratio"] = out["dead_bytes"] / out["size"] if out["size"] else 0.0
             comps = set()
-            for name in data.keys():
-                obs = data[name].get("obs")
+            for name in episode_names:
+                obs = container[name].get("obs")
                 if obs is None:
                     continue
                 for key in ("agentview_rgb", "eye_in_hand_rgb"):

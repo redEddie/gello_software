@@ -70,6 +70,7 @@ class TrimPlan:
     n_trim: int
     release_idx: int | None    # 마지막 그리퍼 변화가 *확립되는* 프레임 인덱스
     already: str | None        # 이미 자른 이력 (attrs["trimmed"])
+    scene: bool = False        # scene-v1 에피소드 (표시용; 처리 경로는 동일)
 
     @property
     def result_frames(self) -> int:
@@ -106,6 +107,9 @@ class TrimPlan:
 
     @property
     def blocked(self) -> str | None:
+        # scene 에피소드도 자른다 (2026-08-14 결정: 실패/튀는 궤적 삭제와 함께
+        # HDF5 큐레이션 편집 허용). 자르기는 프레임축 데이터셋만 줄이고
+        # uid·번호·instruction 은 손대지 않으므로 slot 계보에 영향이 없다.
         if self.n_trim <= 0:
             return "자를 프레임 수가 0입니다"
         if self.too_short:
@@ -129,17 +133,26 @@ def _release_idx(actions: np.ndarray) -> int | None:
     return int(changes[-1]) + 1 if len(changes) else None
 
 
+def _episode_group(f: h5py.File, demo: str):
+    """legacy 는 data/demo_N, scene(scene-v1)은 루트 episode_NNN.
+    에피소드 안쪽 페이로드는 동일하다. (그룹, scene 여부) 를 돌려준다."""
+    if demo in f:
+        return f[demo], True
+    return f["data"][demo], False
+
+
 def plan_trim(path: str, demos: list[str], n_trim: int) -> list[TrimPlan]:
     """Checks, without writing anything, what trimming `n_trim` would do."""
     out: list[TrimPlan] = []
     with h5py.File(path, "r") as f:
         for demo in demos:
-            grp = f["data"][demo]
+            grp, scene = _episode_group(f, demo)
             a = grp["actions"][:]
             out.append(TrimPlan(
                 demo=demo, n_frames=int(a.shape[0]), n_trim=int(n_trim),
                 release_idx=_release_idx(a),
                 already=grp.attrs.get("trimmed"),
+                scene=scene,
             ))
     return out
 
@@ -148,7 +161,7 @@ def tail_speed(path: str, demo: str, k: int = 40) -> np.ndarray:
     """Per-frame arm speed for the last `k` frames, in units of the episode's
     own median -- the curve the operator picks a cut point off."""
     with h5py.File(path, "r") as f:
-        a = f["data"][demo]["actions"][:]
+        a = _episode_group(f, demo)[0]["actions"][:]
     v = np.abs(np.diff(a[:, :ARM_DIMS], axis=0)).max(axis=1)
     med = float(np.median(v)) or 1e-9
     return v[-k:] / med
@@ -183,7 +196,7 @@ def trim_tail(path: str, demo: str, n_trim: int) -> int:
         raise ValueError(plan.blocked)
     keep = plan.result_frames
     with h5py.File(path, "a") as f:
-        grp = f["data"][demo]
+        grp, _scene = _episode_group(f, demo)   # 양포맷 동일 처리
         targets: list[str] = []
         grp.visititems(
             lambda name, obj: targets.append(name)

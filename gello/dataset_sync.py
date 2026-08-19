@@ -66,9 +66,35 @@ def local_tasks(data_root: str | Path) -> dict:
                     ns = data[n].attrs.get("num_samples")
                     lengths.append(int(ns) if ns is not None else -1)
                 out[task] = {"episodes": len(names), "path": Path(p),
+                             "paths": [Path(p)],
                              "at_repack": int(at) if at is not None else None,
                              "lengths": lengths}
         except Exception:  # noqa: BLE001
+            continue
+    # ---- scene-v1 파일의 기여. task = 에피소드별 instruction 이고, 변환이
+    # success 만 내보내므로 개수도 success 기준이다. 같은 문장이 legacy
+    # task 나 다른 scene 과 겹치면 합산한다. scene 기여가 섞인 task 는 길이
+    # 지문 검증을 끈다(lengths=None) -- scene 쪽 resume 안전성은 개수
+    # 산술이 아니라 변환기의 episode_uid 대조가 책임진다.
+    for p in sorted(glob.glob(str(Path(data_root) / "scene_*.hdf5"))):
+        try:
+            from gello.scene_format import list_scene_episodes
+
+            for ep in list_scene_episodes(Path(p)):
+                if ep.get("quality_status") != "success":
+                    continue
+                task = ep["instruction"]
+                e = out.get(task)
+                if e is None:
+                    out[task] = {"episodes": 1, "path": Path(p),
+                                 "paths": [Path(p)], "at_repack": None,
+                                 "lengths": None}
+                else:
+                    e["episodes"] += 1
+                    if Path(p) not in e["paths"]:
+                        e["paths"].append(Path(p))
+                    e["lengths"] = None
+        except Exception:  # noqa: BLE001 - 수집 세션이 잠근 파일 등
             continue
     return out
 
@@ -119,6 +145,41 @@ def hub_meta(repo_id: str) -> tuple[dict, dict, str]:
             if has_length:
                 lengths.setdefault(n, []).append(int(row["length"]))
     return counts, lengths, ""
+
+
+def hub_episode_uids(repo_id: str) -> tuple:
+    """(uid 집합 | None, error). Hub 데이터셋의 ``meta/episode_uids.json``
+    사이드카(변환기가 scene 에피소드마다 남기는 출처)를 읽는다.
+
+    None = 사이드카가 없는 repo (legacy 수집분만 있는 데이터셋 등) -- "이
+    에피소드가 올라가 있는가" 를 에피소드 단위로 판정할 수 없다는 뜻이고,
+    호출자는 문장(task) 단위 판정으로 물러난다. 빈 집합과는 다르다.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+        from huggingface_hub.errors import RepositoryNotFoundError
+    except ImportError as e:
+        return None, f"의존성 없음: {e}"
+    try:
+        d = snapshot_download(repo_id, repo_type="dataset",
+                              allow_patterns=["meta/episode_uids.json"],
+                              force_download=True)
+    except RepositoryNotFoundError:
+        return set(), ""
+    except Exception as e:  # noqa: BLE001
+        return None, f"{type(e).__name__}: {e}"
+    p = Path(d) / "meta" / "episode_uids.json"
+    if not p.exists():
+        return None, ""
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return None, f"사이드카 읽기 실패: {e}"
+    uids: set = set()
+    for e in data.values() if isinstance(data, dict) else []:
+        if isinstance(e, dict) and e.get("episode_uid"):
+            uids.add(str(e["episode_uid"]))
+    return uids, ""
 
 
 def hub_tasks(repo_id: str) -> tuple[dict, str]:
@@ -203,4 +264,21 @@ def plan_sync(data_root: str | Path, repo_id: str) -> dict:
             "ambiguous": ambiguous,
             "local_total": sum(v["episodes"] for v in local.values()),
             "hub_total": sum(hub.values()),
-            "paths": [str(v["path"]) for v in local.values()]}
+            # 변환기에 넘길 파일 목록: legacy 정렬 + scene 정렬, 중복 제거.
+            # (legacy 를 앞에 -- Hub 의 기존 순서가 legacy 선행이라 길이
+            # 지문의 접두 비교가 성립한다)
+            "paths": _ordered_paths(local)}
+
+
+def _ordered_paths(local: dict) -> list:
+    seen: set = set()
+    legacy: list = []
+    scene: list = []
+    for v in local.values():
+        for p in v.get("paths", [v["path"]]):
+            s = str(p)
+            if s in seen:
+                continue
+            seen.add(s)
+            (scene if Path(s).name.startswith("scene_") else legacy).append(s)
+    return sorted(legacy) + sorted(scene)

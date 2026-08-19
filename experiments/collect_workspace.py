@@ -37,6 +37,8 @@ old wizard so both could share them without one importing the other's window.
 from __future__ import annotations
 
 import os
+import re
+import webbrowser
 
 # Must run before numpy/cv2/h5py are imported -- see gello/gui_widgets.py for
 # why this GUI caps the BLAS/OpenCV thread pools at 1.
@@ -54,12 +56,14 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-from PyQt6.QtCore import QEvent, QProcess, Qt, QThread, QTimer, pyqtSlot
-from PyQt6.QtGui import QAction, QActionGroup, QFont, QTextCursor
+from PyQt6.QtCore import (QEvent, QProcess, QSize, Qt, QThread, QTimer,
+                          pyqtSignal, pyqtSlot)
+from PyQt6.QtGui import QAction, QActionGroup, QFont, QIcon, QTextCursor
 from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -71,16 +75,21 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QSplitter,
     QStackedWidget,
     QTabWidget,
@@ -113,6 +122,8 @@ from gello.gui_widgets import (  # noqa: E402
     REPACK_SCRIPT,
     CameraPreviewWorker,
     DatasetSchemaDialog,
+    DepthCloudWorker,
+    GalleryLoadWorker,
     DeltaBar,
     EpisodeLoadWorker,
     HdfUploadDialog,
@@ -124,6 +135,15 @@ from gello.gui_widgets import (  # noqa: E402
     clean_stream_lines,
     hf_account,
     is_progress_line,
+    np_to_pixmap,
+)
+from gello.grid_overlay import (  # noqa: E402
+    DEFAULT_CORNERS,
+    active_corners,
+    draw_grid,
+    grid_segments,
+    load_grid_store,
+    save_grid_store,
 )
 from gello.i18n import tr  # noqa: E402
 from gello.libero_format import (  # noqa: E402
@@ -135,8 +155,28 @@ from gello.libero_format import (  # noqa: E402
     resize_rgb,
     save_crop_params,
 )
+from gello.collection_plan import (  # noqa: E402
+    PLANS_DIR,
+    check_scene_against_plan,
+    list_plans,
+    load_plan,
+)
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
+from gello.props import load_props, props_by_id  # noqa: E402
+from gello.scene_diversity import recommend  # noqa: E402
 from gello.robots.franka_fr3 import FR3_RESET_POSES  # noqa: E402
+from gello.scene_format import (  # noqa: E402
+    INSTRUCTION_ID_RE,
+    SCENE_ID_RE,
+    SceneMetadata,
+    count_by_slot,
+    delete_scene_episodes,
+    describe_scene,
+    iter_scene_files,
+    next_scene_id,
+    read_scene_metadata,
+    scene_filename,
+)
 from gello.station import load_station  # noqa: E402
 
 LOG_DIR = Path.home() / "libero_gui_logs"
@@ -147,6 +187,18 @@ PYLIBFRANKA_PYTHON = STATION.node.python_path
 LAUNCH_NODES_SCRIPT = str(Path(__file__).resolve().parent / "launch_nodes.py")
 CONVERT_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "convert_libero_to_lerobot.py")
 UPLOAD_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "upload_to_hub.py")
+REPLAY_SCRIPT = str(Path(__file__).resolve().parent / "replay_episode.py")
+# 새 수집(scene 체계)의 Hub 저장소 기본값 (2026-08-18 결정). 변환본은
+# -lerobot, 원본 HDF5 는 접미사 없이. legacy repo(fr3-pick-place*, 728개)는
+# 재사용하지 않는다 -- 그쪽에 전체 처리를 돌리면 삭제 게이트가 뜬다.
+DEFAULT_REPOS = {
+    "repo_id": "knu-physical-ai/fr3-tabletop-lerobot",
+    "hdf5_repo_id": "knu-physical-ai/fr3-tabletop",
+}
+# recents 에 남아 있어도 기본값으로 되살리지 않을 옛 저장소들.
+LEGACY_REPOS = {
+    "knu-physical-ai/fr3-pick-place-lerobot", "knu-physical-ai/fr3-pick-place",
+}
 RUNME_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "runme.sh")
 # LIBERO 초기 배치 참조 이미지. 리모트에는 zip 만 올라가고(3.9MB), 풀린
 # png 들은 .gitignore 의 *.png 에 걸린다. GUI 가 뜰 때 zip 이 바뀌었으면 다시
@@ -159,6 +211,51 @@ def _new_stats() -> dict:
     """수집 카운터 한 벌. 이번 task 용과 누적용이 같은 모양이라 같은 곳에서 만든다."""
     return {"saved": 0, "success": 0, "failed": 0, "discarded": 0,
             "frames": 0, "t0": time.monotonic()}
+
+
+def _depth_colormap(z: np.ndarray, zmax: float, zmin: float = 0.05) -> np.ndarray:
+    """depth(m) → JET 컬러맵(가까움=빨강) + 오른쪽 척도 바.
+
+    라이브 Depth 탭과 HDF5 뷰어의 depth 미리보기가 같은 매핑을 쓰게 하는
+    단일 지점. 무측정/범위 밖은 검정.
+    """
+    import cv2
+
+    valid = (z > zmin) & (z <= zmax)
+    norm = np.zeros(z.shape, np.uint8)
+    norm[valid] = (255 * (1.0 - z[valid] / zmax)).astype(np.uint8)
+    rgb = cv2.cvtColor(cv2.applyColorMap(norm, cv2.COLORMAP_JET),
+                       cv2.COLOR_BGR2RGB)
+    rgb[~valid] = 0
+    return _draw_depth_scale(rgb, zmax)
+
+
+def _draw_depth_scale(rgb: np.ndarray, zmax: float) -> np.ndarray:
+    """오른쪽 세로 컬러바 + 거리 눈금(m). 너무 작은 이미지에는 그리지 않는다."""
+    import cv2
+
+    h, w = rgb.shape[:2]
+    if w < 240 or h < 160:
+        return rgb
+    bar_h, bar_w = int(h * 0.72), 18
+    x0, y0 = w - bar_w - 10, (h - bar_h) // 2
+    t = np.linspace(0.0, 1.0, bar_h, dtype=np.float32)     # 0=위=가까움
+    col = (255 * (1.0 - t)).astype(np.uint8).reshape(-1, 1)
+    bar = cv2.cvtColor(cv2.applyColorMap(np.repeat(col, bar_w, 1),
+                                         cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB)
+    rgb[y0:y0 + bar_h, x0:x0 + bar_w] = bar
+    cv2.rectangle(rgb, (x0 - 1, y0 - 1), (x0 + bar_w, y0 + bar_h),
+                  (255, 255, 255), 1)
+    for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
+        y = y0 + int(frac * (bar_h - 1))
+        cv2.line(rgb, (x0 - 5, y), (x0 - 1, y), (255, 255, 255), 1)
+        label = f"{frac * zmax:.2f}m"
+        # 검정 외곽선 + 흰 글자 -- 어느 배경에서든 읽히게
+        for color, thick in (((0, 0, 0), 3), ((255, 255, 255), 1)):
+            cv2.putText(rgb, label, (x0 - 62, y + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, thick,
+                        cv2.LINE_AA)
+    return rgb
 
 
 def _grid_overlay(img):
@@ -241,7 +338,7 @@ STATE_LABELS = {
     "recording": "기록 중",
 }
 SHORTCUT_HINTS = {
-    "reset_wait": "Enter: 대기 건너뛰기   Esc: 직전 에피소드 판정 뒤집기",
+    "reset_wait": "Enter: 리셋 완료 — 계속   Esc: 직전 에피소드 판정 뒤집기",
     "gate": "Space: 텔레옵 시작   Enter: 자동 정렬 다시",
     "recording": "Space: 성공으로 끝내기   Esc: 실패로 끝내기   Del: 폐기",
 }
@@ -430,14 +527,36 @@ class PipelineDialog(QDialog):
         acct_row.addWidget(acct_btn)
         layout.addLayout(acct_row)
 
+        # 삭제 보호 게이트: Hub 에서 사라질 에피소드가 있으면(rebuild 로
+        # 교체 시 실제 삭제) 이해했다는 체크 없이는 시작 버튼이 열리지
+        # 않는다. legacy 파일을 old_data/ 로 치워 둔 상태에서 옛 repo 를
+        # 대상으로 돌리면 수백 개가 조용히 사라지는 사고의 마지막 잠금이다.
+        self.shrink_ack = None
+        if plan.get("shrunk"):
+            self.shrink_ack = QCheckBox(tr(
+                "Hub에서 에피소드 {n}개가 삭제되는 것을 확인했습니다 "
+                "(로컬에 없는 에피소드는 재빌드 후 Hub에서 사라집니다)")
+                .format(n=plan["shrunk"]))
+            self.shrink_ack.setStyleSheet("color:#e74c3c; font-weight:bold;")
+            layout.addWidget(self.shrink_ack)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                                    | QDialogButtonBox.StandardButton.Cancel)
         self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
         self._ok.setText(tr("시작하고 퇴근"))
-        self._ok.setEnabled(action != "blocked")
+        self._action_ok = action != "blocked"
+        self._update_ok_enabled()
+        if self.shrink_ack is not None:
+            self.shrink_ack.toggled.connect(self._update_ok_enabled)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _update_ok_enabled(self, *_args) -> None:
+        ok = self._action_ok
+        if self.shrink_ack is not None and not self.shrink_ack.isChecked():
+            ok = False
+        self._ok.setEnabled(ok)
 
     def _on_account(self) -> None:
         HfAccountDialog(self).exec()
@@ -483,6 +602,1074 @@ class PipelineDialog(QDialog):
         return steps
 
 
+def _relax_min_widths(root: QWidget) -> None:
+    """좌측 패널은 가로 스크롤이 없으므로 자식들이 패널 폭에 맞춰 줄어들 수
+    있어야 한다. 버튼·체크박스·라디오는 텍스트 전체 폭을 최소로 고집하는
+    기본 정책이라 좁은 패널에서 페이지를 잘리게 만든다 -- 수평 최소를 풀어
+    좁아지면 글자가 생략되는 쪽을 택한다 (2026-08-13 사용자 결정: 200px
+    수준까지 축소 허용, ... 요약 표시 허용). '...' 찾아보기처럼 명시적으로
+    고정폭을 준 위젯은 건드리지 않는다."""
+    for w in root.findChildren(QWidget):
+        if isinstance(w, (QPushButton, QCheckBox, QRadioButton)):
+            if w.maximumWidth() >= 16777215:  # 명시 고정폭은 존중
+                sp = w.sizePolicy()
+                sp.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+                w.setSizePolicy(sp)
+    # 폼의 '라벨+입력 나란히' 배치도 최소 폭을 만든다 -- 좁아지면 입력칸이
+    # 라벨 아래로 내려가게 해서 폭 하한을 더 낮춘다.
+    for f in root.findChildren(QFormLayout):
+        f.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+    # 긴 안내문 라벨이 wordWrap 없이 폭을 강제하는 경우가 페이지마다 하나씩
+    # 숨어 있다(업로드 큐 안내문 등). 일괄 줄바꿈 -- 단, 수평 Ignored 정책
+    # 라벨(SceneInfoView 의 격자처럼 일부러 줄바꿈을 막은 것)은 제외.
+    for lb in root.findChildren(QLabel):
+        if lb.sizePolicy().horizontalPolicy() != QSizePolicy.Policy.Ignored:
+            lb.setWordWrap(True)
+            # wordWrap 만으로는 QFormLayout 이 높이를 한 줄치로 줘서 두 줄째가
+            # 잘린다(오른쪽 패널 WIDE_FIELDS 에서 이미 확인된 Qt 동작).
+            # heightForWidth 를 켜야 접힌 만큼 세로가 확보된다.
+            sp = lb.sizePolicy()
+            sp.setHeightForWidth(True)
+            sp.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
+            lb.setSizePolicy(sp)
+
+
+def _shrinkable_combo(c: QComboBox) -> None:
+    """항목 텍스트(카메라 이름, scene 설명 등)가 길어도 콤보가 패널 폭에 맞춰
+    줄어들 수 있게 한다. 기본 정책은 가장 긴 항목만큼 최소 폭을 요구해서,
+    좁은 좌측 패널에서 페이지 전체가 오른쪽으로 잘려 나갔다 (가로 스크롤을
+    쓰지 않는다는 원칙과 충돌). 펼친 목록은 전체 텍스트를 그대로 보여준다."""
+    c.setSizeAdjustPolicy(
+        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    c.setMinimumContentsLength(6)
+
+
+class SceneInfoView(QWidget):
+    """describe_scene 출력 표시용 — 좁은 패널에서도 잘리지 않는 반응형.
+
+    일반 문장 줄(objects, 빈 존, 설명)은 줄바꿈으로 접고, 격자 줄(│┌…)만
+    고정폭 폰트의 비줄바꿈 라벨에 넣는다. 격자 라벨은 수평 크기 정책을
+    Ignored 로 두어 패널 폭을 강제하지 않는다 -- 패널이 격자보다 좁으면
+    격자 오른쪽이 살짝 잘릴 뿐, 다른 입력은 전부 접근 가능하게 남는다.
+    """
+
+    _GRID_CHARS = set("│┌┬┐├┼┤└┴┘─")
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+        self._text = QLabel("")
+        self._text.setWordWrap(True)
+        self._text.setStyleSheet("color:#888; font-size: 11px;")
+        self._grid = QLabel("")
+        # 'monospace' 별칭은 한국어 로케일에서 CJK 모노 폰트로 풀리는데, 그
+        # 폰트는 격자 선문자(│─┌)를 2칸 폭으로 그려 격자가 어긋난다.
+        self._grid.setStyleSheet(
+            "font-family: 'DejaVu Sans Mono', 'Liberation Mono', monospace; "
+            "color:#888; font-size: 10px;")
+        self._grid.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                 QSizePolicy.Policy.Preferred)
+        col.addWidget(self._text)
+        col.addWidget(self._grid)
+
+    def setText(self, text: str) -> None:
+        grid_lines = [ln for ln in text.splitlines()
+                      if set(ln) & self._GRID_CHARS]
+        text_lines = [ln for ln in text.splitlines()
+                      if not (set(ln) & self._GRID_CHARS)]
+        self._text.setText("\n".join(text_lines))
+        self._grid.setText("\n".join(grid_lines))
+        self._grid.setVisible(bool(grid_lines))
+
+    def text(self) -> str:
+        return "\n".join(x for x in (self._text.text(), self._grid.text()) if x)
+
+
+class PlanJsonDialog(QDialog):
+    """수집 계획 원문(JSON) 편집 — 저장하려면 load_plan 검증을 통과해야 한다.
+
+    기본 편집기는 폼 방식의 PlanEditDialog 다. 이것은 note 추가처럼 폼이
+    다루지 않는 필드를 만질 때 쓰는 고급 진입로로만 남아 있다.
+    """
+
+    def __init__(self, parent, path: Path) -> None:
+        super().__init__(parent)
+        self._path = Path(path)
+        self.setWindowTitle(tr("수집 계획 JSON 편집 — {n}").format(n=self._path.name))
+        self.setMinimumSize(680, 480)
+        col = QVBoxLayout(self)
+        hint = QLabel(tr(
+            "저장하면 규칙 검증(scene 내 ID 유일, 따옴표 금지, target>0)을 "
+            "통과해야 반영됩니다. 동사 집합(§4) 밖 문장은 경고만 합니다."))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#888;")
+        col.addWidget(hint)
+        self.editor = QPlainTextEdit()
+        self.editor.setStyleSheet(
+            "font-family: 'DejaVu Sans Mono', monospace; font-size: 12px;")
+        try:
+            self.editor.setPlainText(self._path.read_text(encoding="utf-8"))
+        except OSError as e:
+            self.editor.setPlainText("")
+            QMessageBox.warning(self, tr("읽기 실패"), str(e))
+        col.addWidget(self.editor, 1)
+        self.error_label = QLabel("")
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color:#e74c3c;")
+        col.addWidget(self.error_label)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        col.addWidget(buttons)
+
+    def _save(self) -> None:
+        import tempfile
+
+        text = self.editor.toPlainText()
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                             encoding="utf-8") as tf:
+                tf.write(text)
+                tmp = Path(tf.name)
+            plan = load_plan(tmp)
+            tmp.unlink(missing_ok=True)
+        except Exception as e:  # noqa: BLE001
+            self.error_label.setText(f"{type(e).__name__}: {e}")
+            return
+        self._path.write_text(text, encoding="utf-8")
+        self.warnings = plan.warnings
+        super().accept()
+
+
+class PlanEditDialog(QDialog):
+    """수집 계획 편집 — scene 별로 (문장, 목표)만 표에서 고친다.
+
+    나머지는 자동이다: 기존 행은 파일의 instruction_id 를 그대로 유지하고
+    (수집된 에피소드와의 연결이 ID 에 걸려 있다), 새 행은 저장 시점에 그
+    scene 의 다음 빈 번호를 받는다. 행을 지워도 남은 행의 ID 는 바뀌지
+    않고, 지운 ID 번호도 재사용하지 않는다 -- 같은 번호가 다른 문장으로
+    되살아나면 이미 수집된 데이터와 어긋난다. note 같은 부가 필드는 그대로
+    보존하며, 저장은 여전히 load_plan 검증을 통과해야 반영된다.
+    """
+
+    def __init__(self, parent, path: Path) -> None:
+        super().__init__(parent)
+        self._path = Path(path)
+        self.warnings: list = []
+        self.setWindowTitle(tr("수집 계획 편집 — {n}").format(n=self._path.name))
+        self.setMinimumSize(720, 480)
+        self._cur_sid: "str | None" = None
+
+        col = QVBoxLayout(self)
+        hint = QLabel(tr(
+            "문장과 목표 개수만 고치면 됩니다. ID 는 자동입니다 — 기존 행은 "
+            "번호를 유지하고, 새 행은 저장할 때 다음 번호를 받습니다."))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#888;")
+        col.addWidget(hint)
+
+        srow = QHBoxLayout()
+        srow.addWidget(QLabel(tr("Scene")))
+        self.scene_combo = QComboBox()
+        self.scene_combo.currentIndexChanged.connect(self._on_scene_changed)
+        srow.addWidget(self.scene_combo, 1)
+        add_scene_btn = QPushButton(tr("scene 추가"))
+        add_scene_btn.clicked.connect(self._on_add_scene)
+        srow.addWidget(add_scene_btn)
+        del_scene_btn = QPushButton(tr("scene 삭제"))
+        del_scene_btn.setToolTip(tr(
+            "이 scene 을 계획에서 뺍니다. 이미 수집한 파일은 지워지지 않지만 "
+            "계획 대조가 사라집니다."))
+        del_scene_btn.clicked.connect(self._on_del_scene)
+        srow.addWidget(del_scene_btn)
+        json_btn = QPushButton(tr("JSON 직접 편집..."))
+        json_btn.setToolTip(tr("note 등 폼이 다루지 않는 필드를 고칠 때 씁니다."))
+        json_btn.clicked.connect(self._on_raw_edit)
+        srow.addWidget(json_btn)
+        col.addLayout(srow)
+
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels([tr("ID"), tr("문장 (instruction)"), tr("목표")])
+        self.tree.setRootIsDecorated(False)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        col.addWidget(self.tree, 1)
+
+        rrow = QHBoxLayout()
+        add_btn = QPushButton(tr("행 추가"))
+        add_btn.clicked.connect(lambda: self._add_row(
+            {"id": None, "instr": "", "target": 10}))
+        rrow.addWidget(add_btn)
+        del_btn = QPushButton(tr("선택 행 삭제"))
+        del_btn.clicked.connect(self._on_del_row)
+        rrow.addWidget(del_btn)
+        up_btn = QPushButton("▲")
+        up_btn.setMaximumWidth(36)
+        up_btn.setToolTip(tr("선택 행을 위로 (표시 순서만 -- ID 는 안 바뀝니다)"))
+        up_btn.clicked.connect(lambda: self._move_row(-1))
+        rrow.addWidget(up_btn)
+        down_btn = QPushButton("▼")
+        down_btn.setMaximumWidth(36)
+        down_btn.clicked.connect(lambda: self._move_row(+1))
+        rrow.addWidget(down_btn)
+        rrow.addStretch(1)
+        col.addLayout(rrow)
+
+        self.error_label = QLabel("")
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color:#e74c3c;")
+        col.addWidget(self.error_label)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        col.addWidget(buttons)
+        self._load_file()
+
+    def _load_file(self) -> None:
+        """파일 -> 작업본 -> 표. raw 편집 뒤에도 이걸로 되돌아온다.
+
+        작업본은 scene ID -> [{"id": I000|None, "instr", "target"}] 이고,
+        표는 scene 전환 때마다 여기서 다시 그린다.
+        """
+        try:
+            self._raw = json.loads(self._path.read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, tr("읽기 실패"), str(e))
+            self._raw = {"plan_version": 1, "scenes": []}
+        if not isinstance(self._raw.get("scenes"), list):
+            self._raw["scenes"] = []
+        self._work = {}
+        self._scene_order = []
+        for sc in self._raw["scenes"]:
+            sid = sc.get("scene_id")
+            if not isinstance(sid, str):
+                continue
+            self._scene_order.append(sid)
+            self._work[sid] = [
+                {"id": sl.get("instruction_id"),
+                 "instr": str(sl.get("instruction", "")),
+                 "target": int(sl.get("target") or 1)}
+                for sl in sc.get("slots", []) if isinstance(sl, dict)]
+        self._cur_sid = None
+        self.scene_combo.blockSignals(True)
+        self.scene_combo.clear()
+        for sid in self._scene_order:
+            self.scene_combo.addItem(sid)
+        self.scene_combo.blockSignals(False)
+        self.tree.clear()
+        if self._scene_order:
+            self._cur_sid = self._scene_order[0]
+            self.scene_combo.setCurrentIndex(0)
+            self._load_rows(self._cur_sid)
+
+    # ---- 표 <-> 작업본 ----
+    def _add_row(self, row: dict) -> None:
+        it = QTreeWidgetItem([row["id"] or tr("(자동)"), "", ""])
+        it.setData(0, Qt.ItemDataRole.UserRole, row["id"])
+        self.tree.addTopLevelItem(it)
+        instr = QLineEdit(row["instr"])
+        instr.setPlaceholderText(tr("예) pick up the blue cup and place it on the blue bowl"))
+        instr.textChanged.connect(self._check_dups)   # 중복은 저장 전에 보이게
+        self.tree.setItemWidget(it, 1, instr)
+        spin = QSpinBox()
+        spin.setRange(1, 999)
+        spin.setValue(max(1, row["target"]))
+        self.tree.setItemWidget(it, 2, spin)
+
+    def _collect_rows(self) -> list:
+        rows = []
+        for i in range(self.tree.topLevelItemCount()):
+            it = self.tree.topLevelItem(i)
+            rows.append({"id": it.data(0, Qt.ItemDataRole.UserRole),
+                         "instr": self.tree.itemWidget(it, 1).text().strip(),
+                         "target": self.tree.itemWidget(it, 2).value()})
+        return rows
+
+    def _load_rows(self, sid: str) -> None:
+        self.tree.clear()
+        for row in self._work.get(sid, []):
+            self._add_row(row)
+
+    def _stash_current(self) -> None:
+        if self._cur_sid is not None:
+            self._work[self._cur_sid] = self._collect_rows()
+
+    def _on_scene_changed(self, *_args) -> None:
+        self._stash_current()
+        self._cur_sid = self.scene_combo.currentText() or None
+        if self._cur_sid is not None:
+            self._load_rows(self._cur_sid)
+
+    def _on_del_row(self) -> None:
+        for it in self.tree.selectedItems():
+            self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(it))
+        self._check_dups()
+
+    def _move_row(self, delta: int) -> None:
+        idx = self.tree.indexOfTopLevelItem(self.tree.currentItem())
+        j = idx + delta
+        if idx < 0 or not 0 <= j < self.tree.topLevelItemCount():
+            return
+        rows = self._collect_rows()
+        rows[idx], rows[j] = rows[j], rows[idx]
+        self.tree.clear()
+        for r in rows:
+            self._add_row(r)
+        self.tree.setCurrentItem(self.tree.topLevelItem(j))
+
+    def _check_dups(self, *_args) -> None:
+        instrs = [r["instr"] for r in self._collect_rows() if r["instr"]]
+        dup = sorted({s for s in instrs if instrs.count(s) > 1})
+        if dup:
+            self.error_label.setText(tr(
+                "같은 문장이 여러 행에 있습니다: {s}").format(s=dup[0][:60]))
+        elif self.error_label.text().startswith(tr("같은 문장이")):
+            self.error_label.setText("")
+
+    def _on_del_scene(self) -> None:
+        sid = self._cur_sid
+        if sid is None:
+            return
+        ans = QMessageBox.question(
+            self, tr("scene 삭제"),
+            tr("{s} 를 계획에서 뺄까요? (수집 파일은 그대로 남습니다)")
+            .format(s=sid))
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        i = self._scene_order.index(sid)
+        self._scene_order.remove(sid)
+        self._work.pop(sid, None)
+        self._cur_sid = None
+        self.scene_combo.blockSignals(True)
+        self.scene_combo.removeItem(i)
+        self.scene_combo.blockSignals(False)
+        self.tree.clear()
+        if self._scene_order:
+            self._cur_sid = self.scene_combo.currentText() or None
+            if self._cur_sid:
+                self._load_rows(self._cur_sid)
+
+    def _on_add_scene(self) -> None:
+        used = [int(m.group(1)) for sid in self._scene_order
+                if (m := SCENE_ID_RE.match(sid))]
+        sid = f"S{(max(used) + 1) if used else 0:03d}"
+        self._scene_order.append(sid)
+        self._work[sid] = []
+        self.scene_combo.addItem(sid)
+        self.scene_combo.setCurrentIndex(self.scene_combo.count() - 1)
+
+    def _on_raw_edit(self) -> None:
+        dlg = PlanJsonDialog(self, self._path)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        # 파일이 정본이므로 폼을 파일 기준으로 다시 세운다 (표의 미저장
+        # 수정은 버려진다 -- raw 편집이 이미 파일을 바꿨다)
+        self.warnings = list(getattr(dlg, "warnings", []))
+        self._load_file()
+
+    # ---- 저장 ----
+    def _save(self) -> None:
+        import tempfile
+
+        self._stash_current()
+        raw = json.loads(json.dumps(self._raw))     # 부가 필드 보존용 사본
+        raw.setdefault("plan_version", 1)
+        by_id = {s.get("scene_id"): s for s in raw["scenes"]}
+        # scene 목록은 폼이 정본 -- 폼에서 지운 scene 은 파일에서도 빠진다
+        raw["scenes"] = []
+        for sid in self._scene_order:
+            sc = by_id.get(sid)
+            if sc is None:
+                sc = {"scene_id": sid, "slots": []}
+            raw["scenes"].append(sc)
+            old = {sl.get("instruction_id"): sl
+                   for sl in sc.get("slots", []) if isinstance(sl, dict)}
+            rows = self._work.get(sid, [])
+            # 지워진 ID 도 사용된 번호로 친다 -- 번호 재사용 금지
+            used = {int(m.group(1)) for iid in
+                    list(old) + [r["id"] for r in rows if r["id"]]
+                    if (m := INSTRUCTION_ID_RE.match(iid or ""))}
+            slots = []
+            for r in rows:
+                if not r["id"]:
+                    n = max(used, default=-1) + 1
+                    used.add(n)
+                    r["id"] = f"I{n:03d}"
+                sl = dict(old.get(r["id"], {}))
+                sl["instruction_id"] = r["id"]
+                sl["instruction"] = r["instr"]
+                sl["target"] = r["target"]
+                slots.append(sl)
+            sc["slots"] = slots
+        text = json.dumps(raw, ensure_ascii=False, indent=2) + "\n"
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                             encoding="utf-8") as tf:
+                tf.write(text)
+                tmp = Path(tf.name)
+            plan = load_plan(tmp)
+            tmp.unlink(missing_ok=True)
+        except Exception as e:  # noqa: BLE001
+            self.error_label.setText(f"{type(e).__name__}: {e}")
+            return
+        self._path.write_text(text, encoding="utf-8")
+        self.warnings = plan.warnings
+        super().accept()
+
+
+class Hdf5TreeDialog(QDialog):
+    """HDF5 내부 구조 뷰어 — myHDF5(h5web)처럼 트리 + attrs + 미리보기.
+
+    구조(이름·shape·dtype·압축·attrs)는 열 때 한 번 읽고 파일을 바로
+    닫는다 — 뷰어가 파일을 쥔 채로 있으면 수집/재압축과 부딪힌다. 값·이미지
+    미리보기만 항목을 클릭할 때 잠깐 다시 연다.
+    """
+
+    PREVIEW_ELEMS = 120     # 이 개수 이하의 수치 데이터셋은 값을 그대로 보여준다
+
+    def __init__(self, parent, path: Path) -> None:
+        super().__init__(parent)
+        self._path = Path(path)
+        self.setWindowTitle(tr("HDF5 구조 — {n}").format(n=self._path.name))
+        self.resize(960, 620)
+        col = QVBoxLayout(self)
+        split = QSplitter(Qt.Orientation.Horizontal)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels([tr("이름"), tr("정보")])
+        self.tree.setColumnWidth(0, 300)
+        self.tree.currentItemChanged.connect(self._on_select)
+        split.addWidget(self.tree)
+        right = QWidget()
+        rcol = QVBoxLayout(right)
+        self.preview = QLabel()
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setMinimumHeight(200)
+        rcol.addWidget(self.preview)
+        self.detail = QPlainTextEdit()
+        self.detail.setReadOnly(True)
+        self.detail.setStyleSheet(
+            "font-family: 'DejaVu Sans Mono', monospace; font-size: 12px;")
+        rcol.addWidget(self.detail, 1)
+        split.addWidget(right)
+        split.setSizes([420, 540])
+        col.addWidget(split, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        col.addWidget(buttons)
+        try:
+            with h5py.File(self._path, "r") as f:
+                self._populate(f, self.tree.invisibleRootItem())
+        except BlockingIOError:
+            self.detail.setPlainText(tr(
+                "파일이 사용 중입니다 (수집 세션/재압축). 끝난 뒤 다시 여세요."))
+        except OSError as e:
+            self.detail.setPlainText(tr("파일을 열지 못했습니다: {e}").format(e=e))
+        self.tree.expandToDepth(0)
+
+    def _populate(self, node, parent_item) -> None:
+        # metadata 를 맨 위로 -- 파일을 여는 사람이 먼저 찾는 것이 scene
+        # 정의다 (HDF5 그룹은 순서가 없어 뷰어가 정렬을 정한다).
+        for key in sorted(node, key=lambda k: (k != "metadata", k)):
+            obj = node[key]
+            if isinstance(obj, h5py.Group):
+                it = QTreeWidgetItem(
+                    [key, tr("그룹 · 항목 {n} · attrs {a}")
+                     .format(n=len(obj), a=len(obj.attrs))])
+                f = it.font(0)
+                f.setBold(True)
+                it.setFont(0, f)
+                it.setData(0, Qt.ItemDataRole.UserRole, obj.name)
+                parent_item.addChild(it)
+                self._add_attr_items(obj, it)
+                self._populate(obj, it)
+            else:
+                shape = " × ".join(str(s) for s in obj.shape) or tr("스칼라")
+                info = f"{shape} · {obj.dtype}"
+                if obj.compression:
+                    info += f" · {obj.compression}"
+                it = QTreeWidgetItem([key, info])
+                it.setData(0, Qt.ItemDataRole.UserRole, obj.name)
+                parent_item.addChild(it)
+                self._add_attr_items(obj, it)
+
+    def _add_attr_items(self, obj, parent_item) -> None:
+        """attrs 를 트리에 '@이름' 회색 항목으로 직접 보여준다 -- myHDF5 는
+        오른쪽 패널에만 보여줘서 'scene_id 가 없다'는 오해가 실제로 있었다."""
+        for k in sorted(obj.attrs):
+            s = str(obj.attrs[k])
+            it = QTreeWidgetItem(
+                [f"@{k}", s[:80] + ("…" if len(s) > 80 else "")])
+            # 회색은 '비활성/숨김'으로 읽힌다 (실사용 피드백) -- 기울임꼴만으로
+            # 데이터셋과 구분하고 색은 그대로 둔다.
+            f = it.font(0)
+            f.setItalic(True)
+            it.setFont(0, f)
+            it.setFont(1, f)
+            it.setData(0, Qt.ItemDataRole.UserRole, ("attr", obj.name, k))
+            parent_item.addChild(it)
+
+    def _on_select(self, item, _prev=None) -> None:
+        self.preview.clear()
+        if item is None:
+            return
+        h5path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not h5path:
+            return
+        if isinstance(h5path, tuple) and h5path[0] == "attr":
+            _tag, owner, key = h5path
+            try:
+                with h5py.File(self._path, "r") as f:
+                    v = f[owner].attrs[key]
+                self.detail.setPlainText(
+                    f"attr: {owner}/@{key}\n타입: {type(v).__name__}\n\n{v}")
+            except Exception as e:  # noqa: BLE001
+                self.detail.setPlainText(f"{type(e).__name__}: {e}")
+            return
+        try:
+            with h5py.File(self._path, "r") as f:
+                obj = f[h5path]
+                lines = [f"경로: {h5path}"]
+                if isinstance(obj, h5py.Dataset):
+                    lines.append(f"shape: {tuple(obj.shape)}   dtype: {obj.dtype}")
+                    lines.append(f"압축: {obj.compression or '-'}   "
+                                 f"chunks: {obj.chunks or '-'}")
+                    nbytes = obj.size * obj.dtype.itemsize
+                    lines.append(f"크기(비압축): {nbytes / 1e6:.1f} MB")
+                if len(obj.attrs):
+                    lines.append("")
+                    lines.append("── attrs " + "─" * 30)
+                    for k in sorted(obj.attrs):
+                        v = obj.attrs[k]
+                        s = str(v)
+                        lines.append(f"{k}: {s[:500]}" + ("…" if len(s) > 500 else ""))
+                if isinstance(obj, h5py.Dataset):
+                    arr = None
+                    if obj.dtype == np.uint8 and obj.ndim == 4 and obj.shape[-1] == 3:
+                        arr = obj[0]
+                        lines.append("")
+                        lines.append(tr("(첫 프레임 미리보기)"))
+                    elif obj.dtype == np.uint8 and obj.ndim == 3 and obj.shape[-1] == 3:
+                        arr = obj[...]
+                        lines.append("")
+                        lines.append(tr("(이미지 미리보기)"))
+                    elif obj.dtype == np.uint16 and obj.ndim in (2, 3):
+                        # depth (#17): mm -> m 변환 후 라이브 Depth 탭과 같은
+                        # 컬러맵 + 척도 바
+                        z = (obj[0] if obj.ndim == 3 else obj[...]) / 1000.0
+                        valid = z > 0
+                        zmax = float(np.percentile(z[valid], 98)) if valid.any() else 1.0
+                        arr = _depth_colormap(z.astype(np.float32), zmax)
+                        lines.append("")
+                        lines.append(tr("(depth 첫 프레임 · 척도 ~{m:.2f}m)")
+                                     .format(m=zmax))
+                    elif obj.size and obj.size <= self.PREVIEW_ELEMS:
+                        lines.append("")
+                        lines.append("── 값 " + "─" * 32)
+                        lines.append(np.array2string(
+                            np.asarray(obj[...]), precision=4, threshold=200))
+                    if arr is not None:
+                        pix = np_to_pixmap(np.ascontiguousarray(arr))
+                        self.preview.setPixmap(pix.scaled(
+                            self.preview.width(), max(200, self.preview.height()),
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation))
+                self.detail.setPlainText("\n".join(lines))
+        except BlockingIOError:
+            self.detail.setPlainText(tr("파일이 사용 중이라 값을 읽지 못했습니다."))
+        except Exception as e:  # noqa: BLE001
+            self.detail.setPlainText(f"{type(e).__name__}: {e}")
+
+
+class _GridCanvas(QLabel):
+    """격자 편집 캔버스 — 배경 이미지 위에서 꼭짓점 4개를 드래그한다.
+
+    꼭짓점은 정규화 좌표(0..1)로 들고 있어 배경 해상도와 무관하다.
+    드래그 중에는 외곽선·핸들만 갱신하고, 내부 3×3 선은 '변환' 버튼이
+    다시 그린다 (full_grid 플래그).
+    """
+
+    changed = pyqtSignal()
+    drag_started = pyqtSignal()     # 실행취소 스냅샷 시점
+    HANDLE_PX = 22          # 위젯 픽셀 기준 잡기 반경
+
+    def __init__(self, background: np.ndarray, corners: list) -> None:
+        super().__init__()
+        self._img = np.ascontiguousarray(background)
+        self.corners = [list(c) for c in corners]
+        self.full_grid = True
+        self.crop_params: "dict | None" = None   # {"zoom","x","y"} -- agent 크롭
+        self.show_crop = False
+        self._drag: "int | None" = None
+        self._fit = (1.0, 0, 0)     # scale, x-offset, y-offset (위젯 좌표계)
+        self.setMinimumSize(480, 360)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMouseTracking(False)
+
+    # ---- 렌더 ----
+    def render_grid(self) -> None:
+        import cv2
+
+        h, w = self._img.shape[:2]
+        if self.full_grid:
+            out = draw_grid(self._img, self.corners, 80)
+        else:
+            out = self._img.copy()
+        if self.show_crop and self.crop_params:
+            out = self._crop_shade(out)
+        pts = np.int32([[c[0] * w, c[1] * h] for c in self.corners])
+        cv2.polylines(out, [pts.reshape(-1, 1, 2)], True, (80, 255, 140),
+                      max(1, round(w / 320)), cv2.LINE_AA)
+        r = max(4, round(w / 90))
+        for i, (x, y) in enumerate(pts):
+            cv2.circle(out, (int(x), int(y)), r, (255, 80, 80), -1, cv2.LINE_AA)
+            cv2.putText(out, "1234"[i], (int(x) + r + 2, int(y) - r),
+                        cv2.FONT_HERSHEY_SIMPLEX, w / 1200,
+                        (255, 220, 220), 1, cv2.LINE_AA)
+        pix = np_to_pixmap(out)
+        avail_w, avail_h = max(1, self.width()), max(1, self.height())
+        scale = min(avail_w / w, avail_h / h)
+        sw, sh = max(1, round(w * scale)), max(1, round(h * scale))
+        self._fit = (scale, (avail_w - sw) // 2, (avail_h - sh) // 2)
+        self.setPixmap(pix.scaled(sw, sh,
+                                  Qt.AspectRatioMode.KeepAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation))
+
+    def _crop_shade(self, img: np.ndarray) -> np.ndarray:
+        """변환 파이프라인의 정사각 크롭 밖을 어둡게 -- 라이브 뷰의 크롭
+        가이드(VideoView._decorate)와 같은 수식이라 보이는 영역이 일치한다."""
+        import cv2
+
+        h, w = img.shape[:2]
+        side = min(w, h)
+        z = float(self.crop_params.get("zoom", 1.0))
+        if z > 1.0:
+            side = max(16, round(side / z))
+        sc = w / 640
+        x0 = min(max((w - side) // 2
+                     + round(self.crop_params.get("x", 0) * sc), 0), w - side)
+        y0 = min(max((h - side) // 2
+                     + round(self.crop_params.get("y", 0) * sc), 0), h - side)
+        img[:y0] //= 2
+        img[y0 + side:] //= 2
+        img[y0:y0 + side, :x0] //= 2
+        img[y0:y0 + side, x0 + side:] //= 2
+        cv2.rectangle(img, (x0, y0), (x0 + side - 1, y0 + side - 1),
+                      (255, 255, 255), 1)
+        return img
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self.render_grid()
+
+    # ---- 좌표 변환/드래그 ----
+    def _to_norm(self, pos) -> "tuple[float, float]":
+        scale, ox, oy = self._fit
+        h, w = self._img.shape[:2]
+        return ((pos.x() - ox) / (w * scale), (pos.y() - oy) / (h * scale))
+
+    def _pick(self, pos) -> "int | None":
+        scale, ox, oy = self._fit
+        h, w = self._img.shape[:2]
+        best, best_d = None, self.HANDLE_PX
+        for i, (cx, cy) in enumerate(self.corners):
+            dx = cx * w * scale + ox - pos.x()
+            dy = cy * h * scale + oy - pos.y()
+            d = (dx * dx + dy * dy) ** 0.5
+            if d < best_d:
+                best, best_d = i, d
+        return best
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self._drag = self._pick(event.position())
+        if self._drag is not None:
+            self.drag_started.emit()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._drag is None:
+            return
+        x, y = self._to_norm(event.position())
+        self.corners[self._drag] = [min(1.0, max(0.0, x)),
+                                    min(1.0, max(0.0, y))]
+        self.full_grid = False      # 내부선은 '변환'이 다시 계산한다
+        self.render_grid()
+        self.changed.emit()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self._drag = None
+
+
+class GridEditorDialog(QDialog):
+    """워크스페이스 3×3 격자 편집 — 드래그·정렬·변환·저장/불러오기.
+
+    배경은 호출 시점의 agent 카메라 프레임(없으면 레이아웃 스틸/회색판).
+    저장하면 workspace_grids.json 의 해당 이름에 기록되고 active 로 지정돼
+    Live 오버레이가 바로 이 격자를 쓴다.
+    """
+
+    def __init__(self, parent, background: np.ndarray, store: dict,
+                 crop_params: "dict | None" = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("3×3 격자 편집"))
+        self._store = store
+        self._crop_params = crop_params
+        corners = active_corners(store) or DEFAULT_CORNERS
+        col = QVBoxLayout(self)
+        hint = QLabel(tr(
+            "꼭짓점(1=좌상, 2=우상, 3=우하, 4=좌하)을 드래그해 작업면에 맞추고 "
+            "'변환'으로 내부 3×3 선을 다시 그립니다. 정렬 버튼은 위/아래 두 "
+            "꼭짓점의 높이를 맞춥니다."))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#888;")
+        col.addWidget(hint)
+        self.canvas = _GridCanvas(background, corners)
+        col.addWidget(self.canvas, 1)
+
+        row = QHBoxLayout()
+        for text, slot, tip in (
+                ("위 정렬", lambda: self._align(0, 1, 1), "1·2번 꼭짓점을 같은 높이로"),
+                ("아래 정렬", lambda: self._align(3, 2, 1), "4·3번 꼭짓점을 같은 높이로"),
+                ("좌 정렬", lambda: self._align(0, 3, 0), "1·4번 꼭짓점을 같은 가로 위치로"),
+                ("우 정렬", lambda: self._align(1, 2, 0), "2·3번 꼭짓점을 같은 가로 위치로"),
+                ("변환 (3×3 다시 그리기)", self._transform,
+                 "현재 꼭짓점으로 내부 격자선을 원근 계산해 그립니다"),
+                ("실행취소", self._undo, "마지막 드래그/정렬 하나를 되돌립니다")):
+            b = QPushButton(tr(text))
+            b.setToolTip(tr(tip))
+            b.clicked.connect(slot)
+            row.addWidget(b)
+        self.crop_check = QCheckBox(tr("크롭 가이드"))
+        self.crop_check.setToolTip(tr(
+            "LeRobot 변환 때 남는 정사각 영역 밖을 어둡게 표시합니다.\n"
+            "격자(물체 배치)가 학습 화면 안에 들어오는지 확인용."))
+        self.crop_check.setEnabled(crop_params is not None)
+        self.crop_check.setChecked(crop_params is not None)
+        self.crop_check.toggled.connect(self._on_crop_toggled)
+        row.addWidget(self.crop_check)
+        row.addStretch(1)
+        col.addLayout(row)
+
+        srow = QHBoxLayout()
+        self.load_combo = QComboBox()
+        for name in sorted(store["grids"]):
+            self.load_combo.addItem(name)
+        srow.addWidget(self.load_combo, 1)
+        load_btn = QPushButton(tr("불러오기"))
+        load_btn.clicked.connect(self._load_selected)
+        srow.addWidget(load_btn)
+        srow.addSpacing(16)
+        self.name_edit = QLineEdit(store.get("active") or "default")
+        self.name_edit.setPlaceholderText(tr("저장 이름"))
+        srow.addWidget(self.name_edit, 1)
+        save_btn = QPushButton(tr("저장"))
+        save_btn.setToolTip(tr("이 이름으로 저장하고 active 격자로 지정합니다."))
+        save_btn.clicked.connect(self._save)
+        srow.addWidget(save_btn)
+        col.addLayout(srow)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color:#2ecc71;")
+        col.addWidget(self.status_label)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        col.addWidget(buttons)
+        self._undo_stack: list = []
+        self.canvas.changed.connect(lambda: self.status_label.setText(""))
+        self.canvas.drag_started.connect(self._push_undo)
+        self.canvas.crop_params = crop_params
+        self.canvas.show_crop = self.crop_check.isChecked()
+        self.canvas.render_grid()
+
+    def _on_crop_toggled(self, on: bool) -> None:
+        self.canvas.show_crop = bool(on)
+        self.canvas.render_grid()
+
+    def _push_undo(self) -> None:
+        self._undo_stack.append([list(c) for c in self.canvas.corners])
+        del self._undo_stack[:-20]      # 최근 20단계면 충분
+
+    def _undo(self) -> None:
+        if not self._undo_stack:
+            return
+        self.canvas.corners = self._undo_stack.pop()
+        self.canvas.full_grid = True
+        self.canvas.render_grid()
+
+    def _align(self, i: int, j: int, axis: int) -> None:
+        self._push_undo()
+        c = self.canvas.corners
+        v = (c[i][axis] + c[j][axis]) / 2
+        c[i][axis] = c[j][axis] = v
+        self.canvas.render_grid()
+
+    def _transform(self) -> None:
+        self.canvas.full_grid = True
+        self.canvas.render_grid()
+
+    def _load_selected(self) -> None:
+        name = self.load_combo.currentText()
+        corners = self._store["grids"].get(name)
+        if not corners:
+            return
+        self.canvas.corners = [list(c) for c in corners]
+        self.canvas.full_grid = True
+        self.canvas.render_grid()
+        self.name_edit.setText(name)
+        self.status_label.setText(tr("{n} 불러옴").format(n=name))
+
+    def _save(self) -> None:
+        name = self.name_edit.text().strip() or "default"
+        self._store["grids"][name] = [list(c) for c in self.canvas.corners]
+        self._store["active"] = name
+        save_grid_store(self._store)
+        if self.load_combo.findText(name) < 0:
+            self.load_combo.addItem(name)
+        self.status_label.setText(tr("{n} 저장됨 (active)").format(n=name))
+
+
+class RecommendDialog(QDialog):
+    """scene 다양성 추천안 3개 중 하나 고르기 (#33 GUI).
+
+    추천 계산은 gello.scene_diversity 가 전담한다 -- 여기는 seed 를 바꿔
+    다시 뽑고, 격자 미리보기로 비교해 하나를 고르는 껍데기다.
+    """
+
+    def __init__(self, parent, existing: list, props: dict,
+                 scene_id: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("scene 추천 — 기존 {n}개와 가장 다른 배치")
+                            .format(n=len(existing)))
+        self.setMinimumSize(560, 620)
+        self._existing = existing
+        self._props = props
+        self._scene_id = scene_id
+        self.picked = None      # accept 시 SceneMetadata
+        self._recs: list = []
+        self._radios: list = []
+
+        col = QVBoxLayout(self)
+        top = QHBoxLayout()
+        top.addWidget(QLabel(tr("seed")))
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 9999)
+        top.addWidget(self.seed_spin)
+        again = QPushButton(tr("다시 추천"))
+        again.clicked.connect(self._fill)
+        top.addWidget(again)
+        top.addStretch(1)
+        col.addLayout(top)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._cards = QWidget()
+        self._cards_col = QVBoxLayout(self._cards)
+        scroll.setWidget(self._cards)
+        col.addWidget(scroll, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        col.addWidget(buttons)
+        self._fill()
+
+    def _fill(self) -> None:
+        while self._cards_col.count():
+            it = self._cards_col.takeAt(0)
+            if it.widget() is not None:
+                it.widget().deleteLater()
+        self._radios = []
+        self._recs = recommend(self._existing, self._props, k=3,
+                               seed=self.seed_spin.value(),
+                               scene_id=self._scene_id)
+        # 라디오가 카드(QGroupBox)마다 흩어져 있으면 부모 단위 자동 배타가
+        # 안 걸린다 -- 공용 버튼 그룹으로 묶는다.
+        group = QButtonGroup(self)
+        for i, (md, dist) in enumerate(self._recs, 1):
+            box = QGroupBox()
+            bc = QVBoxLayout(box)
+            rb = QRadioButton(tr("추천 {i} — 기존과의 최소 거리 {d}")
+                              .format(i=i, d=dist))
+            group.addButton(rb)
+            rb.setChecked(i == 1)
+            self._radios.append(rb)
+            bc.addWidget(rb)
+            view = SceneInfoView()
+            view.setText(describe_scene(md))
+            bc.addWidget(view)
+            self._cards_col.addWidget(box)
+        self._cards_col.addStretch(1)
+
+    def _accept(self) -> None:
+        for rb, (md, _d) in zip(self._radios, self._recs):
+            if rb.isChecked():
+                self.picked = md
+                break
+        super().accept()
+
+
+class NewSceneDialog(QDialog):
+    """새 scene 구성 — 소품 선택 + 3×3 존 배치 + 설명.
+
+    입력 검증은 SceneMetadata.validate 가 전담한다 (가드레일: UI 는 얇게).
+    기준 사진은 여기서 찍지 않는다 — 첫 에피소드 기록이 시작될 때 agentview
+    프레임이 자동 캡처된다 (libero_gui_worker 의 enqueue_set_reference).
+
+    사용법: 왼쪽 목록에서 물체를 체크해 포함시키고, 물체를 클릭해 선택한
+    상태로 오른쪽 3×3 격자 칸을 누르면 그 존에 배치된다. [0,0]=왼쪽 위.
+    """
+
+    def __init__(self, parent, scene_id: str,
+                 data_root: "Path | None" = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("새 Scene 구성 — {sid}").format(sid=scene_id))
+        self.setMinimumWidth(720)
+        self._scene_id = scene_id
+        self._data_root = data_root
+        self._placements: dict = {}
+        self.metadata = None  # accept 시 SceneMetadata
+
+        layout = QVBoxLayout(self)
+        hrow = QHBoxLayout()
+        hint = QLabel(tr(
+            "① 포함할 물체를 체크  ② 목록에서 물체를 클릭해 선택  "
+            "③ 오른쪽 격자 칸을 눌러 그 존에 배치  ([0,0]=왼쪽 위)"))
+        hint.setWordWrap(True)
+        hrow.addWidget(hint, 1)
+        rec_btn = QPushButton(tr("추천 받기..."))
+        rec_btn.setToolTip(tr(
+            "기존 scene 들과 가장 다른 소품 조합·배치 3안을 추천받아\n"
+            "체크·배치를 자동으로 채웁니다 (#33, 다양성 최대화)."))
+        rec_btn.clicked.connect(self._on_recommend)
+        hrow.addWidget(rec_btn)
+        layout.addLayout(hrow)
+
+        mid = QHBoxLayout()
+        self.prop_list = QListWidget()
+        for p in load_props():
+            if p.retired:
+                continue
+            it = QListWidgetItem(f"{p.id}  ({p.category} · {p.color})")
+            it.setData(Qt.ItemDataRole.UserRole, p.id)
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(Qt.CheckState.Unchecked)
+            self.prop_list.addItem(it)
+        self.prop_list.itemChanged.connect(self._refresh)
+        mid.addWidget(self.prop_list, 3)
+
+        grid = QGridLayout()
+        self.zone_buttons = {}
+        for r in range(3):
+            for c in range(3):
+                b = QPushButton("")
+                b.setMinimumSize(100, 56)
+                b.setToolTip(tr("존 [{r},{c}] 에 선택한 물체 배치").format(r=r, c=c))
+                b.clicked.connect(lambda _=False, rc=(r, c): self._assign(rc))
+                grid.addWidget(b, r, c)
+                self.zone_buttons[(r, c)] = b
+        mid.addLayout(grid, 4)
+        layout.addLayout(mid)
+
+        form = QFormLayout()
+        self.desc_edit = QLineEdit()
+        self.desc_edit.setPlaceholderText(
+            tr("배치 의도, 지칭하지 않는 물체 등 — 사람용 자유 문장"))
+        form.addRow(tr("설명"), self.desc_edit)
+        layout.addLayout(form)
+
+        self.preview = SceneInfoView()
+        layout.addWidget(self.preview)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._refresh()
+
+    def _checked_ids(self) -> list:
+        return [self.prop_list.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(self.prop_list.count())
+                if self.prop_list.item(i).checkState() == Qt.CheckState.Checked]
+
+    def _on_recommend(self) -> None:
+        existing = []
+        skipped = 0
+        if self._data_root is not None:
+            for p in iter_scene_files(self._data_root):
+                try:
+                    existing.append(read_scene_metadata(p))
+                except Exception:  # noqa: BLE001 -- 세션이 쥔 파일 등
+                    skipped += 1
+        dlg = RecommendDialog(self, existing, props_by_id(), self._scene_id)
+        if skipped:
+            dlg.setWindowTitle(dlg.windowTitle()
+                               + tr(" (읽지 못한 파일 {n}개 제외)").format(n=skipped))
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.picked is not None:
+            self._apply_recommendation(dlg.picked)
+
+    def _apply_recommendation(self, md) -> None:
+        """추천안을 체크박스·배치에 반영한다. 이후 손으로 고칠 수 있다."""
+        want = set(md.objects)
+        self.prop_list.blockSignals(True)
+        for i in range(self.prop_list.count()):
+            it = self.prop_list.item(i)
+            oid = it.data(Qt.ItemDataRole.UserRole)
+            it.setCheckState(Qt.CheckState.Checked if oid in want
+                             else Qt.CheckState.Unchecked)
+        self.prop_list.blockSignals(False)
+        self._placements = {oid: list(spec["zone"]) for oid, spec
+                            in md.layout.get("placements", {}).items()}
+        self._refresh()
+
+    def _assign(self, rc) -> None:
+        it = self.prop_list.currentItem()
+        if it is None:
+            return
+        it.setCheckState(Qt.CheckState.Checked)  # 배치 = 포함 의사
+        self._placements[it.data(Qt.ItemDataRole.UserRole)] = [rc[0], rc[1]]
+        self._refresh()
+
+    def _build(self) -> SceneMetadata:
+        return SceneMetadata(
+            scene_id=self._scene_id,
+            objects=self._checked_ids(),
+            layout={"grid": [3, 3],
+                    "placements": {o: {"zone": z}
+                                   for o, z in self._placements.items()}},
+            description=self.desc_edit.text().strip(),
+            station=STATION.name,
+        )
+
+    def _refresh(self, *_args) -> None:
+        checked = set(self._checked_ids())
+        self._placements = {k: v for k, v in self._placements.items()
+                            if k in checked}
+        for (r, c), b in self.zone_buttons.items():
+            here = [o.replace("OBJ-", "") for o, z in self._placements.items()
+                    if z == [r, c]]
+            b.setText("\n".join(here))
+        try:
+            self.preview.setText(describe_scene(self._build()))
+        except Exception:  # noqa: BLE001 - 미완성 구성의 미리보기는 없어도 된다
+            self.preview.setText("")
+
+    def _accept(self) -> None:
+        md = self._build()
+        try:
+            from gello.props import active_prop_ids
+
+            md.validate(known_prop_ids=active_prop_ids())
+        except ValueError as e:
+            QMessageBox.warning(self, tr("Scene 구성 오류"), str(e))
+            return
+        self.metadata = md
+        super().accept()
+
+
 class StatusLight(QLabel):
     """One status-bar indicator: a colored dot plus a short label."""
 
@@ -503,6 +1690,8 @@ class WorkspaceWindow(QMainWindow):
 
         self.worker: CollectionWorker | None = None
         self.node_process: QProcess | None = None
+        self.replay_process: QProcess | None = None
+        self._grid_store = load_grid_store()
         self.repack_process: QProcess | None = None
         self.convert_process: QProcess | None = None
         self.upload_process: QProcess | None = None
@@ -521,6 +1710,14 @@ class WorkspaceWindow(QMainWindow):
         self.active_episode_cache: list | None = None
         self.agent_preview: CameraPreviewWorker | None = None
         self.wrist_preview: CameraPreviewWorker | None = None
+        # Point Cloud 탭 전용 depth 워커 -- 탭이 보일 때만 산다 (안정성).
+        self._cloud_worker: DepthCloudWorker | None = None
+        self._cloud_pts = None
+        self._cloud_rgb = None
+        self._cloud_previews_were_on = False
+        self._cloud_serial = ""            # 지금 depth 워커가 연 카메라
+        self._depth_consumer = None        # "cloud" | "depth" | None
+        self._depth_img = None
         self._play_loader: EpisodeLoadWorker | None = None
         self._play_frames: dict = {"agent": None, "wrist": None}
         self._play_key = None
@@ -589,6 +1786,180 @@ class WorkspaceWindow(QMainWindow):
         self.log("[준비] 로봇 노드를 먼저 띄운 뒤 Connect 를 누르세요.")
         QTimer.singleShot(0, self._startup_tuning)
 
+    # ------------------------------------------------------------ gallery
+    def _build_gallery_tab(self) -> QWidget:
+        """scene 에피소드 갤러리 (#31): 썸네일 그리드 + instruction 필터.
+
+        더블클릭 = Playback 재생(기존 경로 재사용), 재판정 버튼 = Dataset
+        페이지와 같은 코어(_relabel_episodes). 썸네일은 uid 기반 캐시라
+        (에피소드 immutable) 첫 로드 이후에는 즉시 뜬다.
+        """
+        w = QWidget()
+        col = QVBoxLayout(w)
+        row = QHBoxLayout()
+        self.gallery_scene_combo = QComboBox()
+        _shrinkable_combo(self.gallery_scene_combo)
+        self.gallery_scene_combo.currentIndexChanged.connect(self._refresh_gallery)
+        row.addWidget(self.gallery_scene_combo, 2)
+        self.gallery_filter_combo = QComboBox()
+        _shrinkable_combo(self.gallery_filter_combo)
+        self.gallery_filter_combo.currentIndexChanged.connect(self._apply_gallery_filter)
+        row.addWidget(self.gallery_filter_combo, 2)
+        b = QPushButton("↻")
+        b.setToolTip(tr("scene 목록·썸네일 새로고침"))
+        b.setMaximumWidth(32)
+        b.clicked.connect(self._refresh_gallery_scenes)
+        row.addWidget(b)
+        self.gallery_relabel_btn = QPushButton(tr("선택 재판정"))
+        self.gallery_relabel_btn.clicked.connect(self._on_gallery_relabel)
+        row.addWidget(self.gallery_relabel_btn)
+        self.gallery_replay_btn = QPushButton(tr("실로봇 재생"))
+        self.gallery_replay_btn.setToolTip(tr(
+            "선택한 에피소드의 관절 명령을 실로봇에 다시 보냅니다.\n"
+            "로봇 노드가 켜져 있어야 하고, 로봇이 실제로 움직입니다."))
+        self.gallery_replay_btn.clicked.connect(self._on_gallery_replay)
+        row.addWidget(self.gallery_replay_btn)
+        col.addLayout(row)
+        self.gallery_list = QListWidget()
+        self.gallery_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self.gallery_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.gallery_list.setMovement(QListWidget.Movement.Static)
+        self.gallery_list.setIconSize(QSize(200, 150))
+        self.gallery_list.setSpacing(8)
+        self.gallery_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.gallery_list.itemActivated.connect(self._on_gallery_activated)
+        col.addWidget(self.gallery_list, 1)
+        self.gallery_status = QLabel(tr("scene 을 선택하세요"))
+        self.gallery_status.setStyleSheet("color:#888;")
+        self.gallery_status.setWordWrap(True)
+        col.addWidget(self.gallery_status)
+        self._gallery_loader = None
+        self._gallery_episodes = []
+        self._refresh_gallery_scenes()
+        return w
+
+    def _refresh_gallery_scenes(self) -> None:
+        combo = self.gallery_scene_combo
+        cur = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        try:
+            for p in iter_scene_files(self._dataset_root()):
+                combo.addItem(p.name, str(p))
+        except Exception:  # noqa: BLE001
+            pass
+        idx = combo.findData(cur)
+        combo.setCurrentIndex(max(0, idx))
+        combo.blockSignals(False)
+        self._refresh_gallery()
+
+    def _refresh_gallery(self, *_args) -> None:
+        path = self.gallery_scene_combo.currentData()
+        self.gallery_list.clear()
+        self._gallery_episodes = []
+        if not path:
+            self.gallery_status.setText(tr("표시할 scene 파일이 없습니다"))
+            return
+        if self.active_file_path is not None and Path(path) == self.active_file_path:
+            # HDF5 잠금 -- 실패한 로드 대신 이유와 다음 행동을 말한다
+            self.gallery_status.setText(tr(
+                "수집 세션이 이 scene 파일을 사용 중입니다 — 세션을 종료하면 "
+                "갤러리가 열립니다. (현황은 Collect 페이지 slot 패널에)"))
+            return
+        self.gallery_status.setText(tr("불러오는 중... (첫 로드는 썸네일 생성으로 수 초)"))
+        if self._gallery_loader is not None:
+            self._gallery_loader.wait()
+        self._gallery_loader = GalleryLoadWorker(path)
+        self._gallery_loader.loaded.connect(self._on_gallery_loaded)
+        self._gallery_loader.failed.connect(
+            lambda m: self.gallery_status.setText(tr("갤러리 로드 실패: {m}").format(m=m)))
+        self._gallery_loader.start()
+
+    @pyqtSlot(str, list, object)
+    def _on_gallery_loaded(self, path, episodes, ref_thumb) -> None:
+        if path != self.gallery_scene_combo.currentData():
+            return  # 로드 중 scene 을 바꿨다
+        self._gallery_episodes = episodes
+        # instruction 필터 항목 재구성 (선택 유지)
+        cur = self.gallery_filter_combo.currentData()
+        self.gallery_filter_combo.blockSignals(True)
+        self.gallery_filter_combo.clear()
+        self.gallery_filter_combo.addItem(tr("(모든 instruction)"), None)
+        for iid, instr in sorted({(e["instruction_id"], e["instruction"])
+                                  for e in episodes}):
+            self.gallery_filter_combo.addItem(f"{iid} · {instr[:44]}", iid)
+        idx = self.gallery_filter_combo.findData(cur)
+        self.gallery_filter_combo.setCurrentIndex(max(0, idx))
+        self.gallery_filter_combo.blockSignals(False)
+        self._ref_thumb = ref_thumb
+        self._apply_gallery_filter()
+
+    def _apply_gallery_filter(self, *_args) -> None:
+        want = self.gallery_filter_combo.currentData()
+        path = self.gallery_scene_combo.currentData()
+        self.gallery_list.clear()
+        if getattr(self, "_ref_thumb", None):
+            it = QListWidgetItem(QIcon(self._ref_thumb), tr("기준 사진"))
+            it.setData(Qt.ItemDataRole.UserRole, None)
+            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.gallery_list.addItem(it)
+        shown = 0
+        for e in self._gallery_episodes:
+            if want is not None and e["instruction_id"] != want:
+                continue
+            mark = {"success": "✓", "failed": "✗"}.get(e["quality_status"],
+                                                       e["quality_status"][:4])
+            it = QListWidgetItem(
+                QIcon(e["thumb"]) if e["thumb"] else QIcon(),
+                # E번호는 slot 로컬 (uid 의 마지막 조각) -- I000-E000, I003-E000 …
+                f"{e['instruction_id']}-{e['episode_uid'].rsplit('-', 1)[-1]} {mark}")
+            it.setData(Qt.ItemDataRole.UserRole, (path, e["name"]))
+            it.setToolTip(f"{e['episode_uid']}\n{e['instruction']}\n"
+                          f"{e['num_samples']}프레임 · {e['quality_status']}"
+                          f" · {e.get('collector', '')}")
+            self.gallery_list.addItem(it)
+            shown += 1
+        n_ok = sum(1 for e in self._gallery_episodes
+                   if e["quality_status"] == "success")
+        self.gallery_status.setText(
+            tr("{s}개 표시 (전체 {n}개 · success {ok}개) — 더블클릭: 재생, "
+               "선택 후 재판정 버튼: 성공↔실패").format(
+                   s=shown, n=len(self._gallery_episodes), ok=n_ok))
+
+    def _on_gallery_activated(self, item) -> None:
+        d = item.data(Qt.ItemDataRole.UserRole)
+        if d:
+            self._play_episode(d[0], d[1])
+
+    def _on_gallery_replay(self) -> None:
+        if self._replay_running():      # 토글: 재생 중이면 중단 버튼이다
+            self._on_replay_stop()
+            return
+        picks = [item.data(Qt.ItemDataRole.UserRole)
+                 for item in self.gallery_list.selectedItems()]
+        picks = [d for d in picks if d]
+        if len(picks) != 1:
+            QMessageBox.information(
+                self, tr("선택 필요"),
+                tr("실로봇 재생은 에피소드 하나만 선택하세요."))
+            return
+        self._replay_on_robot(picks[0][0], picks[0][1])
+
+    def _on_gallery_relabel(self) -> None:
+        by_file: dict = {}
+        for item in self.gallery_list.selectedItems():
+            d = item.data(Qt.ItemDataRole.UserRole)
+            if d:
+                by_file.setdefault(Path(d[0]), []).append(d[1])
+        if not by_file:
+            QMessageBox.information(self, tr("선택 필요"),
+                                    tr("재판정할 에피소드를 선택하세요."))
+            return
+        if self._relabel_episodes(by_file):
+            self._refresh_gallery()
+            self._refresh_dataset_tree()
+
     # ------------------------------------------------------------- center
     def _build_center(self) -> None:
         # 카메라별 크롭 정렬 -- 뷰 가이드·레이아웃 겹침·수집·변환이 전부 이
@@ -605,6 +1976,8 @@ class WorkspaceWindow(QMainWindow):
         live_col.setContentsMargins(4, 4, 4, 4)
         self.live_split = QSplitter(Qt.Orientation.Horizontal)
         self.live_views = {}
+        self.live_boxes = {}
+        self._live_maximized: "str | None" = None
         for key, title in (("agent", "Agent (정면)"), ("wrist", "Wrist (손목)")):
             box = QGroupBox(tr(title))
             inner = QVBoxLayout(box)
@@ -612,8 +1985,12 @@ class WorkspaceWindow(QMainWindow):
             view = VideoView()
             view.setText(tr("카메라를 선택하세요"))
             view.set_crop_guide(**self._crop_params[key])
+            view.setToolTip(tr("더블클릭: 이 카메라 최대화 / 복원"))
+            view.setMinimumSize(60, 45)   # 최대화 시 반대쪽이 아주 작아질 수 있게
+            view.installEventFilter(self)
             inner.addWidget(view)
             self.live_views[key] = view
+            self.live_boxes[key] = box
             self.live_split.addWidget(box)
         self.live_split.setSizes([600, 600])
         live_col.addWidget(self.live_split, 1)
@@ -622,7 +1999,44 @@ class WorkspaceWindow(QMainWindow):
         self.square_guide_check.setToolTip(tr(
             "LeRobot 변환은 가운데 정사각만 남깁니다. 켜면 그 바깥이 어둡게 표시됩니다."))
         self.square_guide_check.toggled.connect(self._on_square_guide)
-        live.layout().addWidget(self.square_guide_check)
+        grow = QHBoxLayout()
+        grow.addWidget(QLabel(tr("보기")))
+        # 한 카메라를 전체로 키우고 반대쪽을 왼쪽 아래 PiP 로 겹친다 --
+        # 뷰 더블클릭으로도 토글된다.
+        self.live_view_combo = QComboBox()
+        self.live_view_combo.addItem(tr("나란히"), None)
+        self.live_view_combo.addItem(tr("Agent 최대"), "agent")
+        self.live_view_combo.addItem(tr("Wrist 최대"), "wrist")
+        self.live_view_combo.currentIndexChanged.connect(
+            lambda *_: self._set_live_maximized(self.live_view_combo.currentData()))
+        grow.addWidget(self.live_view_combo)
+        grow.addSpacing(16)
+        grow.addWidget(self.square_guide_check)
+        grow.addSpacing(16)
+        # 3×3 워크스페이스 격자 -- 편집은 격자 편집 다이얼로그, 여기는 표시만.
+        self.grid_live_check = QCheckBox(tr("3×3 격자"))
+        self.grid_live_check.setChecked(bool(self._grid_store.get("live_on")))
+        self.grid_live_check.setToolTip(tr(
+            "저장된 워크스페이스 격자를 agent 라이브 화면에 겹쳐 보입니다.\n"
+            "물체를 어느 칸(A1..C3)에 놓을지 확인하는 용도입니다."))
+        self.grid_live_check.toggled.connect(self._on_grid_live_toggled)
+        grow.addWidget(self.grid_live_check)
+        self.grid_alpha_slider = QSlider(Qt.Orientation.Horizontal)
+        self.grid_alpha_slider.setRange(10, 100)
+        self.grid_alpha_slider.setValue(int(self._grid_store.get("alpha", 60)))
+        self.grid_alpha_slider.setMaximumWidth(140)
+        self.grid_alpha_slider.valueChanged.connect(self._on_grid_alpha)
+        self.grid_alpha_slider.sliderReleased.connect(self._on_grid_alpha_done)
+        grow.addWidget(self.grid_alpha_slider)
+        self.grid_alpha_label = QLabel(
+            tr("{v}%").format(v=self.grid_alpha_slider.value()))
+        self.grid_alpha_label.setStyleSheet("color:#888;")
+        grow.addWidget(self.grid_alpha_label)
+        grid_edit_btn = QPushButton(tr("격자 편집..."))
+        grid_edit_btn.clicked.connect(self._on_edit_grid)
+        grow.addWidget(grid_edit_btn)
+        grow.addStretch(1)
+        live.layout().addLayout(grow)
         self._live_tab_index = self.center_tabs.addTab(live, tr("Live"))
 
         play = QWidget()
@@ -676,14 +2090,13 @@ class WorkspaceWindow(QMainWindow):
         self._trim_tab_index = self.center_tabs.addTab(self._build_trim_tab(), tr("Trim"))
         self._layout_tab_index = self.center_tabs.addTab(
             self._build_layout_tab(), tr("레이아웃"))
+        self._gallery_tab_index = self.center_tabs.addTab(
+            self._build_gallery_tab(), tr("Gallery"))
+        self._cloud_tab_index = self.center_tabs.addTab(
+            self._build_cloud_tab(), tr("Point Cloud"))
+        self._depth_tab_index = self.center_tabs.addTab(
+            self._build_depth_tab(), tr("Depth"))
         self.center_tabs.currentChanged.connect(self._on_center_tab_changed)
-        for title, why in ((tr("Depth"), tr("깊이 스트림을 아직 수집하지 않습니다.")),
-                           (tr("Point Cloud"), tr("포인트클라우드 렌더러가 없습니다."))):
-            ph = QLabel(tr("{t} — {m}\n\n{w}").format(t=title, m=TODO_MARK, w=why))
-            ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            ph.setStyleSheet(TODO_STYLE)
-            idx = self.center_tabs.addTab(ph, f"{title} ({TODO_MARK})")
-            self.center_tabs.setTabEnabled(idx, False)
 
     # --------------------------------------------------------------- left
     def _build_left(self) -> None:
@@ -701,7 +2114,18 @@ class WorkspaceWindow(QMainWindow):
             head.setFont(f)
             head.setStyleSheet("color:#888; letter-spacing:1px;")
             col.addWidget(head)
-            col.addWidget(page, 1)
+            # 페이지가 창보다 길어지면(예: Configure 의 scene 그룹) 세로
+            # 스크롤. 가로 스크롤은 쓰지 않는다 -- 내용이 패널 폭에 맞게
+            # 접히는 것이 원칙이다 (긴 한 줄 표시는 SceneInfoView 처럼 줄바꿈
+            # 또는 Ignored 정책으로 해결).
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            _relax_min_widths(page)
+            scroll.setWidget(page)
+            col.addWidget(scroll, 1)
             self.left_pages[key] = self.left_stack.count()
             self.left_stack.addWidget(wrapper)
 
@@ -720,50 +2144,99 @@ class WorkspaceWindow(QMainWindow):
         nrow.addWidget(self.node_stop_btn)
         col.addWidget(node)
 
-        task = QGroupBox(tr("태스크"))
-        self.task_box = task
-        form = QFormLayout(task)
-        # 이어찍기 드롭다운이 세 입력란보다 위에 온다. 고르면 아래 셋이 잠기고,
-        # 그 파일의 세션 설정이 복원된다 -- 같은 파일에 다른 설정으로 이어
-        # 기록하는 사고를 막는 게 목적이고, 그 안전장치는 마법사 GUI 를
-        # 교체할 때(62cad92) 조용히 빠져 있었다.
-        self.resume_combo = QComboBox()
-        self.resume_combo.setToolTip(tr(
-            "이미 찍은 파일에 이어서 기록합니다. 고르면 Task 이름·Language·"
-            "저장 경로가 그 파일 값으로 잠깁니다."))
-        self.resume_combo.currentIndexChanged.connect(self._on_resume_selected)
-        # 무엇이 복원되고 잠기는지는 문장이 길어 인라인 라벨 대신 info 팝업으로.
-        resume_row = QWidget()
-        rrow = QHBoxLayout(resume_row)
-        rrow.setContentsMargins(0, 0, 0, 0)
-        rrow.addWidget(self.resume_combo, 1)
-        self.resume_info_btn = QPushButton(tr("info"))
-        self.resume_info_btn.setMaximumWidth(48)
-        self.resume_info_btn.setEnabled(False)
-        self.resume_info_btn.clicked.connect(self._show_resume_info)
-        rrow.addWidget(self.resume_info_btn)
-        form.addRow(tr("기존 task 이어찍기"), resume_row)
-
-        self.task_edit = QLineEdit()
-        self.task_edit.setPlaceholderText(tr("예) pick_up_the_blue_cup_and_place_it_on_the_blue_bowl"))
-        self.task_edit.setText(self._recents.most_recent("task", ""))
-        form.addRow(tr("Task 이름"), self.task_edit)
+        # ---- scene-v1 이 유일한 수집 방식이다 (2026-08-13, legacy 수집 UI
+        # 제거). 파일 하나 = 책상 배치(scene) 하나, instruction 은 에피소드마다
+        # 기록되고 수집 중에 바꿀 수 있다. legacy *_demo.hdf5 는 더 이상 새로
+        # 만들지 않지만 변환·업로드·재생 등 데이터 관리 기능은 그대로 남는다.
+        scene = QGroupBox(tr("Scene 수집 (scene-v1)"))
+        self.task_box = scene  # 연습 모드 토글이 잠그는 그룹 (기존 이름 유지)
+        sc_form = QFormLayout(scene)
+        scene_row = QWidget()
+        srow = QHBoxLayout(scene_row)
+        srow.setContentsMargins(0, 0, 0, 0)
+        self.scene_combo = QComboBox()
+        _shrinkable_combo(self.scene_combo)
+        self.scene_combo.currentIndexChanged.connect(self._on_scene_selected)
+        srow.addWidget(self.scene_combo, 1)
+        self.scene_refresh_btn = QPushButton("↻")
+        self.scene_refresh_btn.setToolTip(tr("scene 목록 새로고침"))
+        self.scene_refresh_btn.setMaximumWidth(32)
+        self.scene_refresh_btn.clicked.connect(self._refresh_scene_combo)
+        srow.addWidget(self.scene_refresh_btn)
+        sc_form.addRow(tr("Scene"), scene_row)
+        self.scene_new_btn = QPushButton(tr("새 Scene 구성..."))
+        self.scene_new_btn.clicked.connect(self._on_new_scene)
+        sc_form.addRow(self.scene_new_btn)
+        # 계획이 있으면 시작 문장을 여기서 고른다 -- 고르면 아래 문장·slot ID
+        # 가 함께 채워진다 (세션 중 slot 패널의 계획 콤보와 같은 장치).
+        self.start_plan_combo = QComboBox()
+        _shrinkable_combo(self.start_plan_combo)
+        self.start_plan_combo.currentIndexChanged.connect(self._on_start_plan_pick)
+        sc_form.addRow(tr("계획 문장"), self.start_plan_combo)
         self.lang_edit = QLineEdit()
         self.lang_edit.setPlaceholderText(tr("예) pick up the blue cup and place it on the blue bowl"))
         self.lang_edit.setText(self._recents.most_recent("language", ""))
-        form.addRow(tr("Language"), self.lang_edit)
+        # 문장을 바꾸면 slot ID 가 자동으로 따라온다 (아는 문장=재사용,
+        # 새 문장=다음 빈 ID) -- ID-문장 갈라짐 방지.
+        self.lang_edit.editingFinished.connect(self._on_start_sentence_edited)
+        sc_form.addRow(tr("시작 문장"), self.lang_edit)
+        # 수집 계획 (slot plan). 계획이 있으면 Collect 의 slot 패널이 계획
+        # 기반 드롭다운 + 수집 카운트로 동작한다. 없어도 자유 입력은 그대로.
+        self.plan_combo = QComboBox()
+        _shrinkable_combo(self.plan_combo)
+        self.plan_combo.addItem(tr("(계획 없음 — 자유 입력)"), None)
+        for p in list_plans():
+            self.plan_combo.addItem(p.name, str(p))
+        last_plan = self._recents.most_recent("plan_file", "pilot.json")
+        idx = self.plan_combo.findText(last_plan)
+        if idx > 0:
+            self.plan_combo.setCurrentIndex(idx)
+        self.plan_combo.currentIndexChanged.connect(self._on_plan_selected)
+        plan_row = QWidget()
+        prow = QHBoxLayout(plan_row)
+        prow.setContentsMargins(0, 0, 0, 0)
+        prow.addWidget(self.plan_combo, 1)
+        self.plan_edit_btn = QPushButton("✎")
+        self.plan_edit_btn.setToolTip(tr("선택한 계획 파일 편집 (저장 시 규칙 검증)"))
+        self.plan_edit_btn.setMaximumWidth(32)
+        self.plan_edit_btn.clicked.connect(self._on_edit_plan)
+        prow.addWidget(self.plan_edit_btn)
+        plan_new_btn = QPushButton("+")
+        plan_new_btn.setToolTip(tr("새 계획 파일 만들기 (이름을 정하면 빈 계획이 "
+                                   "생기고 바로 편집이 열립니다)"))
+        plan_new_btn.setMaximumWidth(32)
+        plan_new_btn.clicked.connect(self._on_new_plan)
+        prow.addWidget(plan_new_btn)
+        plan_del_btn = QPushButton("🗑")
+        plan_del_btn.setToolTip(tr("선택한 계획 파일 삭제 (git 이력에는 남습니다)"))
+        plan_del_btn.setMaximumWidth(32)
+        plan_del_btn.clicked.connect(self._on_delete_plan)
+        prow.addWidget(plan_del_btn)
+        sc_form.addRow(tr("수집 계획"), plan_row)
+        self.scene_iid_edit = QLineEdit(self._recents.most_recent("instruction_id", "I000"))
+        self.scene_iid_edit.setToolTip(tr("시작 slot 의 instruction ID (예: I000). "
+                                          "수집 중 Collect 페이지에서 바꿀 수 있습니다."))
+        sc_form.addRow(tr("시작 slot ID"), self.scene_iid_edit)
+        self.collector_edit = QLineEdit(self._recents.most_recent("collector", ""))
+        self.collector_edit.setPlaceholderText(tr("수집자 식별자 (필수 attr, 예: gibeom)"))
+        sc_form.addRow(tr("수집자"), self.collector_edit)
         root_row = QWidget()
         rl = QHBoxLayout(root_row)
         rl.setContentsMargins(0, 0, 0, 0)
         self.root_edit = QLineEdit(self._recents.most_recent(
             "data_root", str(Path.home() / "libero_datasets")))
+        self.root_edit.editingFinished.connect(self._refresh_scene_combo)
         rl.addWidget(self.root_edit, 1)
         browse = QPushButton(tr("..."))
         browse.setMaximumWidth(36)
         browse.clicked.connect(self._browse_root)
         rl.addWidget(browse)
-        form.addRow(tr("저장 경로"), root_row)
-        col.addWidget(task)
+        sc_form.addRow(tr("저장 경로"), root_row)
+        self.scene_info = SceneInfoView()
+        sc_form.addRow(self.scene_info)
+        self._pending_scene_meta = None
+        self._scene_session = False
+        col.addWidget(scene)
 
         cam = QGroupBox(tr("카메라"))
         cform = QFormLayout(cam)
@@ -771,6 +2244,7 @@ class WorkspaceWindow(QMainWindow):
         self.wrist_combo = QComboBox()
         for c in (self.agent_combo, self.wrist_combo):
             c.setEditable(True)
+            _shrinkable_combo(c)
             c.currentTextChanged.connect(self._on_camera_changed)
         cform.addRow(tr("Agent"), self.agent_combo)
         cform.addRow(tr("Wrist"), self.wrist_combo)
@@ -812,7 +2286,11 @@ class WorkspaceWindow(QMainWindow):
         self.eplen_edit = QLineEdit("20")
         sform.addRow(tr("에피소드 길이(s)"), self.eplen_edit)
         self.resetwait_edit = QLineEdit("10")
-        sform.addRow(tr("리셋 대기(s)"), self.resetwait_edit)
+        self.resetwait_edit.setEnabled(False)
+        self.resetwait_edit.setToolTip(tr(
+            "더 이상 사용하지 않습니다 — 리셋 대기는 시간으로 끝나지 않고 "
+            "'리셋 완료' 버튼(Enter)으로만 끝납니다."))
+        sform.addRow(tr("리셋 대기(s) (미사용)"), self.resetwait_edit)
         self.wall_check = QCheckBox(tr("관절 한계 벽 사용"))
         self.wall_check.setChecked(True)
         sform.addRow(self.wall_check)
@@ -821,7 +2299,522 @@ class WorkspaceWindow(QMainWindow):
         sform.addRow(self.match_check)
         col.addWidget(sess)
         col.addStretch()
+        self._refresh_scene_combo()
         return w
+
+    # ------------------------------------------------------- scene 수집 UI
+    def _refresh_scene_combo(self) -> None:
+        """저장 경로의 scene_*.hdf5 목록. 파일명이 아니라 내부 metadata 로
+        표시한다 (경로 역산 금지)."""
+        self.scene_combo.blockSignals(True)
+        self.scene_combo.clear()
+        root = Path(self.root_edit.text().strip() or ".")
+        try:
+            sid_next = next_scene_id(root)
+        except Exception:  # noqa: BLE001
+            sid_next = "S???"
+        self.scene_combo.addItem(tr("— 새 Scene ({sid}) —").format(sid=sid_next), None)
+        try:
+            for p in iter_scene_files(root):
+                try:
+                    md = read_scene_metadata(p)
+                except Exception as e:  # noqa: BLE001
+                    self.scene_combo.addItem(f"{p.name} (읽기 실패: {type(e).__name__})", None)
+                    continue
+                label = f"{md.scene_id} · 물체 {len(md.objects)}개"
+                if md.description:
+                    label += f" · {md.description[:28]}"
+                self.scene_combo.addItem(label, md.scene_id)
+        except Exception:  # noqa: BLE001
+            pass
+        self.scene_combo.blockSignals(False)
+        self._on_scene_selected()
+
+    def _on_scene_selected(self, *_args) -> None:
+        self._refresh_start_plan_combo()
+        sid = self.scene_combo.currentData()
+        self.scene_new_btn.setEnabled(sid is None)
+        if sid is None:
+            if self._pending_scene_meta is not None:
+                self.scene_info.setText(
+                    describe_scene(self._pending_scene_meta)
+                    + "\n" + tr("(연결하면 이 구성으로 새 scene 파일이 만들어집니다)"))
+            else:
+                self.scene_info.setText(
+                    tr("'새 Scene 구성...'으로 물체 배치를 정의하세요."))
+            return
+        root = Path(self.root_edit.text().strip() or ".")
+        try:
+            path = root / scene_filename(sid)
+            if self.active_file_path is not None and path == self.active_file_path:
+                # 세션이 파일을 쥐고 있다 -- 캐시 요약으로 대신한다
+                counts = self._session_slot_counts()
+                lines = [tr("{s} — 수집 세션 진행 중 (배치도는 오른쪽 패널에)")
+                         .format(s=sid)]
+                if counts:
+                    lines.append("slot: " + "  ".join(
+                        f"{iid} {c.get('usable', 0)}/{c.get('total', 0)}"
+                        for iid, c in sorted(counts.items())))
+                self.scene_info.setText("\n".join(lines))
+                return
+            md = read_scene_metadata(path)
+            counts = count_by_slot(path)
+            lines = [describe_scene(md)]
+            if counts:
+                lines.append("slot: " + "  ".join(
+                    f"{iid} {c['usable']}/{c['total']}" for iid, c in sorted(counts.items())))
+            plan = self._current_plan()
+            if plan is not None and plan.slots_for(sid):
+                lines.append(f"계획({plan.path.name}): " + "  ".join(
+                    f"{s.instruction_id} {counts.get(s.instruction_id, {}).get('usable', 0)}"
+                    f"/{s.target}" for s in plan.slots_for(sid)))
+            self.scene_info.setText("\n".join(lines))
+        except BlockingIOError:
+            self.scene_info.setText(tr(
+                "(다른 프로세스가 파일을 사용 중입니다 — 재압축/변환이 끝난 "
+                "뒤 새로고침하세요)"))
+        except Exception as e:  # noqa: BLE001
+            self.scene_info.setText(f"(scene 정보 읽기 실패: {type(e).__name__}: {e})")
+
+    def _on_new_scene(self) -> None:
+        root = Path(self.root_edit.text().strip() or ".")
+        try:
+            sid = next_scene_id(root)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, tr("경로 오류"),
+                                tr("저장 경로를 확인하세요: {e}").format(e=e))
+            return
+        dlg = NewSceneDialog(self, sid, data_root=root)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.metadata is not None:
+            self._pending_scene_meta = dlg.metadata
+            self._on_scene_selected()
+
+    def _scene_config_from_ui(self):
+        """Connect 시점의 scene 설정 검증. (meta, scene_id, resume, error) --
+        error 가 None 이 아니면 연결을 중단하고 그 메시지를 보여준다."""
+        lang = self.lang_edit.text().strip()
+        iid = self.scene_iid_edit.text().strip()
+        collector = self.collector_edit.text().strip()
+        if not lang:
+            return None, None, False, tr("시작 instruction 문장을 Language 칸에 입력하세요.")
+        if lang.startswith('"') and lang.endswith('"'):
+            return None, None, False, tr("instruction 은 따옴표 없는 순수 문장이어야 합니다.")
+        if not INSTRUCTION_ID_RE.match(iid):
+            return None, None, False, tr("시작 slot ID 형식이 틀렸습니다 (예: I000).")
+        if not collector:
+            return None, None, False, tr("수집자 식별자를 입력하세요 (에피소드 필수 attr).")
+        # 계획이 선택돼 있으면 시작 slot 은 계획의 (ID, 문장) 쌍이어야 한다 --
+        # 자유 입력이 계획 밖 slot 을 만들던 구멍의 마지막 잠금. 새 문장은
+        # ✎ 편집으로 계획에 추가하고, 자유 수집은 '(계획 없음)' 을 고른다.
+        plan = self._current_plan()
+        if plan is not None:
+            psid = self._configure_scene_id()
+            slots = plan.slots_for(psid) if psid else ()
+            if not slots:
+                return None, None, False, tr(
+                    "계획({p})에 scene {s} 가 없습니다. ✎ 편집으로 scene 을 "
+                    "추가하거나, 자유 수집이면 수집 계획을 '(계획 없음)' 으로 "
+                    "바꾸세요.").format(p=plan.path.name, s=psid)
+            if not any(s.instruction_id == iid and s.instruction == lang
+                       for s in slots):
+                return None, None, False, tr(
+                    "시작 문장은 '계획 문장' 드롭다운에서 선택하세요. "
+                    "({i}: {t!r} 는 계획에 없습니다 — 새 문장은 ✎ 편집으로 "
+                    "계획에 먼저 추가)").format(i=iid, t=lang[:40])
+        sid = self.scene_combo.currentData()
+        if sid is None:
+            if self._pending_scene_meta is None:
+                return None, None, False, tr(
+                    "'새 Scene 구성...'으로 배치를 먼저 정의하거나 기존 scene 을 고르세요.")
+            return self._pending_scene_meta, None, False, None
+        return None, sid, True, None
+
+    # -------------------------------------------------- slot ID 자동 배정
+    def _known_slots(self, scene_id=None, scene_path=None, episodes=None) -> dict:
+        """**이 scene 의** instruction_id -> 문장 매핑.
+
+        ID 는 scene 마다 독립이다(각 scene 의 첫 instruction 이 I000, 새
+        문장마다 +1 -- 2026-08-13 결정). 그래서 참조 범위도 scene 하나:
+        계획에서 그 scene 의 slot + 그 scene 파일에 기록된 에피소드.
+        계획이 먼저다 -- 파일 쪽에 갈라짐 사고가 있어도 계획이 정본.
+
+        세션 중에는 episodes(GUI 가 saver 에게서 받은 캐시)를 넘겨야 한다 --
+        HDF5 파일 잠금 때문에 열려 있는 파일을 다시 읽을 수 없다.
+        """
+        m: dict = {}
+        plan = self._current_plan()
+        if plan is not None and scene_id is not None:
+            for s in plan.slots_for(scene_id):
+                m.setdefault(s.instruction_id, s.instruction)
+        for ep in (episodes or []):
+            if ep.get("instruction_id"):
+                m.setdefault(ep["instruction_id"], ep.get("instruction", ""))
+        if episodes is None and scene_path is not None and Path(scene_path).exists():
+            try:
+                from gello.scene_format import list_scene_episodes
+
+                for ep in list_scene_episodes(scene_path):
+                    m.setdefault(ep["instruction_id"], ep["instruction"])
+            except Exception:  # noqa: BLE001 - 다른 프로세스가 잠갔을 수 있다
+                pass
+        return m
+
+    def _session_scene_id(self):
+        if self.worker is None:
+            return None
+        cfg = self.worker.cfg
+        if getattr(cfg, "scene_metadata", None) is not None:
+            return cfg.scene_metadata.scene_id
+        return getattr(cfg, "scene_id", None)
+
+    def _session_slot_counts(self) -> dict:
+        """세션 중 slot 카운트 -- 파일은 saver 가 h5py 로 잠그고 있으므로
+        다시 열지 않고, saver 가 보내준 에피소드 목록으로 계산한다
+        (count_by_slot 과 같은 정의: usable = quality_status success)."""
+        counts: dict = {}
+        for e in (self.active_episode_cache or []):
+            iid = e.get("instruction_id")
+            if not iid:
+                continue
+            c = counts.setdefault(iid, {"total": 0, "usable": 0})
+            c["total"] += 1
+            if e.get("quality_status") == "success":
+                c["usable"] += 1
+        return counts
+
+    @staticmethod
+    def _next_iid(known: dict) -> str:
+        used = [int(i[1:]) for i in known if INSTRUCTION_ID_RE.match(i)]
+        return f"I{(max(used) + 1) if used else 0:03d}"
+
+    def _auto_assign_iid(self, instr: str, iid_edit, scene_id=None,
+                         scene_path=None, episodes=None) -> None:
+        """문장이 바뀌면 slot ID 를 자동으로 맞춘다 (**scene 안에서**).
+
+        모든 scene 은 첫 instruction 이 I000 이고 새 문장마다 하나씩
+        올라간다. 이 scene 에서 아는 문장 -> 그 ID 재사용, 처음 보는 문장
+        -> 이 scene 의 다음 빈 ID. 다른 scene 의 ID 는 참조하지 않는다.
+        자동 배정 후에도 손으로 고칠 수 있다.
+        """
+        instr = instr.strip()
+        if not instr:
+            return
+        known = self._known_slots(scene_id, scene_path, episodes=episodes)
+        for iid, s in known.items():
+            if s == instr:
+                if iid_edit.text().strip() != iid:
+                    iid_edit.setText(iid)
+                    self.log(f"[SLOT] 아는 문장 -- {iid} 재사용")
+                return
+        cur = iid_edit.text().strip()
+        nxt = self._next_iid(known)
+        if cur in known and known[cur] != instr:
+            iid_edit.setText(nxt)
+            self.log(f"[SLOT] 새 문장 -- {nxt} 자동 배정 ({cur} 는 이 scene 에서 사용 중)")
+        elif not INSTRUCTION_ID_RE.match(cur) or cur not in known and cur != nxt:
+            # 빈/이상한 값이거나, 이 scene 기준으로 뜬금없는 번호(예: 다른
+            # scene 에서 넘어온 I003)면 이 scene 의 다음 번호로 정렬한다.
+            iid_edit.setText(nxt)
+            if cur and cur != nxt:
+                self.log(f"[SLOT] 새 문장 -- {nxt} 자동 배정")
+
+    def _configure_scene_id(self):
+        """Configure 가 가리키는 scene ID -- 기존 선택이면 그것, 새 scene 이면
+        구성해 둔 metadata 의 ID, 그것도 없으면 다음 발번 예정 ID."""
+        sid = self.scene_combo.currentData()
+        if sid is not None:
+            return sid
+        if self._pending_scene_meta is not None:
+            return self._pending_scene_meta.scene_id
+        try:
+            return next_scene_id(Path(self.root_edit.text().strip() or "."))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _selected_scene_path(self):
+        """Configure 의 Scene 콤보가 가리키는 기존 scene 파일 (새 scene 이면 None)."""
+        sid = self.scene_combo.currentData()
+        if sid is None:
+            return None
+        return Path(self.root_edit.text().strip() or ".") / scene_filename(sid)
+
+    def _on_start_sentence_edited(self) -> None:
+        self._auto_assign_iid(self.lang_edit.text(), self.scene_iid_edit,
+                              scene_id=self._configure_scene_id(),
+                              scene_path=self._selected_scene_path())
+
+    def _on_start_plan_pick(self, *_args) -> None:
+        d = self.start_plan_combo.currentData()
+        if d:
+            self.scene_iid_edit.setText(d[0])
+            self.lang_edit.setText(d[1])
+
+    def _refresh_start_plan_combo(self) -> None:
+        """Configure 의 계획 문장 드롭다운 = 계획 × 선택 scene.
+
+        카운트는 scene 파일에서 온다 (계획 파일에는 카운트가 없다 -- 두 개의
+        진실 금지). 세션이 파일을 쥐고 있으면 카운트만 생략된다.
+        """
+        if not hasattr(self, "start_plan_combo"):
+            return
+        combo = self.start_plan_combo
+        keep = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        plan = self._current_plan()
+        # 계획이 있으면 문장은 계획에서만 고른다 -- 자유 입력이 계획 밖
+        # slot(문장-ID 갈라짐)을 실데이터에 만들었다. 새 문장은 ✎ 편집으로
+        # 계획에 먼저 추가한다. 계획이 없을 때만 직접 입력을 연다.
+        combo.addItem(tr("(계획에서 선택)") if plan is not None
+                      else tr("(직접 입력)"), None)
+        self.lang_edit.setReadOnly(plan is not None)
+        self.scene_iid_edit.setReadOnly(plan is not None)
+        for w in (self.lang_edit, self.scene_iid_edit):
+            w.setStyleSheet("color:#888;" if plan is not None else "")
+        sid = self._configure_scene_id()
+        if plan is not None and sid is not None:
+            counts: dict = {}
+            if self._scene_session and sid == self._session_scene_id():
+                # 세션이 파일을 쥐고 있다 -- saver 가 보내준 캐시로 센다
+                counts = self._session_slot_counts()
+            else:
+                p = self._selected_scene_path()
+                if p is not None and p.exists():
+                    try:
+                        counts = count_by_slot(p)
+                    except Exception:  # noqa: BLE001 -- HDF5 잠금 등
+                        counts = {}
+            for s in plan.slots_for(sid):
+                c = counts.get(s.instruction_id, {}).get("usable", 0)
+                combo.addItem(
+                    f"{s.instruction_id} · {c}/{s.target} · {s.instruction}",
+                    (s.instruction_id, s.instruction))
+            if keep:
+                for i in range(combo.count()):
+                    if combo.itemData(i) == keep:
+                        combo.setCurrentIndex(i)
+                        break
+        combo.blockSignals(False)
+
+    def _on_slot_sentence_edited(self) -> None:
+        # 세션 중에는 파일이 잠겨 있으므로 캐시로 (파일 인자 없이)
+        self._auto_assign_iid(self.slot_instr_edit.text(), self.slot_iid_edit,
+                              scene_id=self._session_scene_id(),
+                              episodes=self.active_episode_cache)
+
+    # -------------------------------------------------- 수집 계획 (slot plan)
+    def _current_plan(self):
+        """선택된 계획 파일. 작아서 캐시 없이 매번 읽는다 -- 파일을 고치고
+        새로고침할 때 낡은 캐시가 남는 쪽이 더 나쁘다."""
+        data = getattr(self, "plan_combo", None) and self.plan_combo.currentData()
+        if not data:
+            return None
+        try:
+            return load_plan(Path(data))
+        except Exception as e:  # noqa: BLE001
+            self.log(f"[계획] {Path(data).name} 로드 실패: {type(e).__name__}: {e}")
+            return None
+
+    def _refresh_plan_combo(self, select: "str | None" = None) -> None:
+        """계획 파일 목록을 다시 읽는다. select 로 파일명을 주면 그걸 고른다."""
+        keep = select or self.plan_combo.currentText()
+        self.plan_combo.blockSignals(True)
+        self.plan_combo.clear()
+        self.plan_combo.addItem(tr("(계획 없음 — 자유 입력)"), None)
+        for p in list_plans():
+            self.plan_combo.addItem(p.name, str(p))
+        idx = self.plan_combo.findText(keep)
+        self.plan_combo.setCurrentIndex(max(0, idx))
+        self.plan_combo.blockSignals(False)
+        self._on_plan_selected()
+
+    def _on_new_plan(self) -> None:
+        name, ok = QInputDialog.getText(
+            self, tr("새 수집 계획"),
+            tr("계획 이름 (영문/숫자/-/_, 확장자 없이):"))
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            QMessageBox.warning(self, tr("이름 오류"),
+                                tr("영문·숫자·-·_ 만 쓸 수 있습니다."))
+            return
+        path = PLANS_DIR / f"{name}.json"
+        if path.exists():
+            QMessageBox.warning(self, tr("이미 있음"),
+                                tr("{n} 이 이미 있습니다. 드롭다운에서 "
+                                   "선택하세요.").format(n=path.name))
+            return
+        PLANS_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"plan_version": 1, "scenes": []},
+                                   ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+        self.log(f"[계획] 새 계획 생성: {path.name}")
+        self._refresh_plan_combo(select=path.name)
+        self._on_edit_plan()    # 빈 계획은 쓸모없으니 바로 편집으로
+
+    def _on_delete_plan(self) -> None:
+        data = self.plan_combo.currentData()
+        if not data:
+            QMessageBox.information(self, tr("계획 없음"),
+                                    tr("삭제할 계획 파일을 먼저 선택하세요."))
+            return
+        p = Path(data)
+        ans = QMessageBox.question(
+            self, tr("계획 삭제"),
+            tr("{n} 을(를) 삭제할까요?\n수집 파일에는 영향이 없고, git 이력"
+               "에서 되살릴 수 있습니다.").format(n=p.name))
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            p.unlink()
+        except OSError as e:
+            QMessageBox.warning(self, tr("삭제 실패"), str(e))
+            return
+        self.log(f"[계획] 삭제: {p.name}")
+        self._refresh_plan_combo(select="")
+
+    def _on_edit_plan(self) -> None:
+        data = self.plan_combo.currentData()
+        if not data:
+            QMessageBox.information(self, tr("계획 없음"),
+                                    tr("편집할 계획 파일을 먼저 선택하세요."))
+            return
+        dlg = PlanEditDialog(self, Path(data))
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            for w in getattr(dlg, "warnings", []):
+                self.log(f"[계획 경고] {w}")
+            self.log(f"[계획] {Path(data).name} 저장됨")
+            # 갱신된 목표/slot 이 화면에 반영되게
+            self._on_plan_selected()
+
+    def _on_plan_selected(self, *_args) -> None:
+        plan = self._current_plan()
+        if plan is not None:
+            self._recents.add("plan_file", self.plan_combo.currentText())
+            for w in plan.warnings:
+                self.log(f"[계획 경고] {w}")
+        self._refresh_slot_panel()
+        self._on_scene_selected()
+
+    def _scene_session_file(self):
+        if not self._scene_session or self.active_file_path is None:
+            return None
+        return self.active_file_path
+
+    def _refresh_slot_panel(self) -> None:
+        """계획 slot 드롭다운 + 수집 카운트 + 계획-파일 불일치 경고 갱신.
+
+        카운트는 계획 파일이 아니라 scene 파일에서 계산한다(두 개의 진실
+        금지). 세션 중 에피소드가 저장될 때마다 다시 계산된다.
+        """
+        if not hasattr(self, "slot_plan_combo"):
+            return
+        combo = self.slot_plan_combo
+        combo.blockSignals(True)
+        combo.clear()
+        plan = self._current_plan()
+        # Configure 쪽과 같은 규칙: 계획이 있으면 드롭다운에서만 고른다.
+        combo.addItem(tr("(계획에서 선택)") if plan is not None
+                      else tr("(직접 입력)"), None)
+        if hasattr(self, "slot_iid_edit"):
+            self.slot_iid_edit.setReadOnly(plan is not None)
+            self.slot_instr_edit.setReadOnly(plan is not None)
+            for w in (self.slot_iid_edit, self.slot_instr_edit):
+                w.setStyleSheet("color:#888;" if plan is not None else "")
+        # 세션 중이므로 파일을 다시 열지 않는다(HDF5 잠금) -- scene ID 는
+        # 워커 설정에서, 에피소드·카운트는 saver 가 보내준 캐시에서.
+        sid = self._session_scene_id() if self._scene_session else None
+        counts = self._session_slot_counts()
+        episodes = list(self.active_episode_cache or [])
+        warn: list = []
+        if plan is not None and sid is not None:
+            slots = plan.slots_for(sid)
+            for s in slots:
+                c = counts.get(s.instruction_id, {}).get("usable", 0)
+                combo.addItem(
+                    f"{s.instruction_id} · {c}/{s.target} · {s.instruction}",
+                    (s.instruction_id, s.instruction))
+            if not slots:
+                warn.append(tr("계획에 scene {s} 가 없습니다").format(s=sid))
+            warn.extend(check_scene_against_plan(plan, sid, episodes))
+        combo.blockSignals(False)
+        self.slot_plan_warn.setText("\n".join(warn[:4]))
+
+    def _on_slot_plan_pick(self, *_args) -> None:
+        d = self.slot_plan_combo.currentData()
+        if d:
+            self.slot_iid_edit.setText(d[0])
+            self.slot_instr_edit.setText(d[1])
+
+    def _on_next_slot(self) -> None:
+        """계획에서 목표(target)를 못 채운 첫 slot 을 골라 채워준다 (§6:
+        채우지 못한 채 책상을 치우는 것이 재수집의 시작이다)."""
+        plan = self._current_plan()
+        sid = self._session_scene_id() if self._scene_session else None
+        if plan is None or sid is None:
+            self.log("[SLOT] 계획이 없거나 scene 세션이 아닙니다")
+            return
+        counts = self._session_slot_counts()
+        for s in plan.slots_for(sid):
+            c = counts.get(s.instruction_id, {}).get("usable", 0)
+            if c < s.target:
+                for i in range(self.slot_plan_combo.count()):
+                    if self.slot_plan_combo.itemData(i) == (s.instruction_id, s.instruction):
+                        self.slot_plan_combo.setCurrentIndex(i)
+                        break
+                self.slot_iid_edit.setText(s.instruction_id)
+                self.slot_instr_edit.setText(s.instruction)
+                self.log(f"[SLOT] 다음 미수집: {s.instruction_id} ({c}/{s.target}) {s.instruction}")
+                return
+        self.log("[SLOT] 이 scene 의 모든 slot 이 목표를 채웠습니다")
+
+    def _on_apply_slot(self) -> None:
+        """scene 세션 중 slot 전환 -- worker 의 cmd_set_slot 호출만 한다."""
+        if self.worker is None or not self._scene_session:
+            return
+        iid = self.slot_iid_edit.text().strip()
+        instr = self.slot_instr_edit.text().strip()
+        if not INSTRUCTION_ID_RE.match(iid):
+            QMessageBox.warning(self, tr("slot 오류"),
+                                tr("instruction ID 형식이 틀렸습니다 (예: I000)."))
+            return
+        if not instr or (instr.startswith('"') and instr.endswith('"')):
+            QMessageBox.warning(self, tr("slot 오류"),
+                                tr("따옴표 없는 순수 문장을 입력하세요."))
+            return
+        # 계획이 있으면 계획의 (ID, 문장) 쌍만 적용 가능 -- 자유 입력이
+        # 계획 밖 slot 을 만들던 구멍을 세션 중에도 막는다.
+        plan = self._current_plan()
+        sid = self._session_scene_id()
+        if plan is not None and sid is not None:
+            slots = plan.slots_for(sid)
+            if slots and not any(s.instruction_id == iid
+                                 and s.instruction == instr for s in slots):
+                QMessageBox.warning(self, tr("slot 오류"), tr(
+                    "계획에 없는 slot 입니다 ({i}). '계획 slot' 드롭다운에서 "
+                    "고르세요 — 새 문장은 계획을 먼저 수정하세요.").format(i=iid))
+                return
+        self.worker.cmd_set_slot(instr, iid)
+        self.slot_current_label.setText(f"{iid}: {instr}")
+        # cmd_set_slot 은 워커 큐로 가서 다음 드레인에 반영된다 -- 오른쪽
+        # 패널은 사용자가 누른 값으로 즉시 갱신한다 (워커 속성은 곧 같아진다).
+        self.right_fields["ds_task"].setText(f"{iid}: {instr}")
+        self.right_fields["ds_task"].setToolTip(f"{iid}: {instr}")
+        self._recents.add("instruction_id", iid)
+        self._recents.add("language", instr)
+        # 계획과 어긋난 수동 입력은 막지 않되 즉시 보이게 한다 (ID-문장
+        # 갈라짐이 실데이터에서 실제로 발생했다).
+        plan = self._current_plan()
+        sid = self._session_scene_id()
+        if plan is not None and sid is not None:
+            sentences = {s.instruction_id: s.instruction
+                         for s in plan.slots_for(sid)}
+            if iid in sentences and sentences[iid] != instr:
+                self.log(f"[SLOT 경고] {iid} 문장이 계획({sid})과 다릅니다 -- "
+                         f"계획: {sentences[iid]!r}")
+            elif sentences and iid not in sentences:
+                self.log(f"[SLOT 경고] 계획({sid})에 없는 slot {iid} 로 수집합니다")
 
     def _on_no_dataset_toggled(self, on: bool) -> None:
         """No file is written, so the task/path fields have nothing to name."""
@@ -841,6 +2834,39 @@ class WorkspaceWindow(QMainWindow):
         w = QWidget()
         col = QVBoxLayout(w)
         col.setContentsMargins(0, 0, 0, 0)
+
+        # scene 세션 전용: 다음 에피소드부터 수행할 slot(instruction) 전환.
+        # 진행 중 에피소드에는 영향이 없다 (worker 가 기록 시작 시점에 캡처).
+        slot = QGroupBox(tr("Scene slot — 현재 instruction"))
+        self.slot_box = slot
+        sfrm = QFormLayout(slot)
+        self.slot_current_label = QLabel("")
+        self.slot_current_label.setWordWrap(True)
+        sfrm.addRow(tr("현재"), self.slot_current_label)
+        # 계획(수집 계획 파일)이 있으면 여기서 slot 을 고른다 -- 항목에 수집
+        # 현황("2/10")이 붙고, 고르면 아래 ID·문장이 채워진다. 문장을 손으로
+        # 칠 때 생기는 미묘한 갈라짐(실데이터에서 실제 발생)을 막는 장치.
+        self.slot_plan_combo = QComboBox()
+        _shrinkable_combo(self.slot_plan_combo)
+        self.slot_plan_combo.currentIndexChanged.connect(self._on_slot_plan_pick)
+        sfrm.addRow(tr("계획 slot"), self.slot_plan_combo)
+        self.slot_next_btn = QPushButton(tr("다음 미수집 slot 제시"))
+        self.slot_next_btn.clicked.connect(self._on_next_slot)
+        sfrm.addRow(self.slot_next_btn)
+        self.slot_iid_edit = QLineEdit()
+        sfrm.addRow(tr("instruction ID"), self.slot_iid_edit)
+        self.slot_instr_edit = QLineEdit()
+        self.slot_instr_edit.editingFinished.connect(self._on_slot_sentence_edited)
+        sfrm.addRow(tr("문장"), self.slot_instr_edit)
+        self.slot_apply_btn = QPushButton(tr("slot 적용 (다음 에피소드부터)"))
+        self.slot_apply_btn.clicked.connect(self._on_apply_slot)
+        sfrm.addRow(self.slot_apply_btn)
+        self.slot_plan_warn = QLabel("")
+        self.slot_plan_warn.setWordWrap(True)
+        self.slot_plan_warn.setStyleSheet("color:#e67e22;")
+        sfrm.addRow(self.slot_plan_warn)
+        slot.setVisible(False)
+        col.addWidget(slot)
 
         gate = QGroupBox(tr("리더 자세 게이트"))
         gcol = QVBoxLayout(gate)
@@ -865,7 +2891,10 @@ class WorkspaceWindow(QMainWindow):
         self.match_btn = QPushButton(tr("자동 정렬 다시 (Enter)"))
         self.match_btn.setEnabled(False)
         self.match_btn.clicked.connect(lambda: self._cmd("cmd_auto_match_pose"))
-        self.skip_btn = QPushButton(tr("리셋 대기 건너뛰기"))
+        self.skip_btn = QPushButton(tr("리셋 완료 — 계속 (Enter)"))
+        self.skip_btn.setToolTip(tr(
+            "물체를 제자리에 놓은 뒤 누르세요. 리셋 대기는 자동으로 끝나지 "
+            "않습니다 -- 이 버튼(또는 Enter)을 눌러야 게이트로 넘어갑니다."))
         self.skip_btn.clicked.connect(lambda: self._cmd("cmd_skip_reset_wait"))
         self.save_ok_btn = QPushButton(tr("저장 (성공)"))
         self.save_ok_btn.setStyleSheet("background-color:#2ecc71; color:white; font-weight:bold;")
@@ -911,6 +2940,19 @@ class WorkspaceWindow(QMainWindow):
         w = QWidget()
         col = QVBoxLayout(w)
         col.setContentsMargins(0, 0, 0, 0)
+        # 이 페이지 전용 폴더 선택 -- 수집 저장 경로(root_edit)와 독립적으로
+        # 다른 폴더(예: old_data/)를 훑어볼 수 있다. 초기값은 수집 경로.
+        dr = QHBoxLayout()
+        self.dataset_root_edit = QLineEdit(
+            self.root_edit.text() if hasattr(self, "root_edit")
+            else str(Path.home() / "libero_datasets"))
+        self.dataset_root_edit.editingFinished.connect(self._refresh_dataset_tree)
+        dr.addWidget(self.dataset_root_edit, 1)
+        dbrowse = QPushButton(tr("..."))
+        dbrowse.setMaximumWidth(36)
+        dbrowse.clicked.connect(self._browse_dataset_root)
+        dr.addWidget(dbrowse)
+        col.addLayout(dr)
         search = QLineEdit()
         search.setPlaceholderText(f"{tr('에피소드 검색')} ({TODO_MARK})")
         mark_todo(search, tr("검색/필터는 아직 없습니다."))
@@ -937,11 +2979,18 @@ class WorkspaceWindow(QMainWindow):
                       ("구조 확인", self._on_show_structure,
                        "선택한 *파일*의 에피소드 수·용량·이미지 압축·재압축 이력과\n"
                        "첫 에피소드의 데이터 구조를 보여줍니다.")),
+                     (("HDF5 트리 뷰어", self._on_hdf5_tree,
+                       "선택한 파일의 전체 내부 구조(그룹/데이터셋/attrs)를\n"
+                       "트리로 탐색합니다. 데이터셋을 클릭하면 shape·dtype·압축과\n"
+                       "이미지 미리보기/값 미리보기가 나옵니다 (myHDF5 스타일)."),
+                      ("myHDF5 (웹)", self._on_myhdf5,
+                       "브라우저에서 myhdf5.hdfgroup.org 를 엽니다.\n"
+                       "파일을 창에 끌어다 놓으면 같은 구조를 웹에서 봅니다.")),
                      (("실패만 선택", self._on_select_failed,
                        "success=False 로 표시된 에피소드를 모두 선택합니다.\n"
                        "선택만 하고 지우지 않습니다."),
                       ("튀는 것만 선택", self._on_select_jerky,
-                       "같은 task 평균과 ±{d} 넘게 차이 나는 에피소드를 모두 선택합니다.\n"
+                       "같은 (scene·문장) 그룹 평균과 ±{d} 넘게 차이 나는 에피소드를 모두 선택합니다.\n"
                        "선택만 하고 지우지 않습니다. (Analysis 탭과 같은 기준)"))):
             row = QHBoxLayout()
             for text, slot, tip in pair:
@@ -964,11 +3013,31 @@ class WorkspaceWindow(QMainWindow):
         trim_btn.clicked.connect(self._on_open_trim)
         col.addWidget(trim_btn)
 
+        relabel_btn = QPushButton(tr("선택 재판정 (성공↔실패)"))
+        relabel_btn.setToolTip(tr(
+            "scene 에피소드 전용. 선택한 에피소드의 quality_status 를 성공↔실패로 "
+            "뒤집습니다.\nscene 체계에서 삭제를 대신하는 큐레이션 수단입니다 -- "
+            "변환은 success 만 내보냅니다.\nbad_data 등 다른 상태는 건드리지 않습니다."))
+        relabel_btn.clicked.connect(self._on_relabel_selected)
+        col.addWidget(relabel_btn)
+
+        # 재생 중에는 이 버튼 자체가 '■ 재생 중단' 으로 바뀐다 -- 별도 중단
+        # 버튼은 화면 밖으로 밀려 안 보이는 일이 있었다.
+        self.replay_btn = QPushButton(tr("선택 재생 (실로봇)"))
+        self.replay_btn.setToolTip(tr(
+            "기록된 관절 명령을 같은 주기로 다시 보내 에피소드를 실로봇에서 "
+            "재현합니다.\n로봇 노드가 켜져 있어야 하고, 로봇이 실제로 "
+            "움직입니다. 주변을 비우세요.\n재생 중에는 이 버튼이 '재생 중단'"
+            "이 됩니다 (중단 시 로봇은 현재 포즈 유지)."))
+        self.replay_btn.clicked.connect(self._on_replay_selected)
+        col.addWidget(self.replay_btn)
+
         del_btn = QPushButton(tr("선택한 에피소드 삭제"))
         del_btn.setToolTip(tr(
-            "위에서 선택한 에피소드를 .hdf5 에서 실제로 지우고 번호를 다시 매깁니다.\n"
-            "되돌릴 수 없습니다. 수집 중이 아닌 파일이면 세션 없이도 삭제됩니다.\n"
-            "파일 통째 삭제는 Dataset 메뉴에 있습니다."))
+            "선택한 에피소드를 .hdf5 에서 실제로 지웁니다 (실패·튀는 궤적 큐레이션).\n"
+            "legacy 는 번호를 다시 매기고, scene 은 번호를 유지하고 지운 uid 를 "
+            "재사용 금지 목록에 남깁니다.\n되돌릴 수 없습니다. 수집 중이 아닌 "
+            "파일이면 세션 없이도 삭제됩니다. 파일 통째 삭제는 Dataset 메뉴에."))
         del_btn.setStyleSheet("background-color:#c0392b; color:white; padding:6px;")
         del_btn.clicked.connect(self._on_delete_selected)
         col.addWidget(del_btn)
@@ -1110,9 +3179,10 @@ class WorkspaceWindow(QMainWindow):
         means a bad run does not poison the next one.
         """
         for v in self._recents.get(key):
-            if repo_id_error(v) is None:
+            if repo_id_error(v) is None and v not in LEGACY_REPOS:
                 return v
-        return ""
+        # 아무것도 없거나 legacy 뿐이면 새 수집 저장소 기본값
+        return DEFAULT_REPOS.get(key, "")
 
     def repo_id_for(self, key: str) -> str:
         return self.repo_edits[key].text().strip()
@@ -1191,6 +3261,29 @@ class WorkspaceWindow(QMainWindow):
                 grid.addWidget(lab, row, c)
                 store[key] = lab
         col.addWidget(box)
+
+        # 계획 진행률 -- scene×slot 전체가 한눈에. 카운트는 언제나 scene
+        # 파일에서 센다 (세션이 쥔 파일만 캐시로 대신).
+        plan_box = QGroupBox(tr("수집 계획 진행률"))
+        pcol = QVBoxLayout(plan_box)
+        self.plan_progress_tree = QTreeWidget()
+        self.plan_progress_tree.setHeaderLabels(
+            [tr("scene / slot"), tr("수집"), tr("목표"), tr("문장")])
+        self.plan_progress_tree.setRootIsDecorated(True)
+        self.plan_progress_tree.header().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Stretch)
+        self.plan_progress_tree.setMinimumHeight(160)
+        pcol.addWidget(self.plan_progress_tree)
+        prow = QHBoxLayout()
+        self.plan_progress_label = QLabel("")
+        self.plan_progress_label.setStyleSheet("color:#888;")
+        prow.addWidget(self.plan_progress_label, 1)
+        pb = QPushButton(tr("새로고침"))
+        pb.clicked.connect(self._refresh_plan_progress)
+        prow.addWidget(pb)
+        pcol.addLayout(prow)
+        col.addWidget(plan_box)
+
         self.disk_box = QGroupBox(tr("디스크"))
         dform = QFormLayout(self.disk_box)
         self.disk_label = QLabel("-")
@@ -1767,8 +3860,286 @@ class WorkspaceWindow(QMainWindow):
             shown = _grid_overlay(shown)
         self.layout_overlay_views[role].set_frame(shown)
 
+    # -------------------------------------------------------- point cloud
+    def _build_cloud_tab(self) -> QWidget:
+        """agent 카메라의 depth 포인트클라우드 뷰 (탭이 보일 때만 스트림).
+
+        depth 는 상시로 켜 두면 USB 대역·안정성을 잡아먹으므로, 이 탭에
+        들어올 때 RGB 미리보기를 잠깐 내리고 depth 워커를 올린다. 탭을
+        떠나면 반대로 되돌린다 (수집 세션과는 아예 공존 불가 -- 세션 중엔
+        안내만 보여준다).
+        """
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(4, 4, 4, 4)
+        self.cloud_view = VideoView()
+        self.cloud_view.setText(tr("탭에 들어오면 depth 스트림을 켭니다"))
+        # 크롭 가이드는 학습 프레이밍용 -- 3D 뷰에는 의미가 없고 어둡게만 보인다
+        self.cloud_view.set_square_guide(False)
+        col.addWidget(self.cloud_view, 1)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr("카메라")))
+        self.cloud_cam_combo = QComboBox()
+        self.cloud_cam_combo.addItem("Agent", "agent")
+        self.cloud_cam_combo.addItem("Wrist", "wrist")
+        self.cloud_cam_combo.setToolTip(tr(
+            "포인트클라우드를 읽을 카메라. 탭이 열려 있으면 즉시 전환합니다."))
+        self.cloud_cam_combo.currentIndexChanged.connect(self._on_cloud_cam_changed)
+        row.addWidget(self.cloud_cam_combo)
+        row.addSpacing(12)
+        row.addWidget(QLabel(tr("회전")))
+        self.cloud_yaw = QSlider(Qt.Orientation.Horizontal)
+        self.cloud_yaw.setRange(-80, 80)
+        self.cloud_yaw.setValue(25)
+        self.cloud_yaw.valueChanged.connect(lambda *_: self._render_cloud())
+        row.addWidget(self.cloud_yaw, 1)
+        row.addWidget(QLabel(tr("기울임")))
+        self.cloud_pitch = QSlider(Qt.Orientation.Horizontal)
+        self.cloud_pitch.setRange(-80, 80)
+        self.cloud_pitch.setValue(-30)
+        self.cloud_pitch.valueChanged.connect(lambda *_: self._render_cloud())
+        row.addWidget(self.cloud_pitch, 1)
+        col.addLayout(row)
+        self.cloud_status = QLabel("")
+        self.cloud_status.setStyleSheet("color:#888;")
+        col.addWidget(self.cloud_status)
+        return w
+
+    def _build_depth_tab(self) -> QWidget:
+        """depth 컬러맵 라이브 뷰 -- Point Cloud 와 같은 워커·같은 수명주기.
+
+        스키마의 depth 기록(#17)과 별개다: 여기는 수집 전에 depth 품질과
+        범위를 눈으로 확인하는 뷰고, 기록 여부는 Settings 의 스키마
+        체크박스가 정한다.
+        """
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(4, 4, 4, 4)
+        self.depth_view = VideoView()
+        self.depth_view.setText(tr("탭에 들어오면 depth 스트림을 켭니다"))
+        # depth 는 원본 해상도 그대로 기록/표시 -- 크롭 가이드 비적용
+        self.depth_view.set_square_guide(False)
+        # 마우스가 가리키는 지점의 실거리 표시 (eventFilter 에서 처리)
+        self.depth_view.setMouseTracking(True)
+        self.depth_view.installEventFilter(self)
+        self._depth_cursor = None
+        col.addWidget(self.depth_view, 1)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr("카메라")))
+        self.depth_cam_combo = QComboBox()
+        self.depth_cam_combo.addItem("Agent", "agent")
+        self.depth_cam_combo.addItem("Wrist", "wrist")
+        self.depth_cam_combo.currentIndexChanged.connect(self._on_cloud_cam_changed)
+        row.addWidget(self.depth_cam_combo)
+        row.addSpacing(12)
+        row.addWidget(QLabel(tr("최대 거리")))
+        self.depth_range_slider = QSlider(Qt.Orientation.Horizontal)
+        self.depth_range_slider.setRange(30, 300)      # 0.3 ~ 3.0 m
+        self.depth_range_slider.setValue(120)
+        self.depth_range_slider.valueChanged.connect(
+            lambda *_: self._render_depth())
+        row.addWidget(self.depth_range_slider, 1)
+        self.depth_range_label = QLabel("1.2 m")
+        self.depth_range_label.setStyleSheet("color:#888;")
+        row.addWidget(self.depth_range_label)
+        col.addLayout(row)
+        self.depth_status = QLabel(tr(
+            "가까움=빨강, 멂=파랑, 검정=측정 불가. 기록 여부는 Settings 의 "
+            "스키마 체크박스(#17)가 정합니다."))
+        self.depth_status.setStyleSheet("color:#888;")
+        self.depth_status.setWordWrap(True)
+        col.addWidget(self.depth_status)
+        return w
+
+    def _depth_role_combo(self) -> QComboBox:
+        return (self.depth_cam_combo if self._depth_consumer == "depth"
+                else self.cloud_cam_combo)
+
+    def _depth_views(self) -> list:
+        return [self.cloud_view, self.depth_view]
+
+    def _start_cloud(self) -> None:
+        if self.worker is not None:
+            for v in self._depth_views():
+                v.clear_frame(tr("수집 세션 중에는 사용할 수 없습니다 — "
+                                 "세션 종료 후 다시 여세요"))
+            return
+        role = self._depth_role_combo().currentData() or "agent"
+        combo = self.agent_combo if role == "agent" else self.wrist_combo
+        serial = self._combo_serial(combo)
+        if not serial:
+            for v in self._depth_views():
+                v.clear_frame(
+                    tr("Configure 에서 {r} 카메라를 선택하세요").format(r=role))
+            return
+        if self._cloud_worker is not None:
+            if serial == self._cloud_serial and self._cloud_worker.isRunning():
+                return                      # 같은 카메라 -- 탭만 바뀐 것
+            # 다른 카메라거나, 오류로 죽은 워커가 남아 있는 경우(죽은 워커를
+            # '살아있다'고 믿으면 탭을 다시 들어와도 스트림이 영영 안 선다)
+            self._stop_cloud(restore_previews=False)
+        # depth 파이프라인은 RGB 미리보기와 같은 장치를 두 번 열 수 없다.
+        # OR-누적: 카메라 전환 재시작 때(미리보기 이미 내려간 상태) 복원
+        # 약속을 잊지 않게 한다. 플래그는 실제 복원 때 리셋된다.
+        self._cloud_previews_were_on = (self._cloud_previews_were_on
+                                        or bool(self.agent_preview
+                                                or self.wrist_preview))
+        self._stop_previews_async()
+        msg = tr("depth 스트림 여는 중... ({s})").format(s=serial)
+        self.cloud_status.setText(msg)
+        self.depth_status.setText(msg)
+        w = DepthCloudWorker(serial, mode=self._depth_consumer or "cloud")
+        w.cloud_ready.connect(self._on_cloud)
+        w.depth_ready.connect(self._on_depth_img)
+        w.error.connect(self._on_depth_error)
+        w.start()
+        self._cloud_worker = w
+        self._cloud_serial = serial
+
+    def _on_depth_error(self, m: str) -> None:
+        text = tr("depth 오류: {m}").format(m=m)
+        self.cloud_status.setText(text)
+        self.depth_status.setText(text)
+
+    def _on_cloud_cam_changed(self, *_args) -> None:
+        if self._cloud_worker is None:      # 탭이 닫혀 있으면 다음 진입 때 반영
+            return
+        self._stop_cloud(restore_previews=False)  # 복원 약속(플래그)은 유지된다
+        for v in self._depth_views():
+            v.clear_frame(tr("카메라 전환 중..."))
+        self._start_cloud()
+
+    def _stop_cloud(self, restore_previews: bool = True) -> None:
+        w = self._cloud_worker
+        if w is None:
+            return
+        self._cloud_worker = None
+        self._cloud_serial = ""
+        w.stop()
+        w.wait(3000)
+        self.cloud_status.setText(tr("depth 스트림 종료"))
+        self.depth_status.setText(tr("depth 스트림 종료"))
+        if restore_previews and self._cloud_previews_were_on \
+                and self.worker is None:
+            self._cloud_previews_were_on = False
+            # 파이프라인이 놓이는 데 잠깐 걸린다 -- 바로 열면 busy.
+            QTimer.singleShot(700, lambda: (
+                self._restart_previews() if self.worker is None
+                and self._cloud_worker is None else None))
+
+    @pyqtSlot(object, object)
+    def _on_cloud(self, pts, rgb) -> None:
+        self._cloud_pts, self._cloud_rgb = pts, rgb
+        if self._depth_consumer == "cloud":     # 보이는 탭만 렌더
+            self._render_cloud()
+            self.cloud_status.setText(
+                tr("점 {n:,}개 · 회전/기울임 슬라이더로 시점 변경").format(n=len(pts)))
+
+    @pyqtSlot(object)
+    def _on_depth_img(self, z) -> None:
+        self._depth_img = z
+        if self._depth_consumer == "depth":
+            self._render_depth()
+
+    def _depth_uv(self, pos) -> "tuple | None":
+        """depth_view 위젯 좌표 -> depth 이미지 픽셀 좌표 (밖이면 None).
+
+        VideoView 는 KeepAspectRatio + 중앙 정렬이라 스케일과 여백을
+        되짚어야 한다.
+        """
+        z = self._depth_img
+        if z is None:
+            return None
+        h, w = z.shape[:2]
+        lw = max(1, self.depth_view.width())
+        lh = max(1, self.depth_view.height())
+        s = min(lw / w, lh / h)
+        u = int((pos.x() - (lw - w * s) / 2) / s)
+        v = int((pos.y() - (lh - h * s) / 2) / s)
+        if 0 <= u < w and 0 <= v < h:
+            return (u, v)
+        return None
+
+    def _render_depth(self) -> None:
+        """depth(m) → JET 컬러맵 + 척도 바 + 커서 지점 실거리."""
+        z = self._depth_img
+        if z is None:
+            return
+        import cv2
+
+        zmax = self.depth_range_slider.value() / 100.0
+        self.depth_range_label.setText(f"{zmax:.1f} m")
+        frame = _depth_colormap(z, zmax)
+        cursor_txt = ""
+        if self._depth_cursor is not None:
+            u, v = self._depth_cursor
+            if not (0 <= u < z.shape[1] and 0 <= v < z.shape[0]):
+                self._depth_cursor = None   # 프레임 크기가 바뀐 뒤 남은 커서
+        if self._depth_cursor is not None:
+            u, v = self._depth_cursor
+            zval = float(z[v, u])
+            label = f"{zval:.3f} m" if zval > 0.001 else tr("무측정")
+            cursor_txt = tr(" · 커서 ({u},{v}) = {d}").format(u=u, v=v, d=label)
+            cv2.circle(frame, (u, v), 7, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (u - 11, v), (u + 11, v), (255, 255, 255), 1)
+            cv2.line(frame, (u, v - 11), (u, v + 11), (255, 255, 255), 1)
+            for color, thick in (((0, 0, 0), 3), ((255, 255, 255), 1)):
+                cv2.putText(frame, label, (min(u + 12, z.shape[1] - 90), max(v - 10, 16)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, thick,
+                            cv2.LINE_AA)
+        self.depth_view.set_frame(frame)
+        n_ok = int(((z > 0.05) & (z <= zmax)).sum())
+        self.depth_status.setText(
+            tr("유효 픽셀 {p}% · 범위 0.05~{m:.1f} m{c} · 기록 여부는 Settings "
+               "스키마(#17)").format(p=round(100 * n_ok / z.size), m=zmax,
+                                     c=cursor_txt))
+
+    def _render_cloud(self) -> None:
+        """포인트클라우드 → 고정 시점 직교 투영 이미지 (numpy 래스터라이즈)."""
+        pts, rgb = self._cloud_pts, self._cloud_rgb
+        if pts is None or len(pts) == 0:
+            return
+        yaw = np.deg2rad(self.cloud_yaw.value())
+        pitch = np.deg2rad(self.cloud_pitch.value())
+        cy, sy = np.cos(yaw), np.sin(yaw)
+        cp, sp = np.cos(pitch), np.sin(pitch)
+        ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+        rx = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
+        p = (pts - pts.mean(axis=0)) @ (rx @ ry).T
+        h_out, w_out = 480, 640
+        # 로버스트 범위(2/98 퍼센타일)로 스케일 -- 튀는 점이 화면을 줄이지 않게
+        lo = np.percentile(p[:, :2], 2, axis=0)
+        hi = np.percentile(p[:, :2], 98, axis=0)
+        span = np.maximum(hi - lo, 1e-6)
+        s = 0.92 * min(w_out / span[0], h_out / span[1])
+        u = ((p[:, 0] - (lo[0] + hi[0]) / 2) * s + w_out / 2).astype(np.int32)
+        v = ((p[:, 1] - (lo[1] + hi[1]) / 2) * s + h_out / 2).astype(np.int32)
+        keep = (u >= 0) & (u < w_out - 1) & (v >= 0) & (v < h_out - 1)
+        u, v, z = u[keep], v[keep], p[keep, 2]
+        c = rgb[keep]
+        order = np.argsort(-z)              # 먼 점부터 -- 가까운 점이 덮어쓴다
+        u, v, c = u[order], v[order], c[order]
+        canvas = np.full((h_out, w_out, 3), 16, np.uint8)
+        for du, dv in ((0, 0), (1, 0), (0, 1), (1, 1)):   # 2×2 점
+            canvas[v + dv, u + du] = c
+        self.cloud_view.set_frame(canvas)
+
     def _on_center_tab_changed(self, idx: int) -> None:
         """레이아웃 탭이 보이는 동안만 하단 로그를 접고 슬라이드쇼를 돌린다."""
+        if idx == getattr(self, "_cloud_tab_index", -1):
+            self._depth_consumer = "cloud"
+        elif idx == getattr(self, "_depth_tab_index", -1):
+            self._depth_consumer = "depth"
+        else:
+            self._depth_consumer = None
+        if self._depth_consumer is not None:
+            self._start_cloud()     # 이미 같은 카메라로 돌고 있으면 유지
+            if self._cloud_worker is not None:
+                # 보이는 탭 것만 계산하도록 워커 모드 전환 (사용자 요구:
+                # depth 계산도 그 탭에 들어갔을 때만)
+                self._cloud_worker.mode = self._depth_consumer
+        elif self._cloud_worker is not None:
+            self._stop_cloud()
         on = idx == self._layout_tab_index
         self.bottom_tabs.setVisible(not on)
         if on:
@@ -1855,6 +4226,18 @@ class WorkspaceWindow(QMainWindow):
         row.addWidget(self.rank_combo, 1)
         fcol.addLayout(row)
 
+        # 그룹(scene·문장) 필터 -- 편차는 이미 그룹 단위로 계산되지만, 후보
+        # 목록도 한 그룹만 놓고 보아야 "이 작업 안에서 어떤 테이크가 튀나"가
+        # 읽힌다 (파일 선택은 scene 단위까지만 좁혀 주었다).
+        grow = QHBoxLayout()
+        grow.addWidget(QLabel(tr("그룹")))
+        self.group_combo = QComboBox()
+        _shrinkable_combo(self.group_combo)
+        self.group_combo.addItem(tr("(전체)"), None)
+        self.group_combo.currentIndexChanged.connect(self._refresh_rank_list)
+        grow.addWidget(self.group_combo, 1)
+        fcol.addLayout(grow)
+
         len_row = QHBoxLayout()
         len_row.addWidget(QLabel(tr("길이(초)")))
         self.len_min_spin = QSlider(Qt.Orientation.Horizontal)
@@ -1881,7 +4264,7 @@ class WorkspaceWindow(QMainWindow):
             self.rank_tree.setColumnWidth(c, 76)
         for c, tip in enumerate((
                 tr("파일 · 에피소드"),
-                tr("이 에피소드의 평균 |Δa| 에서 같은 task 평균을 뺀 값 (rad/frame).\n"
+                tr("이 에피소드의 평균 |Δa| 에서 같은 (scene·문장) 그룹 평균을 뺀 값 (rad/frame).\n"
                    "+ 는 그 작업의 보통 테이크보다 급하게, - 는 느리게 움직인 것.\n"
                    "±{d} 를 넘으면 빨강/파랑").format(d=TASK_DEV_LIMIT),
                 tr("속도가 {v} rad/frame 미만이던 프레임 비율 — 망설임").format(v=STILL_VEL),
@@ -1896,7 +4279,7 @@ class WorkspaceWindow(QMainWindow):
         # 열지 않고도 "몇이면 이상한가"를 알아야 하지만, 그게 목록을 밀어내면
         # 정작 봐야 할 후보가 안 보인다.
         cols_row = QHBoxLayout()
-        cols = QLabel(tr("같은 task 평균과의 차 — ±{d} 밖이면 급함(빨강)/느림(파랑)")
+        cols = QLabel(tr("같은 (scene·문장) 그룹 평균과의 차 — ±{d} 밖이면 급함(빨강)/느림(파랑)")
                       .format(d=TASK_DEV_LIMIT))
         cols.setStyleSheet("color:#888;")
         cols_row.addWidget(cols, 1)
@@ -2008,6 +4391,12 @@ class WorkspaceWindow(QMainWindow):
         self.layout_grid_check.toggled.connect(
             lambda _on: self._layout_rerender())
         dform.addRow(self.layout_grid_check)
+        ws_grid_btn = QPushButton(tr("3×3 워크스페이스 격자 편집..."))
+        ws_grid_btn.setToolTip(tr(
+            "카메라에 비친 작업면의 꼭짓점 4개를 드래그해 3×3 격자를 만들고 "
+            "저장합니다.\nLive 탭의 '3×3 격자' 체크박스로 겹쳐 볼 수 있습니다."))
+        ws_grid_btn.clicked.connect(self._on_edit_grid)
+        dform.addRow(ws_grid_btn)
         col.addWidget(disp)
 
         # 크롭 정렬 -- 값은 640 폭 기준 px. 라이브 가이드·레이아웃 겹침·변환이
@@ -2169,6 +4558,16 @@ class WorkspaceWindow(QMainWindow):
                 self.right_fields[key] = lab
             col.addWidget(box)
 
+        # 지금 수집 중인 scene 의 물체 배치(3×3)를 세션 내내 보여준다 --
+        # 물체를 제자리에 되돌릴 때 Configure 로 오갈 필요가 없게.
+        scene_box = QGroupBox(tr("Scene 배치 (수집 중)"))
+        sv = QVBoxLayout(scene_box)
+        sv.setContentsMargins(6, 6, 6, 6)
+        self.right_scene_view = SceneInfoView()
+        self.right_scene_view.setText(tr("(scene 세션 없음)"))
+        sv.addWidget(self.right_scene_view)
+        col.addWidget(scene_box)
+
         sysbox = QGroupBox(f"System ({TODO_MARK})")
         sform = QFormLayout(sysbox)
         for label in ("CPU", "GPU", "Memory"):
@@ -2240,13 +4639,24 @@ class WorkspaceWindow(QMainWindow):
         self.center_split.setChildrenCollapsible(False)
 
         self.upper_split = QSplitter(Qt.Orientation.Horizontal)
-        self.left_stack.setMinimumWidth(240)
+        self.left_stack.setMinimumWidth(200)
         self.right_panel.setMinimumWidth(200)
+        # 배치도가 붙으면서 패널이 창보다 길어질 수 있다 -- 세로 스크롤로
+        # 감싼다 (가로는 원칙대로 없음, 내용이 접힌다).
+        _relax_min_widths(self.right_panel)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        right_scroll.setWidget(self.right_panel)
+        right_scroll.setMinimumWidth(200)
+        self.right_scroll = right_scroll
         self.center_tabs.setMinimumWidth(420)
         self.bottom_tabs.setMinimumHeight(90)
         self.upper_split.addWidget(self.left_stack)
         self.upper_split.addWidget(self.center_split)
-        self.upper_split.addWidget(self.right_panel)
+        self.upper_split.addWidget(self.right_scroll)
         # Only the center grows when the window does: the two side panels hold
         # text at a readable width, the camera is the thing worth more pixels.
         self.upper_split.setStretchFactor(0, 0)
@@ -2307,7 +4717,7 @@ class WorkspaceWindow(QMainWindow):
         m = mb.addMenu(tr("Dataset"))
         m.addAction(tr("새로고침"), self._refresh_dataset_tree)
         m.addAction(tr("실패만 선택"), self._on_select_failed)
-        m.addAction(tr("튀는 것만 선택 (task 평균과 ±0.0026 밖)"),
+        m.addAction(tr("튀는 것만 선택 (scene·문장 그룹 평균과 ±0.0026 밖)"),
                     self._on_select_jerky)
         m.addAction(tr("에피소드 삭제"), self._on_delete_selected)
         m.addAction(tr("파일 삭제"), self._on_delete_file)
@@ -2341,7 +4751,7 @@ class WorkspaceWindow(QMainWindow):
         m.addAction(self.act_toggle_bottom)
         self.act_toggle_right = QAction(tr("오른쪽 패널"), self, checkable=True, checked=True)
         self.act_toggle_right.triggered.connect(
-            lambda on: self.right_panel.setVisible(on))
+            lambda on: self.right_scroll.setVisible(on))
         m.addAction(self.act_toggle_right)
 
         m = mb.addMenu(tr("Tools"))
@@ -2363,7 +4773,7 @@ class WorkspaceWindow(QMainWindow):
                "  기록 중        Delete       폐기\n"
                "  자세 정렬 중   Enter        자동 정렬 다시 (대략 맞춘 뒤에만)\n"
                "  리셋 대기 중   Esc          직전 에피소드 판정 뒤집기\n"
-               "  리셋 대기 중   Enter        대기 건너뛰기\n\n"
+               "  리셋 대기 중   Enter        리셋 완료 — 계속\n\n"
                "지금 쓸 수 있는 키는 Collect 패널 아래에 초록색으로 표시됩니다.")))
         m.addSeparator()
         m.addAction(tr("정보"), lambda: QMessageBox.information(
@@ -2392,6 +4802,7 @@ class WorkspaceWindow(QMainWindow):
             act.setChecked(True)
         if key == "stats":
             self._refresh_stats()
+            self._refresh_plan_progress()
             if not self._stats:
                 self._refresh_analysis()
         elif key == "dataset":
@@ -2505,85 +4916,9 @@ class WorkspaceWindow(QMainWindow):
             self.root_edit.setText(d)
             self._refresh_dataset_tree()
 
-    # ------------------------------------------------- 기존 task 이어찍기
-    def _refresh_resume_combo(self) -> None:
-        """Rebuilds the resume list from what is actually on disk right now.
-
-        Rebuilt rather than cached: the operator deletes episodes and whole
-        files from the Dataset panel while this dropdown is on screen, and a
-        stale entry here would let them resume a file that no longer exists.
-        """
-        if not hasattr(self, "resume_combo"):
-            return
-        cur = self.resume_combo.currentData()
-        self.resume_combo.blockSignals(True)
-        self.resume_combo.clear()
-        self.resume_combo.addItem(tr("(새로 시작)"), None)
-        root = Path(self.root_edit.text().strip()).expanduser()
-        if root.is_dir():
-            for path in sorted(root.glob("*_demo.hdf5")):
-                try:
-                    with h5py.File(path, "r") as f:
-                        n = len(f["data"].keys())
-                except OSError:
-                    continue
-                self.resume_combo.addItem(
-                    tr("{name}  ({n}개)").format(name=path.stem[:-5], n=n), str(path))
-        idx = self.resume_combo.findData(cur)
-        self.resume_combo.setCurrentIndex(max(0, idx))
-        self.resume_combo.blockSignals(False)
-
-    def _on_resume_selected(self) -> None:
-        """Locks the three task fields to the chosen file and restores its
-        session settings.
-
-        The fields are disabled rather than merely pre-filled: they name the
-        file being written to, so editing them while resuming would either
-        silently start a different file or write this one under a name the
-        operator no longer sees.
-        """
-        path = self.resume_combo.currentData()
-        editable = path is None
-        for wdg in (self.task_edit, self.lang_edit, self.root_edit):
-            wdg.setEnabled(editable)
-        if editable:
-            self._resume_info = ""
-            self.resume_info_btn.setEnabled(False)
-            return
-        p = Path(path)
-        self.task_edit.setText(p.stem[:-5])
-        lang, restored = "", []
-        try:
-            with h5py.File(p, "r") as f:
-                data = f["data"]
-                info = data.attrs.get("problem_info")
-                if info:
-                    lang = json.loads(json.loads(info)["language_instruction"])
-                cfg = data.attrs.get("session_config")
-                if cfg:
-                    restored = self._apply_session_config(json.loads(cfg))
-        except (OSError, ValueError, KeyError) as e:
-            # 읽기 실패는 사용자가 지금 알아야 한다 -- info 버튼 뒤에 숨기지
-            # 않고 바로 띄운다.
-            self._resume_info = tr("설정을 읽지 못했습니다: {e}").format(e=e)
-            self.resume_info_btn.setEnabled(True)
-            self.log(f"[이어찍기] {p.name}: 설정을 읽지 못했습니다: {e}")
-            self._alert(tr("기존 task 이어찍기"), self._resume_info)
-            return
-        self.lang_edit.setText(lang)
-        self.root_edit.setText(str(p.parent))
-        self._resume_info = tr(
-            "{f} 에 이어 기록합니다.\n\n"
-            "Task 이름·Language·저장 경로는 이 파일 값으로 잠깁니다.\n"
-            "복원된 세션 설정: {r}\n"
-            "이 파일의 구조는 대조하지 않습니다 — issue #12.").format(
-                f=p.name, r=", ".join(restored) if restored else tr("없음"))
-        self.resume_info_btn.setEnabled(True)
-
-    def _show_resume_info(self) -> None:
-        if getattr(self, "_resume_info", ""):
-            self._alert(tr("기존 task 이어찍기"), self._resume_info,
-                        icon=QMessageBox.Icon.Information)
+    # legacy '기존 task 이어찍기' 드롭다운(_refresh_resume_combo /
+    # _on_resume_selected / _show_resume_info)은 legacy 수집 UI 제거와 함께
+    # 삭제됐다 (2026-08-13). scene 이어찍기는 Scene 콤보가 담당한다.
 
     def _apply_session_config(self, cfg: dict) -> list:
         """Puts a file's recorded session_config back into the widgets that
@@ -2857,11 +5192,81 @@ class WorkspaceWindow(QMainWindow):
         self._dying_previews = []
 
     def _on_preview_frame(self, role: str, frame) -> None:
-        self.live_views[role].set_frame(frame)
-        self._last_cam_frame[role] = frame
+        self._update_live_view(role, frame)
         if self.center_tabs.currentIndex() == self._layout_tab_index:
             self._layout_update_role(role)
         self._fps_count += 1
+
+    def _update_live_view(self, role: str, frame) -> None:
+        """라이브 프레임 공용 경로 -- 원본 캐시 + 표시 (겹침 없음)."""
+        self._last_cam_frame[role] = frame      # 격자 없는 원본을 저장
+        self.live_views[role].set_frame(self._with_grid(role, frame))
+
+    def _set_live_maximized(self, role: "str | None") -> None:
+        """좌우 배치는 유지하고 스플리터 비율만 바꾼다 -- 최대화한 쪽이
+        ~88%, 반대쪽은 아주 작게. 겹침(PiP) 없음. 경계는 드래그로도 조절."""
+        if role == self._live_maximized:
+            return
+        self._live_maximized = role
+        total = max(self.live_split.width(), 800)
+        if role is None:
+            self.live_split.setSizes([total // 2, total // 2])
+        else:
+            big, small = int(total * 0.88), max(90, int(total * 0.12))
+            self.live_split.setSizes([big, small] if role == "agent"
+                                     else [small, big])
+        idx = 0 if role is None else self.live_view_combo.findData(role)
+        if idx >= 0 and self.live_view_combo.currentIndex() != idx:
+            self.live_view_combo.blockSignals(True)
+            self.live_view_combo.setCurrentIndex(idx)
+            self.live_view_combo.blockSignals(False)
+
+    def _with_grid(self, role: str, frame):
+        """agent 라이브 화면에만 워크스페이스 3×3 격자를 덧그린다 (사본)."""
+        if role != "agent" or not self.grid_live_check.isChecked():
+            return frame
+        corners = active_corners(self._grid_store)
+        if not corners:
+            return frame
+        return draw_grid(frame, corners, self.grid_alpha_slider.value())
+
+    def _on_grid_live_toggled(self, on: bool) -> None:
+        self._grid_store["live_on"] = bool(on)
+        save_grid_store(self._grid_store)
+        if on and active_corners(self._grid_store) is None:
+            self.log(tr("[격자] 저장된 격자가 없습니다 — '격자 편집...'에서 "
+                        "만들어 저장하세요."))
+        self._regrid_live()
+
+    def _on_grid_alpha(self, val: int) -> None:
+        # 드래그 중에는 화면만 갱신하고, 저장은 놓을 때 한 번(_on_grid_alpha_done).
+        self.grid_alpha_label.setText(tr("{v}%").format(v=val))
+        self._grid_store["alpha"] = int(val)
+        self._regrid_live()
+
+    def _on_grid_alpha_done(self) -> None:
+        save_grid_store(self._grid_store)
+
+    def _regrid_live(self) -> None:
+        """마지막 프레임으로 agent 뷰를 다시 그린다 -- 멈춘 화면에서도
+        체크박스/슬라이더가 즉시 반영되게."""
+        frame = self._last_cam_frame.get("agent")
+        if frame is not None:
+            self.live_views["agent"].set_frame(self._with_grid("agent", frame))
+
+    def _on_edit_grid(self) -> None:
+        bg = self._last_cam_frame.get("agent")
+        if bg is None:
+            bg = self._layout_ref.get("agent")
+        if bg is None:
+            bg = np.full((480, 640, 3), 60, np.uint8)
+            self.log(tr("[격자] 카메라 프레임이 없어 회색 배경에서 편집합니다 — "
+                        "미리보기를 켜면 실제 화면 위에서 맞출 수 있습니다."))
+        dlg = GridEditorDialog(self, bg, self._grid_store,
+                               crop_params=dict(self._crop_params["agent"]))
+        dlg.exec()
+        self._grid_store = load_grid_store()    # 저장 결과를 다시 정본에서
+        self._regrid_live()
 
     def _on_preview_error(self, role: str, msg: str) -> None:
         self.live_views[role].clear_frame(tr("미리보기 실패"))
@@ -2874,30 +5279,24 @@ class WorkspaceWindow(QMainWindow):
             self.log("[연결] 이미 세션이 실행 중입니다.")
             return
         no_dataset = self.no_dataset_check.isChecked()
-        task = self.task_edit.text().strip()
+        scene_on = not no_dataset  # scene-v1 이 유일한 수집 방식 (legacy 제거)
         lang = self.lang_edit.text().strip()
-        if not task and not no_dataset:
-            QMessageBox.warning(self, tr("Task 이름 필요"), tr("Task 이름을 입력하세요."))
-            return
-        if no_dataset:
-            # Never reaches a writer, but WorkerConfig requires the fields and
-            # a blank task_name would show up as an empty label everywhere.
-            task = task or "practice"
-        # 이어쓰기 여부는 이어찍기 드롭다운에서 유도한다. 예전의 "기존 파일에
-        # 이어서 수집" 체크박스(기본 True)는 새로 시작인데 Task 이름이 기존
-        # 파일과 겹치면 다른 설정으로 조용히 이어붙였다 -- 드롭다운이 막으려던
-        # 바로 그 사고라서, 그 경우는 여기서 차단한다.
-        resume = self.resume_combo.currentData() is not None
-        if not no_dataset and not resume:
-            target = (Path(self.root_edit.text().strip())
-                      / f"{task.replace(' ', '_')}_demo.hdf5")
-            if target.exists():
-                QMessageBox.warning(self, tr("파일이 이미 있음"), tr(
-                    "{f} 이(가) 이미 있습니다.\n"
-                    "이어 찍으려면 태스크의 '기존 task 이어찍기'에서 이 파일을 "
-                    "고르고, 새 데이터셋이면 Task 이름을 바꾸세요.").format(
-                        f=target.name))
+        # scene 설정 검증은 _scene_config_from_ui 가, 파일 생성/이어찍기 판정은
+        # SceneWriter 가 한다 (파일명은 scene_id 에서 나오므로 이름 중복 검사
+        # 자체가 없다).
+        scene_meta = None
+        scene_sid = None
+        scene_resume = False
+        if scene_on:
+            scene_meta, scene_sid, scene_resume, err = self._scene_config_from_ui()
+            if err is not None:
+                QMessageBox.warning(self, tr("Scene 설정"), err)
                 return
+            task = scene_meta.scene_id if scene_meta is not None else scene_sid
+        else:
+            # 연습 모드: writer 에 닿지 않지만 WorkerConfig 라벨용 이름은 필요.
+            task = "practice"
+        resume = False  # legacy 이어찍기 제거 -- scene 은 scene_resume 이 담당
         agent, wrist = self._combo_serial(self.agent_combo), self._combo_serial(self.wrist_combo)
         if not agent or not wrist:
             QMessageBox.warning(self, tr("카메라 선택 필요"),
@@ -2919,6 +5318,7 @@ class WorkspaceWindow(QMainWindow):
         # can take a second or two on a flaky link -- waited for inline it just
         # looked like the app had died. Ask them to stop, then keep the UI
         # alive and retry on a timer until they are actually gone.
+        self._stop_cloud(restore_previews=False)   # depth 도 카메라를 놓아야 한다
         self._stop_previews_async()
         if self._previews_busy():
             if self._connect_wait_since is None:
@@ -2953,6 +5353,11 @@ class WorkspaceWindow(QMainWindow):
             auto_match_pose=self.match_check.isChecked(),
             resume=resume,
             no_dataset=no_dataset,
+            scene_metadata=scene_meta,
+            scene_id=scene_sid,
+            scene_resume=scene_resume,
+            instruction_id=(self.scene_iid_edit.text().strip() if scene_on else ""),
+            collector=(self.collector_edit.text().strip() if scene_on else ""),
             agent_camera_serial=agent,
             wrist_camera_serial=wrist,
             schema=self.schema,
@@ -2960,11 +5365,32 @@ class WorkspaceWindow(QMainWindow):
             # GUI 상태와 얽혀 있지 않아야 한다.
             crop_params={r: dict(v) for r, v in self._crop_params.items()},
         )
-        for key, value in (("task", task), ("language", lang),
+        for key, value in (("language", lang),
                            ("data_root", cfg.data_root),
-                           ("agent_serial", agent), ("wrist_serial", wrist)):
+                           ("agent_serial", agent), ("wrist_serial", wrist),
+                           ("collector", cfg.collector),
+                           ("instruction_id", cfg.instruction_id)):
             if value:
                 self._recents.add(key, value)
+        # scene 세션 표시 + Collect 페이지 slot 패널 초기값
+        self._scene_session = scene_on
+        if scene_on:
+            self.slot_iid_edit.setText(cfg.instruction_id)
+            self.slot_instr_edit.setText(cfg.language_instruction)
+            self.slot_current_label.setText(
+                f"{cfg.instruction_id}: {cfg.language_instruction}")
+            # 오른쪽 배치도 -- 이어찍기는 metadata 가 파일에만 있으므로 워커가
+            # 파일을 쥐기 전인 지금 읽어 둔다.
+            md = scene_meta
+            if md is None and scene_sid:
+                try:
+                    md = read_scene_metadata(
+                        Path(cfg.data_root) / scene_filename(scene_sid))
+                except Exception:  # noqa: BLE001
+                    md = None
+            self._set_right_scene(md, scene_sid)
+        else:
+            self._set_right_scene(None)
 
         w = CollectionWorker(cfg)
         w.state_changed.connect(self._on_state)
@@ -3021,14 +5447,18 @@ class WorkspaceWindow(QMainWindow):
 
     def _set_running(self, running: bool) -> None:
         savable = running and not self._no_dataset_session
-        for key in ("record", "discard", "home"):
+        for key in ("discard", "home"):
             self.tb_actions[key].setEnabled(running)
         for key in ("save", "savefail"):
             self.tb_actions[key].setEnabled(savable)
         self.tb_actions["connect"].setEnabled(not running)
         self.tb_actions["disconnect"].setEnabled(running)
-        for b in (self.start_btn, self.skip_btn, self.discard_btn, self.home_btn):
+        for b in (self.skip_btn, self.discard_btn, self.home_btn):
             b.setEnabled(running)
+        if not running:
+            self._gate_ok = False
+        # Start(기록 시작)는 게이트 자세 조건까지 본다 -- 아래 헬퍼가 전담.
+        self._update_start_controls(running)
         for b in (self.save_ok_btn, self.save_ng_btn):
             b.setEnabled(savable)
         self.no_dataset_check.setEnabled(not running)
@@ -3044,9 +5474,26 @@ class WorkspaceWindow(QMainWindow):
         for w in self._crop_widgets:
             w.setEnabled(not running)
         self._update_preview_btn()
+        # scene 세션에서만 slot 전환 패널 노출
+        self.slot_box.setVisible(running and self._scene_session)
         self.lights["robot"].set("ok" if running else "off",
                                  tr("연결됨") if running else tr("끊김"))
         self.right_fields["robot"].setText(tr("연결됨") if running else tr("끊김"))
+
+    def _update_start_controls(self, running: "bool | None" = None) -> None:
+        """Start Teleop 버튼/툴바는 게이트 상태에선 자세가 맞아야만 열린다.
+
+        자동 정렬이 켜져 있어도 같다 -- 정렬은 리더가 범위(GATE_RAD) 안에
+        들어와야 발동하므로, 그 전에 시작을 눌러도 워커가 거부만 한다.
+        버튼을 잠가서 '왜 안 되는지'를 누르기 전에 보이게 한다.
+        """
+        if running is None:
+            running = self.worker is not None
+        ok = running and (self._current_state != "gate" or self._gate_ok)
+        self.start_btn.setEnabled(ok)
+        act = getattr(self, "tb_actions", {}).get("record")
+        if act is not None:
+            act.setEnabled(ok)
 
     # ------------------------------------------------------ worker slots
     @pyqtSlot(str)
@@ -3058,7 +5505,11 @@ class WorkspaceWindow(QMainWindow):
             self._last_saved_name = None
             self._pending_verdict_toggle = False
             self.verdict_label.setText("")
+        if state == "gate" and self._current_state != "gate":
+            # 새 게이트: 첫 gate_status 가 올 때까지 시작을 잠근다.
+            self._gate_ok = False
         self._current_state = state
+        self._update_start_controls()
         self.state_label.setText(STATE_LABELS.get(state, state))
         self.shortcut_hint.setText(SHORTCUT_HINTS.get(state, ""))
         self.right_fields["state"].setText(state)
@@ -3073,8 +5524,7 @@ class WorkspaceWindow(QMainWindow):
         for role, rgb in (("agent", agent_rgb), ("wrist", wrist_rgb)):
             if rgb is None:
                 continue
-            self.live_views[role].set_frame(rgb)
-            self._last_cam_frame[role] = rgb
+            self._update_live_view(role, rgb)
             if layout_on:
                 self._layout_update_role(role)
         self._fps_count += 1
@@ -3094,6 +5544,7 @@ class WorkspaceWindow(QMainWindow):
         # 게이트 상태의 힌트도 all_ok에 따라 바꾼다.
         self._gate_ok = all_ok
         self.match_btn.setEnabled(all_ok)
+        self._update_start_controls()
         if self._current_state == "gate":
             self.shortcut_hint.setText(
                 "Space: 텔레옵 시작   Enter: 자동 정렬 다시" if all_ok
@@ -3145,7 +5596,9 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(float)
     def _on_countdown(self, seconds) -> None:
-        self.state_label.setText(tr("리셋 대기 {s:.0f}s").format(s=seconds))
+        # 자동 진행이 없어졌으므로 카운트다운이 아니라 경과 시간이다.
+        self.state_label.setText(
+            tr("리셋 중 {s:.0f}s 경과 — 배치 후 Enter").format(s=seconds))
 
     @pyqtSlot(bool)
     def _on_node_status(self, ok) -> None:
@@ -3159,6 +5612,9 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(int, str)
     def _on_connected(self, n_episodes, path) -> None:
+        # 세션이 붙었다 = 노드가 살아 응답했다 (연결 검증이 노드 경유).
+        self.lights["node"].set("ok", tr("정상"))
+        self.right_fields["node"].setText(tr("정상"))
         # 연결되면 카메라 화면으로 따라간다. 버튼을 누른 시점이 아니라 여기인
         # 이유는, 연결이 미리보기 정리를 기다리거나 실패할 수 있기 때문이다 --
         # 그때 Live 로 옮겨두면 아무것도 안 나오는 탭을 보게 된다.
@@ -3174,6 +5630,10 @@ class WorkspaceWindow(QMainWindow):
             return
         self.active_file_path = Path(path)
         self._episodes_at_connect = int(n_episodes)
+        if self._scene_session:
+            # scene 파일이 실제로 만들어졌으니 보관해 둔 새 scene 구성은 소진.
+            self._pending_scene_meta = None
+            self._refresh_slot_panel()
         self._update_dataset_panel()
         self.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
         self._refresh_dataset_tree()
@@ -3182,12 +5642,28 @@ class WorkspaceWindow(QMainWindow):
     def _on_episode_list(self, episodes) -> None:
         self.active_episode_cache = episodes
         self._refresh_dataset_tree()
+        if self._scene_session:
+            # 저장/재판정마다 saver 가 새 목록을 보내온다 -- slot 카운트 갱신
+            self._refresh_slot_panel()
+            self._refresh_start_plan_combo()   # Configure 쪽 카운트도 동기화
 
     @pyqtSlot(dict)
     def _on_summary(self, summary) -> None:
         # 해제는 여기서 하지 않는다 -- 정상 종료에만 오는 신호다. 실제 해제는
         # 모든 종료 경로에서 오는 finished(_on_worker_finished)가 맡는다.
         self.log(f"[세션 요약] {summary}")
+
+    def _set_right_scene(self, md, sid=None) -> None:
+        """오른쪽 패널의 '수집 중 scene 배치도'를 갱신한다."""
+        if not hasattr(self, "right_scene_view"):
+            return
+        if md is not None:
+            self.right_scene_view.setText(describe_scene(md))
+        elif sid:
+            self.right_scene_view.setText(
+                tr("{s} — 배치 정보를 읽지 못했습니다").format(s=sid))
+        else:
+            self.right_scene_view.setText(tr("(scene 세션 없음)"))
 
     @pyqtSlot()
     def _on_worker_finished(self) -> None:
@@ -3204,9 +5680,21 @@ class WorkspaceWindow(QMainWindow):
         self._no_dataset_session = False
         self.active_file_path = None
         self.active_episode_cache = None
+        was_scene = self._scene_session
+        self._scene_session = False
+        self._set_right_scene(None)
         self._set_running(False)
         self._refresh_dataset_tree()
+        if was_scene:
+            # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
+            self._refresh_scene_combo()
         self._restart_previews()
+        if self._depth_consumer is not None:
+            # 세션 동안 Depth/Point Cloud 탭에 머물러 있었다면 스트림을 다시
+            # 올린다 (세션 중엔 안내만 보였다). 미리보기가 뜨는 시간을 준다.
+            QTimer.singleShot(600, lambda: (
+                self._start_cloud() if self.worker is None
+                and self._depth_consumer is not None else None))
 
     # -------------------------------------------------------------- stats
     def _bump(self, key: str, n: int = 1) -> None:
@@ -3249,6 +5737,65 @@ class WorkspaceWindow(QMainWindow):
         self.sb_right.setText(
             f"{self._fps_value:.0f} fps   |   {count}   |   {self.root_edit.text()}")
 
+    def _refresh_plan_progress(self) -> None:
+        """Statistics 의 계획 진행률 표 -- 계획 × 실제 scene 파일 대조."""
+        tree = getattr(self, "plan_progress_tree", None)
+        if tree is None:
+            return
+        tree.clear()
+        plan = self._current_plan()
+        if plan is None:
+            self.plan_progress_label.setText(
+                tr("Configure 에서 수집 계획을 선택하세요."))
+            return
+        root = Path(self.root_edit.text().strip() or ".")
+        done = total = 0
+        skipped: list = []
+        for sp in plan.scenes:
+            path = root / scene_filename(sp.scene_id)
+            counts: dict = {}
+            note = ""
+            if self._scene_session and sp.scene_id == self._session_scene_id():
+                counts = self._session_slot_counts()
+                note = tr(" (세션 중 — 캐시)")
+            elif path.exists():
+                try:
+                    counts = count_by_slot(path)
+                except Exception:  # noqa: BLE001 -- 잠금 등
+                    note = tr(" (파일 사용 중)")
+            else:
+                # 파일이 없는(아직 안 찍었거나 지운) scene 은 표에 넣지
+                # 않는다 -- 지운 파일의 slot 목록이 계속 보이는 것이
+                # 혼란스럽다는 실사용 피드백. 개수는 아래 요약에 남긴다.
+                skipped.append(sp.scene_id)
+                continue
+            s_done = s_total = 0
+            top = QTreeWidgetItem([f"{sp.scene_id}{note}", "", "", ""])
+            for s in sp.slots:
+                c = counts.get(s.instruction_id, {}).get("usable", 0)
+                s_done += min(c, s.target)
+                s_total += s.target
+                it = QTreeWidgetItem(
+                    [f"  {s.instruction_id}", str(c), str(s.target),
+                     s.instruction])
+                if c >= s.target:
+                    for col_i in range(4):
+                        it.setForeground(col_i, Qt.GlobalColor.darkGreen)
+                top.addChild(it)
+            top.setText(1, str(s_done))
+            top.setText(2, str(s_total))
+            done += s_done
+            total += s_total
+            tree.addTopLevelItem(top)
+        tree.expandAll()
+        pct = (100 * done // total) if total else 0
+        text = tr("전체 {d}/{t} ({p}%) — {n}").format(
+            d=done, t=total, p=pct, n=plan.path.name)
+        if skipped:
+            text += tr("  ·  파일 없는 scene {n}개 표시 안 함 ({s})").format(
+                n=len(skipped), s=", ".join(skipped[:4]))
+        self.plan_progress_label.setText(text)
+
     def _refresh_stats(self) -> None:
         for stats, labels in ((self._session, self.stats_labels),
                               (self._cumulative, self.stats_total_labels)):
@@ -3286,7 +5833,14 @@ class WorkspaceWindow(QMainWindow):
                     else Path(str(self.active_file_path or "-")).name)
             f["ds_file"].setText(soft_wrap(name))
             f["ds_file"].setToolTip(name)
-            task_text = cfg.language_instruction or cfg.task_name
+            # 연결 시점 설정이 아니라 '지금' slot 을 보여준다 -- scene 세션은
+            # Disconnect 없이 slot(문장·ID)을 바꾸므로(cmd_set_slot) 설정값만
+            # 보여주면 전환 뒤에도 첫 문장이 그대로 남는다 (실사용 보고).
+            cur_instr = getattr(self.worker, "_slot_instruction", None) \
+                or cfg.language_instruction or cfg.task_name
+            cur_iid = getattr(self.worker, "_slot_instruction_id", "") or cfg.instruction_id
+            task_text = f"{cur_iid}: {cur_instr}" if (self._scene_session and cur_iid) \
+                else cur_instr
             f["ds_task"].setText(task_text)
             f["ds_task"].setToolTip(task_text)
             # 저장은 백그라운드라 episode_list_changed가 몇 초 늦게 온다. 그걸
@@ -3324,16 +5878,24 @@ class WorkspaceWindow(QMainWindow):
         task = action = gripper = image = "-"
         try:
             with h5py.File(path, "r") as h:
-                data = h["data"]
-                info = data.attrs.get("problem_info")
-                if info:
-                    try:
-                        task = json.loads(json.loads(info)["language_instruction"])
-                    except Exception:  # noqa: BLE001
-                        task = str(info)[:60]
-                names = sorted(data.keys(), key=lambda s: int(s.split("_")[1]))
+                if "data" in h:
+                    data = h["data"]
+                    info = data.attrs.get("problem_info")
+                    if info:
+                        try:
+                            task = json.loads(json.loads(info)["language_instruction"])
+                        except Exception:  # noqa: BLE001
+                            task = str(info)[:60]
+                    names = sorted(data.keys(), key=lambda s: int(s.split("_")[1]))
+                    container = data
+                else:
+                    # scene-v1: task 는 파일 단위 개념이 아니다 -- scene ID 로 표기
+                    task = "scene " + str(h["metadata"].attrs.get("scene_id", "?"))
+                    names = sorted((k for k in h.keys() if k.startswith("episode_")),
+                                   key=lambda s: int(s.split("_")[1]))
+                    container = h
                 if names:
-                    g = data[names[0]]
+                    g = container[names[0]]
                     action = str(g.attrs.get("action_space", "-"))
                     conv = str(g.attrs.get("gripper_action_convention", ""))
                     gripper = {"01": "0/1 (obs와 동일)", "pm1": "-1/+1"}.get(conv, conv or "-")
@@ -3354,10 +5916,13 @@ class WorkspaceWindow(QMainWindow):
         """Rescans every .hdf5's actions. Only a few KB per episode, so this is
         rebuilt from disk rather than cached -- a cache would go stale the
         moment a session records another take."""
-        root = self.root_edit.text().strip()
-        files = hdf5_files(root)
+        # Dataset 페이지의 폴더 선택을 따른다 (수집 경로 하드코딩 제거) --
+        # scene 파일도 함께 스캔한다.
+        root = self._dataset_root()
+        files = hdf5_files(root) + [str(p) for p in iter_scene_files(root)]
         if not files:
-            self.analysis_summary.setText(tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=root))
+            self.analysis_summary.setText(
+                tr("{r} 에 *_demo.hdf5 / scene_*.hdf5 가 없습니다.").format(r=root))
             return
         t0 = time.monotonic()
         self._stats = scan_dataset(files)
@@ -3365,7 +5930,7 @@ class WorkspaceWindow(QMainWindow):
         dt = time.monotonic() - t0
         s = self._summary
         self.analysis_summary.setText(
-            tr("에피소드 {n}개 · {f:,}프레임 · task {t}개 · 길이 {a}~{b}프레임\n{v}").format(
+            tr("에피소드 {n}개 · {f:,}프레임 · 그룹(scene·문장) {t}개 · 길이 {a}~{b}프레임\n{v}").format(
                 n=s["n"], f=s["frames"], t=s["tasks"],
                 a=s["len_min"], b=s["len_max"], v=s["verdict"]))
         self.log(f"[분석] {len(files)}개 파일 / {s['n']}개 에피소드 ({dt:.2f}s) — {s['verdict']}")
@@ -3384,6 +5949,7 @@ class WorkspaceWindow(QMainWindow):
         self.len_max_spin.setValue(int(max(lens) * 10) + 5)
         self.len_min_spin.blockSignals(False)
         self.len_max_spin.blockSignals(False)
+        self._refresh_group_combo()
         self._refresh_rank_list()
 
     def _filtered_stats(self) -> list:
@@ -3401,7 +5967,33 @@ class WorkspaceWindow(QMainWindow):
             v = node.data(0, Qt.ItemDataRole.UserRole)
             path = v if isinstance(v, str) and v.endswith(".hdf5") else None
         out = [e for e in self._stats if lo <= e.seconds <= hi]
-        return [e for e in out if path is None or e.path == path]
+        out = [e for e in out if path is None or e.path == path]
+        grp = self.group_combo.currentData() if hasattr(self, "group_combo") else None
+        if grp is not None:
+            out = [e for e in out if e.group == grp]
+        return out
+
+    def _refresh_group_combo(self) -> None:
+        """Analysis 스캔 결과의 (scene·문장) 그룹으로 콤보를 채운다 -- 선택은
+        가능하면 유지한다 (새로고침마다 (전체) 로 튀지 않게)."""
+        if not hasattr(self, "group_combo"):
+            return
+        keep = self.group_combo.currentData()
+        groups = sorted({e.group for e in self._stats})
+        self.group_combo.blockSignals(True)
+        self.group_combo.clear()
+        self.group_combo.addItem(tr("(전체)"), None)
+        for g in groups:
+            n = sum(1 for e in self._stats if e.group == g)
+            label = (f"{g[0]} · {g[1]}" if g[0] else g[1])
+            self.group_combo.addItem(f"{label}  ({n})", g)
+        idx = 0
+        for i in range(self.group_combo.count()):
+            if self.group_combo.itemData(i) == keep:
+                idx = i
+                break
+        self.group_combo.setCurrentIndex(idx)
+        self.group_combo.blockSignals(False)
 
     def _refresh_rank_list(self) -> None:
         if not self._stats:
@@ -3421,7 +6013,7 @@ class WorkspaceWindow(QMainWindow):
             item = QTreeWidgetItem([
                 f"{Path(e.path).stem[:22]} · {e.demo}",
                 f"{e.task_dev:+.4f}", f"{100 * e.still_frac:.0f}%",
-                f"{e.seconds:.1f}s", e.task[:34]])
+                f"{e.seconds:.1f}s", e.group_label[:40]])
             item.setData(0, Qt.ItemDataRole.UserRole, (e.path, e.demo))
             # 밴드 밖은 차이 칸만 물들인다 -- 행 전체를 칠하면 실패(빨강)와
             # 겹쳐서 둘 다 안 읽힌다.
@@ -3460,13 +6052,13 @@ class WorkspaceWindow(QMainWindow):
         stat = next((e for e in self._stats if e.key == (path, demo)), None)
         if stat is not None:
             self.analysis_summary.setText(
-                tr("{d} · {n}프레임 ({s:.1f}s) · 평균 |Δa| {m:.5f} · 같은 task 평균과 "
+                tr("{d} · {n}프레임 ({s:.1f}s) · 평균 |Δa| {m:.5f} · 같은 (scene·문장) 그룹 평균과 "
                    "{v:+.4f}{mark} · 멈춤 {p:.0f}%\n{t}").format(
                        d=demo, n=stat.n_frames, s=stat.seconds, m=stat.mean_da,
                        v=stat.task_dev,
                        mark=" (급함)" if stat.task_dev > TASK_DEV_LIMIT else (
                            " (느림)" if stat.task_dev < -TASK_DEV_LIMIT else ""),
-                       p=100 * stat.still_frac, t=stat.task))
+                       p=100 * stat.still_frac, t=stat.group_label))
             self.da_hist.set_values(
                 [e.mean_da for e in self._stats],
                 [(self._summary["p50"], tr("중앙값")), (stat.mean_da, tr("이 에피소드"))])
@@ -3493,11 +6085,56 @@ class WorkspaceWindow(QMainWindow):
             self._refresh_analysis()
 
     # ------------------------------------------------------------ dataset
+    def _dataset_root(self) -> Path:
+        """Dataset 페이지의 폴더 -- 전용 입력이 있으면 그것, 없으면 수집 경로.
+        (빌드 순서상 어느 쪽도 아직 없을 수 있다 -- 기본 경로로 폴백.)"""
+        edit = (getattr(self, "dataset_root_edit", None)
+                or getattr(self, "root_edit", None))
+        if edit is None:
+            return Path.home() / "libero_datasets"
+        return Path(edit.text().strip()).expanduser()
+
+    def _browse_dataset_root(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, tr("데이터 폴더"),
+                                             self.dataset_root_edit.text())
+        if d:
+            self.dataset_root_edit.setText(d)
+            self._refresh_dataset_tree()
+
     def _refresh_dataset_tree(self) -> None:
         self.dataset_tree.clear()
-        root = Path(self.root_edit.text().strip()).expanduser()
+        root = self._dataset_root()
         if not root.is_dir():
             return
+        # ---- scene 파일 (scene-v1). 재생·재판정 UI 는 #31 갤러리에서 --
+        # 여기서는 목록·개수·quality 확인 + 삭제/트림 대상 선택용. 삭제는
+        # legacy 와 같이 삭제 후 renumber -- _delete_episodes.
+        for path in iter_scene_files(root):
+            item = QTreeWidgetItem([path.name, "", "scene"])
+            item.setData(0, Qt.ItemDataRole.UserRole, str(path))
+            self.dataset_tree.addTopLevelItem(item)
+            try:
+                if (self.active_file_path is not None
+                        and path == self.active_file_path
+                        and self.active_episode_cache is not None):
+                    episodes = self.active_episode_cache
+                else:
+                    from gello.scene_format import list_scene_episodes
+
+                    episodes = list_scene_episodes(path)
+            except Exception as e:  # noqa: BLE001
+                item.setText(1, f"({type(e).__name__})")
+                continue
+            for ep in episodes:
+                label = f"  {ep['name']} · {ep.get('instruction_id', '')}"
+                q = ep.get("quality_status") or (
+                    "-" if ep.get("success") is None
+                    else ("success" if ep["success"] else "failed"))
+                child = QTreeWidgetItem([label, str(ep.get("num_samples", "")), q])
+                child.setData(0, Qt.ItemDataRole.UserRole, ep["name"])
+                child.setToolTip(0, ep.get("instruction", ""))
+                item.addChild(child)
+            item.setText(1, tr("{n}개").format(n=len(episodes)))
         for path in sorted(root.glob("*_demo.hdf5")):
             item = QTreeWidgetItem([path.name, "", ""])
             item.setData(0, Qt.ItemDataRole.UserRole, str(path))
@@ -3529,7 +6166,10 @@ class WorkspaceWindow(QMainWindow):
         # 접은 채로 시작한다. 200줄 넘는 에피소드를 한 번에 펼쳐두면 정작 훑고
         # 싶은 task 목록이 화면 밖으로 밀린다. 필요한 파일만 열면 된다.
         self.dataset_tree.collapseAll()
-        self._refresh_resume_combo()
+        if hasattr(self, "scene_combo"):
+            self._refresh_scene_combo()
+        if hasattr(self, "gallery_scene_combo"):
+            self._refresh_gallery_scenes()
         self._update_dataset_panel(self._selected_file())
 
     def _selected_file(self) -> Path | None:
@@ -3548,6 +6188,357 @@ class WorkspaceWindow(QMainWindow):
             if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
                 return label
         return ""
+
+    def _on_hdf5_tree(self) -> None:
+        path = self._selected_file()
+        if path is None:
+            QMessageBox.information(self, tr("선택 필요"),
+                                    tr("트리로 볼 파일을 먼저 선택하세요."))
+            return
+        if self.active_file_path is not None and path == self.active_file_path:
+            QMessageBox.information(self, tr("파일 사용 중"), tr(
+                "수집 세션이 이 파일을 쥐고 있습니다 — 세션 종료 후 여세요."))
+            return
+        Hdf5TreeDialog(self, path).exec()
+
+    def _on_myhdf5(self) -> None:
+        webbrowser.open("https://myhdf5.hdfgroup.org/")
+        path = self._selected_file()
+        if path is not None:
+            self.log(tr("[myHDF5] 브라우저 창에 파일을 끌어다 놓으세요: {p}")
+                     .format(p=path))
+
+    def _on_relabel_selected(self) -> None:
+        """scene 에피소드의 quality_status 를 성공↔실패로 뒤집는다.
+
+        scene 체계의 큐레이션 수단이다 (삭제 없음, 변환이 success 만 내보냄).
+        소유권 규칙은 삭제와 동일: 세션이 파일을 쥐고 있으면 saver 스레드
+        경유, 아니면 직접 쓴다 (SceneWriter.set_quality_status 와 같은 필드).
+        success/failed 이외의 상태(bad_data 등)는 건드리지 않는다.
+        """
+        by_file: dict = {}
+        for item in self.dataset_tree.selectedItems():
+            if item.parent() is None:
+                continue
+            p = Path(item.parent().data(0, Qt.ItemDataRole.UserRole))
+            by_file.setdefault(p, []).append(item.data(0, Qt.ItemDataRole.UserRole))
+        by_file = {p: v for p, v in by_file.items() if p.name.startswith("scene_")}
+        if not by_file:
+            QMessageBox.information(
+                self, tr("선택 필요"),
+                tr("재판정할 scene 에피소드를 선택하세요 (legacy 파일은 세션 중 "
+                   "판정 버튼을 사용)."))
+            return
+        if self._relabel_episodes(by_file):
+            self._refresh_dataset_tree()
+
+    def _replay_running(self) -> bool:
+        return (self.replay_process is not None and
+                self.replay_process.state() != QProcess.ProcessState.NotRunning)
+
+    def _on_replay_selected(self) -> None:
+        if self._replay_running():      # 토글: 재생 중이면 중단 버튼이다
+            self._on_replay_stop()
+            return
+        picks = [(Path(i.parent().data(0, Qt.ItemDataRole.UserRole)),
+                  i.data(0, Qt.ItemDataRole.UserRole))
+                 for i in self.dataset_tree.selectedItems()
+                 if i.parent() is not None]
+        if len(picks) != 1:
+            QMessageBox.information(
+                self, tr("선택 필요"),
+                tr("실로봇 재생은 에피소드 하나만 선택하세요."))
+            return
+        self._replay_on_robot(str(picks[0][0]), picks[0][1])
+
+    def _replay_on_robot(self, path: str, demo: str) -> None:
+        """Dataset 트리와 Gallery 가 공유하는 실로봇 재생 진입점.
+
+        replay_episode.py 를 --yes 로 하위 프로세스 실행한다 (램프·틱당
+        클램프 같은 안전장치는 스크립트 쪽에 있다). 로봇을 쥐는 것은 결국
+        로봇 노드 하나이므로, 여기서는 GUI 세션과의 충돌만 막는다.
+        """
+        if self.worker is not None:
+            QMessageBox.warning(self, tr("재생 불가"),
+                                tr("수집 세션 중에는 실로봇 재생을 할 수 "
+                                   "없습니다. 먼저 세션을 종료하세요."))
+            return
+        busy = self._busy_reason()
+        if busy:
+            QMessageBox.warning(self, tr("재생 불가"),
+                                tr("{w} 이(가) 파일을 사용 중입니다. 끝난 뒤 "
+                                   "다시 시도하세요.").format(w=busy))
+            return
+        if self.replay_process is not None and \
+                self.replay_process.state() != QProcess.ProcessState.NotRunning:
+            QMessageBox.information(self, tr("이미 재생 중"),
+                                    tr("이전 재생이 끝나기를 기다리거나 '재생 "
+                                       "중단'을 누르세요."))
+            return
+        speed, ok = QInputDialog.getDouble(
+            self, tr("실로봇 재생"),
+            tr("재생 배속 (0.1~1.0, 첫 재생은 0.5 권장)"),
+            0.5, 0.1, 1.0, 1)
+        if not ok:
+            return
+        ans = QMessageBox.warning(
+            self, tr("로봇이 움직입니다"),
+            tr("{d} ({f}) 을(를) {s}배속으로 실로봇에서 재현합니다.\n\n"
+               "· 로봇 노드가 켜져 있어야 합니다\n"
+               "· 로봇이 시작 포즈로 이동한 뒤 바로 재생됩니다\n"
+               "· 주변 공간을 비우고, 비상정지를 준비하세요\n\n"
+               "시작할까요?").format(d=demo, f=Path(path).name, s=speed),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        proc = QProcess(self)
+        proc.setProgram(sys.executable)
+        proc.setArguments([REPLAY_SCRIPT, path, demo,
+                           "--speed", f"{speed:g}", "--yes"])
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(
+            lambda: self._pipe(proc, "[실로봇 재생]", "log"))
+        proc.finished.connect(self._on_replay_finished)
+        self.replay_process = proc
+        self.log(f"[실로봇 재생] ▶ {Path(path).name} / {demo} ({speed:g}x)")
+        proc.start()
+        self._set_replay_ui(True)
+
+    def _on_replay_stop(self) -> None:
+        """재생 하위 프로세스를 끊는다. 로봇 노드의 레퍼런스 필터가 현재
+        포즈를 유지하므로(Ctrl-C 와 동일) 팔이 낙하하지는 않는다."""
+        proc = self.replay_process
+        if proc is None or proc.state() == QProcess.ProcessState.NotRunning:
+            return
+        self.log(tr("[실로봇 재생] 중단 요청 — 현재 포즈에서 정지합니다"))
+        proc.terminate()
+        if not proc.waitForFinished(2000):
+            proc.kill()
+
+    def _set_replay_ui(self, running: bool) -> None:
+        """재생/중단 토글 -- 두 진입점(Dataset·Gallery) 버튼이 함께 바뀐다."""
+        for b, idle_text in ((getattr(self, "replay_btn", None),
+                              tr("선택 재생 (실로봇)")),
+                             (getattr(self, "gallery_replay_btn", None),
+                              tr("실로봇 재생"))):
+            if b is None:
+                continue
+            b.setText(tr("■ 재생 중단") if running else idle_text)
+            b.setStyleSheet(
+                "background-color:#c0392b; color:white;" if running else "")
+
+    def _on_replay_finished(self, code: int, _status) -> None:
+        self.replay_process = None
+        self._set_replay_ui(False)
+        self.log(tr("[실로봇 재생] {r} (exit={c})").format(
+            r=tr("완료") if code == 0 else tr("중단/실패 — 로그 확인"), c=code))
+
+    def _relabel_episodes(self, by_file: dict) -> bool:
+        """재판정 공용 코어 -- Dataset 트리와 Gallery 가 같은 것을 쓴다."""
+        busy = self._busy_reason()
+        if busy:
+            QMessageBox.warning(self, tr("재판정 불가"),
+                                tr("{job}이(가) 진행 중입니다.").format(job=busy))
+            return False
+        flipped = skipped = 0
+        for path, names in by_file.items():
+            owned = self.active_file_path is not None and path == self.active_file_path
+            try:
+                with h5py.File(path, "r" if owned else "a") as f:
+                    for name in names:
+                        q = str(f[name].attrs.get("quality_status", ""))
+                        if q not in ("success", "failed"):
+                            skipped += 1
+                            continue
+                        new_ok = q != "success"
+                        if owned:
+                            # 세션 소유 파일은 saver 스레드가 유일한 쓰기 통로.
+                            self.worker.cmd_set_episode_success(name, new_ok)
+                        else:
+                            f[name].attrs["quality_status"] = (
+                                "success" if new_ok else "failed")
+                            f[name].attrs["success"] = new_ok
+                        flipped += 1
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.critical(self, tr("재판정 실패"),
+                                     f"{path.name}\n{type(e).__name__}: {e}")
+                return False
+        self.log(f"[재판정] {flipped}개 뒤집음"
+                 + (f", {skipped}개 건너뜀 (success/failed 아님)" if skipped else ""))
+        return True
+
+    def _on_delete_selected(self) -> None:
+        """Deletes the selected episode.
+
+        Two paths, because who owns the file decides who may touch it. h5py is
+        not thread-safe, so while a session has the file open, every
+        file-touching call goes through that session's saver thread -- deleting
+        behind its back would corrupt the file it is still writing into. When
+        no session owns the file, nothing else has it open and this window can
+        do it directly, which is the common case: curating yesterday's takes
+        should not require connecting a robot first.
+        """
+        # 파일별로 묶는다. 여러 개를 지울 때 이름 하나씩 지우고 매번 번호를 다시
+        # 매기면 두 번째부터는 이미 밀린 이름을 지우게 된다 -- 한 파일 안에서
+        # 전부 지운 뒤 renumber는 마지막에 한 번만.
+        by_file: dict = {}
+        for item in self.dataset_tree.selectedItems():
+            if item.parent() is None:
+                continue
+            p = item.parent().data(0, Qt.ItemDataRole.UserRole)
+            by_file.setdefault(Path(p), []).append(item.data(0, Qt.ItemDataRole.UserRole))
+        if not by_file:
+            QMessageBox.information(self, tr("선택 필요"),
+                                    tr("삭제할 에피소드를 선택하세요 (Ctrl/Shift로 여러 개)."))
+            return
+        if self._delete_episodes(by_file):
+            self._refresh_dataset_tree()
+
+    def _describe_delete_targets(self, by_file: dict):
+        """삭제 확인창용: (행 목록, 성공 개수, Hub 안내문). 파일을 읽지 못하면
+        (세션이 쥔 파일 등) 캐시로 대신하고, 그것도 없으면 이름만 나열한다."""
+        from gello.scene_format import list_scene_episodes
+
+        rows: list = []
+        n_success = 0
+        tasks: set = set()
+        uids: set = set()
+        for path, names in by_file.items():
+            eps: dict = {}
+            try:
+                if path.name.startswith("scene_"):
+                    src = (self.active_episode_cache
+                           if (self.active_file_path is not None
+                               and path == self.active_file_path)
+                           else list_scene_episodes(path)) or []
+                    eps = {e["name"]: e for e in src}
+                else:
+                    with h5py.File(path, "r") as f:
+                        data = f["data"]
+                        for n in names:
+                            if n in data:
+                                g = data[n]
+                                ok = g.attrs.get("success", True)
+                                eps[n] = {"episode_uid": n, "instruction": "",
+                                          "quality_status": "success" if ok else "failed",
+                                          "num_samples": int(g.attrs.get("num_samples", 0))}
+            except Exception:  # noqa: BLE001 -- 잠금 등: 이름만
+                eps = {}
+            for n in names:
+                e = eps.get(n)
+                if e is None:
+                    rows.append(f"  {path.name} / {n}")
+                    continue
+                q = str(e.get("quality_status", "?"))
+                if q == "success":
+                    n_success += 1
+                instr = str(e.get("instruction", ""))
+                if instr:
+                    tasks.add(instr)
+                if path.name.startswith("scene_") and e.get("episode_uid"):
+                    uids.add(str(e["episode_uid"]))
+                rows.append(f"  {e.get('episode_uid', n)}  [{q}]  {e.get('num_samples', '?')}f"
+                            + (f"  {instr[:40]}" if instr else ""))
+        hub_note = ""
+        try:
+            repo = self.repo_id_for("repo_id")
+        except Exception:  # noqa: BLE001
+            repo = ""
+        if repo and (tasks or uids) and not repo_id_error(repo):
+            # 판정 단위는 에피소드(uid)다. Hub 의 meta/episode_uids.json 사이드카에
+            # 지울 uid 가 있을 때만 "올라가 있다" 고 말한다. 사이드카가 없는 repo
+            # (legacy 수집분만 있는 데이터셋)는 에피소드 단위 판정이 불가능하므로
+            # 문장(task) 단위 일치를 '참고' 로만 표시한다 -- 같은 문장의 legacy
+            # 에피소드가 있다고 이 에피소드가 올라간 것은 아니다 (실사용 혼란).
+            try:
+                from gello.dataset_sync import hub_episode_uids, hub_meta
+
+                hub_uids, err = hub_episode_uids(repo)
+                if err:
+                    hub_note = ""
+                elif hub_uids is not None:
+                    hit = sorted(uids & hub_uids)
+                    if hit:
+                        hub_note = tr("Hub({r})에 이 에피소드 {k}개가 이미 올라가 "
+                                      "있습니다 ({u}{more}) — 다음 전체 처리에서 "
+                                      "'삭제됨' 으로 잡혀 재빌드(교체)가 필요합니다.")\
+                            .format(r=repo, k=len(hit), u=", ".join(hit[:3]),
+                                    more=" …" if len(hit) > 3 else "")
+                    else:
+                        hub_note = tr("Hub({r})에는 이 에피소드가 올라가 있지 않습니다 "
+                                      "(uid 대조).").format(r=repo)
+                else:
+                    hub, _lens, err2 = hub_meta(repo)
+                    if not err2:
+                        same = [t for t in tasks if hub.get(t, 0) > 0]
+                        if same:
+                            hub_note = tr("참고: Hub({r})에는 uid 사이드카가 없어 에피소드 "
+                                          "단위 확인이 안 됩니다. 같은 문장의 task {k}개가 "
+                                          "있지만(legacy 수집분일 수 있음) 이 에피소드가 "
+                                          "올라갔다는 뜻은 아닙니다.").format(r=repo, k=len(same))
+            except Exception:  # noqa: BLE001 -- 오프라인 등: 안내 생략
+                hub_note = ""
+        return rows, n_success, hub_note
+
+    def _delete_episodes(self, by_file: dict) -> bool:
+        """공용 삭제 경로. Dataset 패널과 Analysis 순위표가 같은 것을 쓴다 --
+        세션 소유 검사와 실행 중 작업 검사를 두 벌로 두면 반드시 갈라진다."""
+        busy = self._busy_reason()
+        if busy:
+            QMessageBox.warning(self, tr("삭제 불가"),
+                                tr("{job}이(가) 진행 중입니다. 끝난 뒤 삭제하세요.").format(job=busy))
+            return False
+        total = sum(len(v) for v in by_file.values())
+        # 확인창: 무엇을 지우는지(uid·문장·판정·프레임) 목록으로 보여주고,
+        # 성공분이 섞였으면 빨갛게, Hub 에 이미 올라간 task 면 재빌드 안내.
+        # "실패만 선택" 으로 고른 정상 경로에서는 경고가 뜨지 않는다 -- 손으로
+        # 잘못 고른 성공분만 눈에 띄게 하는 것이 목적이다.
+        rows, n_success, hub_note = self._describe_delete_targets(by_file)
+        detail = "\n".join(rows[:30]) + ("\n  …" if len(rows) > 30 else "")
+        notes = [tr("삭제 후 남은 에피소드는 번호가 다시 매겨집니다 (scene 은 slot E번호·uid 도).")]
+        if hub_note:
+            notes.append(hub_note)
+        notes.append(tr("파일 크기는 줄지 않습니다 (재압축 필요). 되돌릴 수 없습니다."))
+        title = tr("에피소드 삭제")
+        body = tr("에피소드 {n}개를 삭제합니다.\n\n{d}\n\n{notes}").format(
+            n=total, d=detail, notes="\n".join(notes))
+        if n_success:
+            body = tr("⚠ 성공(success) 에피소드 {k}개가 포함되어 있습니다 — "
+                      "정말 의도한 선택인지 확인하세요.\n\n").format(k=n_success) + body
+            if QMessageBox.warning(
+                    self, title, body,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                return False
+        elif QMessageBox.question(self, title, body) != QMessageBox.StandardButton.Yes:
+            return False
+
+        for path, names in by_file.items():
+            owned = self.active_file_path is not None and path == self.active_file_path
+            try:
+                with h5py.File(path, "r" if owned else "a") as f:
+                    for name in names:
+                        q = str(f[name].attrs.get("quality_status", ""))
+                        if q not in ("success", "failed"):
+                            skipped += 1
+                            continue
+                        new_ok = q != "success"
+                        if owned:
+                            # 세션 소유 파일은 saver 스레드가 유일한 쓰기 통로.
+                            self.worker.cmd_set_episode_success(name, new_ok)
+                        else:
+                            f[name].attrs["quality_status"] = (
+                                "success" if new_ok else "failed")
+                            f[name].attrs["success"] = new_ok
+                        flipped += 1
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.critical(self, tr("재판정 실패"),
+                                     f"{path.name}\n{type(e).__name__}: {e}")
+                return False
+        self.log(f"[재판정] {flipped}개 뒤집음"
+                 + (f", {skipped}개 건너뜀 (success/failed 아님)" if skipped else ""))
+        return True
 
     def _on_delete_selected(self) -> None:
         """Deletes the selected episode.
@@ -3584,14 +6575,25 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("삭제 불가"),
                                 tr("{job}이(가) 진행 중입니다. 끝난 뒤 삭제하세요.").format(job=busy))
             return False
-
         total = sum(len(v) for v in by_file.values())
         detail = "\n".join(f"  {p.name}: {len(v)}개" for p, v in by_file.items())
+        has_scene = any(p.name.startswith("scene_") for p in by_file)
+        has_legacy = any(not p.name.startswith("scene_") for p in by_file)
+        # 두 포맷의 후처리가 다르다: legacy 는 번호를 다시 매기고, scene 은
+        # 이름·번호를 그대로 두고(빈자리 허용) 지운 uid 를 툼스톤으로 남긴다
+        # (E번호 재사용 금지). 확인 문구에 그 차이를 그대로 적는다.
+        notes = []
+        if has_legacy:
+            notes.append(tr("legacy: 남은 에피소드는 번호가 다시 매겨집니다."))
+        if has_scene:
+            notes.append(tr("scene: 번호는 그대로 두고(빈자리 허용) 지운 uid 는 "
+                            "재사용 금지 목록에 남습니다. 이미 Hub 에 올라간 "
+                            "에피소드라면 다음 전체 처리에서 '삭제' 로 잡힙니다."))
+        notes.append(tr("파일 크기는 줄지 않습니다 (재압축 필요). 되돌릴 수 없습니다."))
         if QMessageBox.question(
                 self, tr("에피소드 삭제"),
-                tr("에피소드 {n}개를 삭제합니다.\n\n{d}\n\n남은 에피소드는 번호가 다시 "
-                   "매겨집니다. 파일 크기는 줄지 않습니다 (재압축 필요).").format(
-                       n=total, d=detail)
+                tr("에피소드 {n}개를 삭제합니다.\n\n{d}\n\n{notes}").format(
+                    n=total, d=detail, notes="\n".join(notes))
         ) != QMessageBox.StandardButton.Yes:
             return False
 
@@ -3605,14 +6607,17 @@ class WorkspaceWindow(QMainWindow):
                 self.log(f"[삭제] {path.name}: {len(names)}개 요청 (세션 경유)")
                 continue
             try:
-                with h5py.File(path, "a") as f:
-                    data = f["data"]
-                    missing = [n for n in names if n not in data]
-                    if missing:
-                        raise KeyError(", ".join(missing))
-                    for name in names:
-                        del data[name]
-                    renumber_episodes(data)
+                if path.name.startswith("scene_"):
+                    delete_scene_episodes(path, names)
+                else:
+                    with h5py.File(path, "a") as f:
+                        data = f["data"]
+                        missing = [n for n in names if n not in data]
+                        if missing:
+                            raise KeyError(", ".join(missing))
+                        for name in names:
+                            del data[name]
+                        renumber_episodes(data)
                 self.log(f"[삭제] {path.name}: {len(names)}개 ({', '.join(sorted(names))})")
             except Exception as e:  # noqa: BLE001
                 QMessageBox.critical(self, tr("삭제 실패"), f"{path.name}\n{type(e).__name__}: {e}")
@@ -3680,12 +6685,12 @@ class WorkspaceWindow(QMainWindow):
                     # 접혀 있으면 "N개 선택됨"만 뜨고 무엇이 골렸는지 안 보인다.
                     parent.setExpanded(True)
                     n += 1
-        self.log(f"[큐레이션] 같은 task 평균과 {TASK_DEV_LIMIT} 넘게 차이 나는 "
+        self.log(f"[큐레이션] 같은 (scene·문장) 그룹 평균과 {TASK_DEV_LIMIT} 넘게 차이 나는 "
                  f"에피소드 {n}개를 선택했습니다." + ("" if n else " (없음)"))
         self.dataset_hint.setText(
             tr("튀는 에피소드 {n}개 선택됨 — 재생으로 확인한 뒤 '에피소드 삭제'로 지웁니다.")
             .format(n=n) if n else
-            tr("같은 task 평균과 {d} 넘게 차이 나는 에피소드가 없습니다 "
+            tr("같은 (scene·문장) 그룹 평균과 {d} 넘게 차이 나는 에피소드가 없습니다 "
                "(이 데이터셋은 균일합니다).").format(d=TASK_DEV_LIMIT))
 
     def _on_select_failed(self) -> None:
@@ -3698,11 +6703,15 @@ class WorkspaceWindow(QMainWindow):
         """
         self.dataset_tree.clearSelection()
         n = 0
+        # legacy 는 번역된 '실패', scene 은 quality_status 원문('failed')이
+        # 상태 컬럼에 실린다 -- 둘 다 잡아야 한다 (scene 실패가 선택되지
+        # 않던 실사용 버그).
+        fail_labels = {tr("실패"), "failed"}
         for i in range(self.dataset_tree.topLevelItemCount()):
             parent = self.dataset_tree.topLevelItem(i)
             for j in range(parent.childCount()):
                 child = parent.child(j)
-                if child.text(2) == tr("실패"):
+                if child.text(2) in fail_labels:
                     child.setSelected(True)
                     parent.setExpanded(True)
                     n += 1
@@ -3732,11 +6741,26 @@ class WorkspaceWindow(QMainWindow):
         # 진짜 삭제한다. 오클릭 대책은 되돌리기가 아니라 닿기 어렵게 두는 것
         # (이 항목은 Dataset 메뉴에만 있다) -- 반쯤 지워진 채 디스크만 차지하는
         # 휴지통은 결국 아무도 비우지 않는다.
+        # 이 파일의 에피소드가 Hub 에 이미 있으면 다음 전체 처리가 '삭제됨' 으로
+        # 잡아 재빌드(교체)를 요구한다 -- 지금 지우는 것이 리모트에 어떤 결과를
+        # 낳는지 삭제 순간에 알린다 (오프라인이면 안내 생략).
+        hub_line = tr("Hub 에 올린 사본은 지금은 그대로지만, 다음 전체 처리 때 "
+                      "로컬 기준으로 재빌드되어 교체됩니다.")
+        if path.name.startswith("scene_"):
+            try:
+                from gello.scene_format import list_scene_episodes
+
+                names = [e["name"] for e in list_scene_episodes(path)]
+                _rows, _n_ok, note = self._describe_delete_targets({path: names})
+                if note:
+                    hub_line = note
+            except Exception:  # noqa: BLE001 -- 잠금/오프라인: 기본 안내
+                pass
         confirm = QMessageBox.warning(
             self, tr("파일 삭제"),
             tr("{f}\n\n에피소드 {n}개, {mb:.1f} MB 를 완전히 삭제합니다.\n"
-               "되돌릴 수 없습니다. Hub에 올린 사본은 영향받지 않습니다.").format(
-                   f=path.name, n=st["episodes"], mb=st["size"] / 1e6),
+               "되돌릴 수 없습니다.\n{h}").format(
+                   f=path.name, n=st["episodes"], mb=st["size"] / 1e6, h=hub_line),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel)
         if confirm != QMessageBox.StandardButton.Yes:
@@ -3754,6 +6778,21 @@ class WorkspaceWindow(QMainWindow):
         path = self._selected_file()
         if path is None:
             QMessageBox.information(self, tr("선택 필요"), tr("파일을 선택하세요."))
+            return
+        if path.name.startswith("scene_"):
+            # scene 파일은 legacy 구조 검사 대신 표준 뷰(격자 지도 + slot 현황).
+            try:
+                md = read_scene_metadata(path)
+                counts = count_by_slot(path)
+                text = describe_scene(md)
+                if counts:
+                    text += "\n\nslot 현황: " + "  ".join(
+                        f"{iid} {c['usable']}/{c['total']}"
+                        for iid, c in sorted(counts.items()))
+                text += "\n\n" + tr("정밀 검사: python scripts/check_scene_file.py {p}").format(p=path)
+            except Exception as e:  # noqa: BLE001
+                text = f"{path.name}\n읽기 실패: {type(e).__name__}: {e}"
+            self._alert(tr("Scene 구조"), text, icon=QMessageBox.Icon.Information)
             return
         st = hdf5_repack_status(path)
         lines = [f"{path.name}",
@@ -3965,10 +7004,10 @@ class WorkspaceWindow(QMainWindow):
         if not self._pipeline_guard(tr("HDF5 자동 처리")):
             return
         data_root = self.root_edit.text().strip()
-        paths = sorted(str(x) for x in Path(data_root).glob("*_demo.hdf5"))
+        paths = self._all_hdf5(data_root)
         if not paths:
             QMessageBox.warning(self, tr("파일 없음"),
-                                tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=data_root))
+                                tr("{r} 에 *_demo.hdf5 / scene_*.hdf5 가 없습니다.").format(r=data_root))
             return
         repo = self._check_repo("hdf5_repo_id", tr("HDF5 재압축 + 업로드"))
         if repo is None:
@@ -4018,10 +7057,10 @@ class WorkspaceWindow(QMainWindow):
         if not self._pipeline_guard(tr("LeRobot 자동 처리")):
             return
         data_root = self.root_edit.text().strip()
-        paths = sorted(str(x) for x in Path(data_root).glob("*_demo.hdf5"))
+        paths = self._all_hdf5(data_root)
         if not paths:
             QMessageBox.warning(self, tr("파일 없음"),
-                                tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=data_root))
+                                tr("{r} 에 *_demo.hdf5 / scene_*.hdf5 가 없습니다.").format(r=data_root))
             return
         repo = self._check_repo("repo_id", tr("LeRobot 변환 + 업로드"))
         if repo is None:
@@ -4067,10 +7106,10 @@ class WorkspaceWindow(QMainWindow):
         if not self._pipeline_guard(tr("LeRobot 이어붙이기")):
             return
         data_root = self.root_edit.text().strip()
-        paths = sorted(str(x) for x in Path(data_root).glob("*_demo.hdf5"))
+        paths = self._all_hdf5(data_root)
         if not paths:
             QMessageBox.warning(self, tr("파일 없음"),
-                                tr("{r} 에 *_demo.hdf5 가 없습니다.").format(r=data_root))
+                                tr("{r} 에 *_demo.hdf5 / scene_*.hdf5 가 없습니다.").format(r=data_root))
             return
         repo = self._check_repo("repo_id", tr("LeRobot 이어붙이기"))
         if repo is None:
@@ -4245,7 +7284,7 @@ class WorkspaceWindow(QMainWindow):
                 "action": "blocked", "error": "LeRobot Repo ID가 없습니다 (먼저 한 번 지정하세요)",
                 "rows": [], "added": 0, "shrunk": 0, "ambiguous": [],
                 "local_total": 0, "hub_total": 0,
-                "paths": sorted(str(p) for p in Path(data_root).glob("*_demo.hdf5"))}
+                "paths": self._all_hdf5(data_root)}
         finally:
             QApplication.restoreOverrideCursor()
         dlg = PipelineDialog(self, data_root, plan, repo,
@@ -4428,10 +7467,20 @@ class WorkspaceWindow(QMainWindow):
         ])
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.readyReadStandardOutput.connect(self._on_node_output)
-        proc.finished.connect(lambda c, _s: self.log(f"[노드] 종료 (exit={c})"))
+        proc.finished.connect(self._on_node_finished)
         self.node_process = proc
         self.log("[노드] 시작합니다...")
+        # 인디케이터는 세션 중 장애 신호(node_status)로만 갱신되고 있어서,
+        # 노드가 잘 떠 있어도 '노드 -' 로 남았다 (실화면에서 확인된 혼란).
+        # GUI 가 켠 시점/종료 시점에도 갱신한다.
+        self.lights["node"].set("busy", tr("시작 중"))
+        self.right_fields["node"].setText(tr("시작 중"))
         proc.start()
+
+    def _on_node_finished(self, code: int, _status) -> None:
+        self.log(f"[노드] 종료 (exit={code})")
+        self.lights["node"].set("off", "-")
+        self.right_fields["node"].setText("-")
 
     def _on_node_output(self) -> None:
         if self.node_process is None:
@@ -4452,9 +7501,19 @@ class WorkspaceWindow(QMainWindow):
         self.log("[노드] 종료했습니다.")
 
     # ----------------------------------------------------------- upload
+    @staticmethod
+    def _all_hdf5(data_root) -> list:
+        """변환·업로드 대상 파일 전부: legacy 정렬 + scene 정렬.
+
+        legacy 를 앞에 두는 순서는 plan_sync 의 길이 지문(접두 비교)과
+        일치해야 하므로 dataset_sync._ordered_paths 와 같은 규칙이다.
+        """
+        root = Path(str(data_root))
+        return ([str(p) for p in sorted(root.glob("*_demo.hdf5"))]
+                + [str(p) for p in sorted(root.glob("scene_*.hdf5"))])
+
     def _hdf5_candidates(self) -> list:
-        root = Path(self.root_edit.text().strip() or str(Path.home()))
-        return [str(p) for p in sorted(root.glob("*_demo.hdf5"))]
+        return self._all_hdf5(self.root_edit.text().strip() or str(Path.home()))
 
     def _on_repack(self) -> None:
         if self.worker is not None:
@@ -4566,6 +7625,28 @@ class WorkspaceWindow(QMainWindow):
         teleoperating. Skipped while a modal dialog is open so Esc still
         closes dialogs normally.
         """
+        if event.type() == QEvent.Type.MouseButtonDblClick:
+            # 라이브 뷰 더블클릭 = 그 카메라 최대화/복원 토글
+            for r, v in getattr(self, "live_views", {}).items():
+                if obj is v:
+                    self._set_live_maximized(
+                        None if self._live_maximized == r else r)
+                    return True
+        if obj is getattr(self, "depth_view", None):
+            # Depth 뷰 위에서 마우스가 가리키는 지점의 실거리 표시.
+            # 마우스 이벤트만 소비하고 나머지(키 입력 등)는 아래 공용 단축키
+            # 처리로 흘려보낸다 -- 무조건 return 하면 이 뷰에 포커스가 있는
+            # 동안 Space/Esc 단축키가 죽는다.
+            if (event.type() == QEvent.Type.MouseMove
+                    and self._depth_img is not None):
+                self._depth_cursor = self._depth_uv(event.position())
+                self._render_depth()
+                return False
+            if event.type() == QEvent.Type.Leave \
+                    and self._depth_cursor is not None:
+                self._depth_cursor = None
+                self._render_depth()
+                return False
         if (
             event.type() == QEvent.Type.KeyPress
             and self.worker is not None
@@ -4575,7 +7656,13 @@ class WorkspaceWindow(QMainWindow):
             state = self._current_state
             if key == Qt.Key.Key_Space:
                 if state == "gate":
-                    self._cmd("cmd_start_teleop")
+                    # 버튼과 같은 조건: 자세가 맞아야 시작 (워커도 거부하지만
+                    # 이유를 먼저 보여준다).
+                    if self._gate_ok:
+                        self._cmd("cmd_start_teleop")
+                    else:
+                        self.log("[GATE] 아직 자세가 맞지 않아 시작할 수 없습니다 "
+                                 "-- 리더를 팔로워 자세에 맞추세요.")
                     return True
                 if state == "recording" and not self._no_dataset_session:
                     self._save(True)
@@ -4615,6 +7702,7 @@ class WorkspaceWindow(QMainWindow):
         self._play_timer.stop()
         if self._play_loader is not None:
             self._play_loader.wait(3000)
+        self._stop_cloud(restore_previews=False)
         self._stop_previews_blocking()
         if self.worker is not None and self.worker.isRunning():
             self.worker.cmd_quit()
