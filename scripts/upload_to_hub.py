@@ -42,6 +42,32 @@ from huggingface_hub import HfApi
 from huggingface_hub.errors import BadRequestError, EntryNotFoundError
 
 
+def _commit_message(local: Path) -> str:
+    """Hub 커밋 메시지 -- 파일이 무엇을 담고 있는지 이력에서 읽히게.
+    scene 파일: 'scene_001.hdf5: S001 · 20 ep (I000 10, I001 10) · 2.1 GB'
+    legacy: 'x_demo.hdf5: 11 ep · 1.3 GB'. 읽기 실패(잠금 등)면 이름·크기만."""
+    size_gb = local.stat().st_size / 1e9
+    try:
+        import h5py
+
+        with h5py.File(local, "r") as f:
+            if "metadata" in f:
+                sid = str(f["metadata"].attrs.get("scene_id", "?"))
+                per: dict = {}
+                for k in f.keys():
+                    if k.startswith("episode_"):
+                        iid = str(f[k].attrs.get("instruction_id", "?"))
+                        per[iid] = per.get(iid, 0) + 1
+                n = sum(per.values())
+                slots = ", ".join(f"{k} {v}" for k, v in sorted(per.items()))
+                return f"{local.name}: {sid} · {n} ep ({slots}) · {size_gb:.1f} GB"
+            if "data" in f:
+                return f"{local.name}: {len(f['data'])} ep · {size_gb:.1f} GB"
+    except Exception:  # noqa: BLE001
+        pass
+    return f"{local.name}: {size_gb:.1f} GB"
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("local_file", type=Path, nargs="+", help="업로드할 .hdf5 파일 (여러 개 가능)")
@@ -104,6 +130,7 @@ def main() -> None:
                 path_in_repo=path_in_repo,
                 repo_id=args.repo_id,
                 repo_type="dataset",
+                commit_message=_commit_message(local),
             )
         except BadRequestError as e:
             # 'Invalid file change' 의 대표적인 원인: 만들려는 폴더와 같은 이름의

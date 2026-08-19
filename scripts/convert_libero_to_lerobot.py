@@ -301,6 +301,67 @@ def _fail_integrity(root: Path, problems: list) -> None:
     )
 
 
+def _hub_commit_message(root: Path, repo_id: str, info: dict, replace: bool) -> str:
+    """Hub 커밋 메시지 -- 데이터셋이 자라는 것이 이력에서 읽히게.
+
+    예) ``scene-v1: +12 ep (S000 +10, S001 +2) → 총 47 ep / 9,812 fr · scenes S000-S001``
+    Hub 의 이전 총계는 dataset_sync.hub_meta 로, scene 별 증감은 사이드카
+    (meta/episode_uids.json) 의 uid 를 Hub 사본과 대조해 계산한다. 조회 실패
+    (오프라인·첫 푸시)면 로컬 총계만 적는다. 메시지가 틀려도 업로드를 막지는
+    않는다 -- 이력 가독성 목적이지 정합성 장치가 아니다.
+    """
+    total_ep = int(info.get("total_episodes", 0))
+    total_fr = int(info.get("total_frames", 0))
+    sidecar = root / "meta" / "episode_uids.json"
+    per_scene_local: dict = {}
+    local_uids: set = set()
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8")) if sidecar.exists() else {}
+        for e in data.values():
+            if isinstance(e, dict) and e.get("episode_uid"):
+                local_uids.add(e["episode_uid"])
+                sid = e.get("scene_id") or e["episode_uid"].split("-")[1]
+                per_scene_local[sid] = per_scene_local.get(sid, 0) + 1
+    except Exception:  # noqa: BLE001
+        data = {}
+    prev_total = None
+    hub_uids: set = set()
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from gello.dataset_sync import hub_episode_uids, hub_meta
+
+        counts, _lens, err = hub_meta(repo_id)
+        if not err:
+            prev_total = sum(counts.values())
+        hu, err2 = hub_episode_uids(repo_id)
+        if not err2 and hu:
+            hub_uids = hu
+    except Exception:  # noqa: BLE001
+        pass
+    parts = []
+    if prev_total is not None:
+        delta = total_ep - prev_total
+        parts.append(f"{delta:+d} ep" if delta else "±0 ep")
+    else:
+        parts.append(f"{total_ep} ep")
+    if per_scene_local:
+        per_scene_new: dict = {}
+        for e in data.values():
+            if isinstance(e, dict) and e.get("episode_uid") and e["episode_uid"] not in hub_uids:
+                sid = e.get("scene_id") or e["episode_uid"].split("-")[1]
+                per_scene_new[sid] = per_scene_new.get(sid, 0) + 1
+        if per_scene_new and hub_uids:
+            parts.append("(" + ", ".join(f"{k} +{v}" for k, v in sorted(per_scene_new.items())) + ")")
+        elif per_scene_local:
+            parts.append("(" + ", ".join(f"{k} {v}" for k, v in sorted(per_scene_local.items())) + ")")
+    tail = f"→ 총 {total_ep} ep / {total_fr:,} fr"
+    if per_scene_local:
+        ks = sorted(per_scene_local)
+        tail += f" · scenes {ks[0]}" + (f"-{ks[-1]}" if len(ks) > 1 else "")
+    kind = "rebuild(큐레이션 반영, 교체)" if replace else "scene-v1"
+    return f"{kind}: {' '.join(parts)} {tail}"
+
+
 def _verify_tag(repo_id: str) -> bool:
     """Check that the version tag lerobot reads actually points at what we pushed.
 
@@ -737,6 +798,8 @@ def main() -> None:
         ds.meta = SimpleNamespace(info=info)
         print(f"업로드만 진행: {info_dict['total_episodes']}개 에피소드, "
               f"{info_dict['total_frames']} 프레임 -> {args.repo_id}", flush=True)
+        commit_msg = _hub_commit_message(root, args.repo_id, info_dict, bool(args.replace))
+        print(f"Hub 커밋 메시지: {commit_msg}", flush=True)
         if args.replace:
             # 재빌드한 결과로 Hub을 통째로 교체한다. push_to_hub는 새/바뀐 파일만
             # 올리고 사라진 파일은 지우지 않으므로, 그것만으로는 지운 에피소드의
@@ -752,7 +815,7 @@ def main() -> None:
                 repo_id=args.repo_id, folder_path=str(root), repo_type="dataset",
                 ignore_patterns=["images/", ".cache/**"],
                 delete_patterns=["data/**", "videos/**", "meta/**"],
-                commit_message="rebuild: 큐레이션 반영 (삭제 포함)",
+                commit_message=commit_msg,
             )
             # upload_folder는 태그를 건드리지 않는다. lerobot이 읽는 건 태그이므로
             # 여기서 옮기지 않으면 교체한 내용이 보이지 않는다.
@@ -768,7 +831,32 @@ def main() -> None:
             # 비교체 푸시에서 만든다).
             _merge_card_tags(args.repo_id)
         else:
-            ds.push_to_hub(private=args.private, tags=DATASET_TAGS)
+            # lerobot 의 push_to_hub 는 commit_message 를 받지 않아 이력이 전부
+            # 'Upload dataset' 으로 남는다. 같은 일(폴더 업로드 -> 카드 -> 태그)을
+            # 직접 하되 메시지를 붙인다 -- 데이터셋이 자라는 것이 Hub 이력에서
+            # 읽히게 (사용자 요청 2026-08-19).
+            from huggingface_hub import HfApi
+            from lerobot.datasets.utils import create_lerobot_dataset_card
+
+            api = HfApi()
+            api.create_repo(repo_id=args.repo_id, repo_type="dataset",
+                            private=bool(args.private), exist_ok=True)
+            api.upload_folder(
+                repo_id=args.repo_id, folder_path=str(root), repo_type="dataset",
+                ignore_patterns=["images/", ".cache/**"],
+                commit_message=commit_msg,
+            )
+            card = create_lerobot_dataset_card(
+                tags=DATASET_TAGS, dataset_info=info, repo_id=args.repo_id)
+            card.push_to_hub(repo_id=args.repo_id, repo_type="dataset",
+                             commit_message=f"card: {commit_msg}")
+            from huggingface_hub.errors import RevisionNotFoundError
+
+            try:
+                api.delete_tag(args.repo_id, tag=CODEBASE_VERSION, repo_type="dataset")
+            except RevisionNotFoundError:
+                pass
+            api.create_tag(args.repo_id, tag=CODEBASE_VERSION, repo_type="dataset")
         ok_tag = _verify_tag(args.repo_id)
         print(f"완료: https://huggingface.co/datasets/{args.repo_id}", flush=True)
         # 태그가 안 따라왔으면 성공이 아니다. lerobot은 태그를 읽으므로 올린
