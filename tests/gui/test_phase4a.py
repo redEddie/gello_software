@@ -154,7 +154,20 @@ win.slot_iid_edit.setText("I009")
 win.slot_instr_edit.setText("open the top drawer")
 win._on_apply_slot()
 assert calls, "계획 없이 자유 입력 적용 실패"
-print("4 통과: 계획 없음일 때 자유 입력 회귀 없음")
+# 오른쪽 패널 Dataset '태스크' 가 적용 즉시 현재 slot 으로 바뀐다
+assert win.right_fields["ds_task"].text() == "I009: open the top drawer"
+# 패널 갱신 경로도 워커의 현재 slot 을 읽는다 (연결 시점 설정이 아니라)
+FW._slot_instruction = "close the top drawer"
+FW._slot_instruction_id = "I010"
+FW.cfg.language_instruction = "stale first sentence"
+FW.cfg.instruction_id = "I000"
+FW.cfg.schema = type("S", (), {"action_space": "joint_absolute",
+                               "gripper_action_match_obs": True, "image_size": None})()
+FW.cfg.fps = 20
+win._update_dataset_panel()
+assert win.right_fields["ds_task"].text() == "I010: close the top drawer", \
+    win.right_fields["ds_task"].text()
+print("4 통과: 계획 없음 자유 입력 회귀 없음 + 오른쪽 패널 태스크가 현재 slot 반영")
 
 print("\nPhase 4a 인수 테스트 전부 통과")
 import os  # noqa: E402

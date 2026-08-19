@@ -2797,6 +2797,10 @@ class WorkspaceWindow(QMainWindow):
                 return
         self.worker.cmd_set_slot(instr, iid)
         self.slot_current_label.setText(f"{iid}: {instr}")
+        # cmd_set_slot 은 워커 큐로 가서 다음 드레인에 반영된다 -- 오른쪽
+        # 패널은 사용자가 누른 값으로 즉시 갱신한다 (워커 속성은 곧 같아진다).
+        self.right_fields["ds_task"].setText(f"{iid}: {instr}")
+        self.right_fields["ds_task"].setToolTip(f"{iid}: {instr}")
         self._recents.add("instruction_id", iid)
         self._recents.add("language", instr)
         # 계획과 어긋난 수동 입력은 막지 않되 즉시 보이게 한다 (ID-문장
@@ -5829,7 +5833,14 @@ class WorkspaceWindow(QMainWindow):
                     else Path(str(self.active_file_path or "-")).name)
             f["ds_file"].setText(soft_wrap(name))
             f["ds_file"].setToolTip(name)
-            task_text = cfg.language_instruction or cfg.task_name
+            # 연결 시점 설정이 아니라 '지금' slot 을 보여준다 -- scene 세션은
+            # Disconnect 없이 slot(문장·ID)을 바꾸므로(cmd_set_slot) 설정값만
+            # 보여주면 전환 뒤에도 첫 문장이 그대로 남는다 (실사용 보고).
+            cur_instr = getattr(self.worker, "_slot_instruction", None) \
+                or cfg.language_instruction or cfg.task_name
+            cur_iid = getattr(self.worker, "_slot_instruction_id", "") or cfg.instruction_id
+            task_text = f"{cur_iid}: {cur_instr}" if (self._scene_session and cur_iid) \
+                else cur_instr
             f["ds_task"].setText(task_text)
             f["ds_task"].setToolTip(task_text)
             # 저장은 백그라운드라 episode_list_changed가 몇 초 늦게 온다. 그걸
