@@ -72,9 +72,10 @@ print("3 통과: 행 삭제(번호 유지) + 지운 번호 재사용 금지")
 
 # ---- 4. scene 추가 + 검증 실패 시 파일 무변경 ----
 before = plan_copy.read_text()
+next_sid = f"S{max(int(s['scene_id'][1:]) for s in json.loads(before)['scenes']) + 1:03d}"
 dlg3 = cw.PlanEditDialog(None, plan_copy)
 dlg3._on_add_scene()
-assert dlg3.scene_combo.currentText() == "S002"
+assert dlg3.scene_combo.currentText() == next_sid
 dlg3._add_row({"id": None, "instr": "", "target": 1})
 bad = dlg3.tree.topLevelItem(0)
 dlg3.tree.itemWidget(bad, 1).setText('"quoted sentence"')   # 규칙 위반
@@ -84,11 +85,11 @@ assert plan_copy.read_text() == before
 dlg3.tree.itemWidget(bad, 1).setText("push the plate to the left side")
 dlg3._save()
 saved = json.loads(plan_copy.read_text())
-s2 = [s for s in saved["scenes"] if s["scene_id"] == "S002"]
+s2 = [s for s in saved["scenes"] if s["scene_id"] == next_sid]
 assert s2 and s2[0]["slots"][0]["instruction_id"] == "I000"
 w = [x for x in dlg3.warnings if "동사" in x]
 assert w, "push 동사 경고가 안 남음"
-print("4 통과: scene 추가(S002, I000부터) + 검증 게이트 + 동사 경고 전달")
+print(f"4 통과: scene 추가({next_sid}, I000부터) + 검증 게이트 + 동사 경고 전달")
 
 # ---- 5. Configure 계획 문장 드롭다운 ----
 cw.WorkspaceWindow._refresh_cameras = lambda self: None
