@@ -965,7 +965,11 @@ def main() -> None:
     # LeRobot episode_index -> 출처 매핑 (episode_uid 사이드카). resume 이면
     # 기존 매핑에 이어 쓴다 -- scene 파일의 스킵은 개수 산술이 아니라 이
     # uid 집합과의 대조로 정확하게 한다.
-    uid_records = _load_uid_sidecar(Path(args.root), args.repo_id, args.resume)
+    # resume 가 아니면 빈 기록에서 시작한다 -- 이전 실행의 사이드카가 root 에
+    # 남아 있으면 재빌드가 0..k-1 만 덮어써 k 이상 인덱스의 유령 레코드가
+    # 살아남고, 다음 resume 의 uid 대조를 오염시킨다.
+    uid_records = (_load_uid_sidecar(Path(args.root), args.repo_id, resume=True)
+                   if args.resume else {})
     existing_uids = {e["episode_uid"] for e in uid_records.values()
                      if isinstance(e, dict) and e.get("episode_uid")}
     next_index = ds.meta.total_episodes if args.resume else 0
@@ -973,6 +977,24 @@ def main() -> None:
         with h5py.File(path, "r") as f:
             if _is_scene_file(f):
                 scene_id = str(f["metadata"].attrs["scene_id"])
+                # 큐레이션 편집 게이트 (2026-08-23): 삭제 후 renumber 는 uid 를
+                # 재배정하므로, 편집이 있었던 scene 파일에 uid 집합 대조로
+                # 이어붙이면 다른 에피소드를 "이미 올렸다"고 오판한다(새 궤적
+                # 조용한 누락 / 지운 궤적 Hub 잔존). 트림도 uid·개수를 안 바꿔
+                # 같은 구멍이다. 그래서 파일의 edit_count(삭제·트림마다 증가,
+                # gello/scene_format.mark_scene_edited)를 사이드카에 기록해 두고,
+                # resume 때 달라져 있으면 여기서 멈춘다 -- 전체 재빌드만 허용.
+                edit_count = int(f["metadata"].attrs.get("edit_count", 0))
+                if args.resume and not args.force_all:
+                    edit_base = uid_records.get("_scene_edits", {})
+                    if edit_count != int(edit_base.get(scene_id, 0)):
+                        raise SystemExit(
+                            f"{path.name}: 큐레이션 편집(삭제/트림) 이력이 마지막 변환 "
+                            f"이후 바뀌었습니다 (edit_count {edit_count}, 사이드카 기준 "
+                            f"{edit_base.get(scene_id, 0)}). 편집 후에는 uid 가 재배정되어 "
+                            "이어붙이기가 안전하지 않습니다 -- '전체 처리(재빌드)' 로 올리세요."
+                        )
+                uid_records.setdefault("_scene_edits", {})[scene_id] = edit_count
                 conv = list(_scene_convertible(f, args.include_failed))
                 total_eps = sum(1 for k in f.keys() if EPISODE_GROUP_RE.match(k))
                 n_skipped += total_eps - len(conv)

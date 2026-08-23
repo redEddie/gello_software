@@ -453,6 +453,15 @@ class CollectionWorker(QThread):
         out: dict = dict(zip(JOINT_KEYS, pos.tolist()))
         out["_ee_pos_quat"] = np.asarray(raw["ee_pos_quat"], dtype=float)
         out["_joint_velocities"] = np.asarray(raw["joint_velocities"], dtype=float)
+        # 포스·토크 (hdf5 원본 전용 기록): 노드가 필드를 제공할 때만 키가 있다.
+        # 없으면 add_frame 에 None 이 넘어가 그 에피소드는 해당 데이터셋을
+        # 만들지 않는다 -- 0 으로 채워 "무접촉 측정"처럼 보이게 하지 않는다.
+        for src, dst in (("joint_torques", "_joint_torques"),
+                         ("ext_joint_torques", "_ext_joint_torques"),
+                         ("ee_wrench", "_ee_wrench")):
+            v = raw.get(src)
+            if v is not None:
+                out[dst] = np.asarray(v, dtype=float)
         for cam_key, cam in self._robot.cameras.items():
             frame = cam.read_latest()
             # read_latest() is non-blocking by design: it hands back whatever
@@ -974,6 +983,9 @@ class CollectionWorker(QThread):
                 commanded_gripper=float(action["gripper.pos"]),
                 agentview_depth=obs.get("_agent_depth"),
                 eye_in_hand_depth=obs.get("_wrist_depth"),
+                joint_torques=obs.get("_joint_torques"),
+                ext_joint_torques=obs.get("_ext_joint_torques"),
+                ee_wrench=obs.get("_ee_wrench"),
             )
             self._emit_frames(obs)
             n = i + 1
