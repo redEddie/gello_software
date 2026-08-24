@@ -8,6 +8,7 @@ gello/gui_widgets.py's DatasetSchemaDialog) survives across restarts.
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -109,14 +110,29 @@ class DatasetSchemaConfig:
     # GUI 에서 고를 수 없는 필드들. 저장된 JSON 에 옛 값이 남아 있어도 무시한다
     # -- 다이얼로그에서 뺐다는 이유만으로 고정이 되지는 않는다. 이 목록이 실제
     # 강제 지점이고, 다이얼로그는 그 결과를 보여줄 뿐이다.
+    #
+    # depth 수집은 lerobot 0.5.0 RealSenseCamera 가 read_latest_depth 를
+    # 지원하지 않아 당분간 비활성화한다. 코드(버퍼/저장 경로)는 남겨두고
+    # 플래그만 강제 Off 로 막는다 (fix/depth-gate).
     _FIXED = ("action_space", "action_include_gripper", "gripper_action_match_obs",
-              "action_column_name_overrides")
+              "action_column_name_overrides",
+              "save_agentview_depth", "save_eye_in_hand_depth")
 
     @classmethod
     def from_json(cls, s: str) -> "DatasetSchemaConfig":
         data = json.loads(s)
         valid = {f.name for f in fields(cls)} - set(cls._FIXED)
-        return cls(**{k: v for k, v in data.items() if k in valid})
+        filtered = {k: v for k, v in data.items() if k in valid}
+        # depth 플래그가 True 로 저장돼 있어도 드라이버 미지원으로 인해 Off
+        for flag in ("save_agentview_depth", "save_eye_in_hand_depth"):
+            if data.get(flag):
+                warnings.warn(
+                    f"{flag}=True 인 설정을 무시합니다: "
+                    "카메라 드라이버(lerobot RealSenseCamera)가 depth 읽기를 "
+                    "지원하지 않아 수집이 비활성화되어 있습니다.",
+                    stacklevel=2,
+                )
+        return cls(**filtered)
 
 
 def load_schema_config(path: Path = DEFAULT_CONFIG_PATH) -> DatasetSchemaConfig:

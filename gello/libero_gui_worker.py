@@ -277,6 +277,8 @@ class CollectionWorker(QThread):
         self._cam_stale: dict = {}
         self._cam_stale_run: dict = {}
         self._cam_stale_max_run: dict = {}
+        # depth 수집 가드용 1회 경고 플래그 (fix/depth-gate).
+        self._depth_unsupported_warned = False
 
     # ------------------------------------------------------------------ API
     # Called from the GUI (main) thread; safe because queue.Queue is thread-safe.
@@ -482,10 +484,27 @@ class CollectionWorker(QThread):
                 self._cam_stale_run[cam_key] = 0
             self._cam_last_fp[cam_key] = fp
             out[cam_key] = frame
-        for cam_key in self._depth_roles:       # (#17) 스키마가 켠 역할만
+        # (#17) depth 는 스키마가 켠 역할만 기록하지만, 카메라 드라이버가
+        # read_latest_depth 를 지원하지 않으면 조용히 제거하고 진행한다.
+        # UI 게이트와 별개로, 구버전 설정 파일이나 코드 경로 우회를 막기 위한
+        # 방어 가드다 -- 어떤 경우에도 AttributeError 로 세션이 죽으면 안 된다.
+        unsupported: list[str] = []
+        for cam_key in list(self._depth_roles):
             cam = self._robot.cameras.get(cam_key)
-            if cam is not None:
-                out[f"_{cam_key}_depth"] = cam.read_latest_depth()
+            if cam is None:
+                continue
+            if not hasattr(cam, "read_latest_depth"):
+                unsupported.append(cam_key)
+                self._depth_roles.discard(cam_key)
+                continue
+            out[f"_{cam_key}_depth"] = cam.read_latest_depth()
+        if unsupported and not self._depth_unsupported_warned:
+            self._depth_unsupported_warned = True
+            self.log_message.emit(
+                "[경고] depth 미지원 카메라 -- "
+                f"{', '.join(sorted(unsupported))} 카메라에 read_latest_depth 가 없어 "
+                "이 세션은 depth 를 기록하지 않습니다"
+            )
         return out
 
     # ------------------------------------------------------------------ ramp
