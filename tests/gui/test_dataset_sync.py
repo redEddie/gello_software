@@ -23,8 +23,9 @@ from gello.dataset_sync import (  # noqa: E402
 
 def test_revision_pin():
     """hub_meta/hub_episode_uids 가 lerobot 이 읽는 CODEBASE_VERSION 태그로
-    snapshot_download 을 부르고, 태그가 없는 신생 repo 는 빈 결과로
-    처리해야 한다."""
+    snapshot_download 을 부르고, repo 는 있는데 태그만 없는 상태는 빈 결과가
+    아니라 오류로 거부해야 한다 (태그 생성 실패 사고를 '새 repo' 로 위장하면
+    plan_sync 가 중복 업로드를 권한다 -- refuse rather than guess)."""
 
     def _fake_download(repo_id, repo_type="dataset", allow_patterns=None,
                        revision=None, force_download=True):
@@ -55,8 +56,8 @@ def test_revision_pin():
         assert any(c[1] == LEROBOT_TAG and c[2] == ["meta/episode_uids.json"]
                    for c in calls), calls
 
-    # RevisionNotFoundError 는 "아직 태그가 없는 신생 repo" 로 취급.
-    from huggingface_hub.errors import RevisionNotFoundError  # noqa: E402
+    # RevisionNotFoundError = "repo 는 있는데 태그가 없음" -- 오류로 거부.
+    from huggingface_hub.errors import RepositoryNotFoundError, RevisionNotFoundError  # noqa: E402
 
     class FakeRevNotFound(RevisionNotFoundError):
         def __init__(self, msg):
@@ -65,11 +66,23 @@ def test_revision_pin():
     with patch("huggingface_hub.snapshot_download",
                side_effect=FakeRevNotFound("no tag")):
         counts, lengths, err = hub_meta("dummy/repo")
+        assert "태그" in err and counts == {} and lengths == {}, err
+        uids, err2 = hub_episode_uids("dummy/repo")
+        assert "태그" in err2 and uids is None, (uids, err2)
+
+    # RepositoryNotFoundError = repo 부재 (첫 업로드 전) -- 여전히 빈 결과가 정상.
+    class FakeRepoNotFound(RepositoryNotFoundError):
+        def __init__(self, msg):
+            self.args = (msg,)
+
+    with patch("huggingface_hub.snapshot_download",
+               side_effect=FakeRepoNotFound("no repo")):
+        counts, lengths, err = hub_meta("dummy/repo")
         assert err == "" and counts == {} and lengths == {}
         uids, err2 = hub_episode_uids("dummy/repo")
         assert err2 == "" and uids == set()
 
-    print("test_revision_pin 통과: snapshot_download revision=v3.0, RevisionNotFoundError -> 빈 결과")
+    print("test_revision_pin 통과: revision=v3.0 핀, 태그 없음 -> 오류 거부, repo 없음 -> 빈 결과")
 
 
 def test_mixed_at_repack_cleared():

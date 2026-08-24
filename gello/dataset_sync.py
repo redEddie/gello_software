@@ -132,9 +132,16 @@ def hub_meta(repo_id: str) -> tuple[dict, dict, str]:
                               allow_patterns=["meta/*", "meta/**/*"],
                               revision=LEROBOT_TAG,
                               force_download=True)
-    except (RepositoryNotFoundError, RevisionNotFoundError):
-        # repo 가 없거나 태그가 아직 없는 신생 repo -- 빈 결과가 정상 케이스.
+    except RepositoryNotFoundError:
+        # repo 자체가 없다 (첫 업로드 전) -- 빈 결과가 정상 케이스.
         return {}, {}, ""
+    except RevisionNotFoundError:
+        # repo 는 있는데 태그가 없다 -- upload_folder 성공 후 태그 생성이 실패한
+        # 사고 상태일 수 있다 (docs/lerobot-stale-metadata-incident.md 의 첫 푸시
+        # 변종). 빈 결과로 돌리면 전부 '새 task' 로 보여 중복 업로드를 권하게
+        # 되므로, 추측하지 않고 거부한다 (모듈 원칙: refuse rather than guess).
+        return {}, {}, (f"repo 에 {LEROBOT_TAG} 태그가 없습니다 -- 태그 생성 실패"
+                        " 사고 여부를 확인하세요 (전체 재빌드로 복구 가능)")
     except Exception as e:  # noqa: BLE001
         return {}, {}, f"{type(e).__name__}: {e}"
     files = sorted(glob.glob(f"{d}/meta/episodes/**/*.parquet", recursive=True))
@@ -179,9 +186,13 @@ def hub_episode_uids(repo_id: str) -> tuple:
                               allow_patterns=["meta/episode_uids.json"],
                               revision=LEROBOT_TAG,
                               force_download=True)
-    except (RepositoryNotFoundError, RevisionNotFoundError):
-        # repo 가 없거나 태그가 아직 없는 신생 repo -- 빈 집합이 정상 케이스.
+    except RepositoryNotFoundError:
+        # repo 자체가 없다 (첫 업로드 전) -- 빈 집합이 정상 케이스.
         return set(), ""
+    except RevisionNotFoundError:
+        # repo 는 있는데 태그가 없다 -- hub_meta 와 같은 이유로 추측 대신 거부.
+        return None, (f"repo 에 {LEROBOT_TAG} 태그가 없습니다 -- 태그 생성 실패"
+                      " 사고 여부를 확인하세요")
     except Exception as e:  # noqa: BLE001
         return None, f"{type(e).__name__}: {e}"
     p = Path(d) / "meta" / "episode_uids.json"

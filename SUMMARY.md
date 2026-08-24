@@ -46,3 +46,20 @@ bash tests/gui/run_all.sh python
 - 로컬 커밋 3개, 푸시하지 않음.
 - 파일명으로 task/instruction 판별하지 않음.
 - legacy 경로 동작 불변.
+
+## 리뷰 반영 (2026-08-24)
+
+- 세션 소유 삭제의 썸네일 무효화가 saver 가 잠근 파일을 GUI 스레드에서
+  `read_scene_metadata` 로 재오픈하고 있었다 (h5py 가 거부 → except 삼킴 →
+  무효화가 조용히 안 됨). `_session_scene_id()` 로 교체 -- 파일을 열지 않는다.
+- `_pending_scene_delete` bool → `_pending_scene_deletes` 카운터. 목록이
+  줄어든 emit 만 삭제 완료로 세어(저장/재판정 emit 의 오소진 방지) 매 삭제마다
+  무효화하고, 새 세션 연결 시 초기화한다.
+- 비소유 경로의 썸네일 정리를 삭제와 별도 try 로 분리 (삭제 성공이 "삭제
+  실패" 로 오표기되던 문제).
+- `RevisionNotFoundError` 를 repo 부재와 분리 -- repo 는 있는데 v3.0 태그가
+  없는 상태(태그 생성 실패 사고)는 빈 결과가 아니라 오류 메시지로 반환해
+  plan_sync 가 거부하게 한다.
+- 정정: 커밋은 SUMMARY 포함 4개이며, 커밋 3(at_repack)의 테스트 파일은
+  커밋 2가 만든 tests/gui/test_dataset_sync.py 를 수정하므로 되돌리기 단위로는
+  3→2 순서 의존이 있다.
