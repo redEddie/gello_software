@@ -177,6 +177,7 @@ from gello.scene_format import (  # noqa: E402
     read_scene_metadata,
     scene_filename,
 )
+from gello.scene_gallery import invalidate_scene_thumbs  # noqa: E402
 from gello.station import load_station  # noqa: E402
 
 LOG_DIR = Path.home() / "libero_gui_logs"
@@ -1739,6 +1740,11 @@ class WorkspaceWindow(QMainWindow):
         self._last_saved_name = None
         self._last_saved_success = True
         self._pending_verdict_toggle = False
+        # 세션 소유 scene 삭제 후 썸네일 무효화 대기 건수. bool 이 아니라 카운터 --
+        # saver 는 삭제 1건마다 episode_list_changed 를 emit 하므로, 첫 emit 에서
+        # 플래그를 소진하면 나머지 삭제(추가 renumber/uid 재배정)가 무효화를
+        # 비껴간다.
+        self._pending_scene_deletes = 0
         self._dying_previews: list = []
         # 확정 전까지의 트림 상태. 누른 만큼 오르내리는 정수 하나면 충분하다 --
         # +/- 가 양쪽으로 있으므로 되돌리기용 이력을 따로 들 이유가 없다.
@@ -5631,6 +5637,9 @@ class WorkspaceWindow(QMainWindow):
             return
         self.active_file_path = Path(path)
         self._episodes_at_connect = int(n_episodes)
+        # 직전 세션에서 삭제가 실패해 남았을 수 있는 대기 건수를 청산 --
+        # 새 세션의 첫 목록 갱신이 엉뚱한 무효화를 하지 않게.
+        self._pending_scene_deletes = 0
         if self._scene_session:
             # scene 파일이 실제로 만들어졌으니 보관해 둔 새 scene 구성은 소진.
             self._pending_scene_meta = None
@@ -5641,7 +5650,24 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(list)
     def _on_episode_list(self, episodes) -> None:
+        prev_n = len(self.active_episode_cache) if self.active_episode_cache else None
         self.active_episode_cache = episodes
+        if self._pending_scene_deletes > 0 and self._scene_session:
+            # 목록이 줄어든 emit 만 삭제 완료로 센다 -- 사이에 낀 저장/재판정
+            # emit(개수 불변·증가)이 카운터를 잘못 소진하지 않게. 삭제 1건마다
+            # renumber 로 uid 가 재배정되므로 매번 통째로 무효화한다.
+            if prev_n is not None and len(episodes) < prev_n:
+                self._pending_scene_deletes = max(
+                    0, self._pending_scene_deletes - (prev_n - len(episodes)))
+                try:
+                    # 파일은 saver 가 잠그고 있다 -- 다시 열지 않고 세션 설정에서
+                    # scene_id 를 얻는다 (_session_scene_id).
+                    sid = self._session_scene_id()
+                    n_thumbs = invalidate_scene_thumbs(sid) if sid else 0
+                    if n_thumbs:
+                        self.log(f"[썸네일] {sid}: {n_thumbs}개 캐시 무효화")
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"[썸네일 캐시 정리 실패] {e}")
         self._refresh_dataset_tree()
         if self._scene_session:
             # 저장/재판정마다 saver 가 새 목록을 보내온다 -- slot 카운트 갱신
@@ -6552,16 +6578,31 @@ class WorkspaceWindow(QMainWindow):
 
         for path, names in by_file.items():
             owned = self.active_file_path is not None and path == self.active_file_path
+            is_scene = path.name.startswith("scene_")
             if owned:
                 # 세션이 파일을 쥐고 있으면 saver 스레드가 유일한 통로다. 매 삭제
                 # 뒤 번호가 다시 매겨지므로 뒤에서부터 지워야 앞 이름이 안 밀린다.
                 for name in sorted(names, key=lambda s: int(s.split("_")[1]), reverse=True):
                     self.worker.cmd_delete_episode(name)
                 self.log(f"[삭제] {path.name}: {len(names)}개 요청 (세션 경유)")
+                if is_scene:
+                    # saver 가 삭제를 1건 완료할 때마다 episode_list_changed ->
+                    # _on_episode_list 가 카운터를 줄이며 썸네일을 지운다.
+                    self._pending_scene_deletes += len(names)
                 continue
             try:
-                if path.name.startswith("scene_"):
+                if is_scene:
                     delete_scene_episodes(path, names)
+                    # renumber 로 uid 가 재배정되므로 해당 scene 의 썸네일 캐시를
+                    # 전부 무효화한다. 삭제와 별도 try -- 썸네일 정리 실패가
+                    # "삭제 실패" 로 오표기되면 안 된다 (삭제는 이미 성공했다).
+                    try:
+                        sid = read_scene_metadata(path).scene_id
+                        n_thumbs = invalidate_scene_thumbs(sid)
+                        if n_thumbs:
+                            self.log(f"[썸네일] {path.name}: {n_thumbs}개 캐시 무효화")
+                    except Exception as e:  # noqa: BLE001
+                        self.log(f"[썸네일 캐시 정리 실패] {path.name}: {e}")
                 else:
                     with h5py.File(path, "a") as f:
                         data = f["data"]

@@ -448,8 +448,12 @@ def _load_uid_sidecar(root: Path, repo_id: str, resume: bool) -> dict:
         try:
             from huggingface_hub import hf_hub_download
 
+            # lerobot 은 모든 것을 CODEBASE_VERSION("v3.0") 태그로 읽는다.
+            # main 과 태그가 갈라지면 사이드카를 낡은 버전에서 읽어 uid 대조가
+            # 어긋날 수 있으므로 revision 을 명시한다.
             p = hf_hub_download(repo_id, "meta/episode_uids.json",
-                                repo_type="dataset")
+                                repo_type="dataset",
+                                revision=CODEBASE_VERSION)
             return json.loads(Path(p).read_text())
         except Exception:  # noqa: BLE001 - 없는 것이 정상 케이스
             return {}

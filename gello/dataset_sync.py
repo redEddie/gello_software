@@ -44,6 +44,13 @@ import h5py
 # file was edited in a way counting alone would miss.
 REPACK_COUNT_ATTR = "repacked_episodes"
 
+# LeRobot 이 데이터셋을 읽을 때 사용하는 revision. lerobot 은
+# CODEBASE_VERSION("v3.0") 태그로 모든 메타데이터를 조회하므로, 이 모듈도
+# 같은 태그를 써야 main 과 갈라진 경우에 조용한 누락이 없다.
+# dataset_sync 는 lerobot 을 직접 import 하지 않으므로(lerobot 없는 환경
+# 에서도 돌아야 함) 상수만 동일 값으로 정의한다.
+LEROBOT_TAG = "v3.0"
+
 
 def local_tasks(data_root: str | Path) -> dict:
     """{language_instruction: {"episodes", "path", "at_repack", "lengths"}}.
@@ -93,6 +100,11 @@ def local_tasks(data_root: str | Path) -> dict:
                     e["episodes"] += 1
                     if Path(p) not in e["paths"]:
                         e["paths"].append(Path(p))
+                    # scene 기여가 섞이면 legacy 의 at_repack 은 의미 없다.
+                    # episodes(합산) != at_repack(legacy 시점) 이 되어 plan_sync 가
+                    # 편집이 없어도 "개수 같음 (편집 흔적)" 허위 경고를 내게
+                    # 되므로 함께 None 으로 지운다.
+                    e["at_repack"] = None
                     e["lengths"] = None
         except Exception:  # noqa: BLE001 - 수집 세션이 잠근 파일 등
             continue
@@ -112,15 +124,24 @@ def hub_meta(repo_id: str) -> tuple[dict, dict, str]:
     try:
         import pandas as pd
         from huggingface_hub import snapshot_download
-        from huggingface_hub.errors import RepositoryNotFoundError
+        from huggingface_hub.errors import RepositoryNotFoundError, RevisionNotFoundError
     except ImportError as e:
         return {}, {}, f"의존성 없음: {e}"
     try:
         d = snapshot_download(repo_id, repo_type="dataset",
                               allow_patterns=["meta/*", "meta/**/*"],
+                              revision=LEROBOT_TAG,
                               force_download=True)
     except RepositoryNotFoundError:
+        # repo 자체가 없다 (첫 업로드 전) -- 빈 결과가 정상 케이스.
         return {}, {}, ""
+    except RevisionNotFoundError:
+        # repo 는 있는데 태그가 없다 -- upload_folder 성공 후 태그 생성이 실패한
+        # 사고 상태일 수 있다 (docs/lerobot-stale-metadata-incident.md 의 첫 푸시
+        # 변종). 빈 결과로 돌리면 전부 '새 task' 로 보여 중복 업로드를 권하게
+        # 되므로, 추측하지 않고 거부한다 (모듈 원칙: refuse rather than guess).
+        return {}, {}, (f"repo 에 {LEROBOT_TAG} 태그가 없습니다 -- 태그 생성 실패"
+                        " 사고 여부를 확인하세요 (전체 재빌드로 복구 가능)")
     except Exception as e:  # noqa: BLE001
         return {}, {}, f"{type(e).__name__}: {e}"
     files = sorted(glob.glob(f"{d}/meta/episodes/**/*.parquet", recursive=True))
@@ -157,15 +178,21 @@ def hub_episode_uids(repo_id: str) -> tuple:
     """
     try:
         from huggingface_hub import snapshot_download
-        from huggingface_hub.errors import RepositoryNotFoundError
+        from huggingface_hub.errors import RepositoryNotFoundError, RevisionNotFoundError
     except ImportError as e:
         return None, f"의존성 없음: {e}"
     try:
         d = snapshot_download(repo_id, repo_type="dataset",
                               allow_patterns=["meta/episode_uids.json"],
+                              revision=LEROBOT_TAG,
                               force_download=True)
     except RepositoryNotFoundError:
+        # repo 자체가 없다 (첫 업로드 전) -- 빈 집합이 정상 케이스.
         return set(), ""
+    except RevisionNotFoundError:
+        # repo 는 있는데 태그가 없다 -- hub_meta 와 같은 이유로 추측 대신 거부.
+        return None, (f"repo 에 {LEROBOT_TAG} 태그가 없습니다 -- 태그 생성 실패"
+                      " 사고 여부를 확인하세요")
     except Exception as e:  # noqa: BLE001
         return None, f"{type(e).__name__}: {e}"
     p = Path(d) / "meta" / "episode_uids.json"
