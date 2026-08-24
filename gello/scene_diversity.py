@@ -103,20 +103,36 @@ def scene_distance(a: Signature, b: Signature) -> float:
 def generate_candidate(props: dict, rng: random.Random,
                        scene_id: str = "S999",
                        max_attempts: int = 200) -> SceneMetadata:
-    """인벤토리 제약 안의 무작위 scene: 컵 ≥1 + 다른 종류 ≥1, 물체 2~5개,
-    존 비충돌. 추가로 configs/scene_rules.yaml 의 규칙을 만족하지 않으면
-    재시도한다."""
+    """인벤토리 제약 안의 무작위 scene: 등장 category 는 색 다른 2개 이상
+    (pair_if_present), pickable 최소 한 종류, 물체 2~5개, 존 비충돌.
+    configs/scene_rules.yaml 규칙을 만족하지 않으면 재시도한다."""
     active = [p for p in props.values() if not p.retired]
-    cups = [p for p in active if p.category == "cup"]
-    others = [p for p in active if p.category != "cup"]
-    if not cups or not others:
-        raise ValueError("인벤토리에 컵과 다른 종류가 최소 1개씩 필요하다")
+    # pair_if_present 규칙(2026-08-24) 아래에서는 물체 단위 무작위 뽑기가
+    # 거의 다 기각된다 -- category 단위로 "짝"을 뽑는다: 등장시키는
+    # category 마다 서로 다른 색 min 2개, 총 2~5개, pickable(cup/small_bowl)
+    # 최소 한 종류 포함, drawer 는 단일이라 자유.
+    by_cat: dict = {}
+    for p_ in active:
+        by_cat.setdefault(p_.category, {}).setdefault(p_.color, []).append(p_)
+    paired_cats = [c for c in ("cup", "small_bowl", "large_bowl")
+                   if len(by_cat.get(c, {})) >= 2]
+    if not any(c in paired_cats for c in ("cup", "small_bowl")):
+        raise ValueError("인벤토리에 2색 이상인 pickable category 가 없다")
     for _ in range(max_attempts):
-        n = rng.randint(2, min(5, len(active)))
-        picked = [rng.choice(cups), rng.choice(others)]
-        pool = [p for p in active if p not in picked]
-        rng.shuffle(pool)
-        picked += pool[:n - 2]
+        cats = [c for c in paired_cats if rng.random() < 0.6]
+        if not any(c in cats for c in ("cup", "small_bowl")):
+            continue
+        picked = []
+        for c in cats:
+            colors = list(by_cat[c])
+            rng.shuffle(colors)
+            take = rng.randint(2, min(3, len(colors)))
+            picked += [rng.choice(by_cat[c][col]) for col in colors[:take]]
+        if "drawer" in by_cat and len(picked) <= 4 and rng.random() < 0.5:
+            picked.append(rng.choice(by_cat["drawer"][
+                next(iter(by_cat["drawer"]))]))
+        if not 2 <= len(picked) <= 5:
+            continue
         cells = [(r, c) for r in range(GRID[0]) for c in range(GRID[1])]
         rng.shuffle(cells)
         placements = {p.id: {"zone": list(cells[i])} for i, p in enumerate(picked)}

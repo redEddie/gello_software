@@ -104,13 +104,29 @@ nd2 = cw.NewSceneDialog(None, "S101")
 nd2.prop_list.blockSignals(True)
 for i in range(nd2.prop_list.count()):
     it = nd2.prop_list.item(i)
-    if it.data(cw.Qt.ItemDataRole.UserRole) in {"OBJ-CUP-BLU-01", "OBJ-BOWLS-WHT-01"}:
+    if it.data(cw.Qt.ItemDataRole.UserRole) in {
+            "OBJ-CUP-WHT-01", "OBJ-CUP-BLU-01",
+            "OBJ-BOWLS-WHT-01", "OBJ-BOWLS-BLU-01"}:
         it.setCheckState(cw.Qt.CheckState.Checked)
 nd2.prop_list.blockSignals(False)
-nd2._placements = {"OBJ-CUP-BLU-01": [0, 0], "OBJ-BOWLS-WHT-01": [0, 1]}
+# pair_if_present(2026-08-24 확정): 등장하는 category 는 2개 이상(색 다름)
+# -- 컵 2색 + small bowl 2색으로 충족
+nd2._placements = {"OBJ-CUP-WHT-01": [0, 0], "OBJ-CUP-BLU-01": [1, 0],
+                   "OBJ-BOWLS-WHT-01": [0, 1], "OBJ-BOWLS-BLU-01": [2, 2]}
 nd2._refresh()
-assert nd2.lint_label.text() == ""
-print("5 통과: NewSceneDialog 규칙 통과 시 경고 없음")
+assert nd2.lint_label.text() == "", nd2.lint_label.text()
+# 컵 1 + 그릇 1 이면 pair_if_present 경고가 떠야 한다 (shortcut 방지)
+nd3 = cw.NewSceneDialog(None, "S102")
+nd3.prop_list.blockSignals(True)
+for i in range(nd3.prop_list.count()):
+    it = nd3.prop_list.item(i)
+    if it.data(cw.Qt.ItemDataRole.UserRole) in {"OBJ-CUP-BLU-01", "OBJ-BOWLS-WHT-01"}:
+        it.setCheckState(cw.Qt.CheckState.Checked)
+nd3.prop_list.blockSignals(False)
+nd3._placements = {"OBJ-CUP-BLU-01": [0, 0], "OBJ-BOWLS-WHT-01": [0, 1]}
+nd3._refresh()
+assert "pair_if_present" in nd3.lint_label.text(), nd3.lint_label.text()
+print("5 통과: 규칙 통과 시 경고 없음 + 단일 개체 조합엔 shortcut 경고")
 
 # ---- 6. 문법 lint 자기일관성 + 계획 lint 는 경고로만 ----
 # 계획 파일은 실사용 중 계속 바뀌고, 사람이 쓴 문장이 통일 문법 밖이어도

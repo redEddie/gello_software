@@ -21,7 +21,8 @@ from gello.scene_format import SceneMetadata
 RULES_PATH = Path(__file__).resolve().parent.parent / "configs" / "scene_rules.yaml"
 
 
-_KNOWN_RULES = {"no_lookalike_pair", "color_diverse", "ban_zones"}
+_KNOWN_RULES = {"no_lookalike_pair", "color_diverse", "ban_zones",
+                "pair_if_present"}
 
 
 def _validate_rules(data: dict, path: "str | Path" = RULES_PATH) -> None:
@@ -104,6 +105,18 @@ def check(md: SceneMetadata, props: dict[str, Prop],
                 violations.append(
                     f"color_diverse: {cat} 에 중복 색 {dup}"
                 )
+        elif rule == "pair_if_present":
+            cats = entry.get("categories", [])
+            need = int(entry.get("min_count", 2))
+            counter = Counter(cat for _, cat, _ in triples)
+            for c in cats:
+                n = counter.get(c, 0)
+                if 0 < n < need:
+                    violations.append(
+                        f"pair_if_present: {c} 가 {n}개 -- 등장하려면 "
+                        f"{need}개 이상 (한 개면 색 없이 지칭 가능해져 "
+                        "shortcut 학습 위험)"
+                    )
 
     for entry in data.get("placement", []) or []:
         rule = entry.get("rule")

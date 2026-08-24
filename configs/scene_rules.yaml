@@ -5,6 +5,14 @@ compose:
   - rule: no_lookalike_pair            # 같은 (category, color) 2개 금지 (전 소품)
   - rule: color_diverse                # 같은 category 2개 이상이면 색은 전부 달라야
     category: cup
+  # shortcut 방지 (2026-08-24 사용자 확정): 아래 category 는 scene 에
+  # 등장하려면 반드시 2개 이상이어야 한다 (위 규칙들과 결합되어 자동으로
+  # 서로 다른 색). 한 개만 있으면 "the cup" 만으로 정답이 되어 색 학습이
+  # 생략된다. drawer 는 단일 개체라 제외. 기존 수집분(S000~S009)은 소급
+  # 적용하지 않는다 -- 새 scene·추천에만.
+  - rule: pair_if_present
+    categories: [cup, small_bowl, large_bowl]
+    min_count: 2
 placement:
   - rule: ban_zones                    # 해당 category 를 이 존에 두지 않는다
     category: drawer

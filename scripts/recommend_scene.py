@@ -61,7 +61,12 @@ def _selftest() -> None:
         c = generate_candidate(props, rng)
         c.validate(known_prop_ids=ids)
         cats = {props[o].category for o in c.objects}
-        assert "cup" in cats and len(cats) >= 2
+        # pair_if_present(2026-08-24): 등장 category(서랍 제외)는 2개 이상,
+        # pickable(cup/small_bowl) 최소 한 종류
+        from collections import Counter
+        cnt = Counter(props[o].category for o in c.objects)
+        assert any(k in cnt for k in ("cup", "small_bowl"))
+        assert all(v >= 2 for k, v in cnt.items() if k != "drawer"), cnt
         assert 2 <= len(c.objects) <= 5
     print("2 통과: 후보 50개 제약+validate 통과")
 
