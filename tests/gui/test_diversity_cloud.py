@@ -42,6 +42,21 @@ print(f"2 통과: 추천 3안 validate + 거리 내림차순 ({[d for _, d in re
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
+
+
+def _wait_recs(dlg):
+    """RecommendDialog 의 백그라운드 추천 계산이 끝날 때까지 기다린다."""
+    import time
+    for _ in range(600):
+        if dlg._worker is None or not dlg._worker.isRunning():
+            break
+        app.processEvents()
+        time.sleep(0.01)
+    else:
+        raise AssertionError("RecommendDialog worker timeout")
+    app.processEvents()
+
+
 import collect_workspace as cw  # noqa: E402
 
 cw.WorkspaceWindow._refresh_cameras = lambda self: None
@@ -70,6 +85,7 @@ print("3 통과: 탭 진입/이탈 가드 + 합성 클라우드 렌더 + 세션 
 
 # ---- 4. GUI 추천 받기: 다이얼로그 + NewScene 자동 채움 ----
 rdlg = cw.RecommendDialog(None, [base], props, "S001")
+_wait_recs(rdlg)
 assert len(rdlg._radios) == 3 and rdlg._radios[0].isChecked()
 rdlg._radios[1].setChecked(True)
 rdlg._accept()
@@ -84,9 +100,11 @@ assert nd._placements == want_zones
 assert nd.preview.text()                     # 격자 미리보기 갱신됨
 # seed 바꿔 다시 추천 -> 카드 재구성
 rdlg2 = cw.RecommendDialog(None, [base], props, "S001")
+_wait_recs(rdlg2)
 first = [m.objects for m, _ in rdlg2._recs]
 rdlg2.seed_spin.setValue(7)
 rdlg2._fill()
+_wait_recs(rdlg2)
 assert len(rdlg2._radios) == 3
 print("4 통과: 추천 다이얼로그(선택/재추천) + NewScene 자동 채움")
 

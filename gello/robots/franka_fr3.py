@@ -254,6 +254,21 @@ class FrankaFR3Robot(Robot):
         self._q_cmd = q0.copy()        # filtered command sent to the robot
         self._qd_cmd = np.zeros(7)     # filter velocity state
         self._ee_pose = np.asarray(st.O_T_EE, dtype=float)
+        # 포스·토크 (2026-08-23): franka 가 1kHz 로 이미 추정해 주는 값이라
+        # 캡처는 공짜다. pylibfranka 빌드가 필드를 노출하는지 첫 상태에서
+        # 한 번만 확인하고, 없으면 관측에서 키를 빼서 상류(add_frame)가
+        # 기록을 생략하게 한다 -- 0 으로 채워 "측정된 무접촉"처럼 보이게
+        # 하는 것이 최악이므로 조용한 0 채움은 하지 않는다.
+        self._ft_fields = ("tau_J", "tau_ext_hat_filtered", "O_F_ext_hat_K")
+        self._has_ft = all(hasattr(st, a) for a in self._ft_fields)
+        if self._has_ft:
+            self._tau_J = np.asarray(st.tau_J, dtype=float)
+            self._tau_ext = np.asarray(st.tau_ext_hat_filtered, dtype=float)
+            self._ext_wrench = np.asarray(st.O_F_ext_hat_K, dtype=float)
+        else:
+            missing = [a for a in self._ft_fields if not hasattr(st, a)]
+            print(f"[FR3] robot state 에 포스·토크 필드가 없습니다: {missing} "
+                  "-- joint_torques/ext_joint_torques/ee_wrench 는 기록되지 않습니다")
         self._success_rate = 1.0
         self._control_error: Optional[str] = None
         self._stop = threading.Event()
@@ -341,17 +356,29 @@ class FrankaFR3Robot(Robot):
             dq = self._dq.copy()
             pose = self._ee_pose.copy()
             gripper_norm = 1.0 - self._gripper_state_width / MAX_GRIPPER_WIDTH
+            ft = None
+            if self._has_ft:
+                ft = (self._tau_J.copy(), self._tau_ext.copy(),
+                      self._ext_wrench.copy())
         if self._use_gripper:
             pos = np.append(q, gripper_norm)
             vel = np.append(dq, 0.0)
         else:
             pos, vel = q, dq
-        return {
+        out = {
             "joint_positions": pos,
             "joint_velocities": vel,
             "ee_pos_quat": self._pose_to_pos_quat(pose),
             "gripper_position": np.array(gripper_norm),
         }
+        # 포스·토크: 필드를 노출하는 pylibfranka 빌드에서만 키가 존재한다.
+        # 소비자(libero_gui_worker._get_obs)는 .get() 으로 읽으므로 키 부재는
+        # "기록 안 함"이지 오류가 아니다.
+        if ft is not None:
+            out["joint_torques"] = ft[0]        # tau_J, 측정 관절토크 (N*m)
+            out["ext_joint_torques"] = ft[1]    # tau_ext_hat_filtered, 외력 추정 (N*m)
+            out["ee_wrench"] = ft[2]            # O_F_ext_hat_K, 베이스 좌표 외력 렌치 (N, N*m)
+        return out
 
     # ---------------------------------------------------------------- helpers
     @staticmethod
@@ -398,6 +425,10 @@ class FrankaFR3Robot(Robot):
                     self._dq = np.asarray(st.dq, dtype=float)
                     self._ee_pose = np.asarray(st.O_T_EE, dtype=float)
                     self._success_rate = float(st.control_command_success_rate)
+                    if self._has_ft:
+                        self._tau_J = np.asarray(st.tau_J, dtype=float)
+                        self._tau_ext = np.asarray(st.tau_ext_hat_filtered, dtype=float)
+                        self._ext_wrench = np.asarray(st.O_F_ext_hat_K, dtype=float)
             except Exception as e:  # noqa: BLE001
                 self._control_error = str(e)
                 print(f"[FR3] read-only loop error: {e}")
@@ -454,6 +485,10 @@ class FrankaFR3Robot(Robot):
                     self._dq = np.asarray(state.dq, dtype=float)
                     self._ee_pose = np.asarray(state.O_T_EE, dtype=float)
                     self._success_rate = float(state.control_command_success_rate)
+                    if self._has_ft:
+                        self._tau_J = np.asarray(state.tau_J, dtype=float)
+                        self._tau_ext = np.asarray(state.tau_ext_hat_filtered, dtype=float)
+                        self._ext_wrench = np.asarray(state.O_F_ext_hat_K, dtype=float)
 
                 # Critically-damped second-order reference filter, saturated in
                 # jerk, acceleration and velocity -> smooth, bounded command.

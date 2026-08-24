@@ -64,6 +64,20 @@ selected action space; see ``save_episode``)::
                                                      the command sent at frame t
     obs/commanded_gripper_states  (T, 1) float32  -- commanded gripper, 0=open..1=closed
 
+Same principle for the robot's own force/torque estimates (2026-08-23) --
+franka computes them at 1 kHz anyway, they are tiny (20 floats/frame), and
+they are the only record of contact the realized trajectory hides, so they
+are written whenever the caller supplies them, independent of the schema.
+HDF5-original only; the LeRobot converter does not consume them
+(_CONSUMED_OBS_KEYS)::
+
+    obs/joint_torques             (T, 7) float32  -- tau_J, measured joint torque (N*m)
+    obs/ext_joint_torques         (T, 7) float32  -- tau_ext_hat_filtered,
+                                                     estimated external joint torque (N*m)
+    obs/ee_wrench                 (T, 6) float32  -- O_F_ext_hat_K, estimated external
+                                                     wrench on the EE in base frame
+                                                     [Fx Fy Fz Tx Ty Tz] (N, N*m)
+
 ``scripts/derive_commanded_ee_actions.py`` turns these into commanded EE
 delta actions (``actions_ee`` / ``actions_world_cmd``) offline via FR3
 forward kinematics -- no extra dependency in the collection loop.
@@ -669,6 +683,9 @@ class LiberoEpisodeBuffer:
         self.eye_in_hand_depth: list[np.ndarray] = []
         self.commanded_joint_positions: list[np.ndarray] = []
         self.commanded_gripper: list[float] = []
+        self.joint_torques: list[np.ndarray] = []
+        self.ext_joint_torques: list[np.ndarray] = []
+        self.ee_wrench: list[np.ndarray] = []
 
     def __len__(self) -> int:
         return len(self.joint_states)
@@ -687,6 +704,9 @@ class LiberoEpisodeBuffer:
         commanded_gripper: Optional[float] = None,
         agentview_depth: Optional[np.ndarray] = None,
         eye_in_hand_depth: Optional[np.ndarray] = None,
+        joint_torques: Optional[np.ndarray] = None,
+        ext_joint_torques: Optional[np.ndarray] = None,
+        ee_wrench: Optional[np.ndarray] = None,
     ) -> None:
         self.joint_states.append(np.asarray(joint_positions, dtype=np.float32))
         self.gripper_states.append(np.array([gripper_position], dtype=np.float32))
@@ -698,6 +718,14 @@ class LiberoEpisodeBuffer:
             )
         if commanded_gripper is not None:
             self.commanded_gripper.append(float(commanded_gripper))
+        # 포스·토크는 commanded_* 와 같은 규칙: 호출자가 주면 스키마와 무관하게
+        # 버퍼링한다 (모듈 docstring 참조).
+        if joint_torques is not None:
+            self.joint_torques.append(np.asarray(joint_torques, dtype=np.float32))
+        if ext_joint_torques is not None:
+            self.ext_joint_torques.append(np.asarray(ext_joint_torques, dtype=np.float32))
+        if ee_wrench is not None:
+            self.ee_wrench.append(np.asarray(ee_wrench, dtype=np.float32))
         if self.schema.save_agentview_rgb:
             self.agentview_rgb.append(self._process_image(agentview_rgb))
         if self.schema.save_eye_in_hand_rgb:
@@ -936,6 +964,16 @@ def write_episode_payload(
             "commanded_gripper_states",
             data=np.array(buf.commanded_gripper, dtype=np.float32).reshape(-1, 1),
         )
+    # 포스·토크 (2026-08-23): franka 가 매 스텝 추정해 주는 값의 20Hz 스냅숏.
+    # commanded_* 와 같은 원칙 -- 작고, 실현 궤적이 숨기는 접촉을 담은 유일한
+    # 기록이라 스키마 토글 없이 있으면 항상 쓴다. hdf5 원본 전용 (변환기의
+    # _CONSUMED_OBS_KEYS 밖 -- LeRobot 산출물에는 들어가지 않는다).
+    if len(buf.joint_torques) == n:
+        obs.create_dataset("joint_torques", data=np.stack(buf.joint_torques))
+    if len(buf.ext_joint_torques) == n:
+        obs.create_dataset("ext_joint_torques", data=np.stack(buf.ext_joint_torques))
+    if len(buf.ee_wrench) == n:
+        obs.create_dataset("ee_wrench", data=np.stack(buf.ee_wrench))
 
     grp.create_dataset("actions", data=actions)
     grp.create_dataset("rewards", data=np.zeros(n, dtype=np.float32))

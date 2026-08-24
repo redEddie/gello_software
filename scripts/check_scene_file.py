@@ -206,6 +206,9 @@ def _dummy_frames(writer, n: int = 5, seed: int = 0) -> None:
             gripper_closed=bool(rng.random() > 0.5),
             commanded_joint_positions=rng.standard_normal(7).astype(np.float32),
             commanded_gripper=float(rng.random() > 0.5),
+            joint_torques=rng.standard_normal(7).astype(np.float32),
+            ext_joint_torques=rng.standard_normal(7).astype(np.float32),
+            ee_wrench=rng.standard_normal(6).astype(np.float32),
         )
 
 
@@ -321,6 +324,11 @@ def selftest(keep: Path | None) -> None:
         assert g["actions"].shape == (5, 8)
         assert g["obs/joint_states"].shape == (5, 7)
         assert g["obs/agentview_rgb"].shape == (5, 48, 64, 3)
+        # 포스·토크: 호출자가 주면 스키마 토글 없이 기록된다 (2026-08-23)
+        assert g["obs/joint_torques"].shape == (5, 7)
+        assert g["obs/joint_torques"].dtype == np.float32
+        assert g["obs/ext_joint_torques"].shape == (5, 7)
+        assert g["obs/ee_wrench"].shape == (5, 6)
         assert str(g.attrs["instruction"]) == I0  # 따옴표 없이 그대로
     assert read_reference_image(path) is not None
     assert next_scene_id(root) == "S001"
@@ -330,6 +338,31 @@ def selftest(keep: Path | None) -> None:
     desc = describe_scene(md_back)
     assert "빈 존: (0,1) (1,0) (1,2) (2,1)" in desc and "CUP-BLU-01" in desc
     print("  ✓ scene 포맷: UID·slot 카운트·페이로드·기준사진·describe_scene 확인")
+
+    # -- 큐레이션 편집 마커 (2026-08-23): 삭제하면 edit_count 가 올라가고,
+    #    변환기의 resume 게이트가 이 값으로 이어붙이기를 거부한다.
+    #    --keep 산출물은 tests/gui 픽스처로도 쓰이므로 원본은 건드리지 않고
+    #    하위 디렉터리 사본에서 검증한다.
+    import shutil as _shutil
+    from gello.scene_format import delete_scene_episodes
+    probe_dir = root / "editprobe"
+    probe_dir.mkdir(exist_ok=True)
+    probe = probe_dir / "scene_000.hdf5"
+    _shutil.copyfile(path, probe)
+    with h5py.File(probe, "r") as f:
+        assert int(f["metadata"].attrs.get("edit_count", 0)) == 0
+    delete_scene_episodes(probe, ["episode_001"])
+    with h5py.File(probe, "r") as f:
+        assert int(f["metadata"].attrs["edit_count"]) == 1
+        assert "edited" in f["metadata"].attrs
+    delete_scene_episodes(probe, ["episode_002"])
+    with h5py.File(probe, "r") as f:
+        assert int(f["metadata"].attrs["edit_count"]) == 2  # 단조 증가
+    problems = verify_scene_file(probe)
+    if problems:
+        _fail("삭제 후 불변식 위반:\n  " + "\n  ".join(problems))
+    _shutil.rmtree(probe_dir)
+    print("  ✓ 편집 마커: 삭제마다 edit_count 증가, 삭제 후 불변식 유지")
 
     # -- 리팩터링 회귀: legacy writer 가 공용 페이로드로 여전히 demo_N 을 쓴다
     from gello.libero_format import LiberoTaskWriter
@@ -369,6 +402,18 @@ def main() -> int:
     for p in args.paths:
         problems = verify_scene_file(p)
         print_scene_file(p)
+        # scene 구성 규칙(configs/scene_rules.yaml)은 경고로만 보여준다 --
+        # 규칙은 추천 후보 필터/신규 배치 lint 용이지 기존 파일의 합불
+        # 기준이 아니다 (규칙 도입 전에 찍힌 scene 이 위반일 수 있다).
+        try:
+            from gello.props import props_by_id
+            from gello.scene_format import read_scene_metadata
+            from gello.scene_rules import check as rules_check
+            rv = rules_check(read_scene_metadata(p), props_by_id())
+            for msg in rv:
+                print(f"  ⚠ 규칙 경고: {msg}")
+        except Exception as e:  # noqa: BLE001 -- 규칙 검사 실패가 QA 를 막으면 안 된다
+            print(f"  (규칙 검사 생략: {type(e).__name__}: {e})")
         if problems:
             rc = 1
             print("  ✖ 불변식 위반:")

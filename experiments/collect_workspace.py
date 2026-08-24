@@ -50,6 +50,7 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 import json
 import shutil
 import sys
+import tempfile
 import traceback
 import time
 from pathlib import Path
@@ -161,9 +162,11 @@ from gello.collection_plan import (  # noqa: E402
     list_plans,
     load_plan,
 )
+from gello.instruction_grammar import enumerate_instructions  # noqa: E402
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
 from gello.props import load_props, props_by_id  # noqa: E402
 from gello.scene_diversity import recommend  # noqa: E402
+from gello.scene_rules import check  # noqa: E402
 from gello.robots.franka_fr3 import FR3_RESET_POSES  # noqa: E402
 from gello.scene_format import (  # noqa: E402
     INSTRUCTION_ID_RE,
@@ -1430,25 +1433,57 @@ class GridEditorDialog(QDialog):
         self.status_label.setText(tr("{n} 저장됨 (active)").format(n=name))
 
 
-class RecommendDialog(QDialog):
-    """scene 다양성 추천안 3개 중 하나 고르기 (#33 GUI).
+class RecommendWorker(QThread):
+    """scene 추천 계산을 GUI 스레드 밖에서 수행한다."""
 
-    추천 계산은 gello.scene_diversity 가 전담한다 -- 여기는 seed 를 바꿔
-    다시 뽑고, 격자 미리보기로 비교해 하나를 고르는 껍데기다.
-    """
+    # QThread 자체의 finished 시그널을 가리면 안 되므로(수명 관리가 그걸 쓴다)
+    # 결과 시그널은 recs_ready 로 명명한다 -- 리포의 다른 QThread 들(loaded,
+    # frame_ready, cloud_ready)과 같은 관례.
+    recs_ready = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(self, existing: list, props: dict, k: int,
+                 seed: int, scene_id: str) -> None:
+        super().__init__()
+        self._existing = existing
+        self._props = props
+        self._k = k
+        self._seed = seed
+        self._scene_id = scene_id
+
+    def run(self) -> None:
+        try:
+            recs = recommend(self._existing, self._props, k=self._k,
+                             seed=self._seed, scene_id=self._scene_id)
+            self.recs_ready.emit(recs)
+        except Exception as e:  # noqa: BLE001
+            self.error.emit(f"{type(e).__name__}: {e}")
+
+
+class RecommendDialog(QDialog):
+    """scene 다양성 추천안 3개 중 하나 고르기 + 문장 체크리스트 + 계획 등록."""
 
     def __init__(self, parent, existing: list, props: dict,
-                 scene_id: str) -> None:
+                 scene_id: str, plan_path: "Path | None" = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("scene 추천 — 기존 {n}개와 가장 다른 배치")
                             .format(n=len(existing)))
-        self.setMinimumSize(560, 620)
+        self.setMinimumSize(620, 720)
         self._existing = existing
         self._props = props
         self._scene_id = scene_id
-        self.picked = None      # accept 시 SceneMetadata
+        self._plan_path = plan_path
+        self.picked = None                 # accept 시 SceneMetadata
+        self.registered_plan_path: "Path | None" = None  # 등록 성공 시 경로
         self._recs: list = []
         self._radios: list = []
+        self._sentence_checks: list[list[QCheckBox]] = []
+        self._worker: RecommendWorker | None = None
+        # 아직 도는 옛 워커들의 파이썬 참조. 참조를 버리면 GC 가 실행 중
+        # QThread 를 파괴해 "Destroyed while thread is still running" 으로
+        # 프로세스가 abort 한다 -- 결과는 워커 정체성 비교로 무시하고,
+        # 참조는 스레드가 끝날 때(finished) 거둔다.
+        self._stale_workers: list[RecommendWorker] = []
 
         col = QVBoxLayout(self)
         top = QHBoxLayout()
@@ -1456,9 +1491,11 @@ class RecommendDialog(QDialog):
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(0, 9999)
         top.addWidget(self.seed_spin)
-        again = QPushButton(tr("다시 추천"))
-        again.clicked.connect(self._fill)
-        top.addWidget(again)
+        self.again_btn = QPushButton(tr("다시 추천"))
+        self.again_btn.clicked.connect(self._fill)
+        top.addWidget(self.again_btn)
+        self.status_label = QLabel("")
+        top.addWidget(self.status_label, 1)
         top.addStretch(1)
         col.addLayout(top)
 
@@ -1470,6 +1507,15 @@ class RecommendDialog(QDialog):
         scroll.setWidget(self._cards)
         col.addWidget(scroll, 1)
 
+        if self._plan_path is not None:
+            self._register_check = QCheckBox(
+                tr("채택 시 선택한 문장을 계획 {n} 에 등록 (target=10)")
+                .format(n=self._plan_path.name))
+            self._register_check.setChecked(True)
+            col.addWidget(self._register_check)
+        else:
+            self._register_check = None
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                                    | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._accept)
@@ -1477,17 +1523,61 @@ class RecommendDialog(QDialog):
         col.addWidget(buttons)
         self._fill()
 
-    def _fill(self) -> None:
+    def _clear_cards(self) -> None:
         while self._cards_col.count():
             it = self._cards_col.takeAt(0)
             if it.widget() is not None:
                 it.widget().deleteLater()
         self._radios = []
-        self._recs = recommend(self._existing, self._props, k=3,
-                               seed=self.seed_spin.value(),
-                               scene_id=self._scene_id)
-        # 라디오가 카드(QGroupBox)마다 흩어져 있으면 부모 단위 자동 배타가
-        # 안 걸린다 -- 공용 버튼 그룹으로 묶는다.
+        self._sentence_checks = []
+
+    def _fill(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            # 강제 중단하지 않는다 (recommend() 는 인터럽트를 보지 않는다) --
+            # 참조만 보관해 GC 파괴를 막고, 낡은 결과는 정체성 비교로 버린다.
+            self._stale_workers.append(self._worker)
+        self._clear_cards()
+        self.again_btn.setEnabled(False)
+        self.status_label.setText(tr("추천 계산 중..."))
+        w = RecommendWorker(
+            self._existing, self._props, k=3,
+            seed=self.seed_spin.value(), scene_id=self._scene_id)
+        self._worker = w
+        w.recs_ready.connect(lambda recs, w=w: self._on_recs_ready(w, recs))
+        w.error.connect(lambda msg, w=w: self._on_recs_error(w, msg))
+        w.finished.connect(lambda w=w: self._reap(w))
+        w.start()
+
+    def _reap(self, w: RecommendWorker) -> None:
+        """끝난 옛 워커의 참조 회수 (QThread 기본 finished 시그널 경유)."""
+        if w in self._stale_workers and not w.isRunning():
+            self._stale_workers.remove(w)
+
+    def _wait_workers(self) -> None:
+        """다이얼로그가 닫히기 전에 도는 워커를 기다린다 -- 다이얼로그 소멸과
+        함께 워커가 GC 되면 실행 중 파괴로 abort 한다."""
+        for w in [self._worker, *self._stale_workers]:
+            if w is not None and w.isRunning():
+                w.wait(10000)
+
+    def done(self, r: int) -> None:  # accept/reject/close 공통 경유지
+        self._wait_workers()
+        super().done(r)
+
+    def _on_recs_error(self, w: RecommendWorker, msg: str) -> None:
+        if w is not self._worker:
+            return                       # 낡은 워커의 결과 -- 무시
+        self.status_label.setText(tr("오류: {m}").format(m=msg))
+        self.again_btn.setEnabled(True)
+        self._worker = None
+
+    def _on_recs_ready(self, w: RecommendWorker, recs: list) -> None:
+        if w is not self._worker:
+            return                       # 낡은 워커의 결과 -- 무시
+        self._worker = None
+        self.again_btn.setEnabled(True)
+        self.status_label.setText("")
+        self._recs = recs
         group = QButtonGroup(self)
         for i, (md, dist) in enumerate(self._recs, 1):
             box = QGroupBox()
@@ -1501,35 +1591,149 @@ class RecommendDialog(QDialog):
             view = SceneInfoView()
             view.setText(describe_scene(md))
             bc.addWidget(view)
+
+            sents = enumerate_instructions(md, self._props)
+            checks: list[QCheckBox] = []
+            if sents:
+                bc.addWidget(QLabel(tr("추천 문장 (채택 시 등록됨):")))
+                for s in sents:
+                    cb = QCheckBox(s)
+                    cb.setChecked(True)
+                    cb.setEnabled(self._plan_path is not None)
+                    checks.append(cb)
+                    bc.addWidget(cb)
+            else:
+                note = QLabel(tr("(문법상 생성 가능한 문장이 없음)"))
+                note.setStyleSheet("color:#888;")
+                bc.addWidget(note)
+            self._sentence_checks.append(checks)
             self._cards_col.addWidget(box)
         self._cards_col.addStretch(1)
 
+    def _selected_sentences(self, idx: int) -> list[str]:
+        return [cb.text() for cb in self._sentence_checks[idx] if cb.isChecked()]
+
+    def _register_plan(self, md: SceneMetadata, sentences: list[str]) -> bool:
+        """선택한 문장을 plan_path 의 scene+slots 로 등록. load_plan 검증 통과."""
+        if self._plan_path is None or not sentences:
+            return False
+        path = self._plan_path
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, tr("계획 읽기 실패"), str(e))
+            return False
+        raw.setdefault("plan_version", 1)
+        if not isinstance(raw.get("scenes"), list):
+            raw["scenes"] = []
+        by_sid = {s.get("scene_id"): s for s in raw["scenes"]}
+        scene = by_sid.get(md.scene_id)
+        if scene is None:
+            scene = {"scene_id": md.scene_id, "slots": []}
+            raw["scenes"].append(scene)
+        used = {
+            int(m.group(1))
+            for sl in scene.get("slots", [])
+            if (m := INSTRUCTION_ID_RE.match(str(sl.get("instruction_id", ""))))
+        }
+        # 같은 문장이 이미 있으면 새 ID 로 또 쌓지 않는다 -- load_plan 은
+        # "같은 ID·다른 문장"만 막으므로 여기서 문장 기준으로 걸러야 한다.
+        existing_sents = {str(sl.get("instruction", "")).strip()
+                          for sl in scene.get("slots", [])}
+        new_slots = []
+        n_dup = 0
+        for sent in sentences:
+            if sent.strip() in existing_sents:
+                n_dup += 1
+                continue
+            existing_sents.add(sent.strip())
+            n = max(used, default=-1) + 1
+            used.add(n)
+            new_slots.append({
+                "instruction_id": f"I{n:03d}",
+                "instruction": sent,
+                "target": 10,
+            })
+        if not new_slots:
+            QMessageBox.information(
+                self, tr("계획 등록"),
+                tr("선택한 문장이 모두 이미 등록되어 있습니다 (중복 {n}건 건너뜀).")
+                .format(n=n_dup))
+            return False
+        scene.setdefault("slots", []).extend(new_slots)
+
+        # 검증 게이트 -- 실패해도 temp 파일은 남기지 않는다.
+        tmp: "Path | None" = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                             encoding="utf-8") as tf:
+                tf.write(json.dumps(raw, ensure_ascii=False, indent=2) + "\n")
+                tmp = Path(tf.name)
+            plan = load_plan(tmp)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(
+                self, tr("계획 등록 실패"),
+                tr("load_plan 검증을 통과하지 못했습니다:\n{e}").format(e=e))
+            return False
+        finally:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
+        if plan.warnings:
+            # 통일 문법 경고(§4)는 등록을 막지 않지만 버리지도 않는다 --
+            # PlanEditDialog 저장 경로와 같은 규칙.
+            QMessageBox.warning(self, tr("계획 경고"),
+                                "\n".join(str(x) for x in plan.warnings))
+
+        path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+        self._n_dup_skipped = n_dup
+        self.registered_plan_path = path
+        return True
+
     def _accept(self) -> None:
-        for rb, (md, _d) in zip(self._radios, self._recs):
+        idx = -1
+        for i, rb in enumerate(self._radios):
             if rb.isChecked():
-                self.picked = md
+                idx = i
                 break
+        if idx < 0:
+            return
+        md, _dist = self._recs[idx]
+        self.picked = md
+        if self._register_check is not None and self._register_check.isChecked():
+            sents = self._selected_sentences(idx)
+            # 문장 수 × target 이 곧 수집량이다 -- 물체 5개 scene 은 문장이
+            # 20개를 넘을 수 있어, 무심코 OK 한 번에 200 에피소드가 계획에
+            # 얹히는 것을 총량 확인으로 막는다.
+            if sents and QMessageBox.question(
+                    self, tr("계획 등록"),
+                    tr("{n}개 문장 × target 10 = 총 {t} 에피소드를 {sid} 에 "
+                       "등록합니다. 진행할까요?")
+                    .format(n=len(sents), t=len(sents) * 10, sid=md.scene_id),
+            ) != QMessageBox.StandardButton.Yes:
+                sents = []
+            if sents and self._register_plan(md, sents):
+                dup = getattr(self, "_n_dup_skipped", 0)
+                QMessageBox.information(
+                    self, tr("계획 등록 완료"),
+                    tr("{n}개 문장을 {sid} 에 등록했습니다.{d}")
+                    .format(n=len(sents) - dup, sid=md.scene_id,
+                            d=tr(" (중복 {k}건 건너뜀)").format(k=dup) if dup else ""))
         super().accept()
 
 
 class NewSceneDialog(QDialog):
-    """새 scene 구성 — 소품 선택 + 3×3 존 배치 + 설명.
-
-    입력 검증은 SceneMetadata.validate 가 전담한다 (가드레일: UI 는 얇게).
-    기준 사진은 여기서 찍지 않는다 — 첫 에피소드 기록이 시작될 때 agentview
-    프레임이 자동 캡처된다 (libero_gui_worker 의 enqueue_set_reference).
-
-    사용법: 왼쪽 목록에서 물체를 체크해 포함시키고, 물체를 클릭해 선택한
-    상태로 오른쪽 3×3 격자 칸을 누르면 그 존에 배치된다. [0,0]=왼쪽 위.
-    """
+    """새 scene 구성 — 소품 선택 + 3×3 존 배치 + 설명 + 규칙 lint."""
 
     def __init__(self, parent, scene_id: str,
-                 data_root: "Path | None" = None) -> None:
+                 data_root: "Path | None" = None,
+                 plan_path: "Path | None" = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("새 Scene 구성 — {sid}").format(sid=scene_id))
         self.setMinimumWidth(720)
         self._scene_id = scene_id
         self._data_root = data_root
+        self._plan_path = plan_path
         self._placements: dict = {}
         self.metadata = None  # accept 시 SceneMetadata
 
@@ -1581,6 +1785,11 @@ class NewSceneDialog(QDialog):
         form.addRow(tr("설명"), self.desc_edit)
         layout.addLayout(form)
 
+        self.lint_label = QLabel("")
+        self.lint_label.setWordWrap(True)
+        self.lint_label.setStyleSheet("color:#e67e22;")
+        layout.addWidget(self.lint_label)
+
         self.preview = SceneInfoView()
         layout.addWidget(self.preview)
 
@@ -1605,7 +1814,8 @@ class NewSceneDialog(QDialog):
                     existing.append(read_scene_metadata(p))
                 except Exception:  # noqa: BLE001 -- 세션이 쥔 파일 등
                     skipped += 1
-        dlg = RecommendDialog(self, existing, props_by_id(), self._scene_id)
+        dlg = RecommendDialog(self, existing, props_by_id(), self._scene_id,
+                              plan_path=self._plan_path)
         if skipped:
             dlg.setWindowTitle(dlg.windowTitle()
                                + tr(" (읽지 못한 파일 {n}개 제외)").format(n=skipped))
@@ -1653,10 +1863,23 @@ class NewSceneDialog(QDialog):
             here = [o.replace("OBJ-", "") for o, z in self._placements.items()
                     if z == [r, c]]
             b.setText("\n".join(here))
+        md = None
         try:
-            self.preview.setText(describe_scene(self._build()))
+            md = self._build()
+            self.preview.setText(describe_scene(md))
         except Exception:  # noqa: BLE001 - 미완성 구성의 미리보기는 없어도 된다
             self.preview.setText("")
+            self.lint_label.setText("")
+            return
+        # 규칙 lint (경고만)
+        try:
+            violations = check(md, props_by_id())
+            if violations:
+                self.lint_label.setText(tr("규칙 경고: ") + "; ".join(violations))
+            else:
+                self.lint_label.setText("")
+        except Exception as e:  # noqa: BLE001
+            self.lint_label.setText(tr("규칙 검사 오류: {e}").format(e=e))
 
     def _accept(self) -> None:
         md = self._build()
@@ -2396,7 +2619,9 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("경로 오류"),
                                 tr("저장 경로를 확인하세요: {e}").format(e=e))
             return
-        dlg = NewSceneDialog(self, sid, data_root=root)
+        plan_data = self.plan_combo.currentData() if hasattr(self, "plan_combo") else None
+        plan_path = Path(plan_data) if plan_data else None
+        dlg = NewSceneDialog(self, sid, data_root=root, plan_path=plan_path)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.metadata is not None:
             self._pending_scene_meta = dlg.metadata
             self._on_scene_selected()

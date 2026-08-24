@@ -551,6 +551,21 @@ def _next_slot_idx(f: h5py.File, meta: h5py.Group, instruction_id: str) -> int:
     return slot_idx
 
 
+def mark_scene_edited(meta: h5py.Group) -> None:
+    """큐레이션 편집(삭제·트림)이 일어났다는 사실을 파일에 남긴다.
+
+    삭제 후 renumber 는 uid 를 재사용하므로, 변환기의 이어붙이기(resume)가
+    쓰는 "이미 올린 uid 는 스킵" 대조가 편집 이후에는 다른 에피소드를
+    가리킬 수 있다 -- 그래서 편집이 있었던 파일은 resume 을 거부하고 전체
+    재빌드만 허용해야 한다. 이 카운터가 그 거부의 근거다: 변환기가 변환
+    시점의 값을 사이드카(meta/episode_uids.json 의 ``_scene_edits``)에
+    기록하고, resume 때 파일의 현재 값과 다르면 중단한다
+    (scripts/convert_libero_to_lerobot.py). 단조 증가만 하고 리셋되지 않는다.
+    """
+    meta.attrs["edit_count"] = int(meta.attrs.get("edit_count", 0)) + 1
+    meta.attrs["edited"] = _now_iso()
+
+
 def renumber_scene_episodes(f: h5py.File, meta: h5py.Group) -> None:
     """삭제로 생긴 빈자리를 메운다 -- legacy ``renumber_episodes`` 의 scene 판.
 
@@ -560,7 +575,10 @@ def renumber_scene_episodes(f: h5py.File, meta: h5py.Group) -> None:
     - ``episode_id`` attr = 새 그룹 번호
     - slot 별로 현재 순서대로 ``slot_episode_idx``/``episode_uid`` 재부여
     - ``next_episode_idx`` = N
-    빈자리가 없으면 전부 no-op.
+    - 편집 마커 ``edit_count`` 증가 (:func:`mark_scene_edited` -- uid 가
+      재배정되므로 이 파일은 이후 resume 대상이 될 수 없다)
+    빈자리가 없어도 마커는 올라간다 -- 이 함수가 불렸다는 것 자체가 삭제가
+    있었다는 뜻이다 (호출자는 delete 경로뿐).
     """
     names = sorted((k for k in f.keys() if EPISODE_GROUP_RE.match(k)),
                    key=lambda k: int(EPISODE_GROUP_RE.match(k).group(1)))
@@ -580,6 +598,7 @@ def renumber_scene_episodes(f: h5py.File, meta: h5py.Group) -> None:
         g.attrs["slot_episode_idx"] = e
         if sid and iid:
             g.attrs["episode_uid"] = episode_uid(sid, iid, e)
+    mark_scene_edited(meta)
 
 
 def delete_scene_episodes(path: Path, names: list) -> None:
