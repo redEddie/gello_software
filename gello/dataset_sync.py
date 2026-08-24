@@ -100,6 +100,11 @@ def local_tasks(data_root: str | Path) -> dict:
                     e["episodes"] += 1
                     if Path(p) not in e["paths"]:
                         e["paths"].append(Path(p))
+                    # scene 기여가 섞이면 legacy 의 at_repack 은 의미 없다.
+                    # episodes(합산) != at_repack(legacy 시점) 이 되어 plan_sync 가
+                    # 편집이 없어도 "개수 같음 (편집 흔적)" 허위 경고를 내게
+                    # 되므로 함께 None 으로 지운다.
+                    e["at_repack"] = None
                     e["lengths"] = None
         except Exception:  # noqa: BLE001 - 수집 세션이 잠근 파일 등
             continue
