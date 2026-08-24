@@ -61,8 +61,12 @@ legacy 는 파일 하나 = task 하나였고 **파일명이 사실상 source of 
   저장이 백그라운드 스레드(EpisodeSaver)라, 조작자가 다음 slot 으로 넘어간 뒤
   직전 에피소드가 저장되는 경합에서 "실제 수행한 문장"이 찍혀야 한다.
   crop_params 를 buffer 에 싣는 기존 설계와 같은 이유.
-- **에피소드는 immutable.** 삭제·재번호 없음. QA 는 `set_quality_status` 만.
-  라벨 없는 에피소드는 저장 자체가 거부된다.
+- **에피소드 편집 정책 (2026-08-14 개정).** 1차 큐레이션은 `set_quality_status`
+  재판정, 불량 궤적은 삭제 후 renumber(slot E번호·uid 재배정), 끝만 자르는
+  트림 허용. 삭제·트림은 `metadata.attrs["edit_count"]` 를 올리고, 변환기
+  resume 이 이 값으로 이어붙이기를 거부한다(전체 재빌드만 허용) -- uid 가
+  재배정되므로 "이미 올린 uid 스킵" 대조를 믿을 수 없기 때문. 라벨 없는
+  에피소드는 저장 자체가 거부된다.
 - **글롭 불교차.** scene 파일은 `scene_*.hdf5`, legacy 는 `*_demo.hdf5` —
   같은 디렉터리에 있어도 서로 안 보인다. legacy 코드는 수정 없이 그대로 돈다.
 - instruction 은 따옴표 없는 순수 문자열 (legacy 는 `f'"{...}"'` 래핑이었고
