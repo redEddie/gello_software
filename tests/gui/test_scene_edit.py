@@ -1,5 +1,7 @@
 """scene 에피소드 편집(삭제·트림) 검증 -- 삭제 후 renumber(그룹·episode_id·
 slot E번호·uid), GUI 삭제 경로(양포맷)+확인창, Trim 양포맷, 파일 status."""
+import ast
+import collections
 import json
 import subprocess
 import sys
@@ -182,7 +184,63 @@ _sync.hub_episode_uids = lambda repo: (None, "")
 _, _, note_c = win._describe_delete_targets(targets)
 if have_repo:
     assert "참고" in note_c and "올라갔다는 뜻은 아닙니다" in note_c, note_c
-print(f"7 통과: 확인창 목록 {len(rows)}행 + Hub 안내 uid 단위 3경로 (repo 설정={'O' if have_repo else '-'})")
+print(f"7 통과: 확인창 목록 {len(rows)}행 + Hub 안내 uid 단위 3경로 (repo 설정={'O' if have_repo else '-'})\n\nscene 편집(삭제·트림) 검증 통과")
+
+# ---- 8. 회귀: WorkspaceWindow 메서드 중복 정의 없음 ----
+src = Path(WT) / "experiments" / "collect_workspace.py"
+tree = ast.parse(src.read_text(encoding="utf-8"))
+for node in ast.walk(tree):
+    if isinstance(node, ast.ClassDef) and node.name == "WorkspaceWindow":
+        seen = collections.defaultdict(list)
+        for it in node.body:
+            if isinstance(it, ast.FunctionDef):
+                seen[it.name].append(it.lineno)
+        dups = {k: v for k, v in seen.items() if len(v) > 1}
+        assert not dups, f"중복 정의: {dups}"
+print("8 통과: WorkspaceWindow 메서드 중복 정의 없음")
+
+# ---- 9. 회귀: 버튼 슬롯 경로에서 _describe_delete_targets 가 실제로 호출되고
+#          재빌드 안내가 뜨며 툼스톤 문구가 없음 ----
+class _MockParent:
+    def __init__(self, path): self._path = path
+    def data(self, column, role): return str(self._path)
+
+class _MockItem:
+    def __init__(self, parent, name): self._parent = parent; self._name = name
+    def parent(self): return self._parent
+    def data(self, column, role): return self._name
+
+captured_dialogs = []
+
+def _capture_warning(parent, title, body, *args, **kwargs):
+    captured_dialogs.append(("warning", str(title), str(body)))
+    return cw.QMessageBox.StandardButton.Yes
+
+def _capture_question(parent, title, body, *args, **kwargs):
+    captured_dialogs.append(("question", str(title), str(body)))
+    return cw.QMessageBox.StandardButton.Yes
+
+cw.QMessageBox.warning = staticmethod(_capture_warning)
+cw.QMessageBox.question = staticmethod(_capture_question)
+win._refresh_dataset_tree = lambda: None
+
+win.repo_edits["repo_id"].setText("test/repo")
+uid9 = cur[0]["episode_uid"]
+_sync.hub_episode_uids = lambda repo: ({uid9}, "")
+_sync.hub_meta = lambda repo: ({cur[0]["instruction"]: 99}, {}, "")
+
+win.dataset_tree.selectedItems = lambda: [_MockItem(_MockParent(scene), cur[0]["name"])]
+captured_dialogs.clear()
+win._on_delete_selected()
+
+assert captured_dialogs, "확인창이 뜨지 않음"
+_, title, body = captured_dialogs[-1]
+assert "에피소드 삭제" in title
+assert "재빌드" in body, body
+assert "번호가 다시 매겨집니다" in body
+assert "번호는 그대로" not in body, body
+assert "재사용 금지" not in body, body
+print("9 통과: 버튼 슬롯 경로에서 확인창 문구 실제 동작 기준 (재빌드 O, 툼스톤 X)")
 
 print("\nscene 편집(삭제·트림) 검증 통과")
 import os  # noqa: E402
