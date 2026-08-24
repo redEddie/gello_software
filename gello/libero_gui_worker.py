@@ -485,9 +485,11 @@ class CollectionWorker(QThread):
             self._cam_last_fp[cam_key] = fp
             out[cam_key] = frame
         # (#17) depth 는 스키마가 켠 역할만 기록하지만, 카메라 드라이버가
-        # read_latest_depth 를 지원하지 않으면 조용히 제거하고 진행한다.
-        # UI 게이트와 별개로, 구버전 설정 파일이나 코드 경로 우회를 막기 위한
-        # 방어 가드다 -- 어떤 경우에도 AttributeError 로 세션이 죽으면 안 된다.
+        # read_latest_depth 를 지원하지 않으면 그 역할을 빼고 1회 경고 후
+        # 진행한다. UI 게이트와 별개로, 구버전 설정 파일이나 코드 경로 우회를
+        # 막기 위한 방어 가드다 -- 어떤 경우에도 depth 때문에 세션이 죽으면
+        # 안 된다. 메서드가 있어도 예외를 던지는 드라이버(lerobot read_depth 는
+        # 스트림 미개시 시 RuntimeError)가 있을 수 있어 호출도 감싼다.
         unsupported: list[str] = []
         for cam_key in list(self._depth_roles):
             cam = self._robot.cameras.get(cam_key)
@@ -497,7 +499,11 @@ class CollectionWorker(QThread):
                 unsupported.append(cam_key)
                 self._depth_roles.discard(cam_key)
                 continue
-            out[f"_{cam_key}_depth"] = cam.read_latest_depth()
+            try:
+                out[f"_{cam_key}_depth"] = cam.read_latest_depth()
+            except Exception as e:  # noqa: BLE001
+                unsupported.append(f"{cam_key}({type(e).__name__})")
+                self._depth_roles.discard(cam_key)
         if unsupported and not self._depth_unsupported_warned:
             self._depth_unsupported_warned = True
             self.log_message.emit(

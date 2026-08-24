@@ -123,16 +123,23 @@ class DatasetSchemaConfig:
         data = json.loads(s)
         valid = {f.name for f in fields(cls)} - set(cls._FIXED)
         filtered = {k: v for k, v in data.items() if k in valid}
-        # depth 플래그가 True 로 저장돼 있어도 드라이버 미지원으로 인해 Off
-        for flag in ("save_agentview_depth", "save_eye_in_hand_depth"):
-            if data.get(flag):
-                warnings.warn(
-                    f"{flag}=True 인 설정을 무시합니다: "
-                    "카메라 드라이버(lerobot RealSenseCamera)가 depth 읽기를 "
-                    "지원하지 않아 수집이 비활성화되어 있습니다.",
-                    stacklevel=2,
-                )
-        return cls(**filtered)
+        cfg = cls(**filtered)
+        # depth 플래그가 True 로 저장돼 있어도 드라이버 미지원으로 인해 Off.
+        # warnings 는 stderr 로만 가서 데스크톱 아이콘 실행에서는 아무 데도 안
+        # 남는다 (collect_workspace.py 의 stderr 주석 참조) -- 무시된 플래그를
+        # 인스턴스 속성으로도 들고 있어 GUI 가 로그 뷰가 생긴 뒤 보이는 로그로
+        # 재보고할 수 있게 한다. dataclass 필드가 아니므로 to_json 에는 안 실린다.
+        ignored = [flag for flag in ("save_agentview_depth", "save_eye_in_hand_depth")
+                   if data.get(flag)]
+        if ignored:
+            warnings.warn(
+                f"{', '.join(ignored)}=True 인 설정을 무시합니다: "
+                "카메라 드라이버(lerobot RealSenseCamera)가 depth 읽기를 "
+                "지원하지 않아 수집이 비활성화되어 있습니다.",
+                stacklevel=2,
+            )
+            cfg.ignored_depth_flags = ignored
+        return cfg
 
 
 def load_schema_config(path: Path = DEFAULT_CONFIG_PATH) -> DatasetSchemaConfig:

@@ -78,17 +78,19 @@ with h5py.File(TMP / "d_off_demo.hdf5") as f:
 print("2 통과: 기본 스키마는 depth 미기록 (opt-in)")
 
 # ---- 3. 변환기: depth 유무가 섞여도 스키마 일치 판정 ----
+# import 만 ImportError 로 감싼다 (lerobot 버전 의존) -- 검증(assert)까지
+# except 로 덮으면 진짜 회귀가 "import 불가" 로 위장되어 통과한다.
 try:
     from convert_libero_to_lerobot import _episode_schema  # noqa: E402
-
+except ImportError as e:
+    print(f"3 건너뜀: convert_libero_to_lerobot import 불가 (ImportError: {e})")
+else:
     with h5py.File(TMP / "d_on_demo.hdf5") as f_on, \
             h5py.File(TMP / "d_off_demo.hdf5") as f_off:
         s_on = _episode_schema(f_on["data/demo_0"])
         s_off = _episode_schema(f_off["data/demo_0"])
     assert s_on == s_off, (s_on, s_off)
     print("3 통과: 소비 키 기준 비교 -- depth 혼합 변환 가능")
-except Exception as e:  # noqa: BLE001
-    print(f"3 걸너뜀: convert_libero_to_lerobot import 불가 ({type(e).__name__}: {e})")
 
 # ---- 4. 워커의 depth 역할 파생 ----
 cfg = WorkerConfig(task_name="t", language_instruction="t", data_root=str(TMP),
@@ -112,10 +114,15 @@ with warnings.catch_warnings(record=True) as w:
     loaded = DatasetSchemaConfig.from_json(json_text)
     assert loaded.save_agentview_depth is False
     assert loaded.save_eye_in_hand_depth is False
-    assert len(w) == 2
+    assert len(w) == 1
     assert "depth 읽기" in str(w[0].message)
-    assert "depth 읽기" in str(w[1].message)
-print("   통과: depth 플래그가 False 로 강제되고 경고가 2개 발생")
+# 무시 사실이 인스턴스 속성으로도 남아야 한다 -- warnings 는 stderr 로만 가서
+# 데스크톱 아이콘 실행에서 소실되므로, GUI 가 이 속성을 보고 로그 뷰에 재보고한다.
+assert loaded.ignored_depth_flags == [
+    "save_agentview_depth", "save_eye_in_hand_depth"]
+clean = DatasetSchemaConfig.from_json(DatasetSchemaConfig().to_json())
+assert getattr(clean, "ignored_depth_flags", []) == []
+print("   통과: depth 플래그 False 강제 + 경고 1건 + ignored_depth_flags 기록")
 
 # ---- 6. _get_obs 가 read_latest_depth 없는 카메라에서도 예외 없이 진행 ----
 print("6. _get_obs 가 read_latest_depth 없는 카메라에서도 예외 없이 진행")

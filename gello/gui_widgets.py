@@ -908,6 +908,9 @@ class DatasetSchemaDialog(QDialog):
             # depth 수집은 lerobot 0.5.0 RealSenseCamera 가 read_latest_depth 를
             # 지원하지 않아 당분간 비활성화. 코드는 남겨두고 UI/플래그만 막는다.
             if attr in ("save_agentview_depth", "save_eye_in_hand_depth"):
+                # 결과는 항상 False 이므로 표시도 False -- True 설정이 들어와도
+                # "체크된 채 비활성" 으로 표시-결과가 어긋나게 두지 않는다.
+                cb.setChecked(False)
                 cb.setEnabled(False)
                 cb.setToolTip(tr(
                     "카메라 드라이버(lerobot RealSenseCamera)가 depth 읽기를 "
