@@ -36,10 +36,14 @@ Usage:
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 from huggingface_hub import HfApi
 from huggingface_hub.errors import BadRequestError, EntryNotFoundError
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from gello.hub_upload_state import record_uploaded, upload_reason  # noqa: E402
 
 
 def _commit_message(local: Path) -> str:
@@ -66,6 +70,16 @@ def _commit_message(local: Path) -> str:
     except Exception:  # noqa: BLE001
         pass
     return f"{local.name}: {size_gb:.1f} GB"
+
+
+def _reason_tag(repo_id: str, local: Path) -> str:
+    """커밋 메시지 꼬리표 -- 이 파일이 '왜' 올라가는지 Hub 이력에서도
+    읽히게 (2026-08-25 사용자 요청: 자동 선택이 되면 사유가 안 보인다)."""
+    reason = upload_reason(repo_id, local)
+    if reason is None:
+        return " · 변경 없음(강제 재업로드)"
+    return " · " + ("신규 업로드" if reason.startswith("신규")
+                     else "변경분 재업로드")
 
 
 def main() -> None:
@@ -130,7 +144,8 @@ def main() -> None:
                 path_in_repo=path_in_repo,
                 repo_id=args.repo_id,
                 repo_type="dataset",
-                commit_message=_commit_message(local),
+                commit_message=_commit_message(local)
+                + _reason_tag(args.repo_id, local),
             )
         except BadRequestError as e:
             # 'Invalid file change' 의 대표적인 원인: 만들려는 폴더와 같은 이름의
@@ -149,6 +164,13 @@ def main() -> None:
                         f"  - 'Repo 안 폴더'를 비우거나 다른 이름으로 바꾸세요."
                     ) from e
             raise
+        # 성공한 파일만 장부에 기록 -- 다음 실행에서 '변경 없음'으로
+        # 걸러진다. 도중 실패하면 기록이 없어 다시 선택된다.
+        try:
+            record_uploaded(args.repo_id, local)
+        except OSError as e:
+            print(f"경고: 업로드 장부 기록 실패 ({e}) -- 다음에 다시 "
+                  "선택될 뿐, 업로드 자체는 완료됨", flush=True)
         print(f"[{i}/{total}] 완료: {local.name}", flush=True)
 
     print(f"전체 완료 ({total}개): https://huggingface.co/datasets/{args.repo_id}", flush=True)
