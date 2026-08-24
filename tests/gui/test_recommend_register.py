@@ -1,0 +1,131 @@
+"""RecommendDialog 문장 체크리스트 + 계획 등록, NewSceneDialog lint (offscreen)."""
+import json
+import shutil
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
+sys.path.insert(0, WT)
+sys.path.insert(0, WT + "/experiments")
+sys.argv = ["t"]
+
+from PyQt6.QtWidgets import QApplication  # noqa: E402
+
+app = QApplication(sys.argv)
+
+
+def _wait_recs(dlg):
+    """RecommendDialog 의 백그라운드 추천 계산이 끝날 때까지 기다린다."""
+    for _ in range(600):
+        if dlg._worker is None or not dlg._worker.isRunning():
+            break
+        app.processEvents()
+        time.sleep(0.01)
+    else:
+        raise AssertionError("RecommendDialog worker timeout")
+    app.processEvents()
+
+
+import collect_workspace as cw  # noqa: E402
+from gello.props import props_by_id  # noqa: E402
+from gello.scene_format import SceneMetadata  # noqa: E402
+
+cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
+cw.QMessageBox.information = staticmethod(lambda *a, **k: None)
+cw.QMessageBox.question = staticmethod(
+    lambda *a, **k: cw.QMessageBox.StandardButton.Yes)
+
+props = props_by_id()
+base = SceneMetadata(
+    scene_id="S000",
+    objects=["OBJ-CUP-BLU-01", "OBJ-BOWLS-WHT-01"],
+    layout={"grid": [3, 3], "placements": {
+        "OBJ-CUP-BLU-01": {"zone": [0, 0]},
+        "OBJ-BOWLS-WHT-01": {"zone": [1, 1]}}})
+
+TMP = Path(tempfile.mkdtemp(prefix="recreg_"))
+plan_copy = TMP / "pilot.json"
+shutil.copy(f"{WT}/configs/collection_plans/pilot.json", plan_copy)
+orig = json.loads(plan_copy.read_text())
+
+# ---- 1. RecommendDialog: 문장 체크리스트 표시 + 전체 기본 선택 ----
+rdlg = cw.RecommendDialog(None, [base], props, "S999", plan_path=plan_copy)
+_wait_recs(rdlg)
+assert len(rdlg._radios) == 3
+idx = 0
+sents = rdlg._sentence_checks[idx]
+assert len(sents) >= 1, "추천 문장 체크리스트가 비어 있음"
+assert all(cb.isChecked() for cb in sents), "문장은 기본적으로 선택되어야 함"
+print(f"1 통과: 추천 문장 체크리스트 ({len(sents)}개)")
+
+# ---- 2. 계획 등록: 선택 문장이 plan 파일에 추가됨 ----
+rdlg._accept()
+assert rdlg.registered_plan_path == plan_copy
+plan = json.loads(plan_copy.read_text())
+s999 = [s for s in plan["scenes"] if s["scene_id"] == "S999"]
+assert s999, "S999 scene 이 생성됨"
+added = s999[0]["slots"]
+assert len(added) == len(sents)
+assert added[0]["target"] == 10
+assert added[0]["instruction_id"].startswith("I")
+print(f"2 통과: 계획 등록 {len(added)}개 슬롯 (target=10, ID 자동)")
+
+# ---- 3. 등록 검증 게이트: load_plan 을 통과해야 함 ----
+from gello.collection_plan import load_plan  # noqa: E402
+loaded = load_plan(plan_copy)
+assert loaded.scene("S999") is not None
+print("3 통과: 등록된 계획 load_plan 검증 통과")
+
+# ---- 4. NewSceneDialog lint: 규칙 위반 시 경고 표시 ----
+nd = cw.NewSceneDialog(None, "S100")
+# 위반 배치: 흰 컵 2개 + drawer 중앙
+nd.prop_list.blockSignals(True)
+for i in range(nd.prop_list.count()):
+    it = nd.prop_list.item(i)
+    oid = it.data(cw.Qt.ItemDataRole.UserRole)
+    if oid in {"OBJ-CUP-WHT-01", "OBJ-CUP-WHT-02", "OBJ-DRAWER-01"}:
+        it.setCheckState(cw.Qt.CheckState.Checked)
+nd.prop_list.blockSignals(False)
+nd._placements = {
+    "OBJ-CUP-WHT-01": [0, 0],
+    "OBJ-CUP-WHT-02": [0, 1],
+    "OBJ-DRAWER-01": [1, 1],
+}
+nd._refresh()
+lint_text = nd.lint_label.text()
+assert "no_lookalike_pair" in lint_text or "color_diverse" in lint_text, lint_text
+assert "ban_zones" in lint_text, lint_text
+print("4 통과: NewSceneDialog 규칙 위반 경고")
+
+# ---- 5. NewSceneDialog lint: 규칙 통과 시 경고 없음 ----
+nd2 = cw.NewSceneDialog(None, "S101")
+nd2.prop_list.blockSignals(True)
+for i in range(nd2.prop_list.count()):
+    it = nd2.prop_list.item(i)
+    if it.data(cw.Qt.ItemDataRole.UserRole) in {"OBJ-CUP-BLU-01", "OBJ-BOWLS-WHT-01"}:
+        it.setCheckState(cw.Qt.CheckState.Checked)
+nd2.prop_list.blockSignals(False)
+nd2._placements = {"OBJ-CUP-BLU-01": [0, 0], "OBJ-BOWLS-WHT-01": [0, 1]}
+nd2._refresh()
+assert nd2.lint_label.text() == ""
+print("5 통과: NewSceneDialog 규칙 통과 시 경고 없음")
+
+# ---- 6. 기존 계획 문장이 문법 템플릿을 통과 ----
+from gello.instruction_grammar import lint  # noqa: E402
+plan = json.loads(Path(f"{WT}/configs/collection_plans/pilot.json").read_text())
+failures = []
+for sc in plan["scenes"]:
+    for sl in sc["slots"]:
+        err = lint(sl["instruction"])
+        if err:
+            failures.append(f"{sc['scene_id']}/{sl['instruction_id']}: {err}")
+assert not failures, "\n".join(failures)
+total = sum(len(s["slots"]) for s in plan["scenes"])
+print(f"6 통과: 기존 계획 {total}개 문장 문법 lint 통과")
+
+print("\nRecommendDialog 문장/등록 + NewSceneDialog lint 검증 통과")
+import os  # noqa: E402
+
+os._exit(0)
