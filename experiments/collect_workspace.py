@@ -818,6 +818,13 @@ class PlanEditDialog(QDialog):
         down_btn.setMaximumWidth(36)
         down_btn.clicked.connect(lambda: self._move_row(+1))
         rrow.addWidget(down_btn)
+        compact_btn = QPushButton(tr("번호 정리"))
+        compact_btn.setToolTip(tr(
+            "이 scene 의 ID 를 표 순서대로 I000..I{N-1} 로 다시 매깁니다.\n"
+            "에피소드가 하나도 수집되지 않은 scene 에서만 가능합니다 --\n"
+            "수집된 scene 의 ID 는 데이터와의 연결 고리라 재부여하지 않습니다."))
+        compact_btn.clicked.connect(self._on_compact_ids)
+        rrow.addWidget(compact_btn)
         rrow.addStretch(1)
         col.addLayout(rrow)
 
@@ -932,6 +939,48 @@ class PlanEditDialog(QDialog):
                 "같은 문장이 여러 행에 있습니다: {s}").format(s=dup[0][:60]))
         elif self.error_label.text().startswith(tr("같은 문장이")):
             self.error_label.setText("")
+
+    def _scene_has_episodes(self, sid: str) -> "bool | None":
+        """이 scene 의 수집 파일에 에피소드가 있는가. None = 확인 불가(잠금 등)."""
+        try:
+            from gello.scene_format import list_scene_episodes, scene_filename
+
+            root = Path(Recents().most_recent("data_root",
+                                              str(Path.home() / "libero_datasets")))
+            path = root / scene_filename(sid)
+            if not path.exists():
+                return False
+            return len(list_scene_episodes(path)) > 0
+        except Exception:  # noqa: BLE001 -- 세션이 쥔 파일 등
+            return None
+
+    def _on_compact_ids(self) -> None:
+        """빈 scene 한정 ID 압축 (2026-08-24 결정: 데이터가 없으면 번호를
+        다시 매겨도 안전하고, 있으면 일관성을 위해 건드리지 않는다)."""
+        sid = self._cur_sid
+        if sid is None:
+            return
+        has = self._scene_has_episodes(sid)
+        if has is None:
+            QMessageBox.warning(self, tr("번호 정리 불가"), tr(
+                "{s} 의 수집 파일을 확인할 수 없습니다 (수집 세션이 사용 중일 수 "
+                "있음). 세션 종료 후 다시 시도하세요.").format(s=sid))
+            return
+        if has:
+            QMessageBox.warning(self, tr("번호 정리 불가"), tr(
+                "{s} 에는 이미 수집된 에피소드가 있습니다. ID 는 데이터와의 "
+                "연결 고리라 재부여하지 않습니다 (지운 번호 재사용 금지 규칙)."
+            ).format(s=sid))
+            return
+        rows = self._collect_rows()
+        for i, r in enumerate(rows):
+            r["id"] = f"I{i:03d}"
+        self._work[sid] = rows
+        self._load_rows(sid)
+        self.error_label.setText("")
+        QMessageBox.information(self, tr("번호 정리"), tr(
+            "{s} 의 ID 를 I000..I{n:03d} 로 다시 매겼습니다. 저장을 눌러야 "
+            "반영됩니다.").format(s=sid, n=len(rows) - 1))
 
     def _on_del_scene(self) -> None:
         sid = self._cur_sid

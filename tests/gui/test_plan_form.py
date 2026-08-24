@@ -146,6 +146,30 @@ finally:
     win._recents.add("plan_file", "pilot.json")
 print("7 통과: 계획 파일 생성(+선택) / 삭제(+목록 갱신)")
 
+# ---- 8. 번호 정리: 빈 scene 만 압축, 수집된 scene 은 거부 ----
+warns = []
+cw.QMessageBox.warning = staticmethod(lambda *a, **k: warns.append(a[2] if len(a) > 2 else ""))
+cw.QMessageBox.information = staticmethod(lambda *a, **k: None)
+dlg8 = cw.PlanEditDialog(None, plan_copy)
+# 빈 scene 흉내: 존재 확인을 주입 (파일계 의존 제거)
+dlg8._scene_has_episodes = lambda sid: False
+dlg8._on_del_row()                       # no-op (선택 없음)
+for it_ in [dlg8.tree.topLevelItem(0)]:
+    it_.setSelected(True)
+dlg8._on_del_row()                       # I000 삭제 -> 남은 ID 는 I001..
+before_ids = [dlg8.tree.topLevelItem(i).data(0, cw.Qt.ItemDataRole.UserRole)
+              for i in range(dlg8.tree.topLevelItemCount())]
+assert before_ids and before_ids[0] != "I000"
+dlg8._on_compact_ids()
+after_ids = [dlg8.tree.topLevelItem(i).data(0, cw.Qt.ItemDataRole.UserRole)
+             for i in range(dlg8.tree.topLevelItemCount())]
+assert after_ids == [f"I{i:03d}" for i in range(len(after_ids))], after_ids
+# 수집된 scene 은 거부
+dlg8._scene_has_episodes = lambda sid: True
+dlg8._on_compact_ids()
+assert warns and "이미 수집된" in warns[-1]
+print("8 통과: 번호 정리 -- 빈 scene 압축(I000..) / 수집된 scene 거부")
+
 print("\n계획 폼 + 드롭다운 검증 통과")
 import os  # noqa: E402
 
