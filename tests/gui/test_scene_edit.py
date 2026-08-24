@@ -184,7 +184,7 @@ _sync.hub_episode_uids = lambda repo: (None, "")
 _, _, note_c = win._describe_delete_targets(targets)
 if have_repo:
     assert "참고" in note_c and "올라갔다는 뜻은 아닙니다" in note_c, note_c
-print(f"7 통과: 확인창 목록 {len(rows)}행 + Hub 안내 uid 단위 3경로 (repo 설정={'O' if have_repo else '-'})\n\nscene 편집(삭제·트림) 검증 통과")
+print(f"7 통과: 확인창 목록 {len(rows)}행 + Hub 안내 uid 단위 3경로 (repo 설정={'O' if have_repo else '-'})")
 
 # ---- 8. 회귀: WorkspaceWindow 메서드 중복 정의 없음 ----
 src = Path(WT) / "experiments" / "collect_workspace.py"
@@ -213,11 +213,11 @@ class _MockItem:
 captured_dialogs = []
 
 def _capture_warning(parent, title, body, *args, **kwargs):
-    captured_dialogs.append(("warning", str(title), str(body)))
+    captured_dialogs.append(("warning", str(title), str(body), args, kwargs))
     return cw.QMessageBox.StandardButton.Yes
 
 def _capture_question(parent, title, body, *args, **kwargs):
-    captured_dialogs.append(("question", str(title), str(body)))
+    captured_dialogs.append(("question", str(title), str(body), args, kwargs))
     return cw.QMessageBox.StandardButton.Yes
 
 cw.QMessageBox.warning = staticmethod(_capture_warning)
@@ -234,13 +234,19 @@ captured_dialogs.clear()
 win._on_delete_selected()
 
 assert captured_dialogs, "확인창이 뜨지 않음"
-_, title, body = captured_dialogs[-1]
+kind, title, body, wargs, wkw = captured_dialogs[-1]
 assert "에피소드 삭제" in title
 assert "재빌드" in body, body
 assert "번호가 다시 매겨집니다" in body
 assert "번호는 그대로" not in body, body
 assert "재사용 금지" not in body, body
-print("9 통과: 버튼 슬롯 경로에서 확인창 문구 실제 동작 기준 (재빌드 O, 툼스톤 X)")
+# 성공(success) 에피소드가 섞이면 warning + 기본 버튼 No 여야 한다 --
+# 함수 직접 호출이 아니라 슬롯 경로에서 검증 (기본 Yes 로 되돌아가는 회귀 방지).
+if cur[0].get("quality_status") == "success":
+    assert kind == "warning", kind
+    default = wkw.get("defaultButton", wargs[-1] if wargs else None)
+    assert default == cw.QMessageBox.StandardButton.No, (wargs, wkw)
+print("9 통과: 버튼 슬롯 경로에서 확인창 문구 실제 동작 기준 (재빌드 O, 툼스톤 X, 기본 No)")
 
 print("\nscene 편집(삭제·트림) 검증 통과")
 import os  # noqa: E402

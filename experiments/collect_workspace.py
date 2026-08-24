@@ -3035,8 +3035,9 @@ class WorkspaceWindow(QMainWindow):
         del_btn = QPushButton(tr("선택한 에피소드 삭제"))
         del_btn.setToolTip(tr(
             "선택한 에피소드를 .hdf5 에서 실제로 지웁니다 (실패·튀는 궤적 큐레이션).\n"
-            "legacy 는 번호를 다시 매기고, scene 은 번호를 유지하고 지운 uid 를 "
-            "재사용 금지 목록에 남깁니다.\n되돌릴 수 없습니다. 수집 중이 아닌 "
+            "legacy/scene 모두 삭제 후 번호를 다시 매깁니다 (scene 은 slot E번호와 "
+            "uid 도 재부여).\nHub 에 이미 올라간 에피소드면 전체 재빌드가 필요합니다."
+            "\n되돌릴 수 없습니다. 수집 중이 아닌 "
             "파일이면 세션 없이도 삭제됩니다. 파일 통째 삭제는 Dataset 메뉴에."))
         del_btn.setStyleSheet("background-color:#c0392b; color:white; padding:6px;")
         del_btn.clicked.connect(self._on_delete_selected)
