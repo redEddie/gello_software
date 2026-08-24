@@ -13,12 +13,15 @@ scene 파일도 GUI 스레드에서 `h5py.File(path, "r" if owned else "a")`로 
 - **owned 파일**: `h5py.File`을 재오픈하지 않는다.
   - 판정값은 `self.active_episode_cache`(EpisodeSaver의
     `episode_list_changed`가 채우는 요약 캐시)에서 읽는다.
-  - 쓰기는 기존 saver 큐 명령 `worker.cmd_set_episode_success`로 별내
+  - 쓰기는 기존 saver 큐 명령 `worker.cmd_set_episode_success`로 보내,
     EpisodeSaver가 `SceneWriter.set_quality_status` 또는
-    `LiberoTaskWriter.set_episode_success`를 통해 본 파일 핸들을 재사용한다.
-  - 캐시에 없는 이름은 "걸러냄"으로 집계하고 로그를 남긴다(조용한 실패 금지).
-- **비소유 파일**: 기존 동작을 유지. `h5py.File(path, "a")`로 열어 직접
-  수정하며, scene/legacy 포맷을 명시적으로 처리한다.
+    `LiberoTaskWriter.set_episode_success`를 통해 이미 연 파일 핸들을 재사용한다.
+  - 캐시에 없는 이름은 사유별("세션 캐시에 없음" / "success·failed 아님")로
+    "건너뜀" 집계하고 로그를 남긴다(조용한 실패 금지).
+- **비소유 파일**: `h5py.File(path, "a")`로 열어 직접 수정한다. scene 전용 --
+  호출 경로(`_on_relabel_selected` scene 필터, scene 전용 Gallery)가 scene
+  파일만 넘기므로 legacy 분기는 두지 않는다 (리뷰 반영 2026-08-24: 초판이
+  신설했던 legacy 분기는 도달 불가 죽은 코드 + 필드 규약 불일치라 제거).
 - UI 갱신: saver의 `episode_list_changed`가 오면 트리가 갱신되므로
   별도의 낙관적 갱신은 넣지 않았다. 버튼 피드백(로그 한 줄)은 유지한다.
 
@@ -33,8 +36,8 @@ scene 파일도 GUI 스레드에서 `h5py.File(path, "r" if owned else "a")`로 
 - `python scripts/check_scene_file.py --selftest`: 통과.
 - `tests/gui/test_relabel.py` 상세:
   - owned scene 파일 재판정 시 `h5py.File` 호출 없이 saver 큐에 명령 전달.
-  - 캐시에 없는 이름은 걸러냄 집계, 예외 없음.
-  - 비소유 scene/legacy 파일 직접 수정 회귀.
+  - 캐시에 없는 이름은 건너뜀 집계 + 로그 문구 직접 단언, 예외 없음.
+  - 비소유 scene 파일 직접 수정 회귀.
 
 ## 커밋
 - `d4b47f2 fix: 수집 세션 중 owned 파일 재판정이 h5py 재오픈 없이 동작`
