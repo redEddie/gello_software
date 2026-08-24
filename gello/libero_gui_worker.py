@@ -147,7 +147,7 @@ class EpisodeSaver(QThread):
                     name = item[1]
                     if not hasattr(self._writer, "delete_episode"):
                         # 삭제가 없는 writer (연습 모드의 NullTaskWriter 등).
-                        # scene 은 SceneWriter.delete_episode(툼스톤) 가 있다.
+                        # scene 은 SceneWriter.delete_episode(삭제 후 renumber) 가 있다.
                         self.log_message.emit(
                             f"[삭제 불가] {name}: 이 세션의 writer 는 삭제를 "
                             "지원하지 않습니다")
