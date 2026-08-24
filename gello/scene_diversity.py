@@ -18,6 +18,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from gello.scene_format import SceneMetadata
+from gello.scene_rules import check
 
 W_OBJ, W_PLACE, W_REL = 0.5, 0.35, 0.15
 GRID = (3, 3)
@@ -100,27 +101,35 @@ def scene_distance(a: Signature, b: Signature) -> float:
 
 
 def generate_candidate(props: dict, rng: random.Random,
-                       scene_id: str = "S999") -> SceneMetadata:
+                       scene_id: str = "S999",
+                       max_attempts: int = 200) -> SceneMetadata:
     """인벤토리 제약 안의 무작위 scene: 컵 ≥1 + 다른 종류 ≥1, 물체 2~5개,
-    존 비충돌."""
+    존 비충돌. 추가로 configs/scene_rules.yaml 의 규칙을 만족하지 않으면
+    재시도한다."""
     active = [p for p in props.values() if not p.retired]
     cups = [p for p in active if p.category == "cup"]
     others = [p for p in active if p.category != "cup"]
     if not cups or not others:
         raise ValueError("인벤토리에 컵과 다른 종류가 최소 1개씩 필요하다")
-    n = rng.randint(2, min(5, len(active)))
-    picked = [rng.choice(cups), rng.choice(others)]
-    pool = [p for p in active if p not in picked]
-    rng.shuffle(pool)
-    picked += pool[:n - 2]
-    cells = [(r, c) for r in range(GRID[0]) for c in range(GRID[1])]
-    rng.shuffle(cells)
-    placements = {p.id: {"zone": list(cells[i])} for i, p in enumerate(picked)}
-    return SceneMetadata(
-        scene_id=scene_id,
-        objects=[p.id for p in picked],
-        layout={"grid": list(GRID), "placements": placements},
-        description="(추천안 -- 채택 시 배치 의도를 적어주세요)",
+    for attempt in range(max_attempts):
+        n = rng.randint(2, min(5, len(active)))
+        picked = [rng.choice(cups), rng.choice(others)]
+        pool = [p for p in active if p not in picked]
+        rng.shuffle(pool)
+        picked += pool[:n - 2]
+        cells = [(r, c) for r in range(GRID[0]) for c in range(GRID[1])]
+        rng.shuffle(cells)
+        placements = {p.id: {"zone": list(cells[i])} for i, p in enumerate(picked)}
+        md = SceneMetadata(
+            scene_id=scene_id,
+            objects=[p.id for p in picked],
+            layout={"grid": list(GRID), "placements": placements},
+            description="(추천안 -- 채택 시 배치 의도를 적어주세요)",
+        )
+        if not check(md, props):
+            return md
+    raise ValueError(
+        f"규칙을 만족하는 후보를 {max_attempts}회 시도 중 생성하지 못함"
     )
 
 
@@ -149,11 +158,21 @@ def recommend(existing: list, props: dict, k: int = 3,
         cands.append((md, sig))
     picked: list = []
     picked_sigs: list = []
+    def _diversity_bonus(md: SceneMetadata) -> float:
+        """scene 낸부 distinct (category, color) 비율 -- 타이브레이커."""
+        n = len(md.objects)
+        if n <= 1:
+            return 0.0
+        distinct = len({(_prop_triple(o, props)[0], _prop_triple(o, props)[1])
+                        for o in md.objects})
+        return 0.05 * distinct / n
+
     while cands and len(picked) < k:
         def score(item):
             _md, sig = item
             ds = [scene_distance(sig, e) for e in ex_sigs + picked_sigs]
-            return min(ds) if ds else 1.0
+            base = min(ds) if ds else 1.0
+            return base + _diversity_bonus(_md)
         best = max(cands, key=score)
         picked.append((best[0], round(score(best), 4)))
         picked_sigs.append(best[1])

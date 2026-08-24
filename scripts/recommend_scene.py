@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.props import props_by_id  # noqa: E402
+from gello.scene_rules import check  # noqa: E402
 from gello.scene_diversity import recommend, scene_distance, signature  # noqa: E402
 from gello.scene_format import (  # noqa: E402
     SceneMetadata,
@@ -74,6 +75,13 @@ def _selftest() -> None:
     sigs = [signature(m, props) for m, _ in r1]
     assert len({(s.triples, s.placements) for s in sigs}) == 3
     print("3 통과: 결정성 + 비중복 + 기존 배제")
+
+    # 4. 규칙 필터: 후보 1000개에서 금지 사항 0
+    rng2 = random.Random(1234)
+    for _ in range(1000):
+        c = generate_candidate(props, rng2)
+        assert not check(c, props), check(c, props)
+    print("4 통과: 후보 1000개 규칙 위반 0")
     print("\nselftest 통과")
 
 
