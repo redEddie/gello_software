@@ -103,7 +103,7 @@
       "slots": [
         {
           "instruction_id": "I000",
-          "instruction": "pick up the blue cup and place it in the white bowl",
+          "instruction": "pick up the blue cup and place it inside the white bowl",
           "target": 10
         },
         {
@@ -138,12 +138,12 @@
         },
         {
           "instruction_id": "I004",
-          "instruction": "put the small yellow bowl inside the small white bowl.",
+          "instruction": "pick up the small yellow bowl and place it inside the small white bowl",
           "target": 10
         },
         {
           "instruction_id": "I005",
-          "instruction": "put the small white bowl inside the small yellow bowl.",
+          "instruction": "pick up the small white bowl and place it inside the small yellow bowl",
           "target": 10
         }
       ]
@@ -153,27 +153,27 @@
       "slots": [
         {
           "instruction_id": "I000",
-          "instruction": "put the small blue bowl inside the white bowl",
+          "instruction": "pick up the small blue bowl and place it inside the white bowl",
           "target": 10
         },
         {
           "instruction_id": "I001",
-          "instruction": "put the small green bowl inside the white bowl",
+          "instruction": "pick up the small green bowl and place it inside the white bowl",
           "target": 10
         },
         {
           "instruction_id": "I002",
-          "instruction": "put the blue cup inside the white bowl",
+          "instruction": "pick up the blue cup and place it inside the white bowl",
           "target": 10
         },
         {
           "instruction_id": "I003",
-          "instruction": "put the small blue bowl on top of the drawer",
+          "instruction": "pick up the small blue bowl and place it on top of the drawer",
           "target": 10
         },
         {
           "instruction_id": "I004",
-          "instruction": "put the small green bowl on top of the drawer",
+          "instruction": "pick up the small green bowl and place it on top of the drawer",
           "target": 10
         },
         {
@@ -198,27 +198,27 @@
       "slots": [
         {
           "instruction_id": "I000",
-          "instruction": "put the small gray bowl inside the blue bowl",
+          "instruction": "pick up the small gray bowl and place it inside the blue bowl",
           "target": 10
         },
         {
           "instruction_id": "I001",
-          "instruction": "put the small white bowl inside the blue bowl",
+          "instruction": "pick up the small white bowl and place it inside the blue bowl",
           "target": 10
         },
         {
           "instruction_id": "I002",
-          "instruction": "put the blue cup inside the blue bowl",
+          "instruction": "pick up the blue cup and place it inside the blue bowl",
           "target": 10
         },
         {
           "instruction_id": "I003",
-          "instruction": "put the small gray bowl inside the small white bowl",
+          "instruction": "pick up the small gray bowl and place it inside the small white bowl",
           "target": 10
         },
         {
           "instruction_id": "I005",
-          "instruction": "put the blue cup inside the small gray bowl",
+          "instruction": "pick up the blue cup and place it inside the small gray bowl",
           "target": 10
         }
       ]
@@ -243,7 +243,7 @@
         },
         {
           "instruction_id": "I003",
-          "instruction": "pick up the blue cup that is farthest from the yellow bowl and place it on the yellow bowl",
+          "instruction": "pick up the blue cup farthest from the yellow bowl and place it on the yellow bowl",
           "target": 10
         }
       ]

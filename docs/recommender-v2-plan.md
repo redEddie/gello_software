@@ -37,11 +37,13 @@ placement:
 - 지칭: "the {color} {명사}". scene 안에서 (color, category) 유일할 때만 지칭
   가능 — 유일하지 않으면 그 물체가 들어가는 문장은 생성하지 않는다.
   단일 개체 category(drawer)는 색 생략: "the drawer" / "the top drawer"
-- 템플릿 (기존 데이터 문법 고정, §4 동사 집합):
-  - `pick up the {obj} and place it on the {bowl}`       (obj: cup|small bowl, bowl: *_bowl)
-  - `pick up the {obj} and place it on top of the drawer`
-  - `pick up the {obj} and place it next to the {obj2}`  (obj2 != obj)
-  - `open the top drawer` / `close the top drawer`       (drawer 가 scene 에 있을 때)
+- 정본 템플릿 (2026-08-24 확정 -- B안: 데이터도 이 정본으로 교정 완료):
+  - `pick up the {OBJECT} [QUALIFIER] and place it {RELATION} the {TARGET}`
+    RELATION ∈ on | inside | next to | on top of(TARGET=drawer). 넣기는 inside 로 통일('in' 금지)
+  - `drag the {OBJECT} [QUALIFIER] next to the {TARGET}` (drag 는 끌기 -- large bowl 도 가능)
+  - `open the top drawer` / `close the top drawer`
+  - QUALIFIER(동일 외형 복수일 때만): farthest from | closest to | to the left of |
+    to the right of + `the {REFERENCE}`. 'that is' 없이 붙인다. 문장 끝 마침표 금지
 - API: `enumerate_instructions(md, props) -> list[str]` (결정적 정렬),
   `lint(sentence, md, props) -> None|경고` (계획 편집 폼·load_plan 경고에 연결)
 

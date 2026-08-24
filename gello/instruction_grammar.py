@@ -1,10 +1,26 @@
-"""통일 instruction 문법 -- scene 에서 생성·검증.
+"""통일 instruction 문법 — scene 에서 생성·검증.
 
-인벤토리 category 를 사람 문장으로 매핑하고, scene 안에서 (color, category)
-가 유일할 때만 지칭한다. 문법에 없는 category 는 매핑 추가가 필수다.
+정본 규격 (2026-08-24 사용자 확정):
 
-생성은 명사 매핑(§3)을 그대로 따르고, lint 는 기존 계획 파일의 "bowl" 처럼
-legacy 약칭도 받아들여 하위호환성을 유지한다.
+    Pick-and-place:
+        pick up the {OBJECT} [QUALIFIER] and place it {RELATION} the {TARGET}
+        RELATION ∈ { on, inside, next to, on top of(TARGET=drawer) }
+    Drag (들지 않고 끌기):
+        drag the {OBJECT} [QUALIFIER] next to the {TARGET}
+    Drawer:
+        open the top drawer / close the top drawer
+    QUALIFIER (동일 외형이 여럿일 때만, OBJECT 바로 뒤):
+        farthest from the {REFERENCE} | closest to the {REFERENCE}
+        | to the left of the {REFERENCE} | to the right of the {REFERENCE}
+
+- 넣기는 **inside** 로 통일한다 — 'place it in the ...' 는 오류로 안내.
+- 지칭은 "the {색} {명사}" (색 어순은 small bowl 앞뒤 모두 허용). 명사는
+  NOUN_MAP 이 정본이고, 문법에 없는 category 는 매핑 추가가 필수다.
+- QUALIFIER 가 붙으면 그 (색, 종류)가 scene 에 여러 개여도 된다 — 그게
+  qualifier 의 존재 이유다. 없으면 유일해야 한다.
+
+lint 는 기존 계획 파일의 "bowl" 약칭(=large bowl)도 받아들여 하위호환을
+유지한다.
 """
 
 from __future__ import annotations
@@ -38,10 +54,18 @@ NOUN_MAP = {
 # 문법상 "the top drawer" 도 drawer 를 지칭
 _DRAWER_PHRASES = {"drawer", "top drawer"}
 
-# pick-place 문장의 pick 대상. (템플릿 §4)
+# 들어 옮길 수 있는 것 (pick up 대상)
 _PICKABLE = {"cup", "small_bowl"}
-# place-on 대상. (템플릿 §4)
+# 끌 수 있는 것 (drag 대상 -- 들지 않으므로 큰 그릇도 가능)
+_DRAGGABLE = {"cup", "small_bowl", "large_bowl"}
+# on / inside 목적지
 _BOWL_CATS = {"small_bowl", "large_bowl"}
+# next to 목적지 (탁상 위 아무 물체)
+_BESIDE_CATS = {"cup", "small_bowl", "large_bowl"}
+
+# QUALIFIER 문구 (OBJECT 바로 뒤, 필요할 때만)
+_QUALIFIERS = ("farthest from", "closest to", "to the left of", "to the right of")
+_QUAL_RE = "|".join(re.escape(q) for q in _QUALIFIERS)
 
 # lint 용 object phrase 파싱 패턴. 앞쪽에 색/부가 수식이 올 수 있다.
 _PARSE_PATTERNS = [
@@ -81,16 +105,20 @@ def _parse_object_phrase(phrase: str) -> Optional[tuple[str, str]]:
     return None
 
 
-def _is_unique(color: str, category: str, md: SceneMetadata,
-               props: dict[str, Prop]) -> bool:
-    """scene 안에서 (color, category) 가 정확히 하나인가."""
-    matches = [
-        oid for oid in md.objects
+def _count(color: str, category: str, md: SceneMetadata,
+           props: dict[str, Prop]) -> int:
+    return sum(
+        1 for oid in md.objects
         if oid in props
         and props[oid].category == category
         and props[oid].color == color
-    ]
-    return len(matches) == 1
+    )
+
+
+def _is_unique(color: str, category: str, md: SceneMetadata,
+               props: dict[str, Prop]) -> bool:
+    """scene 안에서 (color, category) 가 정확히 하나인가."""
+    return _count(color, category, md, props) == 1
 
 
 def _reference(color: str, category: str, md: SceneMetadata,
@@ -110,7 +138,8 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
     """scene 에서 문법에 맞는 instruction 문장을 결정적으로 모두 생성.
 
     (color, category) 가 유일하지 않아 모호한 물체가 들어가는 문장은
-    생성하지 않는다.
+    생성하지 않는다 (QUALIFIER 문장은 생성하지 않는다 -- 그건 동일 외형
+    복수 scene 을 사람이 의도적으로 만들 때 쓰는 문법이다).
     """
     by_cat: dict[str, list[tuple[str, str]]] = {}  # category -> [(color, oid), ...]
     for oid in md.objects:
@@ -130,15 +159,15 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
 
     sentences: set[str] = set()
 
-    # 1) pick up {obj} and place it on {bowl}
+    # 1) pick up {obj} and place it on/inside {bowl}
     for ocolor, ocat, ooid in refs(_PICKABLE):
         for bcolor, bcat, boid in refs(_BOWL_CATS):
             if ooid == boid:
                 continue
-            sentences.add(
-                f"pick up {_reference(ocolor, ocat, md, props)} "
-                f"and place it on {_reference(bcolor, bcat, md, props)}"
-            )
+            o = _reference(ocolor, ocat, md, props)
+            b = _reference(bcolor, bcat, md, props)
+            sentences.add(f"pick up {o} and place it on {b}")
+            sentences.add(f"pick up {o} and place it inside {b}")
 
     # 2) pick up {obj} and place it on top of the drawer
     if "drawer" in by_cat:
@@ -150,8 +179,9 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
 
     # 3) pick up {obj} and place it next to {obj2}
     objs = refs(_PICKABLE)
-    for i, (c1, cat1, oid1) in enumerate(objs):
-        for c2, cat2, oid2 in objs:
+    besides = refs(_BESIDE_CATS)
+    for c1, cat1, oid1 in objs:
+        for c2, cat2, oid2 in besides:
             if oid1 == oid2:
                 continue
             sentences.add(
@@ -159,7 +189,17 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
                 f"and place it next to {_reference(c2, cat2, md, props)}"
             )
 
-    # 4) open/close the top drawer
+    # 4) drag {obj} next to {obj2} -- 들지 않고 끌기 (큰 그릇 포함)
+    for c1, cat1, oid1 in refs(_DRAGGABLE):
+        for c2, cat2, oid2 in besides:
+            if oid1 == oid2:
+                continue
+            sentences.add(
+                f"drag {_reference(c1, cat1, md, props)} "
+                f"next to {_reference(c2, cat2, md, props)}"
+            )
+
+    # 5) open/close the top drawer
     if "drawer" in by_cat:
         sentences.add("open the top drawer")
         sentences.add("close the top drawer")
@@ -167,114 +207,125 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
     return sorted(sentences)
 
 
+# ---- 정본 문장 정규식 --------------------------------------------------------
+# OBJECT 뒤에 선택적 QUALIFIER, 그 뒤 관계. 관계 alternation 은 긴 것 먼저
+# ("on top of" 가 "on" 에 잡아먹히지 않게).
+_PICK_RE = re.compile(
+    r"^pick up the (?P<obj>.+?)"
+    rf"(?: (?P<qual>(?:{_QUAL_RE}) the .+?))?"
+    r" and place it (?P<rel>on top of|inside|next to|on) the (?P<tgt>.+)$"
+)
+_DRAG_RE = re.compile(
+    r"^drag the (?P<obj>.+?)"
+    rf"(?: (?P<qual>(?:{_QUAL_RE}) the .+?))?"
+    r" next to the (?P<tgt>.+)$"
+)
+
+
+def _parse_qualifier(qual: str) -> Optional[tuple[str, str]]:
+    """"farthest from the yellow bowl" -> ("farthest from", "the yellow bowl")."""
+    for q in _QUALIFIERS:
+        if qual.startswith(q + " "):
+            return q, qual[len(q) + 1:]
+    return None
+
+
 def lint(sentence: str, md: Optional[SceneMetadata] = None,
          props: Optional[dict[str, Prop]] = None) -> Optional[str]:
-    """문장이 문법을 따르는지 검증.
+    """문장이 정본 문법을 따르는지 검증.
 
     md 가 주어지면 scene 에서 지칭 유일성·존재까지 검사한다. 주어지지 않으면
-    템플릿/어휘만 검사한다(계획 파일 하위호환용).
+    템플릿/어휘만 검사한다(계획 파일 하위호환용). QUALIFIER 가 붙은 지칭은
+    유일하지 않아도 되지만 최소 1개는 존재해야 하고, REFERENCE 는 유일해야
+    한다.
     """
     sentence = sentence.strip()
     if not sentence:
         return "빈 문장"
+    if sentence.endswith("."):
+        return "문장 끝 마침표 금지"
 
-    def _scene_check(color: str, cat: str, role: str) -> Optional[str]:
-        if md is None or props is None:
-            return None
-        if cat == "drawer":
-            if not any(props.get(o, Prop("", "", "", "")).category == "drawer"
-                       for o in md.objects):
-                return "drawer 가 scene 에 없음"
-            return None
-        if not _is_unique(color, cat, md, props):
-            return f"모호한 {role} 지칭: the {color} {NOUN_MAP[cat]}"
-        return None
-
-    # open / close
-    if sentence in {"open the top drawer", "close the top drawer"}:
-        if md is not None and props is not None:
-            if not any(props.get(o, Prop("", "", "", "")).category == "drawer"
-                       for o in md.objects):
-                return "drawer 가 scene 에 없음"
-        return None
-
-    # pick up ... and place it on top of the drawer
-    m = re.match(
-        r"^pick up the (.+?) and place it on top of the (top drawer|drawer)$",
-        sentence,
-    )
-    if m:
-        obj_phrase = m.group(1)
-        parsed = _parse_object_phrase(f"the {obj_phrase}")
-        if parsed is None:
-            return f"지칭 파싱 실패: {obj_phrase!r}"
-        color, cat = parsed
-        if cat not in _PICKABLE:
-            return f"pick 대상 category 불가: {cat!r}"
-        err = _scene_check(color, cat, "pick")
-        if err:
-            return err
-        # 목적지 drawer 의 존재도 검사한다 (open/close 분기와 동일 규칙).
+    def _has_drawer() -> Optional[str]:
         if md is not None and props is not None and not any(
                 props.get(o, Prop("", "", "", "")).category == "drawer"
                 for o in md.objects):
             return "drawer 가 scene 에 없음"
         return None
 
-    # pick up ... and place it on ...
-    m = re.match(r"^pick up the (.+?) and place it on the (.+)$", sentence)
-    if m:
-        obj_phrase = m.group(1)
-        target_phrase = m.group(2)
-        obj = _parse_object_phrase(f"the {obj_phrase}")
-        target = _parse_object_phrase(f"the {target_phrase}")
-        if obj is None:
-            return f"pick 대상 파싱 실패: {obj_phrase!r}"
-        if target is None:
-            return f"place 대상 파싱 실패: {target_phrase!r}"
-        ocolor, ocat = obj
-        tcolor, tcat = target
-        if ocat not in _PICKABLE:
-            return f"pick 대상 category 불가: {ocat!r}"
-        if tcat not in _BOWL_CATS:
-            return f"place-on 대상 category 불가: {tcat!r}"
-        err = _scene_check(ocolor, ocat, "pick")
-        if err:
-            return err
-        err = _scene_check(tcolor, tcat, "place")
-        if err:
-            return err
-        # 같은 물체인지 -- category+color 가 유일하므로 (color, category) 로 비교
-        if (ocolor, ocat) == (tcolor, tcat):
-            return "place-on 대상이 pick 대상과 같음"
-        return None
+    def _check_ref(phrase: str, role: str, allowed: set[str],
+                   qualified: bool = False) -> "tuple[str, str] | str":
+        """지칭 구를 파싱·검증. 성공 시 (color, category), 실패 시 오류 문자열."""
+        parsed = _parse_object_phrase(f"the {phrase}" if not phrase.startswith("the")
+                                      else phrase)
+        if parsed is None:
+            return f"{role} 지칭 파싱 실패: {phrase!r}"
+        color, cat = parsed
+        if cat == "drawer":
+            if "drawer" not in allowed:
+                return f"{role} 에 drawer 불가"
+            err = _has_drawer()
+            return err if err else (color, cat)
+        if cat not in allowed:
+            return f"{role} category 불가: {cat!r}"
+        if md is not None and props is not None:
+            n = _count(color, cat, md, props)
+            if n == 0:
+                return f"{role} 대상이 scene 에 없음: the {color} {NOUN_MAP[cat]}"
+            if n > 1 and not qualified:
+                return (f"모호한 {role} 지칭: the {color} {NOUN_MAP[cat]} "
+                        "(QUALIFIER 필요: farthest from / closest to / "
+                        "to the left of / to the right of)")
+        return (color, cat)
 
-    # pick up ... and place it next to ...
-    m = re.match(r"^pick up the (.+?) and place it next to the (.+)$", sentence)
-    if m:
-        obj_phrase = m.group(1)
-        obj2_phrase = m.group(2)
-        obj = _parse_object_phrase(f"the {obj_phrase}")
-        obj2 = _parse_object_phrase(f"the {obj2_phrase}")
-        if obj is None:
-            return f"pick 대상 파싱 실패: {obj_phrase!r}"
-        if obj2 is None:
-            return f"next-to 대상 파싱 실패: {obj2_phrase!r}"
-        c1, cat1 = obj
-        c2, cat2 = obj2
-        if cat1 not in _PICKABLE or cat2 not in _PICKABLE:
-            return "next-to 문장은 cup/small bowl 끼리만 가능"
-        err = _scene_check(c1, cat1, "pick")
-        if err:
-            return err
-        err = _scene_check(c2, cat2, "next-to")
-        if err:
-            return err
-        if (c1, cat1) == (c2, cat2):
-            return "next-to 대상이 pick 대상과 같음"
-        return None
+    # open / close
+    if sentence in {"open the top drawer", "close the top drawer"}:
+        return _has_drawer()
 
-    return "통일 문법 템플릿에 맞지 않음"
+    # 'in' 오사용을 콕 집어 안내 (inside 로 통일 -- 2026-08-24 결정)
+    if re.search(r"\bplace it in the\b", sentence):
+        return "'place it in' 대신 'place it inside' (inside 로 통일)"
+    if re.match(r"^put the ", sentence):
+        return ("'put the X inside the Y' 대신 정본 "
+                "'pick up the X and place it inside the Y'")
+    if " that is " in sentence:
+        return "QUALIFIER 는 'that is' 없이 붙인다 (예: the blue cup farthest from ...)"
+
+    m = _PICK_RE.match(sentence)
+    d = _DRAG_RE.match(sentence) if m is None else None
+    if m is None and d is None:
+        return "통일 문법 템플릿에 맞지 않음"
+
+    if m is not None:
+        obj_phrase, qual, rel, tgt = (m.group("obj"), m.group("qual"),
+                                      m.group("rel"), m.group("tgt"))
+        obj_allowed = _PICKABLE
+        tgt_allowed = {"on": _BOWL_CATS, "inside": _BOWL_CATS,
+                       "next to": _BESIDE_CATS, "on top of": {"drawer"}}[rel]
+        verb_role = ("pick", f"place-{rel}")
+    else:
+        obj_phrase, qual, tgt = d.group("obj"), d.group("qual"), d.group("tgt")
+        rel = "next to"
+        obj_allowed = _DRAGGABLE
+        tgt_allowed = _BESIDE_CATS
+        verb_role = ("drag", "next-to")
+
+    obj = _check_ref(obj_phrase, verb_role[0], obj_allowed, qualified=bool(qual))
+    if isinstance(obj, str):
+        return obj
+    if qual:
+        parsed_q = _parse_qualifier(qual)
+        if parsed_q is None:
+            return f"QUALIFIER 파싱 실패: {qual!r}"
+        ref = _check_ref(parsed_q[1][4:], "reference",
+                         set(NOUN_MAP) | {"drawer"})
+        if isinstance(ref, str):
+            return ref
+    tgt_parsed = _check_ref(tgt, verb_role[1], tgt_allowed)
+    if isinstance(tgt_parsed, str):
+        return tgt_parsed
+    if obj == tgt_parsed:
+        return f"{verb_role[1]} 대상이 {verb_role[0]} 대상과 같음"
+    return None
 
 
 def selftest() -> None:
@@ -298,13 +349,29 @@ def selftest() -> None:
     )
     s1 = enumerate_instructions(md1, props)
     assert "pick up the blue cup and place it on the white small bowl" in s1
+    assert "pick up the blue cup and place it inside the white small bowl" in s1
     assert "pick up the blue cup and place it on top of the drawer" in s1
+    assert "drag the blue cup next to the white small bowl" in s1
     assert "open the top drawer" in s1
-    assert "close the top drawer" in s1
     assert lint("pick up the blue cup and place it on the white small bowl", md1, props) is None
+    assert lint("pick up the blue cup and place it inside the white small bowl", md1, props) is None
+    assert lint("drag the blue cup next to the white small bowl", md1, props) is None
     assert lint("pick up the blue cup and place it on the blue bowl", md1, props) is not None
 
-    # 두 개의 흰 컵 -> 흰 컵 지칭 문장은 생성되지 않아야 함
+    # 정본 위반 안내 -- put / in / that is / 마침표
+    assert "inside" in lint("pick up the blue cup and place it in the white bowl")
+    assert "정본" in lint("put the blue cup inside the white bowl")
+    assert "that is" in lint(
+        "pick up the blue cup that is farthest from the yellow bowl and place it on the yellow bowl")
+    assert "마침표" in lint("open the top drawer.")
+
+    # QUALIFIER: 템플릿만 검사(md 없이)
+    assert lint("pick up the blue cup farthest from the yellow bowl "
+                "and place it on the yellow bowl") is None
+    assert lint("drag the blue cup closest to the white bowl next to the white cup") is None
+    assert lint("pick up the blue cup nearest the bowl and place it on the bowl") is not None
+
+    # 두 개의 흰 컵 -> qualifier 없으면 모호, 있으면 허용
     md2 = SceneMetadata(
         scene_id="S001",
         objects=["OBJ-CUP-WHT-01", "OBJ-CUP-WHT-02", "OBJ-BOWLS-BLU-01"],
@@ -319,7 +386,12 @@ def selftest() -> None:
     )
     s2 = enumerate_instructions(md2, props)
     assert not any("white cup" in x for x in s2)
-    assert lint("pick up the white cup and place it on the blue bowl", md2, props) is not None
+    err = lint("pick up the white cup and place it on the blue small bowl", md2, props)
+    assert err is not None and "QUALIFIER" in err, err
+    assert lint("pick up the white cup farthest from the blue small bowl "
+                "and place it on the blue small bowl", md2, props) is None
+    # drag: 큰 그릇도 끌 수 있다
+    assert lint("drag the white bowl next to the blue cup") is None
 
     # legacy "bowl" 약칭 파싱
     assert lint("pick up the blue cup and place it on the white bowl") is None
@@ -332,8 +404,7 @@ def selftest() -> None:
     assert _parse_object_phrase("the large bowl") is None
     assert _parse_object_phrase("the small green bowl") == ("green", "small_bowl")
 
-    # 목적지 drawer 존재 검사 (md 제공 시) -- pick 대상(blue small bowl)은
-    # md2 에서 유일하므로, 걸리는 것은 drawer 부재여야 한다
+    # 목적지 drawer 존재 검사 (md 제공 시)
     err = lint("pick up the blue small bowl and place it on top of the drawer",
                md2, props)
     assert err is not None and "drawer" in err, err

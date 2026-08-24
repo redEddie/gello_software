@@ -128,7 +128,10 @@ for sc in plan["scenes"]:
         total += 1
         if lint(sl["instruction"]):
             n_warn += 1
-print(f"6 통과: 생성 문장 자기일관성 + 계획 {total}개 문장 lint 실행 (경고 {n_warn}개 -- 차단 아님)")
+# 2026-08-24 정본 문법 확정 + 전 데이터 교정 이후로는 계획 전체가 통과해야
+# 한다 -- 경고가 생기면 새 문장이 정본 밖이라는 뜻 (문법 확장 또는 문장 수정).
+assert n_warn == 0, f"정본 문법 밖 문장 {n_warn}개 -- lint 경고 확인"
+print(f"6 통과: 생성 문장 자기일관성 + 계획 {total}개 문장 전부 정본 문법 통과")
 
 print("\nRecommendDialog 문장/등록 + NewSceneDialog lint 검증 통과")
 import os  # noqa: E402
