@@ -6336,37 +6336,72 @@ class WorkspaceWindow(QMainWindow):
             r=tr("완료") if code == 0 else tr("중단/실패 — 로그 확인"), c=code))
 
     def _relabel_episodes(self, by_file: dict) -> bool:
-        """재판정 공용 코어 -- Dataset 트리와 Gallery 가 같은 것을 쓴다."""
+        """재판정 공용 코어 -- Dataset 트리와 Gallery 가 같은 것을 쓴다.
+
+        세션이 파일을 쥐고 있으면 HDF5 를 다시 열지 않는다. 같은 프로세스에서
+        쓰기 중인 파일을 재오픈하면 h5py 가 거부하므로, 대신 saver 가 이미 연
+        파일 핸들을 재사용하도록 큐 명령으로 보낸다. 판정값은 saver 가 채워주는
+        ``active_episode_cache`` 에서 읽는다.
+        """
         busy = self._busy_reason()
         if busy:
             QMessageBox.warning(self, tr("재판정 불가"),
                                 tr("{job}이(가) 진행 중입니다.").format(job=busy))
             return False
-        flipped = skipped = 0
+        flipped = skipped_state = skipped_cache = 0
+        cache: dict[str, dict] = {}
+        if self.active_file_path is not None and self.active_episode_cache is not None:
+            cache = {e["name"]: e for e in self.active_episode_cache}
         for path, names in by_file.items():
             owned = self.active_file_path is not None and path == self.active_file_path
             try:
-                with h5py.File(path, "r" if owned else "a") as f:
+                if owned:
+                    # 세션 소유 파일: h5py 재오픈 없이 캐시에서 읽고 saver 큐로 쓴다.
                     for name in names:
-                        q = str(f[name].attrs.get("quality_status", ""))
+                        e = cache.get(name)
+                        if e is None:
+                            skipped_cache += 1
+                            self.log(f"[재판정] {path.name} / {name}: 캐시에 없어 건너뜀")
+                            continue
+                        q = str(e.get("quality_status", ""))
+                        if "quality_status" not in e:
+                            # 캐시 요약에 quality_status 가 없으면 success 로 판단.
+                            success = e.get("success")
+                            if success is True:
+                                q = "success"
+                            elif success is False:
+                                q = "failed"
                         if q not in ("success", "failed"):
-                            skipped += 1
+                            skipped_state += 1
                             continue
                         new_ok = q != "success"
-                        if owned:
-                            # 세션 소유 파일은 saver 스레드가 유일한 쓰기 통로.
-                            self.worker.cmd_set_episode_success(name, new_ok)
-                        else:
+                        self.worker.cmd_set_episode_success(name, new_ok)
+                        flipped += 1
+                else:
+                    # 비소유 파일. 호출 경로(_on_relabel_selected 의 scene 필터,
+                    # scene 전용 Gallery)가 scene 파일만 넘기므로 legacy 분기는
+                    # 두지 않는다 -- 도달 불가한 분기는 규약이 어긋난 채 썩는다.
+                    with h5py.File(path, "a") as f:
+                        for name in names:
+                            q = str(f[name].attrs.get("quality_status", ""))
+                            if q not in ("success", "failed"):
+                                skipped_state += 1
+                                continue
+                            new_ok = q != "success"
                             f[name].attrs["quality_status"] = (
                                 "success" if new_ok else "failed")
                             f[name].attrs["success"] = new_ok
-                        flipped += 1
+                            flipped += 1
             except Exception as e:  # noqa: BLE001
                 QMessageBox.critical(self, tr("재판정 실패"),
                                      f"{path.name}\n{type(e).__name__}: {e}")
                 return False
-        self.log(f"[재판정] {flipped}개 뒤집음"
-                 + (f", {skipped}개 건너뜀 (success/failed 아님)" if skipped else ""))
+        parts = [f"[재판정] {flipped}개 뒤집음"]
+        if skipped_state:
+            parts.append(f"{skipped_state}개 건너뜀 (success/failed 아님)")
+        if skipped_cache:
+            parts.append(f"{skipped_cache}개 건너뜀 (세션 캐시에 없음)")
+        self.log(", ".join(parts))
         return True
 
     def _on_delete_selected(self) -> None:
