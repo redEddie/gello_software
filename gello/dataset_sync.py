@@ -44,6 +44,13 @@ import h5py
 # file was edited in a way counting alone would miss.
 REPACK_COUNT_ATTR = "repacked_episodes"
 
+# LeRobot 이 데이터셋을 읽을 때 사용하는 revision. lerobot 은
+# CODEBASE_VERSION("v3.0") 태그로 모든 메타데이터를 조회하므로, 이 모듈도
+# 같은 태그를 써야 main 과 갈라진 경우에 조용한 누락이 없다.
+# dataset_sync 는 lerobot 을 직접 import 하지 않으므로(lerobot 없는 환경
+# 에서도 돌아야 함) 상수만 동일 값으로 정의한다.
+LEROBOT_TAG = "v3.0"
+
 
 def local_tasks(data_root: str | Path) -> dict:
     """{language_instruction: {"episodes", "path", "at_repack", "lengths"}}.
@@ -112,14 +119,16 @@ def hub_meta(repo_id: str) -> tuple[dict, dict, str]:
     try:
         import pandas as pd
         from huggingface_hub import snapshot_download
-        from huggingface_hub.errors import RepositoryNotFoundError
+        from huggingface_hub.errors import RepositoryNotFoundError, RevisionNotFoundError
     except ImportError as e:
         return {}, {}, f"의존성 없음: {e}"
     try:
         d = snapshot_download(repo_id, repo_type="dataset",
                               allow_patterns=["meta/*", "meta/**/*"],
+                              revision=LEROBOT_TAG,
                               force_download=True)
-    except RepositoryNotFoundError:
+    except (RepositoryNotFoundError, RevisionNotFoundError):
+        # repo 가 없거나 태그가 아직 없는 신생 repo -- 빈 결과가 정상 케이스.
         return {}, {}, ""
     except Exception as e:  # noqa: BLE001
         return {}, {}, f"{type(e).__name__}: {e}"
@@ -157,14 +166,16 @@ def hub_episode_uids(repo_id: str) -> tuple:
     """
     try:
         from huggingface_hub import snapshot_download
-        from huggingface_hub.errors import RepositoryNotFoundError
+        from huggingface_hub.errors import RepositoryNotFoundError, RevisionNotFoundError
     except ImportError as e:
         return None, f"의존성 없음: {e}"
     try:
         d = snapshot_download(repo_id, repo_type="dataset",
                               allow_patterns=["meta/episode_uids.json"],
+                              revision=LEROBOT_TAG,
                               force_download=True)
-    except RepositoryNotFoundError:
+    except (RepositoryNotFoundError, RevisionNotFoundError):
+        # repo 가 없거나 태그가 아직 없는 신생 repo -- 빈 집합이 정상 케이스.
         return set(), ""
     except Exception as e:  # noqa: BLE001
         return None, f"{type(e).__name__}: {e}"

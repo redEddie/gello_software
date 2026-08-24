@@ -6,7 +6,8 @@ cd "$(dirname "$0")"
 fail=0
 for t in test_phase4a test_grid_replay test_plan_form test_right_scene \
          test_gate_reset test_plan_edit_replay test_h5view \
-         test_diversity_cloud test_depth17 test_scene_edit test_stats_group; do
+         test_diversity_cloud test_depth17 test_scene_edit test_stats_group \
+         test_dataset_sync; do
   if QT_QPA_PLATFORM=offscreen timeout 240 "$PY" -u "$t.py" >"/tmp/$t.out" 2>&1; then
     echo "$t OK"
   else
