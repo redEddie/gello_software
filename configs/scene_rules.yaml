@@ -1,0 +1,11 @@
+# scene 구성 규칙 -- scene 추천기와 NewSceneDialog 가 공유하는 정본.
+# 읽는 코드는 gello/scene_rules.py.
+version: 1
+compose:
+  - rule: no_lookalike_pair            # 같은 (category, color) 2개 금지 (전 소품)
+  - rule: color_diverse                # 같은 category 2개 이상이면 색은 전부 달라야
+    category: cup
+placement:
+  - rule: ban_zones                    # 해당 category 를 이 존에 두지 않는다
+    category: drawer
+    zones: [[1, 1]]
