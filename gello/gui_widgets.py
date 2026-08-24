@@ -905,6 +905,16 @@ class DatasetSchemaDialog(QDialog):
             cb.setChecked(getattr(cfg, attr))
             self.field_checks[attr] = cb
             extra_layout.addWidget(cb)
+            # depth 수집은 lerobot 0.5.0 RealSenseCamera 가 read_latest_depth 를
+            # 지원하지 않아 당분간 비활성화. 코드는 남겨두고 UI/플래그만 막는다.
+            if attr in ("save_agentview_depth", "save_eye_in_hand_depth"):
+                # 결과는 항상 False 이므로 표시도 False -- True 설정이 들어와도
+                # "체크된 채 비활성" 으로 표시-결과가 어긋나게 두지 않는다.
+                cb.setChecked(False)
+                cb.setEnabled(False)
+                cb.setToolTip(tr(
+                    "카메라 드라이버(lerobot RealSenseCamera)가 depth 읽기를 "
+                    "지원하지 않아 수집이 비활성화되어 있습니다"))
         layout.addWidget(extra_box)
 
         self._editable_widgets = [obs_box, extra_box]
@@ -935,6 +945,10 @@ class DatasetSchemaDialog(QDialog):
         kwargs = {attr: cb.isChecked() for attr, cb in self.field_checks.items()}
         raw = self.image_size_combo.currentData()
         kwargs["image_size"] = None if raw == self._IMAGE_SIZE_NATIVE else raw
+        # depth 수집은 드라이버 미지원으로 비활성화되어 있으나, 다이얼로그에서
+        # 체크 상태가 어떻든 저장 시 강제 Off 로 막는다 (fix/depth-gate).
+        kwargs["save_agentview_depth"] = False
+        kwargs["save_eye_in_hand_depth"] = False
         return DatasetSchemaConfig(**kwargs)
 
     def result_config(self) -> DatasetSchemaConfig:

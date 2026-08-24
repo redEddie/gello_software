@@ -1763,6 +1763,12 @@ class WorkspaceWindow(QMainWindow):
         self.schema = load_schema_config()
 
         self._build_bottom()          # log view exists before anything logs
+        # 저장된 설정의 depth 플래그가 무시됐다면 여기서(로그 뷰가 생긴 뒤)
+        # 보이는 로그로 알린다 -- from_json 의 warnings 는 stderr 로만 가서
+        # 데스크톱 아이콘 실행에서는 소실된다 (아래 excepthook 주석과 같은 이유).
+        for flag in getattr(self.schema, "ignored_depth_flags", []):
+            self.log(f"[스키마] 저장된 {flag}=True 를 무시합니다 -- "
+                     "카메라 드라이버가 depth 읽기를 지원하지 않습니다")
         self._build_center()
         self._build_left()
         self._build_right()
