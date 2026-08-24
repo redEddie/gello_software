@@ -26,6 +26,9 @@ placement:
 - generate_candidate: 규칙 위반 후보는 버리고 재시도 (시도 상한 후 예외)
 - 선택 스코어: min-dist + 0.05 * (scene 내부 distinct (category,color) 수 / n)
   — 규칙은 강제, 내부 다양성은 타이브레이커
+  - **구현 시 보너스 항 제거 (2026-08-24)**: no_lookalike_pair 가 전 소품에
+    걸려 규칙을 통과한 후보는 항상 distinct == n — 보너스가 상수가 되어 순위
+    효과가 없다. 스코어는 순수 min-dist.
 - 기존 결정성(seed) 유지, 인수 기준에 "동일 외형 페어 0 / ban_zones 위반 0" 추가
 
 ## 3. 통일 문법 (`gello/instruction_grammar.py` 신규)

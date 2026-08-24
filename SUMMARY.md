@@ -42,3 +42,31 @@
 ## 남은 한계
 
 - `test_depth17` 은 현재 `lerobot` 버전(0.5.0 환경에서 `DatasetInfo` import 오류)으로 인해 실패. 본 작업 범위가 아님.
+
+## 리뷰 반영 (2026-08-24)
+
+아키텍트 결정 2건:
+- **다양성 보너스 항 제거** — no_lookalike_pair 가 전 소품에 걸려 통과 후보는
+  항상 distinct == n, 보너스가 상수(0.05)라 순위 효과 0 (스펙 수식의 모순).
+  스코어는 순수 min-dist 로, "기존과의 최소 거리" 라벨이 다시 정확해짐.
+- **lint 대상은 실사용 계획(pilot*.json)으로 한정** — example.json 의 2문장
+  (위치 지칭 I004, put I005)은 §4 동사 집합 밖의 향후 확장 예시. README 명시.
+
+수정:
+- 스펙 §1 사용처 ③ 연결: check_scene_file 파일 검사에 scene_rules 경고 출력
+  (합불 아님 — 규칙 도입 전 scene 이 위반일 수 있다).
+- 스펙 §3 lint 연결 + 이중 진실 해소: collection_plan 의 _ALLOWED_PATTERNS
+  제거, load_plan 경고가 instruction_grammar.lint 를 정본으로 호출.
+  collect_workspace 의 죽은 lint import 제거.
+- RecommendWorker 수명: 실행 중 워커 참조 보관(_stale_workers) + 정체성 비교로
+  낡은 결과 무시 + done() 에서 wait — "Destroyed while thread is still
+  running" abort 경로 제거. finished 시그널을 recs_ready 로 개명(QThread 기본
+  시그널 가림 해소).
+- _parse_object_phrase 색 토큰을 인벤토리 색 집합으로 제한 ("the zzz qqq cup"
+  통과, "the small bowl" 오분류 해소). lint 의 on-top-of-drawer 분기에 drawer
+  존재 검사 추가.
+- _register_plan 문장 기준 dedupe + load_plan 경고 표시 + temp 파일 finally
+  정리. _accept 에 "N문장 × target 10 = 총 M 에피소드" 총량 확인창.
+- scene_rules 기본 규칙 lru_cache (후보당 yaml 재파싱 200배 제거,
+  NewSceneDialog 격자 클릭 lint 도 동일 수혜).
+- 오타("낸부") 및 미사용 루프 변수 정리.

@@ -402,6 +402,18 @@ def main() -> int:
     for p in args.paths:
         problems = verify_scene_file(p)
         print_scene_file(p)
+        # scene 구성 규칙(configs/scene_rules.yaml)은 경고로만 보여준다 --
+        # 규칙은 추천 후보 필터/신규 배치 lint 용이지 기존 파일의 합불
+        # 기준이 아니다 (규칙 도입 전에 찍힌 scene 이 위반일 수 있다).
+        try:
+            from gello.props import props_by_id
+            from gello.scene_format import read_scene_metadata
+            from gello.scene_rules import check as rules_check
+            rv = rules_check(read_scene_metadata(p), props_by_id())
+            for msg in rv:
+                print(f"  ⚠ 규칙 경고: {msg}")
+        except Exception as e:  # noqa: BLE001 -- 규칙 검사 실패가 QA 를 막으면 안 된다
+            print(f"  (규칙 검사 생략: {type(e).__name__}: {e})")
         if problems:
             rc = 1
             print("  ✖ 불변식 위반:")

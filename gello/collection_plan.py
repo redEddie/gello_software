@@ -25,16 +25,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from gello.instruction_grammar import lint as _grammar_lint
 from gello.scene_format import INSTRUCTION_ID_RE, SCENE_ID_RE
 
 PLANS_DIR = Path(__file__).resolve().parent.parent / "configs" / "collection_plans"
 
-# §4 instruction 동사 레지스트리. push 등은 파이프라인 검증 후에 푼다.
-_ALLOWED_PATTERNS = (
-    re.compile(r"^pick up .+ and place it .+$"),
-    re.compile(r"^open .+$"),
-    re.compile(r"^close .+$"),
-)
+# §4 동사 집합·문장 문법의 정본은 gello/instruction_grammar.lint 하나다.
+# 예전에는 여기 동사 정규식(_ALLOWED_PATTERNS)이 따로 있었는데, 문법이 두
+# 곳으로 갈리는 이중 진실이라 제거했다 (리뷰 반영 2026-08-24). 경고는
+# 여전히 경고일 뿐 로드를 막지 않는다.
 
 
 @dataclass(frozen=True)
@@ -110,9 +109,10 @@ def load_plan(path: Path) -> CollectionPlan:
                     f"{path.name}: {sid} 안에서 {iid} 가 서로 다른 문장으로 "
                     f"쓰였다 -- {prev!r} vs {instr!r} (ID 는 scene 안에서 유일)")
             sentence_by_id[iid] = instr
-            if not any(p.match(instr) for p in _ALLOWED_PATTERNS):
+            gerr = _grammar_lint(instr)
+            if gerr:
                 warnings.append(
-                    f"{sid}/{iid}: 동사 집합(§4: pick-place/open/close) 밖의 문장 -- {instr!r}")
+                    f"{sid}/{iid}: 통일 문법(§4 동사 집합 포함) 경고 -- {gerr}: {instr!r}")
             slots.append(PlanSlot(iid, instr, target))
         scenes.append(ScenePlan(scene_id=sid, note=str(s.get("note", "")),
                                 slots=tuple(slots)))

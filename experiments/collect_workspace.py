@@ -162,7 +162,7 @@ from gello.collection_plan import (  # noqa: E402
     list_plans,
     load_plan,
 )
-from gello.instruction_grammar import enumerate_instructions, lint  # noqa: E402
+from gello.instruction_grammar import enumerate_instructions  # noqa: E402
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
 from gello.props import load_props, props_by_id  # noqa: E402
 from gello.scene_diversity import recommend  # noqa: E402
@@ -1435,7 +1435,10 @@ class GridEditorDialog(QDialog):
 class RecommendWorker(QThread):
     """scene 추천 계산을 GUI 스레드 밖에서 수행한다."""
 
-    finished = pyqtSignal(list)
+    # QThread 자체의 finished 시그널을 가리면 안 되므로(수명 관리가 그걸 쓴다)
+    # 결과 시그널은 recs_ready 로 명명한다 -- 리포의 다른 QThread 들(loaded,
+    # frame_ready, cloud_ready)과 같은 관례.
+    recs_ready = pyqtSignal(list)
     error = pyqtSignal(str)
 
     def __init__(self, existing: list, props: dict, k: int,
@@ -1451,7 +1454,7 @@ class RecommendWorker(QThread):
         try:
             recs = recommend(self._existing, self._props, k=self._k,
                              seed=self._seed, scene_id=self._scene_id)
-            self.finished.emit(recs)
+            self.recs_ready.emit(recs)
         except Exception as e:  # noqa: BLE001
             self.error.emit(f"{type(e).__name__}: {e}")
 
@@ -1475,6 +1478,11 @@ class RecommendDialog(QDialog):
         self._radios: list = []
         self._sentence_checks: list[list[QCheckBox]] = []
         self._worker: RecommendWorker | None = None
+        # 아직 도는 옛 워커들의 파이썬 참조. 참조를 버리면 GC 가 실행 중
+        # QThread 를 파괴해 "Destroyed while thread is still running" 으로
+        # 프로세스가 abort 한다 -- 결과는 워커 정체성 비교로 무시하고,
+        # 참조는 스레드가 끝날 때(finished) 거둔다.
+        self._stale_workers: list[RecommendWorker] = []
 
         col = QVBoxLayout(self)
         top = QHBoxLayout()
@@ -1524,24 +1532,47 @@ class RecommendDialog(QDialog):
 
     def _fill(self) -> None:
         if self._worker is not None and self._worker.isRunning():
-            self._worker.requestInterruption()
-            self._worker.wait(2000)
+            # 강제 중단하지 않는다 (recommend() 는 인터럽트를 보지 않는다) --
+            # 참조만 보관해 GC 파괴를 막고, 낡은 결과는 정체성 비교로 버린다.
+            self._stale_workers.append(self._worker)
         self._clear_cards()
         self.again_btn.setEnabled(False)
         self.status_label.setText(tr("추천 계산 중..."))
-        self._worker = RecommendWorker(
+        w = RecommendWorker(
             self._existing, self._props, k=3,
             seed=self.seed_spin.value(), scene_id=self._scene_id)
-        self._worker.finished.connect(self._on_recs_ready)
-        self._worker.error.connect(self._on_recs_error)
-        self._worker.start()
+        self._worker = w
+        w.recs_ready.connect(lambda recs, w=w: self._on_recs_ready(w, recs))
+        w.error.connect(lambda msg, w=w: self._on_recs_error(w, msg))
+        w.finished.connect(lambda w=w: self._reap(w))
+        w.start()
 
-    def _on_recs_error(self, msg: str) -> None:
+    def _reap(self, w: RecommendWorker) -> None:
+        """끝난 옛 워커의 참조 회수 (QThread 기본 finished 시그널 경유)."""
+        if w in self._stale_workers and not w.isRunning():
+            self._stale_workers.remove(w)
+
+    def _wait_workers(self) -> None:
+        """다이얼로그가 닫히기 전에 도는 워커를 기다린다 -- 다이얼로그 소멸과
+        함께 워커가 GC 되면 실행 중 파괴로 abort 한다."""
+        for w in [self._worker, *self._stale_workers]:
+            if w is not None and w.isRunning():
+                w.wait(10000)
+
+    def done(self, r: int) -> None:  # accept/reject/close 공통 경유지
+        self._wait_workers()
+        super().done(r)
+
+    def _on_recs_error(self, w: RecommendWorker, msg: str) -> None:
+        if w is not self._worker:
+            return                       # 낡은 워커의 결과 -- 무시
         self.status_label.setText(tr("오류: {m}").format(m=msg))
         self.again_btn.setEnabled(True)
         self._worker = None
 
-    def _on_recs_ready(self, recs: list) -> None:
+    def _on_recs_ready(self, w: RecommendWorker, recs: list) -> None:
+        if w is not self._worker:
+            return                       # 낡은 워커의 결과 -- 무시
         self._worker = None
         self.again_btn.setEnabled(True)
         self.status_label.setText("")
@@ -1604,8 +1635,17 @@ class RecommendDialog(QDialog):
             for sl in scene.get("slots", [])
             if (m := INSTRUCTION_ID_RE.match(str(sl.get("instruction_id", ""))))
         }
+        # 같은 문장이 이미 있으면 새 ID 로 또 쌓지 않는다 -- load_plan 은
+        # "같은 ID·다른 문장"만 막으므로 여기서 문장 기준으로 걸러야 한다.
+        existing_sents = {str(sl.get("instruction", "")).strip()
+                          for sl in scene.get("slots", [])}
         new_slots = []
+        n_dup = 0
         for sent in sentences:
+            if sent.strip() in existing_sents:
+                n_dup += 1
+                continue
+            existing_sents.add(sent.strip())
             n = max(used, default=-1) + 1
             used.add(n)
             new_slots.append({
@@ -1613,24 +1653,39 @@ class RecommendDialog(QDialog):
                 "instruction": sent,
                 "target": 10,
             })
+        if not new_slots:
+            QMessageBox.information(
+                self, tr("계획 등록"),
+                tr("선택한 문장이 모두 이미 등록되어 있습니다 (중복 {n}건 건너뜀).")
+                .format(n=n_dup))
+            return False
         scene.setdefault("slots", []).extend(new_slots)
 
-        # 검증 게이트
+        # 검증 게이트 -- 실패해도 temp 파일은 남기지 않는다.
+        tmp: "Path | None" = None
         try:
             with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
                                              encoding="utf-8") as tf:
                 tf.write(json.dumps(raw, ensure_ascii=False, indent=2) + "\n")
                 tmp = Path(tf.name)
-            load_plan(tmp)
-            tmp.unlink(missing_ok=True)
+            plan = load_plan(tmp)
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(
                 self, tr("계획 등록 실패"),
                 tr("load_plan 검증을 통과하지 못했습니다:\n{e}").format(e=e))
             return False
+        finally:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
+        if plan.warnings:
+            # 통일 문법 경고(§4)는 등록을 막지 않지만 버리지도 않는다 --
+            # PlanEditDialog 저장 경로와 같은 규칙.
+            QMessageBox.warning(self, tr("계획 경고"),
+                                "\n".join(str(x) for x in plan.warnings))
 
         path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n",
                         encoding="utf-8")
+        self._n_dup_skipped = n_dup
         self.registered_plan_path = path
         return True
 
@@ -1646,11 +1701,23 @@ class RecommendDialog(QDialog):
         self.picked = md
         if self._register_check is not None and self._register_check.isChecked():
             sents = self._selected_sentences(idx)
+            # 문장 수 × target 이 곧 수집량이다 -- 물체 5개 scene 은 문장이
+            # 20개를 넘을 수 있어, 무심코 OK 한 번에 200 에피소드가 계획에
+            # 얹히는 것을 총량 확인으로 막는다.
+            if sents and QMessageBox.question(
+                    self, tr("계획 등록"),
+                    tr("{n}개 문장 × target 10 = 총 {t} 에피소드를 {sid} 에 "
+                       "등록합니다. 진행할까요?")
+                    .format(n=len(sents), t=len(sents) * 10, sid=md.scene_id),
+            ) != QMessageBox.StandardButton.Yes:
+                sents = []
             if sents and self._register_plan(md, sents):
+                dup = getattr(self, "_n_dup_skipped", 0)
                 QMessageBox.information(
                     self, tr("계획 등록 완료"),
-                    tr("{n}개 문장을 {sid} 에 등록했습니다.")
-                    .format(n=len(sents), sid=md.scene_id))
+                    tr("{n}개 문장을 {sid} 에 등록했습니다.{d}")
+                    .format(n=len(sents) - dup, sid=md.scene_id,
+                            d=tr(" (중복 {k}건 건너뜀)").format(k=dup) if dup else ""))
         super().accept()
 
 

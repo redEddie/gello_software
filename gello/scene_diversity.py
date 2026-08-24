@@ -111,7 +111,7 @@ def generate_candidate(props: dict, rng: random.Random,
     others = [p for p in active if p.category != "cup"]
     if not cups or not others:
         raise ValueError("인벤토리에 컵과 다른 종류가 최소 1개씩 필요하다")
-    for attempt in range(max_attempts):
+    for _ in range(max_attempts):
         n = rng.randint(2, min(5, len(active)))
         picked = [rng.choice(cups), rng.choice(others)]
         pool = [p for p in active if p not in picked]
@@ -158,23 +158,17 @@ def recommend(existing: list, props: dict, k: int = 3,
         cands.append((md, sig))
     picked: list = []
     picked_sigs: list = []
-    def _diversity_bonus(md: SceneMetadata) -> float:
-        """scene 낸부 distinct (category, color) 비율 -- 타이브레이커."""
-        n = len(md.objects)
-        if n <= 1:
-            return 0.0
-        distinct = len({(_prop_triple(o, props)[0], _prop_triple(o, props)[1])
-                        for o in md.objects})
-        return 0.05 * distinct / n
-
+    # 스펙 §2 의 "내부 다양성 보너스" 는 구현하지 않는다 (2026-08-24 결정):
+    # no_lookalike_pair 가 전 소품에 걸려 규칙을 통과한 후보는 항상
+    # distinct (category,color) == n 이라 보너스가 상수가 되고, 순위에는
+    # 효과가 없이 점수만 [0,1] 밖으로 밀어낸다 -- 스코어는 순수 최소 거리.
     while cands and len(picked) < k:
-        def score(item):
+        def min_dist(item):
             _md, sig = item
             ds = [scene_distance(sig, e) for e in ex_sigs + picked_sigs]
-            base = min(ds) if ds else 1.0
-            return base + _diversity_bonus(_md)
-        best = max(cands, key=score)
-        picked.append((best[0], round(score(best), 4)))
+            return min(ds) if ds else 1.0
+        best = max(cands, key=min_dist)
+        picked.append((best[0], round(min_dist(best), 4)))
         picked_sigs.append(best[1])
         cands.remove(best)
     return picked

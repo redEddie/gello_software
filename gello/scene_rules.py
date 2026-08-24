@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -48,6 +49,16 @@ def load_rules(path: Path = RULES_PATH) -> dict:
     return data
 
 
+@lru_cache(maxsize=1)
+def _default_rules() -> dict:
+    """기본 경로 규칙의 1회 캐시. check() 가 호출마다 yaml 을 다시 파싱하면
+    추천 후보 생성(후보당 1회 호출)과 NewSceneDialog 의 격자 클릭 lint 가
+    대부분 파싱 비용이 된다 (실측 200배). 규칙 yaml 을 고치면 프로세스
+    재시작(또는 _default_rules.cache_clear()) 이 필요하다 -- 규칙은 git 으로
+    관리되는 정본이라 런타임 변경을 전제하지 않는다."""
+    return load_rules()
+
+
 def _prop_for(oid: str, props: dict[str, Prop]) -> Optional[Prop]:
     return props.get(oid)
 
@@ -69,8 +80,10 @@ def check(md: SceneMetadata, props: dict[str, Prop],
 
     반환값이 비어 있으면 통과. props 는 gello.props.props_by_id() 결과.
     """
-    data = rules_data if rules_data is not None else load_rules()
-    _validate_rules(data, "<injected rules>")
+    data = rules_data if rules_data is not None else _default_rules()
+    if rules_data is not None:
+        # 기본 경로는 load_rules() 가 이미 검증했다 -- 주입분만 재검증.
+        _validate_rules(data, "<injected rules>")
     violations: list[str] = []
     triples = _object_triples(md, props)
 

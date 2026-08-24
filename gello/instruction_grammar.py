@@ -10,10 +10,22 @@ legacy 약칭도 받아들여 하위호환성을 유지한다.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Optional
 
 from gello.props import Prop
 from gello.scene_format import SceneMetadata
+
+
+@lru_cache(maxsize=1)
+def _known_colors() -> frozenset:
+    """인벤토리(configs/props.yaml)의 색 집합 -- 색 토큰 검증용.
+
+    md 없이 부르는 계획 파일 lint 모드에서도 "the zzz qqq cup" 같은 임의
+    문자열이 색으로 통과하지 않게 하고, "the small bowl" 이 색="small" 인
+    large_bowl 로 오분류되는 것도 막는다 (small 은 색이 아니다)."""
+    from gello.props import props_by_id
+    return frozenset(p.color for p in props_by_id().values())
 
 # category -> 사람 문법의 명사구. 새 category 는 여기 추가 후 사용.
 NOUN_MAP = {
@@ -60,8 +72,11 @@ def _parse_object_phrase(phrase: str) -> Optional[tuple[str, str]]:
         m = pat.match(phrase)
         if m:
             color = m.group(1).strip()
-            if not color:
-                return None
+            # 색 토큰은 인벤토리의 실제 색만 인정한다. 아니면 다음 패턴으로 --
+            # "the small green bowl" 은 2번 패턴(색 green)으로, "the small bowl"
+            # 은 어느 패턴에서도 유효한 색이 없어 파싱 실패가 된다.
+            if not color or color not in _known_colors():
+                continue
             return (color, cat)
     return None
 
@@ -199,6 +214,11 @@ def lint(sentence: str, md: Optional[SceneMetadata] = None,
         err = _scene_check(color, cat, "pick")
         if err:
             return err
+        # 목적지 drawer 의 존재도 검사한다 (open/close 분기와 동일 규칙).
+        if md is not None and props is not None and not any(
+                props.get(o, Prop("", "", "", "")).category == "drawer"
+                for o in md.objects):
+            return "drawer 가 scene 에 없음"
         return None
 
     # pick up ... and place it on ...
@@ -305,6 +325,18 @@ def selftest() -> None:
     assert lint("pick up the blue cup and place it on the white bowl") is None
     assert lint("pick up the pink small bowl and place it on the white bowl") is None
     assert lint("pick up the small green bowl and place it on the yellow bowl") is None
+
+    # 색 토큰 검증 -- 인벤토리에 없는 색/색 아닌 수식어는 파싱 실패
+    assert lint("pick up the zzz qqq cup and place it on the wwww bowl") is not None
+    assert _parse_object_phrase("the small bowl") is None      # small 은 색이 아님
+    assert _parse_object_phrase("the large bowl") is None
+    assert _parse_object_phrase("the small green bowl") == ("green", "small_bowl")
+
+    # 목적지 drawer 존재 검사 (md 제공 시) -- pick 대상(blue small bowl)은
+    # md2 에서 유일하므로, 걸리는 것은 drawer 부재여야 한다
+    err = lint("pick up the blue small bowl and place it on top of the drawer",
+               md2, props)
+    assert err is not None and "drawer" in err, err
 
     # 결정성
     assert enumerate_instructions(md1, props) == enumerate_instructions(md1, props)

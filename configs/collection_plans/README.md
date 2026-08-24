@@ -43,3 +43,6 @@ Scene × Instruction 조합(slot)과 목표 에피소드 수를 GUI 에 주입�
   것이 재수집의 가장 흔한 시작이다 (§6).
 
 `example.json` 이 Notion §6 의 matrix 예시를 그대로 옮긴 것이다.
+단 example.json 은 현 단계 §4 동사 집합 밖의 문장(위치 지칭 I004, `put`
+I005)을 포함한 **향후 확장 예시**라 통일 문법 lint 대상이 아니다 — lint
+기준은 실사용 계획(pilot*.json)이다 (2026-08-24 결정).
