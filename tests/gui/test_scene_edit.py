@@ -184,6 +184,27 @@ if have_repo:
     assert "참고" in note_c and "올라갔다는 뜻은 아닙니다" in note_c, note_c
 print(f"7 통과: 확인창 목록 {len(rows)}행 + Hub 안내 uid 단위 3경로 (repo 설정={'O' if have_repo else '-'})")
 
+# ---- 8. 썸네일 캐시 무효화: scene 삭제/renumber 로 uid 가 재배정되면
+#    기존 썸네일이 잘못된 에피소드에 표시될 수 있다.
+from gello.scene_gallery import invalidate_scene_thumbs  # noqa: E402
+
+td = Path(tempfile.mkdtemp(prefix="thumbs_"))
+(td / "EP-S000-I000-E000.jpg").write_text("a")
+(td / "EP-S000-I000-E001.jpg").write_text("b")
+(td / "EP-S000-I001-E000.jpg").write_text("c")
+(td / "EP-S001-I000-E000.jpg").write_text("other")
+(td / "legacy.jpg").write_text("legacy")
+n = invalidate_scene_thumbs("S000", thumbs_dir=td)
+assert n == 3, n
+assert not (td / "EP-S000-I000-E000.jpg").exists()
+assert not (td / "EP-S000-I000-E001.jpg").exists()
+assert not (td / "EP-S000-I001-E000.jpg").exists()
+assert (td / "EP-S001-I000-E000.jpg").exists()
+assert (td / "legacy.jpg").exists()
+# 없는 scene 은 0개
+assert invalidate_scene_thumbs("S999", thumbs_dir=td) == 0
+print("8 통과: 썸네일 캐시 scene 단위 무효화 (다른 scene/비대상 파일 보존)")
+
 print("\nscene 편집(삭제·트림) 검증 통과")
 import os  # noqa: E402
 

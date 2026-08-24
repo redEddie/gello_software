@@ -177,6 +177,7 @@ from gello.scene_format import (  # noqa: E402
     read_scene_metadata,
     scene_filename,
 )
+from gello.scene_gallery import invalidate_scene_thumbs  # noqa: E402
 from gello.station import load_station  # noqa: E402
 
 LOG_DIR = Path.home() / "libero_gui_logs"
@@ -1739,6 +1740,7 @@ class WorkspaceWindow(QMainWindow):
         self._last_saved_name = None
         self._last_saved_success = True
         self._pending_verdict_toggle = False
+        self._pending_scene_delete = False
         self._dying_previews: list = []
         # 확정 전까지의 트림 상태. 누른 만큼 오르내리는 정수 하나면 충분하다 --
         # +/- 가 양쪽으로 있으므로 되돌리기용 이력을 따로 들 이유가 없다.
@@ -5641,6 +5643,15 @@ class WorkspaceWindow(QMainWindow):
     @pyqtSlot(list)
     def _on_episode_list(self, episodes) -> None:
         self.active_episode_cache = episodes
+        if self._pending_scene_delete and self._scene_session and self.active_file_path:
+            try:
+                sid = read_scene_metadata(self.active_file_path).scene_id
+                n_thumbs = invalidate_scene_thumbs(sid)
+                if n_thumbs:
+                    self.log(f"[썸네일] {self.active_file_path.name}: {n_thumbs}개 캐시 무효화")
+            except Exception as e:  # noqa: BLE001
+                self.log(f"[썸네일 캐시 정리 실패] {e}")
+            self._pending_scene_delete = False
         self._refresh_dataset_tree()
         if self._scene_session:
             # 저장/재판정마다 saver 가 새 목록을 보내온다 -- slot 카운트 갱신
@@ -6599,16 +6610,27 @@ class WorkspaceWindow(QMainWindow):
 
         for path, names in by_file.items():
             owned = self.active_file_path is not None and path == self.active_file_path
+            is_scene = path.name.startswith("scene_")
             if owned:
                 # 세션이 파일을 쥐고 있으면 saver 스레드가 유일한 통로다. 매 삭제
                 # 뒤 번호가 다시 매겨지므로 뒤에서부터 지워야 앞 이름이 안 밀린다.
                 for name in sorted(names, key=lambda s: int(s.split("_")[1]), reverse=True):
                     self.worker.cmd_delete_episode(name)
                 self.log(f"[삭제] {path.name}: {len(names)}개 요청 (세션 경유)")
+                if is_scene:
+                    # saver 가 삭제를 완료하면 episode_list_changed -> _on_episode_list
+                    # 에서 scene_id 를 알고 썸네일을 지운다.
+                    self._pending_scene_delete = True
                 continue
             try:
-                if path.name.startswith("scene_"):
+                if is_scene:
                     delete_scene_episodes(path, names)
+                    # renumber 로 uid 가 재배정되므로 해당 scene 의 썸네일 캐시를
+                    # 전부 무효화한다. 삭제 실패 시에는 닿지 않는다.
+                    sid = read_scene_metadata(path).scene_id
+                    n_thumbs = invalidate_scene_thumbs(sid)
+                    if n_thumbs:
+                        self.log(f"[썸네일] {path.name}: {n_thumbs}개 캐시 무효화")
                 else:
                     with h5py.File(path, "a") as f:
                         data = f["data"]
