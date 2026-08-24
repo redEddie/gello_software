@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.props import props_by_id  # noqa: E402
+from gello.instruction_grammar import enumerate_instructions  # noqa: E402
 from gello.scene_rules import check  # noqa: E402
 from gello.scene_diversity import recommend, scene_distance, signature  # noqa: E402
 from gello.scene_format import (  # noqa: E402
@@ -82,6 +83,22 @@ def _selftest() -> None:
         c = generate_candidate(props, rng2)
         assert not check(c, props), check(c, props)
     print("4 통과: 후보 1000개 규칙 위반 0")
+
+    # 5. 문법: 같은 scene -> 같은 문장 목록, 모호 지칭 미생성
+    from gello.instruction_grammar import enumerate_instructions
+    sents_a = enumerate_instructions(base, props)
+    sents_b = enumerate_instructions(base, props)
+    assert sents_a == sents_b
+    assert all("white cup" not in x for x in enumerate_instructions(
+        SceneMetadata(
+            scene_id="S001",
+            objects=["OBJ-CUP-WHT-01", "OBJ-CUP-WHT-02", "OBJ-BOWLS-BLU-01"],
+            layout={"grid": [3, 3], "placements": {
+                "OBJ-CUP-WHT-01": {"zone": [0, 0]},
+                "OBJ-CUP-WHT-02": {"zone": [0, 1]},
+                "OBJ-BOWLS-BLU-01": {"zone": [0, 2]}}}),
+        props))
+    print("5 통과: 문법 결정성 + 모호 지칭 제외")
     print("\nselftest 통과")
 
 
@@ -112,6 +129,9 @@ def main() -> None:
         print("=" * 56)
         print(f"추천 {i}  (기존과의 최소 거리 {dist})")
         print(describe_scene(md))
+        print("추천 문장:")
+        for s in enumerate_instructions(md, props):
+            print(f"  - {s}")
         print("layout JSON:")
         print(json.dumps({"objects": md.objects, "layout": md.layout},
                          ensure_ascii=False))
