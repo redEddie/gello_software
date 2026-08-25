@@ -140,7 +140,7 @@ class FakeClient:
 class FakeCam:
     """read_latest 는 있지만 read_latest_depth 는 없는 카메라."""
 
-    def read_latest(self):
+    def read_latest(self, max_age_ms=500):
         return np.zeros((480, 640, 3), dtype=np.uint8)
 
 
