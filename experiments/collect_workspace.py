@@ -5086,7 +5086,8 @@ class WorkspaceWindow(QMainWindow):
         m = mb.addMenu(tr("Dataset"))
         m.addAction(tr("새로고침"), self._refresh_dataset_tree)
         m.addAction(tr("실패만 선택"), self._on_select_failed)
-        m.addAction(tr("튀는 것만 선택 (scene·문장 그룹 평균과 ±0.0026 밖)"),
+        m.addAction(tr("튀는 것만 선택 (scene·문장 그룹 평균과 ±{d} 밖)")
+                    .format(d=TASK_DEV_LIMIT),
                     self._on_select_jerky)
         m.addAction(tr("에피소드 삭제"), self._on_delete_selected)
         m.addAction(tr("파일 삭제"), self._on_delete_file)
