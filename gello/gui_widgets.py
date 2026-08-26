@@ -120,10 +120,16 @@ class Recents:
     must not be able to stop the GUI from starting or a conversion from running.
     """
 
-    def __init__(self, path: Path = RECENTS_PATH) -> None:
-        self._path = path
+    def __init__(self, path: "Path | None" = None) -> None:
+        # 기본 경로를 def 시점이 아니라 실행 시점에 읽는다 -- 테스트가
+        # gui_widgets.RECENTS_PATH 를 임시 파일로 바꿔 실제 GUI 기억값
+        # (~/libero_gui_logs/recent_inputs.json) 을 오염시키지 않게.
+        # (2026-08-26: 테스트가 PipelineDialog.steps() 를 부르면서 test 용
+        # repo 'org/x' 등이 실제 파일 최상단에 박혀, GUI 전체 처리 화면이
+        # 존재하지 않는 Hub 와 대조해 "전부 없음"으로 보인 사고.)
+        self._path = path if path is not None else RECENTS_PATH
         try:
-            self._data = json.loads(path.read_text(encoding="utf-8"))
+            self._data = json.loads(self._path.read_text(encoding="utf-8"))
             if not isinstance(self._data, dict):
                 self._data = {}
         except (OSError, ValueError):

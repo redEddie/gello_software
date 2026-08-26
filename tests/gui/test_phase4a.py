@@ -1,5 +1,7 @@
 """Phase 4a 인수 테스트: 계획 로더 + slot 드롭다운/카운트/다음 slot/불일치 경고."""
+import atexit
 import json
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -31,6 +33,7 @@ assert not plan.warnings, f"pilot.json 이 동사 규칙 위반: {plan.warnings}
 names = [p.name for p in list_plans()]
 assert names[0] == "pilot.json" and names[-1] == "example.json", names
 TMP = Path(tempfile.mkdtemp(prefix="p4a_"))
+atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 bad1 = TMP / "bad1.json"
 bad1.write_text(json.dumps({"plan_version": 1, "scenes": [
     {"scene_id": "S000", "slots": [
@@ -86,19 +89,16 @@ _pi = win.plan_combo.findText("pilot.json")
 assert _pi > 0
 win.plan_combo.setCurrentIndex(_pi)
 # scene 세션을 흉내 -- 세션 중엔 파일이 잠기므로(HDF5 잠금) 워커 cfg 의
-# scene_id + saver 캐시로 계산한다. 사본에서 캐시를 만들어 주입.
-import shutil  # noqa: E402
-import tempfile  # noqa: E402
-
-from gello.scene_format import list_scene_episodes  # noqa: E402
+# scene_id + saver 캐시로 계산한다. 파일은 경로로만 쓰이고 아래에서 캐시를
+# 직접 주입하므로 빈 파일이면 충분하다. (예전엔 실제 scene_000.hdf5 를
+# 통째로 복사했는데 -- 읽지도 않는 8.9GB 를 -- 정리 코드도 없어서 테스트
+# 실행마다 /tmp 에 쌓였고, 35회 누적 233GB 로 NVMe 를 가득 채워 실수집의
+# HDF5 쓰기가 ENOSPC 로 죽는 사고가 났다. 2026-08-26)
 
 TMPD = Path(tempfile.mkdtemp(prefix="p4a_s_"))
+atexit.register(shutil.rmtree, TMPD, ignore_errors=True)
 scene_copy = TMPD / "scene_000.hdf5"
-_src = Path.home() / "libero_datasets" / "scene_000.hdf5"
-try:
-    shutil.copy(_src, scene_copy)   # 사본은 경로로만 쓰인다 (읽지 않음)
-except OSError:
-    scene_copy.touch()
+scene_copy.touch()
 
 
 class FakeW:
@@ -170,6 +170,9 @@ assert win.right_fields["ds_task"].text() == "I010: close the top drawer", \
 print("4 통과: 계획 없음 자유 입력 회귀 없음 + 오른쪽 패널 태스크가 현재 slot 반영")
 
 print("\nPhase 4a 인수 테스트 전부 통과")
+# os._exit 는 atexit 을 건너뛴다 -- 임시 폴더는 여기서 직접 지운다.
+shutil.rmtree(TMP, ignore_errors=True)
+shutil.rmtree(TMPD, ignore_errors=True)
 import os  # noqa: E402
 
 os._exit(0)
