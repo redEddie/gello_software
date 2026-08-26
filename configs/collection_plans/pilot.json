@@ -318,47 +318,167 @@
       "slots": [
         {
           "instruction_id": "I000",
-          "instruction": "pick up the white cup and place it on the small gray bowl",
+          "instruction": "drag the blue small bowl next to the gray small bowl",
           "target": 10
         },
         {
           "instruction_id": "I001",
-          "instruction": "pick up the white cup and place it on the small yellow bowl",
+          "instruction": "drag the gray small bowl next to the blue small bowl",
           "target": 10
         },
         {
           "instruction_id": "I002",
-          "instruction": "pick up the white cup and place it on the blue bowl",
+          "instruction": "pick up the blue small bowl and place it inside the blue large bowl",
           "target": 10
         },
         {
           "instruction_id": "I003",
-          "instruction": "drag the white cup next to the small gray bowl",
+          "instruction": "pick up the blue small bowl and place it inside the gray small bowl",
           "target": 10
         },
         {
           "instruction_id": "I004",
-          "instruction": "drag the white cup next to the small pink bowl",
+          "instruction": "pick up the blue small bowl and place it inside the white large bowl",
           "target": 10
         },
         {
           "instruction_id": "I005",
-          "instruction": "drag the white cup next to the small yellow bowl",
+          "instruction": "pick up the blue small bowl and place it inside the yellow small bowl",
           "target": 10
         },
         {
           "instruction_id": "I006",
-          "instruction": "pick up the small gray bowl and place it inside the blue bowl",
+          "instruction": "pick up the gray small bowl and place it inside the blue large bowl",
           "target": 10
         },
         {
           "instruction_id": "I007",
-          "instruction": "pick up the small pink bowl and place it inside the blue bowl",
+          "instruction": "pick up the gray small bowl and place it inside the blue small bowl",
           "target": 10
         },
         {
           "instruction_id": "I008",
-          "instruction": "pick up the small yellow bowl and place it inside the blue bowl",
+          "instruction": "pick up the gray small bowl and place it inside the white large bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I009",
+          "instruction": "pick up the gray small bowl and place it inside the yellow small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I010",
+          "instruction": "pick up the yellow small bowl and place it inside the blue large bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I011",
+          "instruction": "pick up the yellow small bowl and place it inside the blue small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I012",
+          "instruction": "pick up the yellow small bowl and place it inside the gray small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I013",
+          "instruction": "pick up the yellow small bowl and place it inside the white large bowl",
+          "target": 10
+        }
+      ]
+    },
+    {
+      "scene_id": "S010",
+      "slots": [
+        {
+          "instruction_id": "I000",
+          "instruction": "close the top drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I001",
+          "instruction": "drag the gray small bowl next to the pink small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I003",
+          "instruction": "open the top drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I004",
+          "instruction": "pick up the gray small bowl and place it inside the pink small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I005",
+          "instruction": "pick up the gray small bowl and place it next to the pink small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I007",
+          "instruction": "pick up the gray small bowl and place it on top of the drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I008",
+          "instruction": "pick up the pink small bowl and place it inside the gray small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I009",
+          "instruction": "pick up the pink small bowl and place it next to the gray small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I011",
+          "instruction": "pick up the pink small bowl and place it on top of the drawer",
+          "target": 10
+        }
+      ]
+    },
+    {
+      "scene_id": "S011",
+      "slots": [
+        {
+          "instruction_id": "I000",
+          "instruction": "pick up the pink small bowl and place it inside the white large bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I001",
+          "instruction": "pick up the pink small bowl and place it inside the yellow large bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I002",
+          "instruction": "pick up the pink small bowl and place it next to the white large bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I003",
+          "instruction": "pick up the pink small bowl and place it next to the yellow large bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I005",
+          "instruction": "pick up the yellow small bowl and place it inside the pink small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I006",
+          "instruction": "pick up the yellow small bowl and place it inside the white large bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I008",
+          "instruction": "pick up the yellow small bowl and place it next to the white large bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I009",
+          "instruction": "pick up the yellow small bowl and place it next to the yellow large bowl",
           "target": 10
         }
       ]
