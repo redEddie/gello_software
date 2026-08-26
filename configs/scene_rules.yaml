@@ -16,4 +16,9 @@ compose:
 placement:
   - rule: ban_zones                    # 해당 category 를 이 존에 두지 않는다
     category: drawer
-    zones: [[1, 1]]
+    zones: [[1, 1], [2, 1]]            # 중앙 + 앞줄 중앙 (2026-08-26 사용자 확정)
+  # 가림 방지 (2026-08-26 사용자 확정): 키 큰 서랍이 있는 열에는 다른
+  # 물체를 두지 않는다 -- agentview 에서 서랍 뒤(같은 열)에 물체가 서면
+  # 가려진다. 기존 수집분에는 소급 적용하지 않는다.
+  - rule: exclusive_column
+    category: drawer

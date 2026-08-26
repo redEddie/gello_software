@@ -22,7 +22,7 @@ RULES_PATH = Path(__file__).resolve().parent.parent / "configs" / "scene_rules.y
 
 
 _KNOWN_RULES = {"no_lookalike_pair", "color_diverse", "ban_zones",
-                "pair_if_present"}
+                "pair_if_present", "exclusive_column"}
 
 
 def _validate_rules(data: dict, path: "str | Path" = RULES_PATH) -> None:
@@ -132,6 +132,35 @@ def check(md: SceneMetadata, props: dict[str, Prop],
                     violations.append(
                         f"ban_zones: {cat} ({oid}) 가 금지 존 {list(zone)} 에 있음"
                     )
+        elif rule == "exclusive_column":
+            # 가림 방지 (2026-08-26): 해당 category(키 큰 서랍)가 있는 열에는
+            # 다른 물체를 두지 않는다 -- agentview 에서 같은 열의 물체가
+            # 서랍에 가려진다. "뒤쪽만" 이 아니라 열 전체를 비우는 이유:
+            # 존 좌표는 카메라 프레임이라 어느 row 가 카메라 쪽인지가
+            # 규칙 파일에선 보이지 않고, 열 전체 배제가 항상 안전하다.
+            cat = entry.get("category")
+            placements = md.layout.get("placements", {})
+
+            def _zone_of(oid: str) -> "tuple | None":
+                z = placements.get(oid, {}).get("zone", [])
+                return tuple(z) if len(z) == 2 else None
+
+            for a_oid, c, _ in triples:
+                if c != cat:
+                    continue
+                az = _zone_of(a_oid)
+                if az is None:
+                    continue
+                for oid, oc, _ in triples:
+                    if oid == a_oid or oc == cat:
+                        continue
+                    z = _zone_of(oid)
+                    if z is not None and z[1] == az[1]:
+                        violations.append(
+                            f"exclusive_column: {cat} ({a_oid}) 의 열 "
+                            f"{az[1]} 에 {oid} 가 있음 (존 {list(z)} -- "
+                            "가림 위험)"
+                        )
 
     return violations
 
@@ -143,20 +172,24 @@ def selftest() -> None:
     props = props_by_id()
     rules = load_rules()
 
-    # 통과 케이스
+    # 통과 케이스 (pair_if_present: 등장 category 는 2색 이상 -- 2026-08-24;
+    # exclusive_column: 서랍 열(2)은 비움 -- 2026-08-26)
     ok_md = SceneMetadata(
         scene_id="S000",
-        objects=["OBJ-CUP-BLU-01", "OBJ-BOWLS-WHT-01", "OBJ-DRAWER-01"],
+        objects=["OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01",
+                 "OBJ-BOWLS-WHT-01", "OBJ-BOWLS-BLU-01", "OBJ-DRAWER-01"],
         layout={
             "grid": [3, 3],
             "placements": {
                 "OBJ-CUP-BLU-01": {"zone": [0, 0]},
+                "OBJ-CUP-WHT-01": {"zone": [1, 0]},
                 "OBJ-BOWLS-WHT-01": {"zone": [0, 1]},
+                "OBJ-BOWLS-BLU-01": {"zone": [2, 0]},
                 "OBJ-DRAWER-01": {"zone": [0, 2]},
             },
         },
     )
-    assert check(ok_md, props, rules) == []
+    assert check(ok_md, props, rules) == [], check(ok_md, props, rules)
 
     # lookalike 페어
     look_md = SceneMetadata(
@@ -188,6 +221,50 @@ def selftest() -> None:
     )
     v = check(drawer_md, props, rules)
     assert any("ban_zones" in x for x in v)
+
+    # 앞줄 중앙 [2,1] 도 금지 (2026-08-26)
+    front_md = SceneMetadata(
+        scene_id="S005",
+        objects=["OBJ-CUP-BLU-01", "OBJ-DRAWER-01"],
+        layout={
+            "grid": [3, 3],
+            "placements": {
+                "OBJ-CUP-BLU-01": {"zone": [0, 0]},
+                "OBJ-DRAWER-01": {"zone": [2, 1]},
+            },
+        },
+    )
+    assert any("ban_zones" in x for x in check(front_md, props, rules))
+
+    # exclusive_column: 서랍 열에 다른 물체 -> 위반, 다른 열이면 통과
+    occl_md = SceneMetadata(
+        scene_id="S003",
+        objects=["OBJ-CUP-BLU-01", "OBJ-BOWLS-WHT-01", "OBJ-DRAWER-01"],
+        layout={
+            "grid": [3, 3],
+            "placements": {
+                "OBJ-CUP-BLU-01": {"zone": [2, 2]},     # 서랍(열 2) 앞
+                "OBJ-BOWLS-WHT-01": {"zone": [0, 1]},
+                "OBJ-DRAWER-01": {"zone": [0, 2]},
+            },
+        },
+    )
+    v = check(occl_md, props, rules)
+    assert any("exclusive_column" in x and "OBJ-CUP-BLU-01" in x for x in v), v
+    clear_md = SceneMetadata(
+        scene_id="S004",
+        objects=["OBJ-CUP-BLU-01", "OBJ-BOWLS-WHT-01", "OBJ-DRAWER-01"],
+        layout={
+            "grid": [3, 3],
+            "placements": {
+                "OBJ-CUP-BLU-01": {"zone": [2, 0]},
+                "OBJ-BOWLS-WHT-01": {"zone": [0, 1]},
+                "OBJ-DRAWER-01": {"zone": [0, 2]},
+            },
+        },
+    )
+    assert not any("exclusive_column" in x
+                   for x in check(clear_md, props, rules))
 
     # 알 수 없는 rule 이름은 로드 시 예외
     bad = {"version": 1, "compose": [{"rule": "no_such_rule"}]}
