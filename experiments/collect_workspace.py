@@ -1997,6 +1997,11 @@ class WorkspaceWindow(QMainWindow):
 
         self.worker: CollectionWorker | None = None
         self.node_process: QProcess | None = None
+        # 카메라 노드 (2026-08-25 3-프로세스 분리): RealSense 를 독점 소유하는
+        # 별도 프로세스. GUI 미리보기·포인트클라우드·수집 worker 는 전부 이
+        # 노드의 구독자다 -- GIL 기아·device busy·wedge 를 없앤 구조.
+        self.camera_node_process: QProcess | None = None
+        self._camera_node_spec = ""
         self.replay_process: QProcess | None = None
         self._grid_store = load_grid_store()
         self.repack_process: QProcess | None = None
@@ -4309,7 +4314,8 @@ class WorkspaceWindow(QMainWindow):
         msg = tr("depth 스트림 여는 중... ({s})").format(s=serial)
         self.cloud_status.setText(msg)
         self.depth_status.setText(msg)
-        w = DepthCloudWorker(serial, mode=self._depth_consumer or "cloud")
+        self._ensure_camera_node()
+        w = DepthCloudWorker(role, serial, mode=self._depth_consumer or "cloud")
         w.cloud_ready.connect(self._on_cloud)
         w.depth_ready.connect(self._on_depth_img)
         w.error.connect(self._on_depth_error)
@@ -5061,6 +5067,8 @@ class WorkspaceWindow(QMainWindow):
         m = mb.addMenu(tr("Camera"))
         m.addAction(tr("새로고침"), self._refresh_cameras)
         m.addAction(tr("미리보기 중지"), self._stop_previews_async)
+        m.addAction(tr("카메라 노드 재시작"),
+                    lambda: self._ensure_camera_node(restart=True))
 
         m = mb.addMenu(tr("View"))
         for key, _icon, title, _tip in ACTIVITIES:
@@ -5322,6 +5330,7 @@ class WorkspaceWindow(QMainWindow):
         self._mirror_camera_combos(rebuild=True)
         self._set_camera_hint(tr("{n}대 감지됨").format(n=len(entries)))
         self.log(f"[카메라] {len(entries)}대 감지: {[s for s, _ in entries]}")
+        self._ensure_camera_node()
 
     def _set_camera_hint(self, text: str) -> None:
         self.camera_hint.setText(text)
@@ -5375,7 +5384,8 @@ class WorkspaceWindow(QMainWindow):
     def _on_camera_changed(self) -> None:
         self._mirror_camera_combos()
         if self.worker is not None:
-            return  # the session owns the cameras; previews must stay off
+            return  # 세션 중 카메라 교체는 없다 -- 노드도 그대로 둔다
+        self._ensure_camera_node()   # 선택이 바뀌면 노드를 새 구성으로 재시작
         self._restart_previews()
 
     def _on_toggle_previews(self) -> None:
@@ -5406,7 +5416,7 @@ class WorkspaceWindow(QMainWindow):
                 self.live_views[role].clear_frame(tr("카메라를 선택하세요"))
                 self.right_fields[f"cam_{role}"].setText("-")
                 continue
-            w = CameraPreviewWorker(serial)
+            w = CameraPreviewWorker(role, serial)
             w.frame_ready.connect(lambda f, r=role: self._on_preview_frame(r, f))
             w.error.connect(lambda m, r=role: self._on_preview_error(r, m))
             w.start()
@@ -5627,6 +5637,9 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("카메라 중복"),
                                 tr("Agent와 Wrist에 같은 카메라가 선택되었습니다."))
             return
+        # 노드가 죽었거나 다른 구성으로 떠 있으면 여기서 맞춘다. worker 는
+        # 장치를 직접 열지 않으므로(노드 구독) 이게 유일한 카메라 준비 단계다.
+        self._ensure_camera_node()
         try:
             ep_len = float(self.eplen_edit.text())
             reset_wait = float(self.resetwait_edit.text())
@@ -7790,6 +7803,68 @@ class WorkspaceWindow(QMainWindow):
         self.runme_process = None
 
     # ------------------------------------------------------------- node
+    # ------------------------------------------------- 카메라 노드 (별도 프로세스)
+    def _camera_node_specs(self) -> list:
+        specs = []
+        for role, combo in (("agent", self.agent_combo),
+                            ("wrist", self.wrist_combo)):
+            serial = self._combo_serial(combo)
+            if serial:
+                specs.append(f"{role}:{serial}")
+        return specs
+
+    def _ensure_camera_node(self, restart: bool = False) -> None:
+        """카메라 노드 프로세스를 현재 콤보 선택과 일치하게 유지한다.
+
+        이미 같은 구성으로 떠 있으면 아무것도 하지 않는다 -- 노드의 가치는
+        "카메라를 한 번 열고 계속 스트리밍"에 있으므로 불필요한 재시작이
+        가장 나쁘다. 선택이 바뀌었거나 죽었을 때만 (재)시작한다."""
+        specs = self._camera_node_specs()
+        key = ",".join(specs)
+        running = (self.camera_node_process is not None and
+                   self.camera_node_process.state()
+                   != QProcess.ProcessState.NotRunning)
+        if running and not restart and key == self._camera_node_spec:
+            return
+        if running:
+            self._stop_camera_node()
+        if not specs:
+            return
+        proc = QProcess(self)
+        proc.setProgram(sys.executable)
+        proc.setArguments(["-m", "gello.camera_node", "--die-with-parent"]
+                          + [a for sp in specs for a in ("--cam", sp)])
+        proc.setWorkingDirectory(str(Path(__file__).resolve().parent.parent))
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(self._on_camera_node_output)
+        proc.finished.connect(self._on_camera_node_finished)
+        self.camera_node_process = proc
+        self._camera_node_spec = key
+        self.log(f"[카메라노드] 시작: {key}")
+        proc.start()
+
+    def _on_camera_node_output(self) -> None:
+        if self.camera_node_process is None:
+            return
+        for line in self._proc_text(self.camera_node_process).splitlines():
+            if line.strip():
+                self.log(f"[카메라노드] {line.rstrip()}")
+
+    def _on_camera_node_finished(self, code: int, _status) -> None:
+        self.log(f"[카메라노드] 종료 (exit={code})"
+                 + ("" if code == 0 else " — Camera 메뉴 > 카메라 노드 재시작"))
+
+    def _stop_camera_node(self) -> None:
+        proc = self.camera_node_process
+        self.camera_node_process = None
+        self._camera_node_spec = ""
+        if proc is None or proc.state() == QProcess.ProcessState.NotRunning:
+            return
+        proc.terminate()
+        if not proc.waitForFinished(3000):
+            proc.kill()
+            proc.waitForFinished(2000)
+
     def _on_start_node(self) -> None:
         if self.node_process is not None and \
                 self.node_process.state() != QProcess.ProcessState.NotRunning:
@@ -8051,6 +8126,7 @@ class WorkspaceWindow(QMainWindow):
             self._play_loader.wait(3000)
         self._stop_cloud(restore_previews=False)
         self._stop_previews_blocking()
+        self._stop_camera_node()
         if self.worker is not None and self.worker.isRunning():
             self.worker.cmd_quit()
             self.worker.wait(5000)

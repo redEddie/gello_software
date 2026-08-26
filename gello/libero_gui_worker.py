@@ -1250,41 +1250,35 @@ class CollectionWorker(QThread):
             self.state_changed.emit("idle")
 
     def _connect(self) -> None:
-        from lerobot.cameras.realsense import RealSenseCameraConfig
+        from gello.camera_client import NodeCamera
 
         self._robot = FR3ZMQRobot(
             FR3ZMQRobotConfig(
                 id="fr3",
                 host=self.cfg.hostname,
                 port=self.cfg.robot_port,
-                # 스트림 포맷은 스테이션 설정에서 온다
-                # (configs/stations/<이름>.yaml 의 cameras.<역할>). 시리얼만은
-                # WorkerConfig 를 따르는데, GUI 가 라이브 장치 스캔 결과로
-                # 채워 주기 때문이다 -- 카메라를 바꿔 끼우면 시리얼이 바뀐다.
-                #
-                # 30fps 이지 60 이 아닌 이유: D405 는 640x480 에서 30fps 가
-                # 상한이고(pyrealsense2 프로파일 열거로 확인), 60 을 요구하면
-                # librealsense 가 스트림 설정을 거부하면서 엉뚱하게 "device
-                # busy" ConnectionError 로 나온다. 기록 루프는 어차피
-                # read_latest() 로 cfg.fps(기본 20Hz)에서만 집어가므로 30fps
-                # 캡처로 충분하다.
-                # depth (#17): 스키마가 켠 역할만 스트림을 올린다 -- 캠당
-                # +~176Mbps 라 기본은 꺼짐. 값은 카메라 ASIC 이 계산한다.
-                cameras={
-                    role: RealSenseCameraConfig(
-                        serial_number_or_name=serial,
-                        fps=_STATION.camera(role).fps,
-                        width=_STATION.camera(role).width,
-                        height=_STATION.camera(role).height,
-                        use_depth=role in self._depth_roles,
-                    )
-                    for role, serial in (
-                        ("agent", self.cfg.agent_camera_serial),
-                        ("wrist", self.cfg.wrist_camera_serial),
-                    )
-                },
+                cameras={},
             )
         )
+        # 카메라는 장치를 직접 열지 않는다 (2026-08-25, 3-프로세스 분리):
+        # GUI 가 띄운 카메라 노드(gello/camera_node.py)가 장치를 독점 소유하고,
+        # worker 는 최신 프레임 구독자다. 이 구조가 없앤 것 세 가지 --
+        # 1) GIL 기아: GUI 렌더링·기록이 리더 스레드를 굶겨 프레임 나이가
+        #    500ms 를 넘던 문제 (단독 41ms vs GUI 안 505~550ms 실측),
+        # 2) device busy: 미리보기<->worker 가 장치를 주고받던 12초 핸드오프,
+        # 3) wedge: 세션마다 파이프라인을 여닫다 스트림이 엉키던 문제 --
+        #    노드는 한 번 열고 유지하며, 죽으면 스스로 hardware_reset 한다.
+        # 시리얼을 넘기는 이유: 노드가 다른 카메라 구성으로 떠 있으면
+        # connect 가 즉시 ConnectionError 로 알려 준다 (조용히 엉뚱한 화면을
+        # 기록하는 것보다 낫다). NodeCamera.read_latest[_depth] 는 lerobot
+        # 카메라와 같은 계약이라 아래 관측 루프는 무수정이다.
+        self._robot.cameras = {
+            role: NodeCamera(role, serial=serial)
+            for role, serial in (
+                ("agent", self.cfg.agent_camera_serial),
+                ("wrist", self.cfg.wrist_camera_serial),
+            )
+        }
         self._teleop = GelloFR3Teleop(
             GelloFR3TeleopConfig(id="gello", enable_wall=self.cfg.enable_wall, grip=self.cfg.grip)
         )
