@@ -125,6 +125,33 @@ def wrap_into_limits(q: np.ndarray, lower, upper) -> np.ndarray:
     return q + 2 * np.pi * k
 
 
+def _allocate_budget(cur: np.ndarray, i_trig: float, budget: float,
+                     floors: np.ndarray) -> "tuple[np.ndarray, float]":
+    """Split the supply budget across joints + trigger, honoring floors.
+
+    Within budget: unchanged. Over budget: each joint first keeps
+    ``min(floor_i, |request_i|)`` -- a floor is a *guarantee*, not a grant,
+    so an already-aligned joint requesting almost nothing cedes its unused
+    floor to the pool automatically (this is the "real-time weighting":
+    no explicit reallocation step is needed). Only the excess above the
+    floors, plus the trigger, is scaled down to fit. Degenerate case: if
+    the floors alone exceed the budget, everything scales uniformly (the
+    guarantee is impossible; uniform is the least-surprising fallback).
+    Pure function -- unit-tested offline in selftest()."""
+    total = float(np.abs(cur).sum()) + abs(i_trig)
+    if total <= budget:
+        return cur, i_trig
+    kept = np.minimum(floors, np.abs(cur))
+    fixed = float(kept.sum())
+    if fixed >= budget:
+        scale = budget / total
+        return cur * scale, i_trig * scale
+    rest = (total - fixed)
+    scale = (budget - fixed) / rest
+    out = np.sign(cur) * (kept + (np.abs(cur) - kept) * scale)
+    return out, i_trig * scale
+
+
 class JointLimitWall:
     """One-sided spring-damper on the leader at the follower's joint limits.
 
@@ -151,7 +178,12 @@ class JointLimitWall:
     Keyword tuning args mirror the standalone script's defaults, which were
     tuned by hand on the real leader (500 mA per servo, 2800 mA supply budget).
 
-    Pose-match assist args (see ``set_match_target``): ``match_kp``/``match_kd``
+    Pose-match assist args (see ``set_match_target``): ``match_kp`` (scalar or
+    per-arm-joint -- kp * lead cap is each joint's real max pull, so pitch
+    joints need a far stiffer spring), ``match_int_gain``/``match_int_max``
+    (model-free gravity-holding integrator, per-joint clamp, 0 = off),
+    ``budget_floor`` (per-joint guaranteed share of ``current_budget`` when
+    the summed request saturates -- see ``_allocate_budget``), ``match_kd``
     are the spring/damper gains (current per rad, current per rad/s) pulling
     an armed joint toward the match target; ``match_max_current`` caps that
     pull per joint. ``match_tol`` (rad) / ``match_vel_tol`` (rad/s) are the
@@ -198,7 +230,7 @@ class JointLimitWall:
         trigger_max_current: float = 300.0,
         trigger_curve: float = 3.0,
         trigger_kd: float = 5.0,
-        match_kp: float = 400.0,
+        match_kp=400.0,  # scalar or per-arm-joint sequence (mA/rad)
         match_kd: float = 20.0,
         match_max_current=350.0,  # scalar or per-arm-joint sequence (mA)
         match_tol: float = 0.05,
@@ -208,6 +240,9 @@ class JointLimitWall:
         match_max_lead: float = 0.35,
         match_stiff_kp: float = 1200.0,
         match_stiff_tol: float = 0.10,
+        match_int_gain: float = 1000.0,
+        match_int_max=0.0,  # scalar or per-arm-joint sequence (mA); 0 = off
+        budget_floor=0.0,  # scalar or per-arm-joint sequence (mA)
         gravity_gains: Optional[np.ndarray] = None,
         gravity_offsets: Optional[np.ndarray] = None,
         stiction_gain: float = 0.0,
@@ -268,7 +303,15 @@ class JointLimitWall:
         self._health_every = health_every
         self._min_voltage = min_voltage
 
-        self._match_kp = match_kp
+        # Per-joint spring gain (2026-08-27): a scalar kp under-serves the
+        # pitch joints. The pull current is kp * tracking-error, and the
+        # error is capped at match_max_lead -- with kp=400 that is a hard
+        # 140 mA ceiling per joint no matter what match_max_current says.
+        # J2/J4 fight gravity and need a much stiffer spring to actually
+        # reach their current caps; the rest only fight friction.
+        self._match_kp = np.broadcast_to(
+            np.asarray(match_kp, dtype=float), (self._n_arm,)
+        ).copy()
         self._match_kd = match_kd
         # Scalar or one value per arm joint. Per-joint matters because the
         # supply is the real constraint, not any single servo: every armed
@@ -297,6 +340,29 @@ class JointLimitWall:
         self._match_stiff_tol = float(match_stiff_tol)
         self._match_setpoint: Optional[np.ndarray] = None
         self._match_hold_s = match_hold_s
+        # Match-time integrator (2026-08-27): a spring alone cannot reject
+        # gravity at steady state -- holding ~430 mA on J2 with kp inside
+        # sane bounds would need an error far above match_tol, which is why
+        # pitch used to sag below the target until a hand helped it. The
+        # integrator learns the exact holding current for THIS pose with no
+        # model (the URDF-based gravity comp this replaces was reverted for
+        # being wrong, see class docstring). Leaky safeguards: clamped to
+        # match_int_max per joint (0 = off for that joint), reset on every
+        # set_match_target call, zeroed while no target is set.
+        self._match_int_gain = float(match_int_gain)
+        self._match_int_max = np.broadcast_to(
+            np.asarray(match_int_max, dtype=float), (self._n_arm,)
+        ).copy()
+        self._match_int = np.zeros(self._n_arm)
+        # Budget floors (2026-08-27): when the summed request exceeds the
+        # supply budget, joints used to be scaled down uniformly -- starving
+        # the pitch joints exactly when several joints pull at once. A floor
+        # reserves up to floor_i mA for joint i (only as much as it actually
+        # requests -- an aligned joint requesting 10 mA cedes the rest of its
+        # floor automatically); only the excess above the floors is scaled.
+        self._budget_floor = np.broadcast_to(
+            np.asarray(budget_floor, dtype=float), (self._n_arm,)
+        ).copy()
         # Set/cleared by set_match_target(), read once per tick in _run().
         # Plain attribute swap, not lock-protected: CPython's GIL makes a
         # single reference assignment atomic, and _run() only ever needs
@@ -363,6 +429,9 @@ class JointLimitWall:
         self._match_target = None if target is None else np.array(target, dtype=float)
         self._match_done = False
         self._match_hold_start = None
+        # A fresh target means a fresh pose: the learned holding current of
+        # the previous pose is wrong for it, so the integrator restarts.
+        self._match_int = np.zeros(self._n_arm)
         # Cleared so _run() re-seeds it from the leader's *current* pose on
         # the next tick -- the pull always starts from where the arm is, never
         # from a stale setpoint that would produce an instant jump.
@@ -511,9 +580,23 @@ class JointLimitWall:
                     )
                     # Stiffen once actually close to the goal, so the pose is
                     # held rigidly while the operator lets go of the leader.
-                    kp = self._match_stiff_kp if match_err < self._match_stiff_tol else self._match_kp
+                    # Per-joint kp; elementwise max so a joint whose own kp
+                    # already exceeds stiff_kp (the pitch joints) never gets
+                    # SOFTER on arrival.
+                    if match_err < self._match_stiff_tol:
+                        kp = np.maximum(self._match_kp, self._match_stiff_kp)
+                    else:
+                        kp = self._match_kp
+                    # Integrator charges on the TRUE goal error (not the
+                    # setpoint's), so it keeps building while the setpoint
+                    # still walks; clamp is the anti-windup.
+                    self._match_int = np.clip(
+                        self._match_int
+                        + self._match_int_gain * goal_err * self._dt,
+                        -self._match_int_max, self._match_int_max,
+                    )
                     cur_match = np.clip(
-                        kp * terr - self._match_kd * dq,
+                        kp * terr - self._match_kd * dq + self._match_int,
                         -self._match_max_current, self._match_max_current,
                     )  # per-joint caps; np.clip broadcasts elementwise
                     cur = cur + cur_match
@@ -528,6 +611,7 @@ class JointLimitWall:
                     self._match_done = False
                     self._match_hold_start = None
                     self._match_setpoint = None
+                    self._match_int = np.zeros(self._n_arm)
 
                 # Empirical gravity comp (see class docstring for why this is
                 # a per-joint single-pendulum approximation, not RNEA): each
@@ -576,12 +660,12 @@ class JointLimitWall:
                     i_trig = float(np.clip(i_trig, -self._trig_cap, self._trig_cap))
 
                 # Supply budget: one joint keeps full force; several at once
-                # scale down together so the 5 V / 4 A supply is not overdrawn.
-                total = float(np.abs(cur).sum()) + abs(i_trig)
-                if total > self._budget:
-                    scale = self._budget / total
-                    cur *= scale
-                    i_trig *= scale
+                # share the 5 V / 4 A supply. Floored allocation (2026-08-27):
+                # each joint keeps up to budget_floor of what it requests
+                # before any scaling -- see _allocate_budget.
+                cur, i_trig = _allocate_budget(
+                    cur, i_trig, self._budget, self._budget_floor
+                )
 
                 if self._armed or self._trigger:
                     # Back to raw servo space.  Disarmed arm servos are
@@ -618,6 +702,7 @@ class JointLimitWall:
                     "trigger": {"g": g, "cur": i_trig} if self._trigger else None,
                     "match_error": match_err,
                     "match_done": self._match_done,
+                    "match_int": self._match_int,
                     "dq": dq,
                     "tau_g": tau_g,
                 }
@@ -657,3 +742,51 @@ class JointLimitWall:
                     f"servo ID{servo_id} supply sag {v:.1f} V "
                     f"< {self._min_voltage} V; wall stopping"
                 )
+
+
+def selftest() -> None:
+    """Offline math checks (no hardware): budget floors + integrator clamp."""
+    # 1. 예산 안이면 무변경
+    cur = np.array([100.0, 900.0, -100.0, 800.0, 50.0, 50.0, 50.0])
+    floors = np.array([0.0, 1000.0, 0.0, 1000.0, 0.0, 0.0, 0.0])
+    out, trig = _allocate_budget(cur.copy(), 200.0, 2800.0, floors)
+    assert np.allclose(out, cur) and trig == 200.0
+
+    # 2. 초과 시: J2/J4 는 플로어(1000)까지 요구 전량 유지, 나머지만 축소
+    cur = np.array([400.0, 1000.0, -400.0, 1000.0, 400.0, 400.0, 400.0])
+    out, trig = _allocate_budget(cur.copy(), 300.0, 2800.0, floors)
+    assert abs(np.abs(out).sum() + abs(trig) - 2800.0) < 1e-6
+    assert out[1] == 1000.0 and out[3] == 1000.0          # 플로어 보장
+    assert all(abs(out[i]) < 400.0 for i in (0, 2, 4, 5, 6))
+    assert out[2] < 0                                      # 부호 보존
+    assert trig < 300.0
+
+    # 3. 정렬된 J2(요구 10mA)는 플로어를 자동 양보 -- 나머지가 덜 깎인다
+    cur_aligned = np.array([400.0, 10.0, -400.0, 1000.0, 400.0, 400.0, 400.0])
+    out2, _ = _allocate_budget(cur_aligned.copy(), 300.0, 2800.0, floors)
+    out1, _ = _allocate_budget(
+        np.array([400.0, 1000.0, -400.0, 1000.0, 400.0, 400.0, 400.0]),
+        300.0, 2800.0, floors)
+    assert out2[1] == 10.0                                 # 요구 이상 안 줌
+    assert abs(out2[0]) > abs(out1[0])                     # 양보분이 돌아감
+
+    # 4. 퇴화: 플로어 합이 예산 초과 -> 균등 스케일 폴백
+    big_floors = np.full(7, 1000.0)
+    cur = np.full(7, 1000.0)
+    out, trig = _allocate_budget(cur.copy(), 0.0, 2800.0, big_floors)
+    assert abs(np.abs(out).sum() - 2800.0) < 1e-6
+    assert np.allclose(out, out[0])                        # 균등
+
+    # 5. 적분기 클램프 산수: gain*err*dt 누적이 int_max 를 넘지 않는다
+    int_max = np.array([0.0, 800.0, 0.0, 800.0, 0.0, 0.0, 0.0])
+    acc = np.zeros(7)
+    err = np.full(7, 0.3)
+    for _ in range(3000):                                  # 10초 @300Hz
+        acc = np.clip(acc + 1000.0 * err * (1.0 / 300.0), -int_max, int_max)
+    assert acc[1] == 800.0 and acc[3] == 800.0
+    assert all(acc[i] == 0.0 for i in (0, 2, 4, 5, 6))     # int_max=0 = off
+    print("joint_limit_wall selftest 통과")
+
+
+if __name__ == "__main__":
+    selftest()

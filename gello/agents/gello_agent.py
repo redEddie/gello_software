@@ -59,6 +59,26 @@ class DynamixelRobotConfig:
     servo: every armed joint can saturate simultaneously, so the worst-case
     draw is the sum of these plus the trigger spring's."""
 
+    match_kp: Optional[Sequence[float]] = None
+    """Per-arm-joint pose-match spring gain (mA/rad), or None for the wall's
+    scalar default. The pull current is kp * tracking-error and the error is
+    capped at match_max_lead, so kp -- not match_max_current -- is what
+    actually sets each joint's pull force; pitch joints need a much stiffer
+    spring than the rest (see the FR3 entry)."""
+
+    match_int_max: Optional[Sequence[float]] = None
+    """Per-arm-joint clamp (mA) on the pose-match integrator, or None to
+    leave it off everywhere. The integrator learns the gravity-holding
+    current of the target pose model-free (JointLimitWall docstring);
+    non-zero only for joints that fight gravity."""
+
+    budget_floor: Optional[Sequence[float]] = None
+    """Per-arm-joint supply-budget floor (mA), or None for no floors. When
+    the summed request exceeds the wall's current budget, each joint keeps
+    up to floor_i of what it requests before the excess is scaled down --
+    guarantees the pitch joints their share exactly when everything pulls
+    at once."""
+
     def __post_init__(self):
         assert len(self.joint_ids) == len(self.joint_offsets)
         assert len(self.joint_ids) == len(self.joint_signs)
@@ -146,10 +166,23 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
         # Pose-match current budget, split across the 4 A supply rather than
         # given to each joint independently -- all seven can saturate at the
         # same instant, so what matters is the sum. J2/J4 are the pitch joints
-        # carrying the arm's weight against gravity and get 1 A each; the rest
-        # only have to overcome their own friction and get 0.3 A. Total here
-        # is 3.5 A, leaving ~0.3 A of headroom for the trigger spring.
-        match_max_current=(300.0, 1000.0, 300.0, 1000.0, 300.0, 300.0, 300.0),
+        # carrying the arm's weight against gravity and get 1 A each; the
+        # rest only have to overcome their own friction. Caps may sum past
+        # the wall's 2.8 A budget: the budget_floor allocation below scales
+        # the non-pitch joints down first when they actually collide.
+        # (2026-08-27 사용자 확정: 전반 상향 300->400, pitch 강화)
+        match_max_current=(400.0, 1000.0, 400.0, 1000.0, 400.0, 400.0, 400.0),
+        # kp is the real force knob (pull = kp * error, error capped at
+        # match_max_lead 0.35 rad): 600 -> 210 mA max for friction-only
+        # joints, 2800 -> ~980 mA for the pitch joints, meeting their cap.
+        match_kp=(600.0, 2800.0, 600.0, 2800.0, 600.0, 600.0, 600.0),
+        # Pitch-only integrator: learns the gravity-holding current at the
+        # target pose (model-free), so J2/J4 converge instead of sagging
+        # just outside match_tol. Clamped well under their 1 A caps.
+        match_int_max=(0.0, 800.0, 0.0, 800.0, 0.0, 0.0, 0.0),
+        # J2/J4 keep their first 1 A of request when the supply budget
+        # saturates -- 사용자 요구: pitch 는 최소 1 A 유지.
+        budget_floor=(0.0, 1000.0, 0.0, 1000.0, 0.0, 0.0, 0.0),
     ),
     # xArm
     "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT3M9NVB-if00-port0": DynamixelRobotConfig(
@@ -268,11 +301,16 @@ class GelloAgent(Agent):
                 gravity_gains=config.gravity_gains,
                 gravity_offsets=config.gravity_offsets,
                 stiction_gain=config.stiction_gain,
-                **(
-                    {"match_max_current": np.asarray(config.match_max_current, dtype=float)}
-                    if config.match_max_current is not None
-                    else {}
-                ),
+                **{
+                    k: np.asarray(v, dtype=float)
+                    for k, v in (
+                        ("match_max_current", config.match_max_current),
+                        ("match_kp", config.match_kp),
+                        ("match_int_max", config.match_int_max),
+                        ("budget_floor", config.budget_floor),
+                    )
+                    if v is not None
+                },
             )
             self._wall.start()
         elif enable_wall:
