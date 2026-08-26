@@ -29,6 +29,7 @@ from gello.instruction_grammar import skill_of  # noqa: E402
 from gello.props import props_by_id  # noqa: E402
 from gello.scene_diversity import (  # noqa: E402
     AXES,
+    COVERAGE_AXES,
     axis_coverage,
     axis_distances,
     axis_support,
@@ -57,7 +58,7 @@ def audit_histograms(sigs: list, skills: Counter, props: dict) -> dict:
     support = axis_support(props)
     uni = coverage_uniformity(hist, support)
     print("== 1. 축별 히스토그램 균등성 (1.0 = 완전 균등) ==")
-    for ax in ("category", "color", "position"):
+    for ax in COVERAGE_AXES:
         print(f"  {ax:<9} 균등성 {uni[ax]:.3f} [{_bar(uni[ax])}]")
         for b in sorted(support[ax], key=str):
             print(f"    {str(b):<14} {hist[ax].get(b, 0)}")
@@ -74,7 +75,7 @@ def audit_histograms(sigs: list, skills: Counter, props: dict) -> dict:
               "(수집된 스킬 기준)")
         for sk, n in sorted(skills.items(), key=lambda kv: (-kv[1], kv[0])):
             print(f"    {sk:<20} {n}")
-    weak = min(("category", "color", "position"), key=lambda ax: uni[ax])
+    weak = min(COVERAGE_AXES, key=lambda ax: uni[ax])
     print(f"  → 가장 약한 축: {weak} (추천기가 다음 픽에서 보강하는 축)")
     return uni
 

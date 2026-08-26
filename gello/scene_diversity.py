@@ -51,8 +51,15 @@ GRID = (3, 3)
 AXES = ("category", "color", "position", "relation")
 
 #: 커버리지(히스토그램) 관리 대상 축 — relation 은 현재 씬들이 거의 쓰지
-#: 않아 서포트를 정의할 수 없으므로 제외한다.
-COVERAGE_AXES = ("category", "color", "position")
+#: 않아 서포트를 정의할 수 없으므로 제외한다. count(물체 개수)는 거리
+#: 축은 아니지만 커버리지 축이다 (2026-08-26): 안 재면 선택이 작은 씬으로
+#: 쏠린다 -- 커버리지 gain 이 항목 평균이라 희귀 bin 하나짜리 작은 씬이
+#: 흔한 물체 섞인 큰 씬을 항상 이겼다 (실측: 후보 풀 과반이 5물체인데
+#: 추천은 전부 3물체). 함정 1 의 재발 사례.
+COVERAGE_AXES = ("category", "color", "position", "count")
+
+#: generate_candidate 의 물체 개수 범위 -- count 축 서포트와 일치해야 한다.
+MIN_OBJECTS, MAX_OBJECTS = 2, 5
 
 #: 버킷 순환 순서. 첫 추천은 여전히 가장 새로운(원거리) 것이 되도록
 #: 원거리부터 돈다.
@@ -167,6 +174,7 @@ def axis_support(props: dict) -> dict:
         "category": {p.category for p in active},
         "color": {p.color for p in active},
         "position": {(r, c) for r in range(GRID[0]) for c in range(GRID[1])},
+        "count": set(range(MIN_OBJECTS, MAX_OBJECTS + 1)),
     }
 
 
@@ -177,6 +185,7 @@ def axis_coverage(sigs: list) -> dict:
         hist["category"].update(t[0] for t in s.triples)
         hist["color"].update(t[1] for t in s.triples)
         hist["position"].update(z for _, z in s.placements)
+        hist["count"][len(s.triples)] += 1
     return hist
 
 
@@ -207,6 +216,7 @@ def _coverage_gain(sig: Signature, hist: dict, weights: dict) -> float:
         "category": [t[0] for t in sig.triples],
         "color": [t[1] for t in sig.triples],
         "position": [z for _, z in sig.placements],
+        "count": [len(sig.triples)],
     }
     g = 0.0
     for ax in COVERAGE_AXES:
@@ -269,7 +279,8 @@ def generate_candidate(props: dict, rng: random.Random,
 
 def recommend_detailed(existing: list, props: dict, k: int = 3,
                        n_candidates: int = 400, seed: int = 0,
-                       scene_id: str = "S999") -> list:
+                       scene_id: str = "S999",
+                       min_objects: int = MIN_OBJECTS) -> list:
     """거리 버킷 쿼터 + 축별 커버리지 보강으로 k 개 추천.
 
     절차:
@@ -284,6 +295,8 @@ def recommend_detailed(existing: list, props: dict, k: int = 3,
     axes = 기존 scene 들과의 축별 최소 거리 (position 은 정의 안 되면 None),
     uniformity = 이 추천을 뽑기 직전의 축별 균등성. 기존이 비어 있으면
     모든 후보가 원거리(거리 1.0)라 순수 커버리지 순으로 뽑힌다.
+    min_objects 로 작은 씬을 후보에서 제외할 수 있다 (예: 5 = 5물체만) --
+    기본은 전 범위이고, 개수 균형은 count 커버리지 축이 잡는다.
     지시문 결정은 여기서 하지 않는다 — :mod:`gello.skill_stats` 로 별도
     단계에서 (함정 3).
     """
@@ -293,6 +306,8 @@ def recommend_detailed(existing: list, props: dict, k: int = 3,
     seen: set = set()
     for _ in range(n_candidates):
         md = generate_candidate(props, rng, scene_id=scene_id)
+        if len(md.objects) < min_objects:
+            continue
         sig = signature(md, props)
         key = (sig.triples, sig.placements)
         if key in seen:                      # 후보끼리 중복 제거
@@ -368,12 +383,14 @@ def recommend_detailed(existing: list, props: dict, k: int = 3,
         hist["category"].update(t[0] for t in sig.triples)
         hist["color"].update(t[1] for t in sig.triples)
         hist["position"].update(z for _, z in sig.placements)
+        hist["count"][len(sig.triples)] += 1
     return picked
 
 
 def recommend(existing: list, props: dict, k: int = 3,
               n_candidates: int = 400, seed: int = 0,
-              scene_id: str = "S999") -> list:
+              scene_id: str = "S999",
+              min_objects: int = MIN_OBJECTS) -> list:
     """호환 래퍼: [(SceneMetadata, min_distance), ...].
 
     2026-08-26 이전에는 순수 greedy farthest-point 였다 (모서리 쏠림 —
@@ -384,4 +401,5 @@ def recommend(existing: list, props: dict, k: int = 3,
     return [(r["md"], r["min_dist"])
             for r in recommend_detailed(existing, props, k=k,
                                         n_candidates=n_candidates,
-                                        seed=seed, scene_id=scene_id)]
+                                        seed=seed, scene_id=scene_id,
+                                        min_objects=min_objects)]

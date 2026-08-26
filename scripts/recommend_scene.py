@@ -145,9 +145,22 @@ def _selftest() -> None:
     assert len(set(buckets)) >= 2, buckets    # 원거리 독점 금지 (거리 구간 쿼터)
     for r in det_a:
         assert set(r["axes"]) == set(AXES)
-        assert r["weak_axis"] in ("category", "color", "position")
+        assert r["weak_axis"] in ("category", "color", "position", "count")
         assert 0 < r["min_dist"] <= 1
-    print(f"7 통과: 버킷 쿼터 {buckets} + 결정성 + 축 리포트")
+    # count 커버리지: 기존이 전부 2물체 씬이면 count 축이 최약이 되고,
+    # 추천이 2물체만 반복하지 않는다 (물체 개수도 측정되는 축 -- 함정 1)
+    from gello.scene_diversity import axis_coverage, axis_support, coverage_uniformity
+    uni2 = coverage_uniformity(axis_coverage(
+        [signature(m, props) for m in ex3]), axis_support(props))
+    assert "count" in uni2
+    sizes = {len(r["md"].objects) for r in det_a}
+    assert sizes != {2}, sizes
+    # min_objects: 5물체만 강제
+    det5 = recommend_detailed(ex3, props, k=3, seed=42, min_objects=5)
+    assert det5 and all(len(r["md"].objects) == 5 for r in det5), \
+        [len(r["md"].objects) for r in det5]
+    print(f"7 통과: 버킷 쿼터 {buckets} + count 축 {sorted(sizes)} + "
+          f"min_objects=5 강제 OK")
 
     # 8. 지시문 단계: 부족 스킬 우선 랭킹 + 전 문장 lint 통과 (유일 지칭)
     from collections import Counter as _C
@@ -182,6 +195,9 @@ def main() -> None:
                     default=Path.home() / "libero_datasets")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("-k", type=int, default=3)
+    ap.add_argument("--min-objects", type=int, default=2,
+                    help="이 개수 미만 물체의 후보 제외 (기본 2 = 전 범위; "
+                         "개수 균형은 count 커버리지 축이 자동으로 잡는다)")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
@@ -200,7 +216,7 @@ def main() -> None:
     print(f"기존 scene {len(existing)}개 기준, 다음 ID {sid}")
     print(f"스킬별 누적 수집 (적은 순): {format_skill_counts(counts)}\n")
     recs = recommend_detailed(existing, props, k=args.k, seed=args.seed,
-                              scene_id=sid)
+                              scene_id=sid, min_objects=args.min_objects)
     for i, rec in enumerate(recs, 1):
         md = rec["md"]
         print("=" * 56)
