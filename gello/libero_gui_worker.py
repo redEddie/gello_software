@@ -465,15 +465,13 @@ class CollectionWorker(QThread):
             if v is not None:
                 out[dst] = np.asarray(v, dtype=float)
         for cam_key, cam in self._robot.cameras.items():
-            # max_age_ms=2000, 기본값 500 이 아닌 이유 (2026-08-25): 카메라
-            # 리더 스레드는 GUI 와 같은 프로세스라, 렌더링·기록이 GIL 을 길게
-            # 쥐면 0.5초쯤 버퍼 갱신이 늦어질 수 있다. 실측으로 확인했다 --
-            # 같은 카메라·같은 커널 에러율에서 단독 프로세스는 최장 41ms,
-            # GUI 안에서는 505~550ms. 기본 500ms 는 그 일시 정지를 치명적
-            # 오류로 만들어 세션 전체를 죽였다. 일시 정지는 아래 스톨 감지
-            # (3틱 연속 동일 -> 경고 + 에피소드 폐기 권장)가 품질 게이트로
-            # 잡고, 진짜 죽은 카메라는 2초면 여전히 예외로 세션을 멈춘다.
-            frame = cam.read_latest(max_age_ms=2000)
+            # max_age_ms=500 (2026-08-26 원복): 한때 2000 으로 늘렸던 것은
+            # 리더 스레드가 GUI 와 GIL 을 공유하던 시절의 완화책이다 (그때
+            # 실측: 단독 41ms vs GUI 안 505~550ms). 카메라 노드 분리 후에는
+            # 같은 조건 실측이 최대 35ms 라 500ms 는 정상 동작에서 절대 닿지
+            # 않는 순수 카메라 건강 기준이고, 낡은 프레임이 기록에 섞이기
+            # 전에 빡빡하게 끊는 쪽이 데이터에 안전하다 (사용자 결정).
+            frame = cam.read_latest(max_age_ms=500)
             # read_latest() is non-blocking by design: it hands back whatever
             # is in the buffer and only raises once that is older than
             # max_age_ms. At 20 Hz a stalled camera silently repeats the SAME
@@ -518,7 +516,7 @@ class CollectionWorker(QThread):
                 continue
             try:
                 out[f"_{cam_key}_depth"] = cam.read_latest_depth(
-                    max_age_ms=2000)  # color 쪽과 같은 이유 (위 주석)
+                    max_age_ms=500)  # color 쪽과 같은 기준 (위 주석)
             except Exception as e:  # noqa: BLE001
                 unsupported.append(f"{cam_key}({type(e).__name__})")
                 self._depth_roles.discard(cam_key)

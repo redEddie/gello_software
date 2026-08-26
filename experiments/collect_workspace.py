@@ -2002,6 +2002,7 @@ class WorkspaceWindow(QMainWindow):
         # 노드의 구독자다 -- GIL 기아·device busy·wedge 를 없앤 구조.
         self.camera_node_process: QProcess | None = None
         self._camera_node_spec = ""
+        self._camera_node_crashes: list = []   # 비정상 종료 시각 (loop 방지)
         self.replay_process: QProcess | None = None
         self._grid_store = load_grid_store()
         self.repack_process: QProcess | None = None
@@ -7851,8 +7852,28 @@ class WorkspaceWindow(QMainWindow):
                 self.log(f"[카메라노드] {line.rstrip()}")
 
     def _on_camera_node_finished(self, code: int, _status) -> None:
-        self.log(f"[카메라노드] 종료 (exit={code})"
-                 + ("" if code == 0 else " — Camera 메뉴 > 카메라 노드 재시작"))
+        proc = self.sender()
+        if proc is not self.camera_node_process:
+            # _stop_camera_node() 나 _ensure(재시작) 가 이미 손을 뗀 프로세스
+            # -- 의도된 종료라 조용히 보낸다.
+            self.log(f"[카메라노드] 종료 (exit={code})")
+            return
+        # 비정상 종료 -- 자동 재시작한다. 단 crash-loop(예: 포트 충돌로
+        # 뜨자마자 죽는 상태)이면 로그만 가득 채우므로 60초 내 3회를 넘으면
+        # 멈추고 수동(카메라 메뉴)으로 넘긴다.
+        self.camera_node_process = None
+        self._camera_node_spec = ""
+        now = time.monotonic()
+        self._camera_node_crashes = [
+            t for t in self._camera_node_crashes if now - t < 60.0] + [now]
+        if len(self._camera_node_crashes) > 3:
+            self.log(f"[카메라노드] 비정상 종료 (exit={code}) — 60초 내 "
+                     f"{len(self._camera_node_crashes)}회째, 자동 재시작을 "
+                     "멈춥니다. Camera 메뉴 > 카메라 노드 재시작으로 수동 "
+                     "시작하세요.")
+            return
+        self.log(f"[카메라노드] 비정상 종료 (exit={code}) — 2초 후 자동 재시작")
+        QTimer.singleShot(2000, self._ensure_camera_node)
 
     def _stop_camera_node(self) -> None:
         proc = self.camera_node_process
