@@ -19,7 +19,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.props import props_by_id  # noqa: E402
 from gello.instruction_grammar import enumerate_instructions  # noqa: E402
 from gello.scene_rules import check  # noqa: E402
-from gello.scene_diversity import recommend, scene_distance, signature  # noqa: E402
+from gello.scene_diversity import (  # noqa: E402
+    AXES,
+    axis_distances,
+    recommend,
+    recommend_detailed,
+    scene_distance,
+    signature,
+)
+from gello.skill_stats import (  # noqa: E402
+    collected_skill_counts,
+    format_skill_counts,
+    rank_instructions,
+)
 from gello.scene_format import (  # noqa: E402
     SceneMetadata,
     describe_scene,
@@ -104,6 +116,62 @@ def _selftest() -> None:
                 "OBJ-BOWLS-BLU-01": {"zone": [0, 2]}}}),
         props))
     print("5 통과: 문법 결정성 + 모호 지칭 제외")
+
+    # 6. 축별 분해: 색만 바꾸면 color 만, 위치만 옮기면 position 만 커진다.
+    # (색을 물체끼리 '맞바꾸면' 색 팔레트 multiset 이 같아 color 거리 0 이다
+    #  -- 축은 팔레트를 재지, 색-종류 결합은 재지 않는다. 결합 편향은 감사
+    #  도구의 scene→task 상관 지표가 잡는다.)
+    color_swapped = SceneMetadata(
+        scene_id="S002",
+        objects=["OBJ-CUP-BLU-01", "OBJ-BOWLS-PNK-01"],
+        layout={"grid": [3, 3], "placements": {
+            "OBJ-CUP-BLU-01": {"zone": [0, 0]},
+            "OBJ-BOWLS-PNK-01": {"zone": [1, 1]}}})
+    ax = axis_distances(s0, signature(color_swapped, props))
+    assert ax["category"] == 0.0 and ax["color"] > 0.0 and ax["position"] == 0.0, ax
+    ax2 = axis_distances(s0, signature(moved, props))
+    assert ax2["category"] == 0.0 and ax2["color"] == 0.0 and ax2["position"] > 0.0, ax2
+    assert axis_distances(s0, s0) == {a: 0.0 for a in AXES}
+    print("6 통과: 축별 거리 분해 (색↔color, 이동↔position 만 반응)")
+
+    # 7. 버킷 쿼터: k=3 이 전부 원거리로 쏠리지 않고, 결정적이다
+    ex3 = [base, moved, color_swapped]
+    det_a = recommend_detailed(ex3, props, k=3, seed=42)
+    det_b = recommend_detailed(ex3, props, k=3, seed=42)
+    assert [r["md"].objects for r in det_a] == [r["md"].objects for r in det_b]
+    assert len(det_a) == 3
+    buckets = [r["bucket"] for r in det_a]
+    assert buckets[0] == "원거리", buckets     # 첫 픽은 여전히 가장 새로운 것
+    assert len(set(buckets)) >= 2, buckets    # 원거리 독점 금지 (거리 구간 쿼터)
+    for r in det_a:
+        assert set(r["axes"]) == set(AXES)
+        assert r["weak_axis"] in ("category", "color", "position")
+        assert 0 < r["min_dist"] <= 1
+    print(f"7 통과: 버킷 쿼터 {buckets} + 결정성 + 축 리포트")
+
+    # 8. 지시문 단계: 부족 스킬 우선 랭킹 + 전 문장 lint 통과 (유일 지칭)
+    from collections import Counter as _C
+
+    from gello.instruction_grammar import lint
+    from gello.skill_stats import rank_instructions
+    fake_counts = _C({"pick-on": 100, "pick-inside": 3, "drawer-open": 50})
+    md_d = SceneMetadata(
+        scene_id="S003",
+        objects=["OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01", "OBJ-BOWLS-WHT-01",
+                 "OBJ-BOWLS-BLU-01", "OBJ-DRAWER-01"],
+        layout={"grid": [3, 3], "placements": {
+            "OBJ-CUP-BLU-01": {"zone": [0, 0]},
+            "OBJ-CUP-WHT-01": {"zone": [1, 0]},
+            "OBJ-BOWLS-WHT-01": {"zone": [0, 1]},
+            "OBJ-BOWLS-BLU-01": {"zone": [2, 2]},
+            "OBJ-DRAWER-01": {"zone": [0, 2]}}})
+    ranked = rank_instructions(md_d, props, fake_counts)
+    assert ranked, "랭킹이 비어 있음"
+    assert [n for _, _, n in ranked] == sorted(n for _, _, n in ranked)
+    assert ranked[0][1] not in ("pick-on",), ranked[0]   # 최다 수집 스킬이 1순위 금지
+    for s, _sk, _n in ranked:
+        assert lint(s, md_d, props) is None, s           # 유일 지칭 게이트
+    print("8 통과: 부족 스킬 우선 랭킹 + 유일 지칭 lint")
     print("\nselftest 통과")
 
 
@@ -128,15 +196,28 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001 -- 잠긴 파일(수집 중)은 건너뛴다
             print(f"[경고] {p.name} 읽기 실패 ({type(e).__name__}) -- 제외")
     sid = next_scene_id(args.root)
-    print(f"기존 scene {len(existing)}개 기준, 다음 ID {sid}\n")
-    recs = recommend(existing, props, k=args.k, seed=args.seed, scene_id=sid)
-    for i, (md, dist) in enumerate(recs, 1):
+    counts = collected_skill_counts(args.root)
+    print(f"기존 scene {len(existing)}개 기준, 다음 ID {sid}")
+    print(f"스킬별 누적 수집 (적은 순): {format_skill_counts(counts)}\n")
+    recs = recommend_detailed(existing, props, k=args.k, seed=args.seed,
+                              scene_id=sid)
+    for i, rec in enumerate(recs, 1):
+        md = rec["md"]
         print("=" * 56)
-        print(f"추천 {i}  (기존과의 최소 거리 {dist})")
+        print(f"추천 {i}  [{rec['bucket']} 변형]  기존과의 최소 거리 "
+              f"{rec['min_dist']}")
+        ax = rec["axes"]
+        ax_s = "  ".join(
+            f"{a}={ax[a]:.2f}" if ax.get(a) is not None else f"{a}=--"
+            for a in AXES)
+        print(f"  축별 최소 거리: {ax_s}")
+        uni_s = "  ".join(f"{a}={v:.2f}"
+                          for a, v in rec["uniformity"].items())
+        print(f"  커버리지 보강 축: {rec['weak_axis']} (균등성 {uni_s})")
         print(describe_scene(md))
-        print("추천 문장:")
-        for s in enumerate_instructions(md, props):
-            print(f"  - {s}")
+        print("추천 문장 (누적 수집이 적은 스킬 우선):")
+        for s, sk, n in rank_instructions(md, props, counts):
+            print(f"  - [{sk} · 누적 {n}] {s}")
         print("layout JSON:")
         print(json.dumps({"objects": md.objects, "layout": md.layout},
                          ensure_ascii=False))

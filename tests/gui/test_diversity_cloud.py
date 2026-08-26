@@ -19,7 +19,7 @@ print("1 통과: recommend_scene --selftest")
 
 # ---- 2. 추천 결과의 검증 통과 + 거리 근거 ----
 from gello.props import active_prop_ids, props_by_id  # noqa: E402
-from gello.scene_diversity import recommend  # noqa: E402
+from gello.scene_diversity import AXES, recommend, recommend_detailed  # noqa: E402
 from gello.scene_format import SceneMetadata  # noqa: E402
 
 props = props_by_id()
@@ -29,14 +29,20 @@ base = SceneMetadata(
     layout={"grid": [3, 3], "placements": {
         "OBJ-CUP-BLU-01": {"zone": [0, 0]},
         "OBJ-BOWLS-WHT-01": {"zone": [1, 1]}}})
-recs = recommend([base], props, k=3, seed=5, scene_id="S001")
+det = recommend_detailed([base], props, k=3, seed=5, scene_id="S001")
 ids = active_prop_ids()
-assert len(recs) == 3
-for md, dist in recs:
-    md.validate(known_prop_ids=ids)
-    assert 0 < dist <= 1
-assert recs[0][1] >= recs[1][1] >= recs[2][1]   # farthest-point 순서
-print(f"2 통과: 추천 3안 validate + 거리 내림차순 ({[d for _, d in recs]})")
+assert len(det) == 3
+for rec in det:
+    rec["md"].validate(known_prop_ids=ids)
+    assert 0 < rec["min_dist"] <= 1
+    assert rec["bucket"] in ("원거리", "중간", "근거리")
+    assert set(rec["axes"]) == set(AXES)          # 축별 거리 리포트
+assert det[0]["bucket"] == "원거리"               # 첫 픽은 가장 새로운 것
+# 호환 래퍼는 detailed 와 같은 내용의 (md, dist) 를 준다
+recs = recommend([base], props, k=3, seed=5, scene_id="S001")
+assert [m.objects for m, _ in recs] == [r["md"].objects for r in det]
+print(f"2 통과: detailed 추천 3안 validate + 버킷/축 리포트 "
+      f"({[(r['bucket'], r['min_dist']) for r in det]})")
 
 # ---- 3. Point Cloud 탭 (카메라 없이 렌더 경로만) ----
 from PyQt6.QtWidgets import QApplication  # noqa: E402
@@ -90,7 +96,7 @@ assert len(rdlg._radios) == 3 and rdlg._radios[0].isChecked()
 rdlg._radios[1].setChecked(True)
 rdlg._accept()
 assert rdlg.picked is not None
-assert rdlg.picked.objects == rdlg._recs[1][0].objects
+assert rdlg.picked.objects == rdlg._recs[1]["md"].objects
 nd = cw.NewSceneDialog(None, "S001")
 nd._apply_recommendation(rdlg.picked)
 assert set(nd._checked_ids()) == set(rdlg.picked.objects)
@@ -101,7 +107,7 @@ assert nd.preview.text()                     # 격자 미리보기 갱신됨
 # seed 바꿔 다시 추천 -> 카드 재구성
 rdlg2 = cw.RecommendDialog(None, [base], props, "S001")
 _wait_recs(rdlg2)
-first = [m.objects for m, _ in rdlg2._recs]
+first = [r["md"].objects for r in rdlg2._recs]
 rdlg2.seed_spin.setValue(7)
 rdlg2._fill()
 _wait_recs(rdlg2)

@@ -163,10 +163,14 @@ from gello.collection_plan import (  # noqa: E402
     list_plans,
     load_plan,
 )
-from gello.instruction_grammar import enumerate_instructions  # noqa: E402
 from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
 from gello.props import load_props, props_by_id  # noqa: E402
-from gello.scene_diversity import recommend  # noqa: E402
+from gello.scene_diversity import AXES, recommend_detailed  # noqa: E402
+from gello.skill_stats import (  # noqa: E402
+    collected_skill_counts,
+    format_skill_counts,
+    rank_instructions,
+)
 from gello.scene_rules import check  # noqa: E402
 from gello.robots.franka_fr3 import FR3_RESET_POSES  # noqa: E402
 from gello.scene_format import (  # noqa: E402
@@ -1522,23 +1526,28 @@ class RecommendWorker(QThread):
     # QThread 자체의 finished 시그널을 가리면 안 되므로(수명 관리가 그걸 쓴다)
     # 결과 시그널은 recs_ready 로 명명한다 -- 리포의 다른 QThread 들(loaded,
     # frame_ready, cloud_ready)과 같은 관례.
-    recs_ready = pyqtSignal(list)
+    recs_ready = pyqtSignal(list, object)   # (detailed 추천, 스킬 Counter)
     error = pyqtSignal(str)
 
     def __init__(self, existing: list, props: dict, k: int,
-                 seed: int, scene_id: str) -> None:
+                 seed: int, scene_id: str,
+                 data_root: "Path | None" = None) -> None:
         super().__init__()
         self._existing = existing
         self._props = props
         self._k = k
         self._seed = seed
         self._scene_id = scene_id
+        self._data_root = data_root
 
     def run(self) -> None:
         try:
-            recs = recommend(self._existing, self._props, k=self._k,
-                             seed=self._seed, scene_id=self._scene_id)
-            self.recs_ready.emit(recs)
+            # 스킬별 누적 수집량 -- 지시문 랭킹용. HDF5 IO 라 워커에서 센다.
+            counts = collected_skill_counts(self._data_root)
+            recs = recommend_detailed(self._existing, self._props, k=self._k,
+                                      seed=self._seed,
+                                      scene_id=self._scene_id)
+            self.recs_ready.emit(recs, counts)
         except Exception as e:  # noqa: BLE001
             self.error.emit(f"{type(e).__name__}: {e}")
 
@@ -1547,15 +1556,18 @@ class RecommendDialog(QDialog):
     """scene 다양성 추천안 3개 중 하나 고르기 + 문장 체크리스트 + 계획 등록."""
 
     def __init__(self, parent, existing: list, props: dict,
-                 scene_id: str, plan_path: "Path | None" = None) -> None:
+                 scene_id: str, plan_path: "Path | None" = None,
+                 data_root: "Path | None" = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("scene 추천 — 기존 {n}개와 가장 다른 배치")
+        self.setWindowTitle(tr("scene 추천 — 기존 {n}개 기준 (거리 버킷 + 커버리지)")
                             .format(n=len(existing)))
         self.setMinimumSize(620, 720)
         self._existing = existing
         self._props = props
         self._scene_id = scene_id
         self._plan_path = plan_path
+        self._data_root = data_root
+        self._skill_counts = None          # 워커가 채움 (Counter)
         self.picked = None                 # accept 시 SceneMetadata
         self.registered_plan_path: "Path | None" = None  # 등록 성공 시 경로
         self._recs: list = []
@@ -1624,9 +1636,11 @@ class RecommendDialog(QDialog):
         self.status_label.setText(tr("추천 계산 중..."))
         w = RecommendWorker(
             self._existing, self._props, k=3,
-            seed=self.seed_spin.value(), scene_id=self._scene_id)
+            seed=self.seed_spin.value(), scene_id=self._scene_id,
+            data_root=self._data_root)
         self._worker = w
-        w.recs_ready.connect(lambda recs, w=w: self._on_recs_ready(w, recs))
+        w.recs_ready.connect(
+            lambda recs, counts, w=w: self._on_recs_ready(w, recs, counts))
         w.error.connect(lambda msg, w=w: self._on_recs_error(w, msg))
         w.finished.connect(lambda w=w: self._reap(w))
         w.start()
@@ -1654,35 +1668,50 @@ class RecommendDialog(QDialog):
         self.again_btn.setEnabled(True)
         self._worker = None
 
-    def _on_recs_ready(self, w: RecommendWorker, recs: list) -> None:
+    def _on_recs_ready(self, w: RecommendWorker, recs: list,
+                       counts) -> None:
         if w is not self._worker:
             return                       # 낡은 워커의 결과 -- 무시
         self._worker = None
         self.again_btn.setEnabled(True)
         self.status_label.setText("")
         self._recs = recs
+        self._skill_counts = counts
         group = QButtonGroup(self)
-        for i, (md, dist) in enumerate(self._recs, 1):
+        for i, rec in enumerate(self._recs, 1):
+            md = rec["md"]
             box = QGroupBox()
             bc = QVBoxLayout(box)
-            rb = QRadioButton(tr("추천 {i} — 기존과의 최소 거리 {d}")
-                              .format(i=i, d=dist))
+            rb = QRadioButton(tr("추천 {i} — {b} 변형 · 기존과의 최소 거리 {d}")
+                              .format(i=i, b=rec["bucket"], d=rec["min_dist"]))
             group.addButton(rb)
             rb.setChecked(i == 1)
             self._radios.append(rb)
             bc.addWidget(rb)
+            ax = rec.get("axes", {})
+            ax_s = "  ".join(
+                f"{a}={ax[a]:.2f}" if ax.get(a) is not None else f"{a}=--"
+                for a in AXES)
+            why = QLabel(tr("축별 최소 거리: {ax} · 커버리지 보강 축: {wk}")
+                         .format(ax=ax_s, wk=rec.get("weak_axis", "?")))
+            why.setStyleSheet("color:#888;")
+            why.setWordWrap(True)
+            bc.addWidget(why)
             view = SceneInfoView()
             view.setText(describe_scene(md))
             bc.addWidget(view)
 
-            sents = enumerate_instructions(md, self._props)
+            ranked = rank_instructions(md, self._props, counts or {})
             checks: list[QCheckBox] = []
-            if sents:
-                bc.addWidget(QLabel(tr("추천 문장 (채택 시 등록됨):")))
-                for s in sents:
+            if ranked:
+                bc.addWidget(QLabel(
+                    tr("추천 문장 — 수집이 적은 스킬 우선 (채택 시 등록됨):")))
+                for s, sk, n in ranked:
                     cb = QCheckBox(s)
                     cb.setChecked(True)
                     cb.setEnabled(self._plan_path is not None)
+                    cb.setToolTip(tr("스킬 {sk} · 지금까지 {n} 에피소드 수집")
+                                  .format(sk=sk, n=n))
                     checks.append(cb)
                     bc.addWidget(cb)
             else:
@@ -1691,6 +1720,12 @@ class RecommendDialog(QDialog):
                 bc.addWidget(note)
             self._sentence_checks.append(checks)
             self._cards_col.addWidget(box)
+        if counts:
+            summary = QLabel(tr("스킬별 누적 수집 (적은 순): {s}")
+                             .format(s=format_skill_counts(counts)))
+            summary.setStyleSheet("color:#888;")
+            summary.setWordWrap(True)
+            self._cards_col.addWidget(summary)
         self._cards_col.addStretch(1)
 
     def _selected_sentences(self, idx: int) -> list[str]:
@@ -1781,7 +1816,7 @@ class RecommendDialog(QDialog):
                 break
         if idx < 0:
             return
-        md, _dist = self._recs[idx]
+        md = self._recs[idx]["md"]
         self.picked = md
         if self._register_check is not None and self._register_check.isChecked():
             sents = self._selected_sentences(idx)
@@ -1898,7 +1933,8 @@ class NewSceneDialog(QDialog):
                 except Exception:  # noqa: BLE001 -- 세션이 쥔 파일 등
                     skipped += 1
         dlg = RecommendDialog(self, existing, props_by_id(), self._scene_id,
-                              plan_path=self._plan_path)
+                              plan_path=self._plan_path,
+                              data_root=self._data_root)
         if skipped:
             dlg.setWindowTitle(dlg.windowTitle()
                                + tr(" (읽지 못한 파일 {n}개 제외)").format(n=skipped))

@@ -222,6 +222,34 @@ _DRAG_RE = re.compile(
 )
 
 
+#: 문법이 표현할 수 있는 스킬(동사×관계) 전집합 — skill_of() 의 치역.
+#: scene 추천의 지시문 단계(gello.skill_stats)가 "실행 가능한 스킬 중
+#: 누적 수집횟수가 가장 적은 것 우선" 을 판단할 때의 단위다.
+SKILLS = ("pick-on", "pick-inside", "pick-next_to", "pick-on_top_of",
+          "drag-next_to", "drawer-open", "drawer-close")
+
+
+def skill_of(sentence: str) -> Optional[str]:
+    """문장을 스킬(동사×관계)로 분류한다. 정본 문법이 아니면 None.
+
+    물체 색·종류는 스킬이 아니다 — "pick up the blue cup and place it on
+    the white bowl" 과 "... pink small bowl ..." 은 같은 pick-on 스킬이다.
+    legacy 따옴표 감싸기는 벗겨서 판정한다 (v0 파일 대조용)."""
+    s = sentence.strip()
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        s = s[1:-1].strip()
+    if s == "open the top drawer":
+        return "drawer-open"
+    if s == "close the top drawer":
+        return "drawer-close"
+    m = _PICK_RE.match(s)
+    if m is not None:
+        return "pick-" + m.group("rel").replace(" ", "_")
+    if _DRAG_RE.match(s) is not None:
+        return "drag-next_to"
+    return None
+
+
 def _parse_qualifier(qual: str) -> Optional[tuple[str, str]]:
     """"farthest from the yellow bowl" -> ("farthest from", "the yellow bowl")."""
     for q in _QUALIFIERS:
@@ -411,6 +439,18 @@ def selftest() -> None:
 
     # 결정성
     assert enumerate_instructions(md1, props) == enumerate_instructions(md1, props)
+
+    # 스킬 분류 -- 색·종류가 달라도 같은 스킬, 정본 아니면 None
+    assert skill_of("pick up the blue cup and place it on the white bowl") == "pick-on"
+    assert skill_of("pick up the pink small bowl and place it on the white bowl") == "pick-on"
+    assert skill_of("pick up the blue cup and place it inside the white small bowl") == "pick-inside"
+    assert skill_of("pick up the blue cup and place it on top of the drawer") == "pick-on_top_of"
+    assert skill_of("pick up the blue cup and place it next to the white bowl") == "pick-next_to"
+    assert skill_of("drag the blue cup next to the white small bowl") == "drag-next_to"
+    assert skill_of("open the top drawer") == "drawer-open"
+    assert skill_of('"close the top drawer"') == "drawer-close"   # legacy 따옴표
+    assert skill_of("put the cup somewhere") is None
+    assert all(skill_of(s) in SKILLS for s in s1)   # 생성 문장은 전부 분류 가능
     print("instruction_grammar selftest 통과")
 
 
