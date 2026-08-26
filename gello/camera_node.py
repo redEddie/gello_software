@@ -149,9 +149,13 @@ class CameraWorker(threading.Thread):
                 _log(f"{self.role}: {self.last_error}")
                 if not self.running:
                     return
-                # 열기 실패 = 다른 프로세스가 쥠 / 케이블 / wedge. 첫 시도가
-                # 아니면 리셋까지 해 본다 (busy 인 상대가 있으면 무해).
-                if not first_open:
+                # busy = 다른 프로세스(VLA 정책 클라이언트, 이전 노드 등)가
+                # 정당하게 쥐고 있는 상태다. 여기에 hardware_reset 을 쏘면
+                # 그 프로그램의 스트림이 끊긴다 -- 기다리기만 한다.
+                # busy 가 아닌 실패(wedge/케이블)만 리셋으로 복구를 시도한다.
+                if "busy" in str(e).lower():
+                    time.sleep(2.0)
+                elif not first_open:
                     self._hardware_reset()
                 else:
                     time.sleep(2.0)

@@ -2003,6 +2003,11 @@ class WorkspaceWindow(QMainWindow):
         self.camera_node_process: QProcess | None = None
         self._camera_node_spec = ""
         self._camera_node_crashes: list = []   # 비정상 종료 시각 (loop 방지)
+        # 수동 종료 래치 (2026-08-26): VLA 배포 등 다른 프로그램이 카메라를
+        # 직접 열어야 할 때 노드를 내려 두는 상태. 래치가 켜져 있으면
+        # 새로고침/콤보 변경이 노드를 몰래 되살리지 않는다 -- 재시작 메뉴나
+        # 세션 연결 안내를 통해서만 풀린다.
+        self._camera_node_user_stopped = False
         self.replay_process: QProcess | None = None
         self._grid_store = load_grid_store()
         self.repack_process: QProcess | None = None
@@ -5069,7 +5074,9 @@ class WorkspaceWindow(QMainWindow):
         m.addAction(tr("새로고침"), self._refresh_cameras)
         m.addAction(tr("미리보기 중지"), self._stop_previews_async)
         m.addAction(tr("카메라 노드 재시작"),
-                    lambda: self._ensure_camera_node(restart=True))
+                    self._on_restart_camera_node)
+        m.addAction(tr("카메라 노드 종료 (카메라 해제)"),
+                    self._on_stop_camera_node_manual)
 
         m = mb.addMenu(tr("View"))
         for key, _icon, title, _tip in ACTIVITIES:
@@ -5640,6 +5647,15 @@ class WorkspaceWindow(QMainWindow):
             return
         # 노드가 죽었거나 다른 구성으로 떠 있으면 여기서 맞춘다. worker 는
         # 장치를 직접 열지 않으므로(노드 구독) 이게 유일한 카메라 준비 단계다.
+        if self._camera_node_user_stopped:
+            # 수동 종료 상태에서 몰래 되살리면 외부 프로그램(VLA)이 쥔
+            # 카메라를 노드가 빼앗으려 든다 -- 명시적 재시작을 요구한다.
+            QMessageBox.warning(self, tr("카메라 노드 종료 상태"),
+                                tr("카메라 노드가 수동으로 종료되어 있습니다 "
+                                   "(외부 프로그램용 카메라 해제).\n"
+                                   "Camera 메뉴 > 카메라 노드 재시작 후 다시 "
+                                   "연결하세요."))
+            return
         self._ensure_camera_node()
         try:
             ep_len = float(self.eplen_edit.text())
@@ -7814,12 +7830,41 @@ class WorkspaceWindow(QMainWindow):
                 specs.append(f"{role}:{serial}")
         return specs
 
+    def _on_restart_camera_node(self) -> None:
+        self._camera_node_user_stopped = False
+        self._ensure_camera_node(restart=True)
+
+    def _on_stop_camera_node_manual(self) -> None:
+        """카메라를 완전히 놓는다 -- VLA 배포 등 외부 프로그램이 장치를
+        직접 열 수 있게. 미리보기·depth 뷰도 함께 내린다 (구독자만 남으면
+        에러만 5초마다 찍는다)."""
+        if self.worker is not None:
+            QMessageBox.warning(self, tr("세션 진행 중"),
+                                tr("수집 세션이 카메라를 쓰고 있습니다. "
+                                   "세션 종료 후 노드를 내리세요."))
+            return
+        self._camera_node_user_stopped = True
+        self._stop_cloud(restore_previews=False)
+        self._stop_previews_async()
+        self._stop_camera_node()
+        for role in ("agent", "wrist"):
+            self.live_views[role].clear_frame(tr("카메라 노드 종료됨"))
+        self.lights["camera"].set("off", tr("노드 종료"))
+        self.log("[카메라노드] 수동 종료 — 카메라가 해제되어 다른 프로그램"
+                 "(VLA 정책 클라이언트 등)이 열 수 있습니다. 다시 쓰려면 "
+                 "Camera 메뉴 > 카메라 노드 재시작.")
+
     def _ensure_camera_node(self, restart: bool = False) -> None:
         """카메라 노드 프로세스를 현재 콤보 선택과 일치하게 유지한다.
 
         이미 같은 구성으로 떠 있으면 아무것도 하지 않는다 -- 노드의 가치는
         "카메라를 한 번 열고 계속 스트리밍"에 있으므로 불필요한 재시작이
-        가장 나쁘다. 선택이 바뀌었거나 죽었을 때만 (재)시작한다."""
+        가장 나쁘다. 선택이 바뀌었거나 죽었을 때만 (재)시작한다. 수동 종료
+        래치가 켜져 있으면 건드리지 않는다 (외부 프로그램이 카메라를 쓰는
+        중일 수 있다 -- restart=True 도 래치를 풀지 않는다, 그건
+        _on_restart_camera_node 만 한다)."""
+        if self._camera_node_user_stopped:
+            return
         specs = self._camera_node_specs()
         key = ",".join(specs)
         running = (self.camera_node_process is not None and
