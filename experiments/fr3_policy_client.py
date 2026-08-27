@@ -50,7 +50,7 @@ import numpy as np
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fr3_kinematics import ee_step_to_joint  # noqa: E402  (mamba real_deploy copy, byte-identical)
+from fr3_kinematics import ee_step_to_joint, fk, compute_proprio_single  # noqa: E402  (mamba real_deploy copy)
 
 from gello.station import load_station
 
@@ -152,6 +152,8 @@ def main() -> None:
     ap.add_argument("--lead-ticks", type=int, default=CHUNK_LEAD, metavar="K",
                     help="청크 끝 K틱 전에 미리 추론하고 도착 청크의 앞 K개를 버린다 "
                          "(0=예전 순차 동작, 경계 정지 발생)")
+    ap.add_argument("--proprio", action="store_true",
+                    help="UMI proprioception을 계산해 /predict에 첨부 (use_eef_proprio 모델).")
     args = ap.parse_args()
 
     # 첫 출력까지 조용한 구간(카메라/로봇/서버 연결)이 길다 — 시작 즉시 설정을 보여준다.
@@ -226,6 +228,12 @@ def main() -> None:
             "observation.images.agent": _b64(_crop_resize(obs["agent"], "agent")),
             "observation.images.wrist": _b64(_crop_resize(obs["wrist"], "wrist")),
         }
+        if args.proprio:
+            q_cur = np.array([obs[k] for k in JOINT_KEYS[:7]], dtype=float)
+            grip_cur = float(obs[JOINT_KEYS[7]])
+            q_prev, grip_prev = q_hist[-2] if len(q_hist) >= 2 else (q_cur, grip_cur)
+            payload["proprio"] = compute_proprio_single(
+                q_cur, q_prev, start_q, grip_cur, grip_prev).tolist()
         t0 = time.perf_counter()
         r = session.post(f"{args.server}/predict", json=payload, timeout=60)
         r.raise_for_status()
@@ -248,6 +256,9 @@ def main() -> None:
         else:
             raise RuntimeError("reset ramp did not converge")
         print("[client] at reset pose.")
+        from collections import deque
+        q_hist = deque(maxlen=8)                       # (q7, grip) 20Hz 히스토리 (proprio 0.1s전)
+        start_q = joints(robot.get_observation()) if args.proprio else None
 
         print(f"[client] POST {args.server}/reset ... (서버가 없으면 여기서 최대 60초 대기)")
         r = requests.post(f"{args.server}/reset",
@@ -313,7 +324,10 @@ def main() -> None:
                 pending = pool.submit(predict, obs)
 
             # (3) 한 틱 실행 — 매 틱 최신 측정 pose에 재앵커(ee) / passthrough(joint)
-            q_meas = joints(robot.get_observation())
+            _o = robot.get_observation()
+            q_meas = joints(_o)
+            if args.proprio:
+                q_hist.append((q_meas, float(_o[JOINT_KEYS[7]])))
             a = raw_to_joint(chunk[idx], q_meas, ee_mode)   # 클라측 /step (fresh anchor)
             idx += 1
             # 안전 클램프: 목표가 측정치에서 MAX_STEP_RAD 이상 벗어나지 않게
