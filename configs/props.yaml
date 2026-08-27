@@ -50,7 +50,7 @@ props:
 
   # 나무 트레이 -- 단일 개체라 drawer 처럼 색 없이 지칭한다 ('the tray').
   # color 는 추천기 색 거리용 지배색만 적는다.
-  - {id: OBJ-TRAY-01, category: tray, color: natural, material: wood}
+  - {id: OBJ-TRAY-01, category: tray, color: brown, material: wood}
 
   # 커트러리 (2026-08-27 사용자 확정): 숟가락/포크/나이프를 category 'cutlery'
   # 한 묶음으로 취급하고 문장에서는 색으로만 지칭한다 ('the pink cutlery').
