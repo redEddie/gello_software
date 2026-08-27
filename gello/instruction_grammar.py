@@ -52,7 +52,10 @@ NOUN_MAP = {
     # 2026-08-27 소품 확장: 커트러리는 숟가락/포크/나이프를 한 묶음으로
     # (종류 구분 없이 색으로만 지칭 -- 사용자 확정), 트레이는 단일 개체.
     "cutlery": "cutlery",
-    "tray": "tray",
+    # 'wooden tray' (2026-08-27 사용자 결정): 재질 수식이 시각 grounding 에
+    # 유리하고, tray 수집분이 아직 없어 일관성 부채도 없다. lint 는 짧은
+    # 'the tray' 도 계속 받는다 (_TRAY_PHRASES).
+    "tray": "wooden tray",
 }
 
 # 문법상 "the top drawer" 도 drawer 를 지칭
@@ -205,12 +208,12 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
                 "and place it inside the drawer"
             )
 
-    # 2c) pick up {obj} and place it on the tray
+    # 2c) pick up {obj} and place it on the wooden tray
     if "tray" in by_cat:
         for ocolor, ocat, _ in refs(_PICKABLE):
             sentences.add(
                 f"pick up {_reference(ocolor, ocat, md, props)} "
-                "and place it on the tray"
+                f"and place it on the {NOUN_MAP['tray']}"
             )
 
     # 3) pick up {obj} and place it next to {obj2}
@@ -488,9 +491,12 @@ def selftest() -> None:
             "OBJ-TRAY-01": {"zone": [0, 1]},
             "OBJ-DRAWER-01": {"zone": [0, 2]}}})
     s4 = enumerate_instructions(md4, props)
-    assert "pick up the pink cutlery and place it on the tray" in s4
+    assert "pick up the pink cutlery and place it on the wooden tray" in s4
     assert "pick up the blue cutlery and place it inside the drawer" in s4
     assert "pick up the pink cutlery and place it on top of the drawer" in s4
+    assert lint("pick up the pink cutlery and place it on the wooden tray",
+                md4, props) is None
+    # 짧은 지칭도 lint 는 계속 허용 (하위호환)
     assert lint("pick up the pink cutlery and place it on the tray",
                 md4, props) is None
     assert lint("pick up the blue cutlery and place it inside the drawer",
@@ -512,7 +518,7 @@ def selftest() -> None:
     err = lint("pick up the blue cup and place it on the tray", md1, props)
     assert err is not None and "tray" in err, err
     # 새 문장도 기존 스킬 체계로 떨어진다 (신규 스킬 없음)
-    assert skill_of("pick up the pink cutlery and place it on the tray") == "pick-on"
+    assert skill_of("pick up the pink cutlery and place it on the wooden tray") == "pick-on"
     assert skill_of("pick up the blue cutlery and place it inside the drawer") == "pick-inside"
 
     # 결정성
