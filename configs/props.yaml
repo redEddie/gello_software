@@ -47,3 +47,32 @@ props:
   # 몸체 검정 + 서랍 앞면 회색 3칸. color 는 지배색(몸체)만 적는다 -- 문장에서
   # 부르는 이름('the black drawer')과 일치, 추천기 색 거리에도 단색으로 들어간다.
   - {id: OBJ-DRAWER-01, category: drawer, color: black, material: plastic}
+
+  # 나무 트레이 -- 단일 개체라 drawer 처럼 색 없이 지칭한다 ('the tray').
+  # color 는 추천기 색 거리용 지배색만 적는다.
+  - {id: OBJ-TRAY-01, category: tray, color: natural, material: wood}
+
+  # 커트러리 (2026-08-27 사용자 확정): 숟가락/포크/나이프를 category 'cutlery'
+  # 한 묶음으로 취급하고 문장에서는 색으로만 지칭한다 ('the pink cutlery').
+  # ID 는 실물 추적(바닥 라벨)을 위해 종류를 남긴다. no_lookalike_pair 가
+  # (category,color) 기준이므로 같은 색 커트러리 두 개(핑크 숟가락+핑크
+  # 포크)는 한 씬에 같이 못 선다 -- 묶음 취급의 자연스러운 귀결.
+  # 색은 작은 그릇 6색과 의도적으로 동일 (색-종류 결합 편향 깨기).
+  - {id: OBJ-SPOON-WHT-01, category: cutlery, color: white, material: plastic}
+  - {id: OBJ-SPOON-GRY-01, category: cutlery, color: gray, material: plastic}
+  - {id: OBJ-SPOON-PNK-01, category: cutlery, color: pink, material: plastic}
+  - {id: OBJ-SPOON-YEL-01, category: cutlery, color: yellow, material: plastic}
+  - {id: OBJ-SPOON-GRN-01, category: cutlery, color: green, material: plastic}
+  - {id: OBJ-SPOON-BLU-01, category: cutlery, color: blue, material: plastic}
+  - {id: OBJ-FORK-WHT-01, category: cutlery, color: white, material: plastic}
+  - {id: OBJ-FORK-GRY-01, category: cutlery, color: gray, material: plastic}
+  - {id: OBJ-FORK-PNK-01, category: cutlery, color: pink, material: plastic}
+  - {id: OBJ-FORK-YEL-01, category: cutlery, color: yellow, material: plastic}
+  - {id: OBJ-FORK-GRN-01, category: cutlery, color: green, material: plastic}
+  - {id: OBJ-FORK-BLU-01, category: cutlery, color: blue, material: plastic}
+  - {id: OBJ-KNIFE-WHT-01, category: cutlery, color: white, material: plastic}
+  - {id: OBJ-KNIFE-GRY-01, category: cutlery, color: gray, material: plastic}
+  - {id: OBJ-KNIFE-PNK-01, category: cutlery, color: pink, material: plastic}
+  - {id: OBJ-KNIFE-YEL-01, category: cutlery, color: yellow, material: plastic}
+  - {id: OBJ-KNIFE-GRN-01, category: cutlery, color: green, material: plastic}
+  - {id: OBJ-KNIFE-BLU-01, category: cutlery, color: blue, material: plastic}

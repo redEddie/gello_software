@@ -10,8 +10,11 @@ compose:
   # 서로 다른 색). 한 개만 있으면 "the cup" 만으로 정답이 되어 색 학습이
   # 생략된다. drawer 는 단일 개체라 제외. 기존 수집분(S000~S009)은 소급
   # 적용하지 않는다 -- 새 scene·추천에만.
+  # cutlery(2026-08-27 추가)도 같은 이유로 포함: 씬에 커트러리가 하나뿐이면
+  # "the cutlery" 색 없이도 정답이 되어 색 학습이 생략된다. drawer/tray 는
+  # 단일 개체라 제외.
   - rule: pair_if_present
-    categories: [cup, small_bowl, large_bowl]
+    categories: [cup, small_bowl, large_bowl, cutlery]
     min_count: 2
 placement:
   - rule: ban_zones                    # 해당 category 를 이 존에 두지 않는다

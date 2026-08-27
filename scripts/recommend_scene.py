@@ -77,8 +77,10 @@ def _selftest() -> None:
         # pickable(cup/small_bowl) 최소 한 종류
         from collections import Counter
         cnt = Counter(props[o].category for o in c.objects)
-        assert any(k in cnt for k in ("cup", "small_bowl"))
-        assert all(v >= 2 for k, v in cnt.items() if k != "drawer"), cnt
+        assert any(k in cnt for k in ("cup", "small_bowl", "cutlery"))
+        # drawer/tray 는 단일 개체 category 라 짝 규칙에서 제외
+        assert all(v >= 2 for k, v in cnt.items()
+                   if k not in ("drawer", "tray")), cnt
         assert 2 <= len(c.objects) <= 5
     print("2 통과: 후보 50개 제약+validate 통과")
 

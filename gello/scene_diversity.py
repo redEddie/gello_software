@@ -233,22 +233,29 @@ def generate_candidate(props: dict, rng: random.Random,
                        max_attempts: int = 200) -> SceneMetadata:
     """인벤토리 제약 안의 무작위 scene: 등장 category 는 색 다른 2개 이상
     (pair_if_present), pickable 최소 한 종류, 물체 2~5개, 존 비충돌.
-    configs/scene_rules.yaml 규칙을 만족하지 않으면 재시도한다."""
+    configs/scene_rules.yaml 규칙을 만족하지 않으면 재시도한다.
+
+    2026-08-27 일반화: category 목록을 하드코딩(cup/small_bowl/large_bowl/
+    drawer)하지 않고 인벤토리에서 파생한다 -- 활성 색이 2개 이상인
+    category 는 "짝" 후보(등장 시 2~3색), 색이 하나뿐인 category(drawer/
+    tray)는 확률적 단일 추가. pickable 판정은 문법(PICKABLE_CATS)이 정본.
+    새 소품은 props.yaml + NOUN_MAP 등록만으로 추천 대상이 된다."""
+    from gello.instruction_grammar import PICKABLE_CATS
+
     active = [p for p in props.values() if not p.retired]
     # pair_if_present 규칙(2026-08-24) 아래에서는 물체 단위 무작위 뽑기가
-    # 거의 다 기각된다 -- category 단위로 "짝"을 뽑는다: 등장시키는
-    # category 마다 서로 다른 색 min 2개, 총 2~5개, pickable(cup/small_bowl)
-    # 최소 한 종류 포함, drawer 는 단일이라 자유.
+    # 거의 다 기각된다 -- category 단위로 "짝"을 뽑는다.
     by_cat: dict = {}
     for p_ in active:
         by_cat.setdefault(p_.category, {}).setdefault(p_.color, []).append(p_)
-    paired_cats = [c for c in ("cup", "small_bowl", "large_bowl")
-                   if len(by_cat.get(c, {})) >= 2]
-    if not any(c in paired_cats for c in ("cup", "small_bowl")):
+    paired_cats = sorted(c for c in by_cat if len(by_cat[c]) >= 2)
+    single_cats = sorted(c for c in by_cat if len(by_cat[c]) == 1)
+    if not any(c in PICKABLE_CATS for c in paired_cats):
         raise ValueError("인벤토리에 2색 이상인 pickable category 가 없다")
     for _ in range(max_attempts):
-        cats = [c for c in paired_cats if rng.random() < 0.6]
-        if not any(c in cats for c in ("cup", "small_bowl")):
+        n_pair = rng.randint(1, min(2, len(paired_cats)))
+        cats = rng.sample(paired_cats, n_pair)
+        if not any(c in PICKABLE_CATS for c in cats):
             continue
         picked = []
         for c in cats:
@@ -256,9 +263,9 @@ def generate_candidate(props: dict, rng: random.Random,
             rng.shuffle(colors)
             take = rng.randint(2, min(3, len(colors)))
             picked += [rng.choice(by_cat[c][col]) for col in colors[:take]]
-        if "drawer" in by_cat and len(picked) <= 4 and rng.random() < 0.5:
-            picked.append(rng.choice(by_cat["drawer"][
-                next(iter(by_cat["drawer"]))]))
+        for c in single_cats:
+            if len(picked) <= 4 and rng.random() < 0.4:
+                picked.append(rng.choice(by_cat[c][next(iter(by_cat[c]))]))
         if not 2 <= len(picked) <= 5:
             continue
         cells = [(r, c) for r in range(GRID[0]) for c in range(GRID[1])]
