@@ -50,7 +50,10 @@ import numpy as np
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fr3_kinematics import ee_step_to_joint, fk, compute_proprio_single  # noqa: E402  (mamba real_deploy copy)
+from fr3_kinematics import (  # noqa: E402  (mamba real_deploy copy)
+    ee_step_to_joint, fk, compute_proprio_single,
+    ee_chunk_to_joint_chunk, POS_MAX_WP, ROT_MAX_WP,
+)
 
 from gello.station import load_station
 
@@ -152,6 +155,9 @@ def main() -> None:
     ap.add_argument("--lead-ticks", type=int, default=CHUNK_LEAD, metavar="K",
                     help="청크 끝 K틱 전에 미리 추론하고 도착 청크의 앞 K개를 버린다 "
                          "(0=예전 순차 동작, 경계 정지 발생)")
+    ap.add_argument("--waypoint", action="store_true",
+                    help="② waypoint ckpt: 청크를 관측시점 앵커로 관절 청크로 1회 변환 "
+                         "(이후 타임스탬프 인덱싱으로 절대 목표 추종).")
     ap.add_argument("--proprio", action="store_true",
                     help="UMI proprioception을 계산해 /predict에 첨부 (use_eef_proprio 모델).")
     args = ap.parse_args()
@@ -238,7 +244,15 @@ def main() -> None:
         r = session.post(f"{args.server}/predict", json=payload, timeout=60)
         r.raise_for_status()
         predict_ms.append((time.perf_counter() - t0) * 1000)
-        return np.asarray(r.json()["actions"], dtype=float)  # [10, dim] raw
+        chunk = np.asarray(r.json()["actions"], dtype=float)  # [K, dim] raw
+        if args.waypoint and chunk.shape[1] == 7:
+            # ②: 이 관측의 pose가 청크 전체의 앵커 — 여기(워커 스레드)서 1회 IK 변환.
+            # 결과 [K,8] joint-absolute → 제어 루프는 passthrough + 타임스탬프 인덱싱.
+            # 지연으로 스텝을 스킵해도 절대 목표라 변위 무손실.
+            q_anchor = np.array([float(obs[k]) for k in JOINT_KEYS[:7]])
+            chunk = ee_chunk_to_joint_chunk(chunk, q_anchor,
+                                            pos_max=POS_MAX_WP, rot_max=ROT_MAX_WP)
+        return chunk
 
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="predict")
 

@@ -132,6 +132,33 @@ def ik(target: np.ndarray, q_seed: np.ndarray, iters: int = 30,
     return q
 
 
+# waypoint(②) 액션 프리스케일 — 학습(waypoint_actions.py)과 반드시 동일값.
+POS_MAX_WP = 0.30
+ROT_MAX_WP = 1.5
+
+
+def ee_waypoint_step_to_joint(w7: np.ndarray, q_anchor: np.ndarray, q_seed: np.ndarray,
+                              pos_max: float = POS_MAX_WP, rot_max: float = ROT_MAX_WP) -> np.ndarray:
+    """One waypoint (7,) anchored at the OBSERVATION pose -> joint target (8,).
+
+    ② convention: the whole chunk is expressed in the frame of the pose at the
+    observation that produced it (q_anchor, fixed for the chunk). Unlike
+    ee_step_to_joint, the anchor does NOT move between steps — waypoints are
+    absolute targets, so skipped/late steps lose nothing.
+    q_seed: IK warm start (current measured joints)."""
+    w = np.asarray(w7, dtype=np.float64)
+    T0 = fk(np.asarray(q_anchor, dtype=np.float64))
+    R0, p0 = T0[:3, :3], T0[:3, 3]
+    T_tgt = np.eye(4)
+    T_tgt[:3, 3] = p0 + R0 @ (w[:3] * pos_max)
+    T_tgt[:3, :3] = axis_angle_to_rot(R0 @ (w[3:6] * rot_max)) @ R0
+    q = ik(T_tgt, np.asarray(q_seed, dtype=np.float64))
+    out = np.zeros(8)
+    out[:7] = q
+    out[7] = float(np.clip((w[6] + 1.0) / 2.0, 0.0, 1.0))
+    return out
+
+
 def ee_step_to_joint(delta7: np.ndarray, q_meas: np.ndarray,
                      pos_max: float = 0.05, rot_max: float = 0.5) -> np.ndarray:
     """One normalized EE-frame delta (7,) + measured joints (7,) -> joint target (8,).
@@ -190,22 +217,3 @@ def ee_chunk_to_joint_chunk(actions_ee: np.ndarray, q_meas: np.ndarray,
         out[k, :7] = q
         out[k, 7] = float(np.clip((d[6] + 1.0) / 2.0, 0.0, 1.0))
     return out
-
-
-# ── UMI 상대 proprioception (배포 추론용, 단일 프레임) ──
-# src/mamba_embeddingvla/data/eef_proprio.py:compute_proprio 와 특징 순서/공식 동일해야 함.
-def _rot6d(R):
-    return np.concatenate([R[:, 0], R[:, 1]])
-
-
-def compute_proprio_single(q_cur7, q_prev7, q_start7, grip_cur, grip_prev):
-    """현재/0.1s전/시작 관절 + 그리퍼 -> 17-dim UMI proprio (현재 EEF 프레임 기준).
-       [pos_prev(3), rot_prev6d(6), rot_start6d(6), grip_cur(1), grip_prev(1)]."""
-    Tt = fk(q_cur7); Rt, pt = Tt[:3, :3], Tt[:3, 3]
-    Tp = fk(q_prev7); Rp, pp = Tp[:3, :3], Tp[:3, 3]
-    Rs = fk(q_start7)[:3, :3]
-    pos_prev = Rt.T @ (pp - pt)
-    rot_prev = _rot6d(Rt.T @ Rp)
-    rot_start = _rot6d(Rs.T @ Rt)
-    return np.concatenate([pos_prev, rot_prev, rot_start,
-                           [grip_cur], [grip_prev]]).astype(np.float32)
