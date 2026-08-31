@@ -30,7 +30,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from gello.core.station import load_station  # noqa: E402
 
 STATION = load_station()

@@ -25,8 +25,15 @@ import numpy as np
 import tyro
 from termcolor import colored
 
-from gello.agents.gello_agent import GelloAgent
-from gello.comm.zmq_core.robot_node import ZMQClientRobot
+import sys
+from pathlib import Path
+
+# 이 스크립트가 속한 체크아웃의 gello 를 쓴다 -- venv 의 editable gello 는
+# 다른 워크트리를 가리킬 수 있다 (2026-08-31 실제 사고).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from gello.agents.gello_agent import GelloAgent  # noqa: E402
+from gello.comm.zmq_core.robot_node import ZMQClientRobot  # noqa: E402
 
 
 @dataclass

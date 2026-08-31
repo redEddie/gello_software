@@ -3,8 +3,16 @@ from multiprocessing import Process
 
 import tyro
 
-from gello.cameras.realsense_camera import RealSenseCamera, get_device_ids
-from gello.comm.zmq_core.camera_node import ZMQServerCamera
+import sys
+from pathlib import Path
+
+# 이 스크립트가 속한 체크아웃의 gello 를 쓴다. venv 에 설치된 editable
+# gello 는 다른 워크트리(deploy)를 가리킬 수 있고, 그러면 여기 코드를
+# 실행해도 라이브러리는 저쪽 것이 import 된다 (2026-08-31 실제 사고).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from gello.cameras.realsense_camera import RealSenseCamera, get_device_ids  # noqa: E402
+from gello.comm.zmq_core.camera_node import ZMQServerCamera  # noqa: E402
 
 
 @dataclass

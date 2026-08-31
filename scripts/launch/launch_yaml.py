@@ -10,7 +10,14 @@ import tyro
 import zmq.error
 from omegaconf import OmegaConf
 
-from gello.utils.launch_utils import instantiate_from_dict
+import sys
+
+# 이 스크립트가 속한 체크아웃의 gello 를 쓴다. venv 에 설치된 editable
+# gello 는 다른 워크트리(deploy)를 가리킬 수 있고, 그러면 여기 코드를
+# 실행해도 라이브러리는 저쪽 것이 import 된다 (2026-08-31 실제 사고).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from gello.utils.launch_utils import instantiate_from_dict  # noqa: E402
 
 # Global variables for cleanup
 active_threads = []

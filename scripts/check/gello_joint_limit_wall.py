@@ -19,10 +19,17 @@ from typing import Optional
 import numpy as np
 import tyro
 
-from gello.agents.gello_agent import PORT_CONFIG_MAP
-from gello.hw.dynamixel.driver import DynamixelDriver
-from gello.robots.franka_fr3 import GRIPPER_CLOSE_AT
-from gello.robots.joint_limit_wall import JointLimitWall
+import sys
+from pathlib import Path
+
+# 이 스크립트가 속한 체크아웃의 gello 를 쓴다 -- venv 의 editable gello 는
+# 다른 워크트리를 가리킬 수 있다 (2026-08-31 실제 사고).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from gello.agents.gello_agent import PORT_CONFIG_MAP  # noqa: E402
+from gello.hw.dynamixel.driver import DynamixelDriver  # noqa: E402
+from gello.robots.franka_fr3 import GRIPPER_CLOSE_AT  # noqa: E402
+from gello.robots.joint_limit_wall import JointLimitWall  # noqa: E402
 
 
 @dataclass
