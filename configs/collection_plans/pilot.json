@@ -482,6 +482,151 @@
           "target": 10
         }
       ]
+    },
+    {
+      "scene_id": "S012",
+      "slots": [
+        {
+          "instruction_id": "I000",
+          "instruction": "close the top drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I001",
+          "instruction": "open the top drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I002",
+          "instruction": "pick up the gray small bowl and place it on top of the drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I003",
+          "instruction": "pick up the pink small bowl and place it on top of the drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I004",
+          "instruction": "drag the gray small bowl next to the pink small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I005",
+          "instruction": "drag the pink small bowl next to the gray small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I006",
+          "instruction": "pick up the gray small bowl and place it next to the pink small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I007",
+          "instruction": "pick up the pink small bowl and place it next to the gray small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I008",
+          "instruction": "pick up the gray small bowl and place it inside the pink small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I009",
+          "instruction": "pick up the pink small bowl and place it inside the gray small bowl",
+          "target": 10
+        }
+      ]
+    },
+    {
+      "scene_id": "S013",
+      "slots": [
+        {
+          "instruction_id": "I000",
+          "instruction": "close the top drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I001",
+          "instruction": "open the top drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I002",
+          "instruction": "pick up the green small bowl and place it on top of the drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I003",
+          "instruction": "pick up the pink small bowl and place it on top of the drawer",
+          "target": 10
+        },
+        {
+          "instruction_id": "I006",
+          "instruction": "pick up the green small bowl and place it inside the pink small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I007",
+          "instruction": "pick up the pink small bowl and place it inside the green small bowl",
+          "target": 10
+        }
+      ]
+    },
+    {
+      "scene_id": "S014",
+      "slots": [
+        {
+          "instruction_id": "I000",
+          "instruction": "pick up the gray small bowl and place it next to the green small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I001",
+          "instruction": "pick up the gray small bowl and place it next to the wooden tray",
+          "target": 10
+        },
+        {
+          "instruction_id": "I002",
+          "instruction": "pick up the green small bowl and place it next to the gray small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I003",
+          "instruction": "pick up the green small bowl and place it next to the wooden tray",
+          "target": 10
+        },
+        {
+          "instruction_id": "I004",
+          "instruction": "pick up the gray small bowl and place it inside the green small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I005",
+          "instruction": "pick up the green small bowl and place it inside the gray small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I006",
+          "instruction": "drag the gray small bowl next to the green small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I007",
+          "instruction": "drag the gray small bowl next to the wooden tray",
+          "target": 10
+        },
+        {
+          "instruction_id": "I008",
+          "instruction": "drag the green small bowl next to the gray small bowl",
+          "target": 10
+        },
+        {
+          "instruction_id": "I009",
+          "instruction": "drag the green small bowl next to the wooden tray",
+          "target": 10
+        }
+      ]
     }
   ]
 }
