@@ -37,7 +37,7 @@ Scene × Instruction 조합(slot)과 목표 에피소드 수를 GUI 에 주입�
   파생한다 (GUI 의 자동 배정이 문장을 보고 ID 를 채우므로 손으로 맞출
   필요 없음).
 - `collected` 는 계획 파일에 넣지 않는다. 항상 scene 파일을 읽어 계산한다
-  (`gello.scene_format.count_by_slot`) — 계획 파일에 넣는 순간 두 개의 진실이
+  (`gello.scene.scene_format.count_by_slot`) — 계획 파일에 넣는 순간 두 개의 진실이
   생긴다.
 - `target` 은 세션 안에서는 제약처럼 다룬다 — 채우지 못한 채 책상을 치우는
   것이 재수집의 가장 흔한 시작이다 (§6).

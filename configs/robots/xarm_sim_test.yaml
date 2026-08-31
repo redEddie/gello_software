@@ -1,5 +1,5 @@
 robot:
-  _target_: gello.robots.sim_robot.MujocoRobotServer
+  _target_: gello.sim.sim_robot.MujocoRobotServer
   xml_path: "third_party/mujoco_menagerie/ufactory_xarm7/xarm7.xml"
   gripper_xml_path: null
   host: "127.0.0.1"

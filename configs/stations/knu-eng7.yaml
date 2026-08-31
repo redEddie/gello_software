@@ -81,7 +81,7 @@ recording:
 # 지금 값이 궁금하면 언제든 실측할 수 있다:
 #
 #   Franka        : Desk 웹 UI > Dashboard
-#   카메라/링크    : python scripts/check_cameras.py
+#   카메라/링크    : python scripts/check/check_cameras.py
 #   파이썬 패키지  : pip show pylibfranka / pyrealsense2
 #
 # 기록 시점 2026-08-07.

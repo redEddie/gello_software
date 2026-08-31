@@ -6,7 +6,7 @@ import mujoco.viewer
 
 
 def main():
-    _PROJECT_ROOT: Path = Path(__file__).parent.parent
+    _PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
     _MENAGERIE_ROOT: Path = _PROJECT_ROOT / "third_party" / "mujoco_menagerie"
     xml = _MENAGERIE_ROOT / "franka_emika_panda" / "panda.xml"
 

@@ -65,7 +65,7 @@ def launch_robot_server(args: Args):
     port = args.robot_port
     if args.robot == "sim_ur":
         MENAGERIE_ROOT: Path = (
-            Path(__file__).parent.parent / "third_party" / "mujoco_menagerie"
+            Path(__file__).resolve().parents[2] / "third_party" / "mujoco_menagerie"
         )
         xml = MENAGERIE_ROOT / "universal_robots_ur5e" / "ur5e.xml"
         gripper_xml = MENAGERIE_ROOT / "robotiq_2f85" / "2f85.xml"
@@ -77,7 +77,7 @@ def launch_robot_server(args: Args):
         server.serve()
     elif args.robot == "sim_yam":
         MENAGERIE_ROOT: Path = (
-            Path(__file__).parent.parent / "third_party" / "mujoco_menagerie"
+            Path(__file__).resolve().parents[2] / "third_party" / "mujoco_menagerie"
         )
         xml = MENAGERIE_ROOT / "i2rt_yam" / "yam.xml"
         from gello.sim.sim_robot import MujocoRobotServer
@@ -90,7 +90,7 @@ def launch_robot_server(args: Args):
         from gello.sim.sim_robot import MujocoRobotServer
 
         MENAGERIE_ROOT: Path = (
-            Path(__file__).parent.parent / "third_party" / "mujoco_menagerie"
+            Path(__file__).resolve().parents[2] / "third_party" / "mujoco_menagerie"
         )
         xml = MENAGERIE_ROOT / "franka_fr3" / "fr3.xml"
         gripper_xml = MENAGERIE_ROOT / "franka_emika_panda" / "hand.xml"
@@ -109,7 +109,7 @@ def launch_robot_server(args: Args):
         from gello.sim.sim_robot import MujocoRobotServer
 
         MENAGERIE_ROOT: Path = (
-            Path(__file__).parent.parent / "third_party" / "mujoco_menagerie"
+            Path(__file__).resolve().parents[2] / "third_party" / "mujoco_menagerie"
         )
         xml = MENAGERIE_ROOT / "franka_emika_panda" / "panda.xml"
         gripper_xml = None
@@ -121,7 +121,7 @@ def launch_robot_server(args: Args):
         from gello.sim.sim_robot import MujocoRobotServer
 
         MENAGERIE_ROOT: Path = (
-            Path(__file__).parent.parent / "third_party" / "mujoco_menagerie"
+            Path(__file__).resolve().parents[2] / "third_party" / "mujoco_menagerie"
         )
         xml = MENAGERIE_ROOT / "ufactory_xarm7" / "xarm7.xml"
         gripper_xml = None

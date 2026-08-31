@@ -23,10 +23,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 @dataclass
 class Args:
     output_path: Optional[str] = None
-    """Output path for the generated YAML config. If not provided, will use configs/yam_auto_generated.yaml"""
+    """Output path for the generated YAML config. If not provided, will use configs/robots/yam_auto_generated.yaml"""
 
     sim_output_path: Optional[str] = None
-    """Output path for the simulation YAML config. If not provided, will use configs/yam_auto_generated_sim.yaml"""
+    """Output path for the simulation YAML config. If not provided, will use configs/robots/yam_auto_generated_sim.yaml"""
 
     port: Optional[str] = None
     """The port that GELLO is connected to. If not provided, will auto-detect."""
@@ -238,7 +238,7 @@ def main(args: Args) -> None:
     # Step 4: Load template configs and update with offsets
     print("Loading template configurations and updating with detected offsets...")
 
-    config_dir = Path(__file__).parent.parent / "configs"
+    config_dir = Path(__file__).resolve().parents[2] / "configs" / "robots"
     hardware_template_path = config_dir / "templates/yam_template.yaml"
     sim_template_path = config_dir / "templates/yam_sim_template.yaml"
 

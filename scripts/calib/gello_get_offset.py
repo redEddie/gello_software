@@ -11,7 +11,7 @@ from gello.hw.dynamixel.driver import DynamixelDriver
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-MENAGERIE_ROOT: Path = Path(__file__).parent / "third_party" / "mujoco_menagerie"
+MENAGERIE_ROOT: Path = Path(__file__).resolve().parents[2] / "third_party" / "mujoco_menagerie"
 
 
 @dataclass

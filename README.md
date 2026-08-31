@@ -272,7 +272,7 @@ Add the generated joint offsets to `gello/agents/gello_agent.py` in the `PORT_CO
 1. Copy an existing config from `configs/` as a template (e.g., `yam_passive.yaml`).
 2. Modify the robot `_target_` and parameters for your setup:
    - For hardware: `gello.robots.ur.URRobot`, `gello.robots.panda.PandaRobot`, etc.
-   - For simulation: `gello.robots.sim_robot.MujocoRobotServer`
+   - For simulation: `gello.sim.sim_robot.MujocoRobotServer`
 3. Update the agent configuration with your GELLO device settings:
    - `port`: Your U2D2 device path
    - `joint_offsets`: From the offset detection script
