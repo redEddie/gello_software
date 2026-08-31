@@ -73,14 +73,16 @@ def _selftest() -> None:
         c = generate_candidate(props, rng)
         c.validate(known_prop_ids=ids)
         cats = {props[o].category for o in c.objects}
-        # pair_if_present(2026-08-24): 등장 category(서랍 제외)는 2개 이상,
-        # pickable(cup/small_bowl) 최소 한 종류
+        # pair_if_present(2026-08-24): 등장 category(단일 개체 제외)는 2개
+        # 이상, pickable 최소 한 종류 -- 목록은 문법이 정본 (하드코딩 금지).
         from collections import Counter
+
+        from gello.instruction_grammar import PICKABLE_CATS
         cnt = Counter(props[o].category for o in c.objects)
-        assert any(k in cnt for k in ("cup", "small_bowl", "cutlery"))
-        # drawer/tray 는 단일 개체 category 라 짝 규칙에서 제외
+        assert any(k in cnt for k in PICKABLE_CATS)
+        # drawer/tray/cutlery(색 없는 단일 번들)는 짝 규칙에서 제외
         assert all(v >= 2 for k, v in cnt.items()
-                   if k not in ("drawer", "tray")), cnt
+                   if k not in ("drawer", "tray", "cutlery")), cnt
         assert 2 <= len(c.objects) <= 5
     print("2 통과: 후보 50개 제약+validate 통과")
 

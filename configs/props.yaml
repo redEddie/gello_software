@@ -12,7 +12,7 @@
 #
 # ID 형식: OBJ-<종류>-<색>-<번호>
 #   작은 그릇과 큰 멜라민 그릇은 색이 겹치므로(yellow/white/blue) 종류 토큰으로
-#   구분한다: BOWLS = small bowl, BOWLL = large (melamine) bowl.
+#   구분한다: BOWLS = small 12cm bowl, BOWLL = large 20.5cm bowl, BOWLM = 15cm bowl.
 
 version: 1
 
@@ -22,6 +22,8 @@ props:
   - {id: OBJ-CUP-WHT-02, category: cup, color: white, material: plastic}
   - {id: OBJ-CUP-BLU-01, category: cup, color: blue, material: plastic}
   - {id: OBJ-CUP-BLU-02, category: cup, color: blue, material: plastic}
+  - {id: OBJ-CUP-RED-01, category: cup, color: red, material: plastic}
+  - {id: OBJ-CUP-RED-02, category: cup, color: red, material: plastic}
 
   # 종이컵 -- 등록만 했다가 한 번도 안 쓰고 뺐다 (2026-08-18).
   # retired 는 "데이터에 한 번이라도 쓰인 ID" 에만 필요하다(기존 metadata 해석용).
@@ -37,10 +39,17 @@ props:
   - {id: OBJ-BOWLS-YEL-01, category: small_bowl, color: yellow, material: plastic}
   - {id: OBJ-BOWLS-GRN-01, category: small_bowl, color: green, material: plastic}
 
-  # 큰 그릇 (멜라민) 3색 -- 크기 variation 용
+  # 큰 그릇 (멜라민) 4색 -- 크기 variation 용
+  # cotton-candy melamine bowl 20.5cm ("코튼캔디멜라민볼 20.5cm")
   - {id: OBJ-BOWLL-YEL-01, category: large_bowl, color: yellow, material: melamine}
   - {id: OBJ-BOWLL-WHT-01, category: large_bowl, color: white, material: melamine}
   - {id: OBJ-BOWLL-BLU-01, category: large_bowl, color: blue, material: melamine}
+  - {id: OBJ-BOWLL-GRN-01, category: large_bowl, color: green, material: melamine}  # TH melamine salad bowl 20.5cm
+
+  # 15cm melamine bowls
+  - {id: OBJ-BOWLM-JPN-01, category: bowl, color: blue japanese, material: melamine}  # Japanese wave-pattern melamine bowl, normal size
+  - {id: OBJ-BOWLM-PNKSTR-01, category: bowl, color: pink striped, material: melamine}  # pink stripe melamine bowl 15cm; identical pair -- only one may appear in a scene, the other is a spare
+  - {id: OBJ-BOWLM-PNKSTR-02, category: bowl, color: pink striped, material: melamine}  # spare for OBJ-BOWLM-PNKSTR-01
 
   # 미니 3단 서랍장 -- articulated. top/middle/bottom 이 모두 실재.
   # LIBERO 의 cabinet 어휘를 가져오지 않는다 (§5): 이건 탁자 위 소형 서랍장이다.
@@ -52,27 +61,24 @@ props:
   # color 는 추천기 색 거리용 지배색만 적는다.
   - {id: OBJ-TRAY-01, category: tray, color: brown, material: wood}
 
-  # 커트러리 (2026-08-27 사용자 확정): 숟가락/포크/나이프를 category 'cutlery'
-  # 한 묶음으로 취급하고 문장에서는 색으로만 지칭한다 ('the pink cutlery').
-  # ID 는 실물 추적(바닥 라벨)을 위해 종류를 남긴다. no_lookalike_pair 가
-  # (category,color) 기준이므로 같은 색 커트러리 두 개(핑크 숟가락+핑크
-  # 포크)는 한 씬에 같이 못 선다 -- 묶음 취급의 자연스러운 귀결.
-  # 색은 작은 그릇 6색과 의도적으로 동일 (색-종류 결합 편향 깨기).
-  - {id: OBJ-SPOON-WHT-01, category: cutlery, color: white, material: plastic}
-  - {id: OBJ-SPOON-GRY-01, category: cutlery, color: gray, material: plastic}
-  - {id: OBJ-SPOON-PNK-01, category: cutlery, color: pink, material: plastic}
-  - {id: OBJ-SPOON-YEL-01, category: cutlery, color: yellow, material: plastic}
-  - {id: OBJ-SPOON-GRN-01, category: cutlery, color: green, material: plastic}
-  - {id: OBJ-SPOON-BLU-01, category: cutlery, color: blue, material: plastic}
-  - {id: OBJ-FORK-WHT-01, category: cutlery, color: white, material: plastic}
-  - {id: OBJ-FORK-GRY-01, category: cutlery, color: gray, material: plastic}
-  - {id: OBJ-FORK-PNK-01, category: cutlery, color: pink, material: plastic}
-  - {id: OBJ-FORK-YEL-01, category: cutlery, color: yellow, material: plastic}
-  - {id: OBJ-FORK-GRN-01, category: cutlery, color: green, material: plastic}
-  - {id: OBJ-FORK-BLU-01, category: cutlery, color: blue, material: plastic}
-  - {id: OBJ-KNIFE-WHT-01, category: cutlery, color: white, material: plastic}
-  - {id: OBJ-KNIFE-GRY-01, category: cutlery, color: gray, material: plastic}
-  - {id: OBJ-KNIFE-PNK-01, category: cutlery, color: pink, material: plastic}
-  - {id: OBJ-KNIFE-YEL-01, category: cutlery, color: yellow, material: plastic}
-  - {id: OBJ-KNIFE-GRN-01, category: cutlery, color: green, material: plastic}
-  - {id: OBJ-KNIFE-BLU-01, category: cutlery, color: blue, material: plastic}
+  # Cutlery bundle (2026-08-31): the 18 individual pieces below are retired and
+  # replaced by one mixed-color set. Reference without color as "the cutlery".
+  - {id: OBJ-CUTLERY-SET-01, category: cutlery, color: mixed, material: plastic}
+  - {id: OBJ-SPOON-WHT-01, category: cutlery, color: white, material: plastic, retired: true}
+  - {id: OBJ-SPOON-GRY-01, category: cutlery, color: gray, material: plastic, retired: true}
+  - {id: OBJ-SPOON-PNK-01, category: cutlery, color: pink, material: plastic, retired: true}
+  - {id: OBJ-SPOON-YEL-01, category: cutlery, color: yellow, material: plastic, retired: true}
+  - {id: OBJ-SPOON-GRN-01, category: cutlery, color: green, material: plastic, retired: true}
+  - {id: OBJ-SPOON-BLU-01, category: cutlery, color: blue, material: plastic, retired: true}
+  - {id: OBJ-FORK-WHT-01, category: cutlery, color: white, material: plastic, retired: true}
+  - {id: OBJ-FORK-GRY-01, category: cutlery, color: gray, material: plastic, retired: true}
+  - {id: OBJ-FORK-PNK-01, category: cutlery, color: pink, material: plastic, retired: true}
+  - {id: OBJ-FORK-YEL-01, category: cutlery, color: yellow, material: plastic, retired: true}
+  - {id: OBJ-FORK-GRN-01, category: cutlery, color: green, material: plastic, retired: true}
+  - {id: OBJ-FORK-BLU-01, category: cutlery, color: blue, material: plastic, retired: true}
+  - {id: OBJ-KNIFE-WHT-01, category: cutlery, color: white, material: plastic, retired: true}
+  - {id: OBJ-KNIFE-GRY-01, category: cutlery, color: gray, material: plastic, retired: true}
+  - {id: OBJ-KNIFE-PNK-01, category: cutlery, color: pink, material: plastic, retired: true}
+  - {id: OBJ-KNIFE-YEL-01, category: cutlery, color: yellow, material: plastic, retired: true}
+  - {id: OBJ-KNIFE-GRN-01, category: cutlery, color: green, material: plastic, retired: true}
+  - {id: OBJ-KNIFE-BLU-01, category: cutlery, color: blue, material: plastic, retired: true}
