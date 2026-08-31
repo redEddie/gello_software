@@ -33,10 +33,14 @@ from gello.agents.lerobot_plugin import (
 )
 from gello.data.libero_format import LiberoTaskWriter, NullTaskWriter
 from gello.robots.franka_fr3 import FR3_RESET_POSES
+from gello.robots.joint_limit_wall import MATCH_GATE_RAD
 from gello.scene.scene_format import QUALITY_FAILED, QUALITY_SUCCESS, SceneMetadata, SceneWriter
 from gello.core.station import load_station
 
-GATE_RAD = 0.5  # run_env.py / gello_match_pose.py's start-gate threshold
+#: 자세 매칭 게이지의 초록/빨강 임계. 정본은 리더 wall 이다 -- 게이지가
+#: 초록으로 보이는 것과 모터가 실제로 당기기 시작하는 것이 같은 숫자여야
+#: 하기 때문이다 (issue #37A). 여기서 재정의하면 둘이 어긋난다.
+GATE_RAD = MATCH_GATE_RAD
 # rad/tick @ 20Hz. The FR3 driver's reference filter saturates at 1.0 rad/s
 # regardless, so this only has to be large enough not to be the binding
 # constraint -- 0.10 lets the filter reach ~0.91 rad/s (0.05 gave ~0.80).
@@ -947,11 +951,34 @@ class CollectionWorker(QThread):
             err = status["error"]
             done = bool(status["done"])
             self.pose_match_status.emit(float(err) if err is not None else 0.0, done)
+            if status.get("blocked"):
+                # wall 이 과부하 보호로 정렬을 포기했다 (어느 조인트가 몇 초째
+                # 캡에 붙어 있었다 = 걸렸거나 붙잡혀 있다). 여기서 다시
+                # 요청해봐야 같은 결과라, 사람이 원인을 치우고 다시 누르는
+                # 것이 유일한 재시도 경로다 (issue #37A).
+                self._teleop.cancel_pose_match()
+                self.log_message.emit(
+                    "[자동정렬] 리더가 걸린 것 같아 과부하 방지로 중단했습니다 "
+                    "-- 걸린 곳을 풀고 다시 시도하세요"
+                )
+                return "ok"
             if done:
                 self.log_message.emit("[자동정렬] 완료 -- 텔레옵 시작 전까지 자세를 유지합니다")
                 return "ok"
             if time.monotonic() > deadline:
-                self.log_message.emit(f"[자동정렬] {timeout:.0f}s 시간 초과 -- 수동으로 조정하세요")
+                if not status.get("engaged"):
+                    # 게이트가 한 번도 안 걸렸다: 게이지는 초록인데(여기까지
+                    # 왔으니) wall 기준으로는 아직 목표에서 먼 경우 -- 게이지는
+                    # 리더-팔로워 차이, wall 은 리더-리셋자세 차이라 팔로워가
+                    # 리셋 자세에 정확히 있지 않으면 조금 어긋난다.
+                    self.log_message.emit(
+                        f"[자동정렬] 리더가 정렬 범위({GATE_RAD} rad) 밖이라 "
+                        "모터를 걸지 않았습니다 -- 손으로 조금 더 가까이 "
+                        "가져다 놓고 다시 시도하세요"
+                    )
+                else:
+                    self.log_message.emit(
+                        f"[자동정렬] {timeout:.0f}s 시간 초과 -- 수동으로 조정하세요")
                 self.pose_match_status.emit(float(err) if err is not None else 0.0, True)
                 self._teleop.cancel_pose_match()
                 return "ok"

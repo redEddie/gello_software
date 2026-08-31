@@ -26,6 +26,19 @@ The same thread also drives an optional "pose-match assist" (see
 ``set_match_target``): a two-sided current-mode spring-damper that pulls the
 arm servos onto an arbitrary target pose, e.g. the follower's reset pose, so
 the operator doesn't have to nudge the leader there by hand joint-by-joint.
+The pull is *gated* (2026-08-31, issue #37A): a target alone never energizes
+anything. Current flows only once the leader is already within
+``match_gate_rad`` of it -- the same threshold the collector's pose-match
+gauge paints green, so "it pulls when the gauge is green" is literally one
+number (``MATCH_GATE_RAD``) shared by the display and the motors. Outside the
+gate the arm servos stay torque-off, i.e. free to be carried there by hand,
+and engage by themselves on arrival. The gate lives here rather than in the
+callers because the rule it enforces is about the hardware: put the leader
+down anywhere you like and nothing over-torques. A second guard covers the
+case the gate cannot -- a joint stuck at its current cap for
+``match_stall_s`` seconds (jammed, or a hand holding it) means the pull is
+losing, so the assist gives up and latches off until the caller sets a
+target again; servos are more expensive than one alignment.
 It lives here for the same reason the limit spring does -- ``set_current``
 sync-writes the whole servo vector, so a second control loop calling it
 concurrently would fight this one over the bus. While a match target is set
@@ -90,6 +103,23 @@ from gello.hw.dynamixel.driver import (
 ADDR_HW_ERROR = 70        # Hardware Error Status (1 B, bitfield)
 ADDR_INPUT_VOLTAGE = 144  # Present Input Voltage (2 B, units of 0.1 V)
 ADDR_TEMPERATURE = 146    # Present Temperature (1 B, deg C)
+
+#: 자세 정렬을 걸기 시작하는 최대 조인트 오차 (rad) -- 이 파일이 정본이다.
+#: 수집 GUI 의 "자세 매칭" 게이지가 초록/빨강을 가르는 값과 같은 상수여야
+#: 한다 (gello.gui.libero_gui_worker.GATE_RAD 가 이걸 가져다 쓴다): 게이지가
+#: 초록일 때만 모터가 당긴다는 규칙이 눈에 보이는 것과 실제 동작에서 같은
+#: 숫자로 성립해야 하기 때문이다 (GitHub issue #37A).
+MATCH_GATE_RAD = 0.5
+
+
+def _engage_gate(engaged: bool, err: float, gate: float, release: float) -> bool:
+    """정렬 engage 여부 (히스테리시스). 순수 함수 -- selftest 에서 검증.
+
+    아직 안 걸렸으면 ``err <= gate`` 여야 걸리고, 한 번 걸린 뒤에는
+    ``gate + release`` 를 넘어야 풀린다. 히스테리시스가 없으면 게이트
+    경계에서 전류가 켜졌다 꺼졌다 하며 리더가 덜덜 떨린다.
+    """
+    return err <= (gate + release) if engaged else err <= gate
 
 
 def _wrap_pi(d: np.ndarray) -> np.ndarray:
@@ -242,6 +272,10 @@ class JointLimitWall:
         match_stiff_tol: float = 0.10,
         match_int_gain: float = 1000.0,
         match_int_max=0.0,  # scalar or per-arm-joint sequence (mA); 0 = off
+        match_gate_rad: float = MATCH_GATE_RAD,
+        match_gate_release: float = 0.15,
+        match_stall_frac: float = 0.9,
+        match_stall_s: float = 4.0,  # 0 = 감시 끔
         budget_floor=0.0,  # scalar or per-arm-joint sequence (mA)
         gravity_gains: Optional[np.ndarray] = None,
         gravity_offsets: Optional[np.ndarray] = None,
@@ -372,6 +406,27 @@ class JointLimitWall:
         self._match_done = False
         self._match_hold_start: Optional[float] = None
 
+        # Engage 게이트 (2026-08-31, issue #37A). 정렬 목표가 설정돼 있어도
+        # 리더가 목표 근처(게이지가 초록)에 올 때까지는 전류를 한 톨도 걸지
+        # 않는다. 왜 호출자가 아니라 여기냐면: 규칙이 "리더암을 어디에
+        # 놓아두든 과토크가 걸리지 않는다" 이기 때문이다 -- GUI 든 정렬
+        # 스크립트든 앞으로 생길 무엇이든, set_match_target 을 부르는 모든
+        # 경로가 같은 보호를 받아야 한다. 게이트 밖에서는 팔이 토크 오프라
+        # 사람이 손으로 자유롭게 가져다 놓을 수 있고, 그 순간 자동으로 걸린다.
+        self._match_gate = float(match_gate_rad)
+        self._match_gate_release = float(match_gate_release)
+        self._match_engaged = False
+        # 포화 감시. J2/J4 는 kp*max_lead = 2800*0.35 = 980 mA 라, 게이트
+        # 안(0.5 rad)에서도 사실상 캡(1000 mA)으로 당긴다 -- 정상 정렬은
+        # 1~2초면 끝나므로 그 전류가 몇 초씩 이어진다는 건 리더가 뭔가에
+        # 걸렸거나 사람이 붙잡고 있다는 뜻이고, 그게 곧 과부하(0x20)다.
+        # 그때는 싸우지 않고 정렬을 포기한다(래치) -- 서보를 살리는 쪽이
+        # 정렬 한 번보다 싸다. 래치는 set_match_target 재호출로만 풀린다.
+        self._match_stall_frac = float(match_stall_frac)
+        self._match_stall_s = float(match_stall_s)
+        self._match_stall_since: Optional[float] = None
+        self._match_blocked = False
+
         # Set/read like _match_target -- plain attribute swaps, no lock.
         self._gravity_gains = (
             np.zeros(self._n_arm) if gravity_gains is None
@@ -429,6 +484,13 @@ class JointLimitWall:
         self._match_target = None if target is None else np.array(target, dtype=float)
         self._match_done = False
         self._match_hold_start = None
+        # 새 목표는 게이트도 처음부터 -- 이전 목표에서 걸려 있었다고 해서
+        # 새 목표(다른 자세, 다시 멀 수 있다)를 곧바로 당기면 안 된다.
+        # 포화 래치도 여기서만 풀린다: 사람이 상황을 정리하고 다시 요청한
+        # 것이 재시도의 유일한 신호다.
+        self._match_engaged = False
+        self._match_stall_since = None
+        self._match_blocked = False
         # A fresh target means a fresh pose: the learned holding current of
         # the previous pose is wrong for it, so the integrator restarts.
         self._match_int = np.zeros(self._n_arm)
@@ -512,6 +574,24 @@ class JointLimitWall:
                 gravity_gains = self._gravity_gains  # snapshot -- see set_gravity_comp
                 gravity_active = bool(np.any(gravity_gains != 0.0))
 
+                # Engage 게이트 (issue #37A): 목표가 있어도 리더가 목표
+                # 근처(GUI 자세 매칭 게이지가 초록)에 올 때까지는 걸지
+                # 않는다. 아래 arming 이 이걸 보고 토크 자체를 안 켜므로,
+                # 게이트 밖 리더는 그냥 자유롭게 움직이는 팔이다.
+                match_err = None
+                if match_target is not None:
+                    match_err = float(
+                        np.abs(_wrap_pi(match_target - q)).max()
+                    )
+                    self._match_engaged = (
+                        False if self._match_blocked else
+                        _engage_gate(self._match_engaged, match_err,
+                                     self._match_gate, self._match_gate_release)
+                    )
+                else:
+                    self._match_engaged = False
+                match_active = match_target is not None and self._match_engaged
+
                 # Arm torque only near a limit: current-control-at-zero drags
                 # more than torque-off, so the rest of the workspace is left
                 # torque-off and feels exactly as it does without the wall.
@@ -522,7 +602,7 @@ class JointLimitWall:
                 # be held" are typically nowhere near one), so the
                 # limit-only rule would otherwise rarely or never arm.
                 slack = float(np.minimum(self._hi - q, q - self._lo).min())
-                want = (match_target is not None) or gravity_active or slack < (
+                want = match_active or gravity_active or slack < (
                     self._arm_margin + self._arm_hyst if self._armed
                     else self._arm_margin
                 )
@@ -547,8 +627,7 @@ class JointLimitWall:
                 # above. "Done" requires the error AND speed to stay under
                 # tolerance for match_hold_s continuously, so a fast pass
                 # through the target mid-swing doesn't register as arrival.
-                match_err = None
-                if match_target is not None:
+                if match_active:
                     # Moving setpoint, seeded at the current pose: the spring
                     # only ever sees a <= match_rate*dt error, so the leader
                     # eases onto the target instead of being slammed at it.
@@ -564,7 +643,6 @@ class JointLimitWall:
                     # was already next to, which is what "the arm ties itself
                     # in a knot" actually was.
                     goal_err = _wrap_pi(match_target - q)
-                    match_err = float(np.abs(goal_err).max())
                     lead = self._match_rate * self._dt
                     self._match_setpoint = self._match_setpoint + np.clip(
                         _wrap_pi(match_target - self._match_setpoint), -lead, lead
@@ -600,6 +678,25 @@ class JointLimitWall:
                         -self._match_max_current, self._match_max_current,
                     )  # per-joint caps; np.clip broadcasts elementwise
                     cur = cur + cur_match
+                    # 포화 감시: 어느 조인트든 캡 근처를 stall_s 초 이상
+                    # 연속으로 요구하면 정렬을 포기한다. 정상 정렬은
+                    # match_rate(0.6 rad/s)로 게이트 폭(0.5 rad)을 1초 남짓에
+                    # 닫으므로, 몇 초씩 캡에 붙어 있다는 것은 리더가 걸렸거나
+                    # 사람이 붙잡고 있다는 뜻이고, 그대로 두면 0x20 이다.
+                    if self._match_stall_s > 0:
+                        sat = bool(np.any(
+                            np.abs(cur_match)
+                            >= self._match_stall_frac * self._match_max_current
+                        ))
+                        if not sat:
+                            self._match_stall_since = None
+                        elif self._match_stall_since is None:
+                            self._match_stall_since = t0
+                        elif t0 - self._match_stall_since >= self._match_stall_s:
+                            # 래치: set_match_target 재호출까지 다시 안 건다.
+                            self._match_blocked = True
+                            self._match_engaged = False
+                            self._match_stall_since = None
                     if match_err < self._match_tol and float(np.abs(dq).max()) < self._match_vel_tol:
                         if self._match_hold_start is None:
                             self._match_hold_start = t0
@@ -608,6 +705,10 @@ class JointLimitWall:
                     else:
                         self._match_hold_start = None
                 else:
+                    # 목표가 없거나(평시) 게이트 밖/래치 상태 -- 정렬 전류는
+                    # 0 이고, setpoint·적분기는 비워 둔다. 그래야 나중에
+                    # engage 되는 순간 "지금 있는 자리"에서 다시 시작한다
+                    # (묵은 setpoint 로 튀지 않는다).
                     self._match_done = False
                     self._match_hold_start = None
                     self._match_setpoint = None
@@ -702,6 +803,11 @@ class JointLimitWall:
                     "trigger": {"g": g, "cur": i_trig} if self._trigger else None,
                     "match_error": match_err,
                     "match_done": self._match_done,
+                    # issue #37A: 게이지가 초록인가(engaged), 과부하 보호로
+                    # 포기했는가(blocked), 그 판정에 쓴 임계값(gate).
+                    "match_engaged": self._match_engaged,
+                    "match_blocked": self._match_blocked,
+                    "match_gate": self._match_gate,
                     "match_int": self._match_int,
                     "dq": dq,
                     "tau_g": tau_g,
@@ -785,6 +891,21 @@ def selftest() -> None:
         acc = np.clip(acc + 1000.0 * err * (1.0 / 300.0), -int_max, int_max)
     assert acc[1] == 800.0 and acc[3] == 800.0
     assert all(acc[i] == 0.0 for i in (0, 2, 4, 5, 6))     # int_max=0 = off
+
+    # 6. engage 게이트 (issue #37A): 멀리 있으면 안 걸리고, 게이트 안에서
+    #    걸리고, 한 번 걸린 뒤에는 release 만큼 더 나가야 풀린다.
+    gate, rel = MATCH_GATE_RAD, 0.15
+    assert not _engage_gate(False, 1.2, gate, rel)          # 멀다 -> 안 건다
+    assert not _engage_gate(False, gate + 0.01, gate, rel)  # 경계 밖
+    assert _engage_gate(False, gate, gate, rel)             # 경계에서 건다
+    assert _engage_gate(False, 0.1, gate, rel)
+    assert _engage_gate(True, gate + 0.1, gate, rel)        # 히스테리시스 안
+    assert not _engage_gate(True, gate + rel + 0.01, gate, rel)   # 벗어나면 풀림
+    # 게이트 폭을 왕복해도 상태가 튀지 않는다 (덜덜 떨림 방지)
+    eng = False
+    for e in (1.0, 0.6, 0.5, 0.52, 0.6, 0.66, 0.9):
+        eng = _engage_gate(eng, e, gate, rel)
+    assert not eng                                          # 0.66 에서 풀린 뒤 유지
     print("joint_limit_wall selftest 통과")
 
 

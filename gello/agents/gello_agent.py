@@ -339,13 +339,23 @@ class GelloAgent(Agent):
         self._wall.set_match_target(np.asarray(target_q, dtype=float))
 
     def pose_match_status(self) -> Dict[str, Any]:
-        """``{"error": max abs rad or None, "done": bool}``. ``done`` is
-        always True (nothing to wait for) when there is no wall or no match
-        is in progress."""
+        """``{"error": max abs rad or None, "done", "engaged", "blocked"}``.
+
+        ``done`` is always True (nothing to wait for) when there is no wall
+        or no match is in progress. ``engaged`` says whether the pull is
+        actually energized -- the wall only engages inside its gate, so a
+        match can be "in progress" while the leader is still being carried
+        into range (issue #37A). ``blocked`` means the wall gave the pull up
+        to protect the servos (a joint sat at its current cap); it clears on
+        the next ``start_pose_match``.
+        """
         if self._wall is None:
-            return {"error": None, "done": True}
+            return {"error": None, "done": True,
+                    "engaged": False, "blocked": False}
         s = self._wall.status()
-        return {"error": s.get("match_error"), "done": bool(s.get("match_done"))}
+        return {"error": s.get("match_error"), "done": bool(s.get("match_done")),
+                "engaged": bool(s.get("match_engaged")),
+                "blocked": bool(s.get("match_blocked"))}
 
     def cancel_pose_match(self) -> None:
         """Release the match target early (abort/interrupt). No-op if there

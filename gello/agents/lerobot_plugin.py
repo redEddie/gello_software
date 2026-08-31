@@ -247,7 +247,7 @@ class GelloFR3Teleop(Teleoperator):
 
     def pose_match_status(self) -> dict[str, Any]:
         if self._agent is None:
-            return {"error": None, "done": True}
+            return {"error": None, "done": True, "engaged": False, "blocked": False}
         return self._agent.pose_match_status()
 
     def cancel_pose_match(self) -> None:
