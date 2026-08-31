@@ -26,19 +26,27 @@ The same thread also drives an optional "pose-match assist" (see
 ``set_match_target``): a two-sided current-mode spring-damper that pulls the
 arm servos onto an arbitrary target pose, e.g. the follower's reset pose, so
 the operator doesn't have to nudge the leader there by hand joint-by-joint.
-The pull is *gated* (2026-08-31, issue #37A): a target alone never energizes
-anything. Current flows only once the leader is already within
-``match_gate_rad`` of it -- the same threshold the collector's pose-match
-gauge paints green, so "it pulls when the gauge is green" is literally one
-number (``MATCH_GATE_RAD``) shared by the display and the motors. Outside the
-gate the arm servos stay torque-off, i.e. free to be carried there by hand,
-and engage by themselves on arrival. The gate lives here rather than in the
-callers because the rule it enforces is about the hardware: put the leader
-down anywhere you like and nothing over-torques. A second guard covers the
-case the gate cannot -- a joint stuck at its current cap for
-``match_stall_s`` seconds (jammed, or a hand holding it) means the pull is
-losing, so the assist gives up and latches off until the caller sets a
-target again; servos are more expensive than one alignment.
+The pull is shaped as an *attractive well* (2026-08-31, issue #37A) rather
+than a spring that grows without bound: each joint's match current is scaled
+by ``1 / (1 + (err/match_well_rad)^2)``, so the force peaks around
+``match_well_rad`` and then fades as ``1/err``. Close in it holds firmly;
+pull a joint well away and the motor lets go, by design. That is what makes
+the arm steerable by hand -- notably when unwinding a cable by turning a
+joint a full revolution, where a plain spring would fight the whole way and
+then drag the joint back the short way round, re-twisting what was just
+undone. The envelope is smooth everywhere (a rational function -- one divide,
+no exp, and no kink to jerk the motor), and it is per joint: the one being
+turned goes soft while the rest keep holding the arm up. Beyond
+``match_arm_rad`` the servos are cut to torque-off entirely, since current
+control at ~0 mA still drags more than no torque at all.
+
+The shaping lives here rather than in the callers because the rule it
+enforces is about the hardware: put the leader down anywhere you like and
+nothing over-torques. A second guard covers what the envelope cannot -- a
+joint stuck at its current cap for ``match_stall_s`` seconds (jammed, or a
+hand holding it near the target where the assist is at full strength) means
+the pull is losing, so the assist gives up and latches off until the caller
+sets a target again; servos are more expensive than one alignment.
 It lives here for the same reason the limit spring does -- ``set_current``
 sync-writes the whole servo vector, so a second control loop calling it
 concurrently would fight this one over the bus. While a match target is set
@@ -113,13 +121,36 @@ MATCH_GATE_RAD = 0.5
 
 
 def _engage_gate(engaged: bool, err: float, gate: float, release: float) -> bool:
-    """정렬 engage 여부 (히스테리시스). 순수 함수 -- selftest 에서 검증.
+    """토크를 켤지 말지 (히스테리시스). 순수 함수 -- selftest 에서 검증.
 
-    아직 안 걸렸으면 ``err <= gate`` 여야 걸리고, 한 번 걸린 뒤에는
-    ``gate + release`` 를 넘어야 풀린다. 히스테리시스가 없으면 게이트
-    경계에서 전류가 켜졌다 꺼졌다 하며 리더가 덜덜 떨린다.
+    아직 안 켰으면 ``err <= gate`` 여야 켜지고, 한 번 켠 뒤에는
+    ``gate + release`` 를 넘어야 꺼진다. 히스테리시스가 없으면 경계에서
+    토크가 켜졌다 꺼졌다 하며 딸깍거린다.
+
+    끄는 판정에만 쓴다 -- 얼마나 세게 당길지는 _well_assist 가 연속으로
+    정한다. 여기서 자르는 것은 "이 거리에선 어차피 무의미한 전류이니
+    차라리 팔을 완전히 자유롭게 두자" 는 결정이다.
     """
     return err <= (gate + release) if engaged else err <= gate
+
+
+def _well_assist(abs_err: np.ndarray, well: float) -> np.ndarray:
+    """조인트별 정렬 세기 0..1 -- 오차가 커질수록 힘이 부드럽게 풀린다.
+
+        a(x) = 1 / (1 + (x/well)^2)
+
+    유리 함수라 exp 없이 나눗셈 하나로 끝나고, 어디서나 미분 가능해서
+    (가우시안과 달리 꺾이는 지점이 없다) 모터가 덜컹거리지 않는다.
+    스프링 힘 ``kp*x`` 에 이걸 곱하면 ``kp*x/(1+(x/well)^2)`` 라는 우물이
+    되어 ``x = well`` 에서 힘이 최대가 되고 그 바깥으로는 ``1/x`` 로
+    잦아든다 -- 가까이서는 확실히 잡아 주고, 사람이 크게 끌면 힘이 스스로
+    빠져 손으로 이길 수 있다.
+
+    조인트마다 따로 계산하는 것이 중요하다: 케이블을 풀려고 한 관절만
+    한 바퀴 돌릴 때, 그 관절은 힘이 빠지고 나머지는 계속 자세를 지켜야
+    팔이 주저앉지 않는다.
+    """
+    return 1.0 / (1.0 + (np.asarray(abs_err, dtype=float) / well) ** 2)
 
 
 def _wrap_pi(d: np.ndarray) -> np.ndarray:
@@ -272,7 +303,8 @@ class JointLimitWall:
         match_stiff_tol: float = 0.10,
         match_int_gain: float = 1000.0,
         match_int_max=0.0,  # scalar or per-arm-joint sequence (mA); 0 = off
-        match_gate_rad: float = MATCH_GATE_RAD,
+        match_well_rad: float = MATCH_GATE_RAD / 2,
+        match_arm_rad: float = MATCH_GATE_RAD * 2,
         match_gate_release: float = 0.15,
         match_stall_frac: float = 0.9,
         match_stall_s: float = 4.0,  # 0 = 감시 끔
@@ -406,16 +438,28 @@ class JointLimitWall:
         self._match_done = False
         self._match_hold_start: Optional[float] = None
 
-        # Engage 게이트 (2026-08-31, issue #37A). 정렬 목표가 설정돼 있어도
-        # 리더가 목표 근처(게이지가 초록)에 올 때까지는 전류를 한 톨도 걸지
-        # 않는다. 왜 호출자가 아니라 여기냐면: 규칙이 "리더암을 어디에
-        # 놓아두든 과토크가 걸리지 않는다" 이기 때문이다 -- GUI 든 정렬
-        # 스크립트든 앞으로 생길 무엇이든, set_match_target 을 부르는 모든
-        # 경로가 같은 보호를 받아야 한다. 게이트 밖에서는 팔이 토크 오프라
-        # 사람이 손으로 자유롭게 가져다 놓을 수 있고, 그 순간 자동으로 걸린다.
-        self._match_gate = float(match_gate_rad)
+        # 힘 우물 (2026-08-31, issue #37A). 정렬 힘은 켜짐/꺼짐이 아니라
+        # 오차에 따라 연속으로 변한다 -- 목표 근처에서 가장 세고, 멀어질수록
+        # 스스로 풀린다 (_well_assist). 왜 호출자가 아니라 여기냐면: 규칙이
+        # "리더암을 어디에 놓아두든 과토크가 걸리지 않는다" 이기 때문이다 --
+        # set_match_target 을 부르는 모든 경로가 같은 보호를 받아야 한다.
+        #
+        # well 은 게이지 임계의 절반이 기본값이다: 게이지가 초록인 구간
+        # (<= MATCH_GATE_RAD)에서는 힘이 최대 근처라 손으로 밀면 적당히
+        # 버티고, 빨강으로 넘어가면 20% 아래로 떨어져 사람이 쉽게 이긴다.
+        # arm 반경(기본 게이지 임계의 2배) 밖에서는 아예 토크를 끊는다 --
+        # 그 거리의 전류는 어차피 무의미한데 전류제어 0 이 토크 오프보다
+        # 끌리기 때문이다.
+        self._match_well = float(match_well_rad)
+        self._match_arm_rad = float(match_arm_rad)
         self._match_gate_release = float(match_gate_release)
         self._match_engaged = False
+        # 토크는 조인트마다 따로 켠다 (set_torque_ids 가 부분집합을 받는다).
+        # 힘만 풀고 토크를 켜 둔 채로는 부족하다 -- 전류제어 0 도 토크 오프
+        # 보다 끌리기 때문에, 케이블을 풀려고 돌리는 그 관절은 아예 토크를
+        # 끊어야 정말로 자유롭다. 나머지 관절은 그대로 자세를 지킨다.
+        self._match_arm_mask = np.zeros(self._n_arm, dtype=bool)
+        self._armed_mask = np.zeros(self._n_arm, dtype=bool)
         # 포화 감시. J2/J4 는 kp*max_lead = 2800*0.35 = 980 mA 라, 게이트
         # 안(0.5 rad)에서도 사실상 캡(1000 mA)으로 당긴다 -- 정상 정렬은
         # 1~2초면 끝나므로 그 전류가 몇 초씩 이어진다는 건 리더가 뭔가에
@@ -574,22 +618,31 @@ class JointLimitWall:
                 gravity_gains = self._gravity_gains  # snapshot -- see set_gravity_comp
                 gravity_active = bool(np.any(gravity_gains != 0.0))
 
-                # Engage 게이트 (issue #37A): 목표가 있어도 리더가 목표
-                # 근처(GUI 자세 매칭 게이지가 초록)에 올 때까지는 걸지
-                # 않는다. 아래 arming 이 이걸 보고 토크 자체를 안 켜므로,
-                # 게이트 밖 리더는 그냥 자유롭게 움직이는 팔이다.
+                # 힘 우물 + 원거리 해제 (issue #37A). goal_err 은 여기서 한 번만
+                # 구해 아래 match 절이 그대로 쓴다 -- 우물 세기와 arming 판단이
+                # 같은 오차를 봐야 하기 때문이다.
+                goal_err = match_assist = None
                 match_err = None
                 if match_target is not None:
-                    match_err = float(
-                        np.abs(_wrap_pi(match_target - q)).max()
-                    )
-                    self._match_engaged = (
-                        False if self._match_blocked else
-                        _engage_gate(self._match_engaged, match_err,
-                                     self._match_gate, self._match_gate_release)
-                    )
+                    goal_err = _wrap_pi(match_target - q)
+                    abs_err = np.abs(goal_err)
+                    match_err = float(abs_err.max())
+                    match_assist = _well_assist(abs_err, self._match_well)
+                    # 조인트별 토크 on/off: arm 반경 밖 관절은 전류 0 이
+                    # 아니라 토크 자체를 끊는다 (전류제어 0 도 토크 오프보다
+                    # 끌린다 -- 위 참조). 히스테리시스는 관절마다 따로.
+                    if self._match_blocked:
+                        self._match_arm_mask = np.zeros(self._n_arm, dtype=bool)
+                    else:
+                        thr = np.where(
+                            self._match_arm_mask,
+                            self._match_arm_rad + self._match_gate_release,
+                            self._match_arm_rad,
+                        )
+                        self._match_arm_mask = abs_err <= thr
                 else:
-                    self._match_engaged = False
+                    self._match_arm_mask = np.zeros(self._n_arm, dtype=bool)
+                self._match_engaged = bool(self._match_arm_mask.any())
                 match_active = match_target is not None and self._match_engaged
 
                 # Arm torque only near a limit: current-control-at-zero drags
@@ -601,18 +654,34 @@ class JointLimitWall:
                 # near a limit (a reset pose / "anywhere the leader might
                 # be held" are typically nowhere near one), so the
                 # limit-only rule would otherwise rarely or never arm.
+                # 한계벽/중력보상은 예전 그대로 팔 전체 단위다 (한계 근처
+                # 판정은 최소 slack 하나로 내려 왔고, 그 튜닝을 건드리지
+                # 않는다). 정렬만 조인트별이다: 목표에서 먼 관절은 토크를
+                # 끊어 정말로 자유롭게 두고, 가까운 관절은 계속 잡아 준다.
                 slack = float(np.minimum(self._hi - q, q - self._lo).min())
-                want = match_active or gravity_active or slack < (
+                near_limit = slack < (
                     self._arm_margin + self._arm_hyst if self._armed
                     else self._arm_margin
                 )
-                if want != self._armed:
-                    if not want:
+                if near_limit or gravity_active:
+                    want_mask = np.ones(self._n_arm, dtype=bool)
+                else:
+                    want_mask = self._match_arm_mask.copy()
+                if not np.array_equal(want_mask, self._armed_mask):
+                    ids = list(self._driver._ids[: self._n_arm])
+                    off = [i for i, w, a in zip(ids, want_mask, self._armed_mask)
+                           if a and not w]
+                    on = [i for i, w, a in zip(ids, want_mask, self._armed_mask)
+                          if w and not a]
+                    if off:
+                        # 토크를 끊기 전에 지령을 0 으로 -- 나중에 다시 켤 때
+                        # 묵은 전류가 그대로 살아나지 않게 (원래 동작 유지).
                         self._driver.set_current([0.0] * self._n_ids)
-                    self._driver.set_torque_ids(
-                        self._driver._ids[: self._n_arm], want
-                    )
-                    self._armed = want
+                        self._driver.set_torque_ids(off, False)
+                    if on:
+                        self._driver.set_torque_ids(on, True)
+                    self._armed_mask = want_mask
+                self._armed = bool(want_mask.any())
 
                 # One-sided spring-damper: exactly zero inside the limits.
                 over_hi = q > self._hi
@@ -642,7 +711,6 @@ class JointLimitWall:
                     # leader then winds a whole extra turn to reach a pose it
                     # was already next to, which is what "the arm ties itself
                     # in a knot" actually was.
-                    goal_err = _wrap_pi(match_target - q)
                     lead = self._match_rate * self._dt
                     self._match_setpoint = self._match_setpoint + np.clip(
                         _wrap_pi(match_target - self._match_setpoint), -lead, lead
@@ -667,13 +735,19 @@ class JointLimitWall:
                         kp = self._match_kp
                     # Integrator charges on the TRUE goal error (not the
                     # setpoint's), so it keeps building while the setpoint
-                    # still walks; clamp is the anti-windup.
+                    # still walks; clamp is the anti-windup. 우물 세기를 충전
+                    # 속도에도 곱한다 -- 힘이 풀려 있는 먼 거리에서 적분기만
+                    # 가득 차 있다가, 사람이 팔을 되돌려 놓는 순간 그 값이
+                    # 통째로 튀어나오는 것을 막는다.
                     self._match_int = np.clip(
                         self._match_int
-                        + self._match_int_gain * goal_err * self._dt,
+                        + self._match_int_gain * goal_err * match_assist * self._dt,
                         -self._match_int_max, self._match_int_max,
                     )
-                    cur_match = np.clip(
+                    # 우물은 스프링·댐퍼·적분기 전체에 곱한다: 셋의 비율이
+                    # 유지되므로 감쇠비가 거리와 무관하게 그대로다 (스프링만
+                    # 줄이면 먼 거리에서 상대적으로 과감쇠가 된다).
+                    cur_match = match_assist * np.clip(
                         kp * terr - self._match_kd * dq + self._match_int,
                         -self._match_max_current, self._match_max_current,
                     )  # per-joint caps; np.clip broadcasts elementwise
@@ -773,7 +847,12 @@ class JointLimitWall:
                     # torque-off, so their zeros are inert register writes.
                     out = np.zeros(self._n_ids)
                     if self._armed:
-                        out[: self._n_arm] = cur * self._signs
+                        # 토크가 꺼진 조인트에는 0 을 쓴다 -- 어차피 무효한
+                        # 레지스터 쓰기지만, status 의 cur 과 실제 지령이
+                        # 어긋나지 않게 여기서 마스킹한다.
+                        out[: self._n_arm] = np.where(
+                            self._armed_mask, cur * self._signs, 0.0)
+                        cur = np.where(self._armed_mask, cur, 0.0)
                     if self._trigger:
                         out[self._n_arm] = i_trig * self._trig_open_dir
                     self._driver.set_current(out.tolist())
@@ -803,11 +882,13 @@ class JointLimitWall:
                     "trigger": {"g": g, "cur": i_trig} if self._trigger else None,
                     "match_error": match_err,
                     "match_done": self._match_done,
-                    # issue #37A: 게이지가 초록인가(engaged), 과부하 보호로
-                    # 포기했는가(blocked), 그 판정에 쓴 임계값(gate).
+                    # issue #37A: 토크가 켜져 있는가(engaged), 과부하 보호로
+                    # 포기했는가(blocked), 조인트별 정렬 세기 0..1(assist).
                     "match_engaged": self._match_engaged,
                     "match_blocked": self._match_blocked,
-                    "match_gate": self._match_gate,
+                    "match_assist": match_assist,
+                    "match_well": self._match_well,
+                    "armed_mask": self._armed_mask,
                     "match_int": self._match_int,
                     "dq": dq,
                     "tau_g": tau_g,
@@ -892,20 +973,34 @@ def selftest() -> None:
     assert acc[1] == 800.0 and acc[3] == 800.0
     assert all(acc[i] == 0.0 for i in (0, 2, 4, 5, 6))     # int_max=0 = off
 
-    # 6. engage 게이트 (issue #37A): 멀리 있으면 안 걸리고, 게이트 안에서
-    #    걸리고, 한 번 걸린 뒤에는 release 만큼 더 나가야 풀린다.
-    gate, rel = MATCH_GATE_RAD, 0.15
-    assert not _engage_gate(False, 1.2, gate, rel)          # 멀다 -> 안 건다
-    assert not _engage_gate(False, gate + 0.01, gate, rel)  # 경계 밖
-    assert _engage_gate(False, gate, gate, rel)             # 경계에서 건다
-    assert _engage_gate(False, 0.1, gate, rel)
+    # 6. 토크 on/off 히스테리시스 (issue #37A)
+    gate, rel = MATCH_GATE_RAD * 2, 0.15
+    assert not _engage_gate(False, gate + 0.01, gate, rel)  # 경계 밖 -> 안 켬
+    assert _engage_gate(False, gate, gate, rel)             # 경계에서 켠다
     assert _engage_gate(True, gate + 0.1, gate, rel)        # 히스테리시스 안
-    assert not _engage_gate(True, gate + rel + 0.01, gate, rel)   # 벗어나면 풀림
-    # 게이트 폭을 왕복해도 상태가 튀지 않는다 (덜덜 떨림 방지)
+    assert not _engage_gate(True, gate + rel + 0.01, gate, rel)   # 벗어나면 끔
     eng = False
-    for e in (1.0, 0.6, 0.5, 0.52, 0.6, 0.66, 0.9):
+    for e in (2.0, 1.1, 1.0, 1.05, 1.1, 1.16, 1.4):
         eng = _engage_gate(eng, e, gate, rel)
-    assert not eng                                          # 0.66 에서 풀린 뒤 유지
+    assert not eng                                          # 한 번 꺼진 뒤 유지
+
+    # 7. 힘 우물 (issue #37A): kp*x*a(x) 가 x=well 에서 최대이고 그 바깥으로
+    #    단조 감소한다 -- "가까이선 잡아주고 크게 끌면 놓아준다".
+    well = MATCH_GATE_RAD / 2
+    xs = np.linspace(0.0, 4.0, 4001)
+    force = xs * _well_assist(xs, well)          # kp 는 상수배라 형태에 무관
+    assert abs(xs[int(np.argmax(force))] - well) < 1e-2, xs[int(np.argmax(force))]
+    tail = force[xs >= well]
+    assert np.all(np.diff(tail) <= 1e-12), "우물 바깥에서 힘이 다시 커진다"
+    a = _well_assist(np.array([0.0, well, MATCH_GATE_RAD, 2 * MATCH_GATE_RAD,
+                               np.pi]), well)
+    assert a[0] == 1.0                                   # 목표 위: 전력 100%
+    assert abs(a[1] - 0.5) < 1e-9                        # well: 절반
+    assert a[2] < 0.21                                   # 게이지 초록 경계: 20%
+    assert a[4] < 0.01                                   # 반 바퀴 돌리면 1% 미만
+    # 조인트별로 따로 계산된다 (한 관절만 돌려도 나머지는 계속 버틴다)
+    per = _well_assist(np.array([0.02, np.pi, 0.02]), well)
+    assert per[0] > 0.98 and per[2] > 0.98 and per[1] < 0.01
     print("joint_limit_wall selftest 통과")
 
 
