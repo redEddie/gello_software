@@ -79,7 +79,11 @@ from typing import Any, Optional
 import h5py
 import numpy as np
 
-from gello.data.dataset_schema import DatasetSchemaConfig
+from gello.data.dataset_schema import (
+    SCHEMA_VERSION,
+    DatasetSchemaConfig,
+    normalize_schema_version,
+)
 from gello.data.libero_format import (
     LiberoEpisodeBuffer,
     _mark_close_on_exec,
@@ -87,7 +91,11 @@ from gello.data.libero_format import (
     write_episode_payload,
 )
 
-SCENE_DATASET_VERSION = "scene-v1"
+#: 파일에 적히는 형식 버전. 2026-08-31 부터 SemVer 표기 ``knu-X.Y.Z``
+#: (issue #41) 이고, 정본과 규약은 gello.data.dataset_schema 에 있다.
+#: 그 전 파일은 전부 ``scene-v1`` 인데 필드 구성이 knu-0.1.0 과 같아
+#: 소급 기록 없이 별칭으로 해석한다 (normalize_schema_version).
+SCENE_DATASET_VERSION = SCHEMA_VERSION
 
 # 표준 격자 (2026-08-13 결정). 포맷 자체는 파일마다 grid 를 기록하므로 나중에
 # 바꿔도 기존 파일은 읽히지만, 새 scene 생성은 이 값만 허용한다 -- 수집자마다
@@ -236,7 +244,10 @@ def _read_metadata(meta: h5py.Group) -> SceneMetadata:
         layout=json.loads(meta.attrs["layout"]),
         description=str(meta.attrs.get("description", "")),
         station=str(meta.attrs.get("station", "")),
-        dataset_version=str(meta.attrs.get("dataset_version", "")),
+        # 옛 표기(scene-v1)는 여기서 knu-0.1.0 으로 풀어 준다 -- 읽는 쪽은
+        # 어느 시절 파일인지 신경 쓰지 않고 SemVer 하나만 보면 된다.
+        dataset_version=normalize_schema_version(
+            meta.attrs.get("dataset_version", "")),
         created=str(meta.attrs.get("created", "")),
     )
 
@@ -346,6 +357,9 @@ class SceneWriter:
             self._meta.attrs["description"] = metadata.description
             self._meta.attrs["station"] = metadata.station
             self._meta.attrs["dataset_version"] = metadata.dataset_version
+            # 같은 값을 표준 이름으로도 남긴다 (issue #41): LeRobot 변환본의
+            # info.json 과 키 이름을 맞춰, 두 포맷을 한 쿼리로 대조할 수 있게.
+            self._meta.attrs["schema_version"] = metadata.dataset_version
             self._meta.attrs["created"] = metadata.created
             self._meta.attrs["next_episode_idx"] = 0
 

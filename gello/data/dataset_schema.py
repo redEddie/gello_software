@@ -33,6 +33,104 @@ ACTION_SPACE_LABELS = {
 DEFAULT_CONFIG_PATH = Path.home() / "libero_gui_logs" / "dataset_schema.json"
 
 
+# --------------------------------------------------------- dataset schema 버전
+# 우리 데이터셋 형식의 버전 (GitHub issue #41). SemVer 를 쓰되 접두사로
+# 출처를 밝힌다: knu-MAJOR.MINOR.PATCH.
+#
+#   MINOR = 필드 '추가'만. 옛 리더가 새 파일을 열어도 자기가 아는 필드는
+#           그대로 있으니 읽힌다(전방 호환), 새 리더가 옛 파일을 열면
+#           추가 필드만 없다(후방 호환). 예: 조인트 토크 추가 -> knu-0.2.0.
+#   MAJOR = 기존 필드의 의미·단위·이름 변경이나 삭제. 리더는 자기 MAJOR
+#           안의 모든 MINOR 를 읽을 수 있어야 한다.
+#   PATCH = 데이터에 영향 없는 명세 문서 수정.
+#
+# 명세 문서는 docs/dataset-schema.md 이고, 이 상수들이 그 문서의 코드 쪽
+# 정본이다 (문서와 어긋나면 검증기가 잡는다).
+SCHEMA_VERSION = "knu-0.1.0"
+
+#: 버전 문자열이 없던 시절의 표기 -> 현재 버전. 기존 파일(scene_000~014)은
+#: 전부 ``dataset_version="scene-v1"`` 이고 필드 구성이 knu-0.1.0 과 완전히
+#: 같아, 소급 기록 없이 별칭으로만 해석한다.
+SCHEMA_VERSION_ALIASES = {
+    "scene-v1": "knu-0.1.0",
+    "": "knu-0.1.0",      # 아주 초기 파일: 표기 자체가 없다
+}
+
+#: 버전별 필수 필드. 검증기(scripts/check/check_scene_file.py)가 이걸 본다.
+#: 새 MINOR 를 추가할 때는 이전 항목을 고치지 말고 새 키를 넣는다 -- 옛
+#: 파일을 옛 규칙으로 계속 검사할 수 있어야 한다.
+SCHEMA_FIELDS = {
+    "knu-0.1.0": {
+        # episode 그룹 바로 아래
+        "episode_datasets": ("actions", "dones", "rewards"),
+        # episode/obs 아래. depth 는 여기 없다 -- 카메라 드라이버가 아직
+        # depth 읽기를 지원하지 않아 수집 자체가 꺼져 있다(_FIXED 참조).
+        # 되살아나면 필드 '추가'이므로 knu-0.2.0 이다.
+        "obs_datasets": (
+            "agentview_rgb", "eye_in_hand_rgb",
+            "joint_states", "commanded_joint_states",
+            "gripper_states", "commanded_gripper_states",
+            "ee_states", "ee_pos", "ee_ori",
+        ),
+        # episode 그룹 attrs
+        "episode_attrs": (
+            "instruction", "instruction_id", "episode_id", "episode_uid",
+            "num_samples", "success", "quality_status", "scene_id",
+            "slot_episode_idx", "collector", "station", "timestamp",
+            "action_space", "action_column_names",
+            "gripper_action_convention", "crop_params",
+        ),
+        # metadata 그룹 attrs
+        "metadata_attrs": (
+            "scene_id", "objects", "layout", "description", "station",
+            "dataset_version", "created", "next_episode_idx",
+        ),
+    },
+}
+
+
+def normalize_schema_version(value) -> str:
+    """파일에 적힌 버전 표기를 정본 형태로. 별칭은 풀고, 나머지는 그대로.
+
+    파일이 정본이므로 모르는 표기라고 던지지 않는다 -- 그대로 돌려주고
+    판단은 호출자(검증기)에게 맡긴다. 여기서 죽으면 옛 파일을 열지 못하게
+    되는데, 그게 버저닝을 도입한 이유와 정반대다.
+    """
+    s = str(value or "").strip()
+    return SCHEMA_VERSION_ALIASES.get(s, s)
+
+
+def parse_schema_version(value) -> "tuple[int, int, int] | None":
+    """``knu-0.1.0`` -> ``(0, 1, 0)``. 형식이 아니면 None."""
+    s = normalize_schema_version(value)
+    if not s.startswith("knu-"):
+        return None
+    parts = s[4:].split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        return tuple(int(p) for p in parts)  # type: ignore[return-value]
+    except ValueError:
+        return None
+
+
+def schema_is_readable(value, reader: str = SCHEMA_VERSION) -> bool:
+    """이 리더가 그 파일을 읽을 수 있는가.
+
+    같은 MAJOR 안에서는 MINOR 가 위든 아래든 읽을 수 있다: MINOR 는 필드
+    추가만 하기로 했으므로, 위 버전 파일에는 모르는 필드가 더 있을 뿐이고
+    아래 버전 파일에는 나중에 생긴 필드가 없을 뿐이다. MAJOR 가 다르면
+    필드의 의미가 달라졌을 수 있어 읽을 수 없다고 본다.
+    """
+    a, b = parse_schema_version(value), parse_schema_version(reader)
+    return bool(a and b and a[0] == b[0])
+
+
+def schema_required_fields(value) -> "dict | None":
+    """그 버전이 요구하는 필드 목록. 모르는 버전이면 None."""
+    return SCHEMA_FIELDS.get(normalize_schema_version(value))
+
+
 @dataclass
 class DatasetSchemaConfig:
     """What gets written to the HDF5. Every field defaults to LIBERO's
@@ -154,3 +252,40 @@ def load_schema_config(path: Path = DEFAULT_CONFIG_PATH) -> DatasetSchemaConfig:
 def save_schema_config(cfg: DatasetSchemaConfig, path: Path = DEFAULT_CONFIG_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(cfg.to_json(), encoding="utf-8")
+
+
+def selftest() -> None:
+    """버저닝 규약 자체 검증 (issue #41). 하드웨어·파일 불필요."""
+    # 별칭: 옛 표기는 현재 버전으로 풀린다 (파일 소급 수정 없이)
+    assert normalize_schema_version("scene-v1") == "knu-0.1.0"
+    assert normalize_schema_version("") == "knu-0.1.0"
+    assert normalize_schema_version("knu-0.2.0") == "knu-0.2.0"
+    assert parse_schema_version("scene-v1") == (0, 1, 0)
+    assert parse_schema_version("모르는버전") is None
+
+    # 같은 MAJOR 안이면 위·아래 MINOR 모두 읽는다 (MINOR = 추가만)
+    assert schema_is_readable("knu-0.1.0", reader="knu-0.1.0")
+    assert schema_is_readable("knu-0.1.0", reader="knu-0.2.0")   # 후방 호환
+    assert schema_is_readable("knu-0.2.0", reader="knu-0.1.0")   # 전방 호환
+    assert not schema_is_readable("knu-1.0.0", reader="knu-0.1.0")  # MAJOR 다름
+    assert not schema_is_readable("이상한거")
+
+    # 현재 버전은 필드 목록을 갖고 있고, 그 목록이 문서와 같은 정본이다
+    cur = schema_required_fields(SCHEMA_VERSION)
+    assert cur is not None and SCHEMA_VERSION in SCHEMA_FIELDS
+    assert set(cur) == {"episode_datasets", "obs_datasets",
+                        "episode_attrs", "metadata_attrs"}
+    # depth 는 0.1.0 에 없다 -- 드라이버 미지원으로 수집 자체가 꺼져 있고,
+    # 되살아나면 '추가'라 0.2.0 이다 (docs/dataset-schema.md)
+    assert not any("depth" in f for f in cur["obs_datasets"])
+    assert "save_agentview_depth" in DatasetSchemaConfig._FIXED
+    # 토크도 아직 없다 (issue #16 -> 0.2.0)
+    assert not any("torque" in f for f in cur["obs_datasets"])
+
+    # 모르는 버전은 필드 목록이 없다 -> 검증기가 "모르는 스키마 버전" 으로 잡는다
+    assert schema_required_fields("knu-9.9.9") is None
+    print("dataset_schema selftest 통과")
+
+
+if __name__ == "__main__":
+    selftest()

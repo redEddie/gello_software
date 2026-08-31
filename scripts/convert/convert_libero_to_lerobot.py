@@ -138,7 +138,11 @@ from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION, LeRobotDataset
 from lerobot.datasets.utils import DatasetInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from gello.data.dataset_schema import ACTION_SPACE_EE_DELTA  # noqa: E402
+from gello.data.dataset_schema import (  # noqa: E402
+    ACTION_SPACE_EE_DELTA,
+    SCHEMA_VERSION,
+    normalize_schema_version,
+)
 from gello.data.libero_format import (  # noqa: E402
     EYE_IN_HAND_CROP_X_SHIFT,
     action_column_names,
@@ -716,6 +720,27 @@ def _check_resume_compatible(remote_features: dict, local_features: dict) -> Non
             )
 
 
+def _stamp_schema_version(root: Path, source_versions: "list[str]") -> None:
+    """변환본 meta/info.json 에 원본 HDF5 의 스키마 버전을 남긴다 (issue #41).
+
+    LeRobot 자신의 ``codebase_version`` 은 LeRobot 포맷의 버전이지 우리
+    필드 구성의 버전이 아니다. 변환본만 받은 사람이 "이 데이터가 어느
+    세대 스키마에서 왔는가" 를 알 수 있어야 하므로 별도 키로 적는다.
+    여러 세대의 원본이 섞여 들어올 수 있어 목록으로 남긴다.
+    """
+    info_path = root / "meta" / "info.json"
+    if not info_path.exists():
+        return
+    try:
+        info = json.loads(info_path.read_text())
+        info["schema_version"] = SCHEMA_VERSION
+        if source_versions:
+            info["source_schema_versions"] = source_versions
+        info_path.write_text(json.dumps(info, indent=4))
+    except Exception as e:  # noqa: BLE001 -- 스탬프 실패로 변환을 버리지 않는다
+        print(f"[경고] meta/info.json 에 schema_version 을 남기지 못했습니다: {e}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("hdf5_paths", type=Path, nargs="*",
@@ -977,10 +1002,13 @@ def main() -> None:
     existing_uids = {e["episode_uid"] for e in uid_records.values()
                      if isinstance(e, dict) and e.get("episode_uid")}
     next_index = ds.meta.total_episodes if args.resume else 0
+    source_versions: set = set()   # 원본들의 스키마 버전 (issue #41)
     for path in args.hdf5_paths:
         with h5py.File(path, "r") as f:
             if _is_scene_file(f):
                 scene_id = str(f["metadata"].attrs["scene_id"])
+                source_versions.add(normalize_schema_version(
+                    f["metadata"].attrs.get("dataset_version", "")))
                 # 큐레이션 편집 게이트 (2026-08-23): 삭제 후 renumber 는 uid 를
                 # 재배정하므로, 편집이 있었던 scene 파일에 uid 집합 대조로
                 # 이어붙이면 다른 에피소드를 "이미 올렸다"고 오판한다(새 궤적
@@ -1078,6 +1106,7 @@ def main() -> None:
         print(f"[검증] {fixed}", flush=True)
     # push 전에 써야 push_to_hub(폴더 업로드)에 사이드카가 실린다.
     _write_uid_sidecar(Path(args.root), uid_records)
+    _stamp_schema_version(Path(args.root), sorted(source_versions))
     print(f"\n완료: {n_episodes}개 에피소드 변환, {n_skipped}개 건너뜀 (필터)"
           + (f", {n_already}개는 이미 데이터셋에 있어 제외" if n_already else "")
           + f" -> {args.root}")

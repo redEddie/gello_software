@@ -28,6 +28,13 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from gello.data.dataset_schema import (  # noqa: E402
+    SCHEMA_FIELDS,
+    SCHEMA_VERSION,
+    normalize_schema_version,
+    schema_is_readable,
+    schema_required_fields,
+)
 from gello.scene.props import active_prop_ids  # noqa: E402
 from gello.scene.scene_format import (  # noqa: E402
     EPISODE_GROUP_RE,
@@ -86,6 +93,27 @@ def verify_scene_file(path: Path) -> list[str]:
             if k not in meta.attrs:
                 problems.append(f"metadata.attrs[{k!r}] 가 없다")
 
+        # 스키마 버전 (issue #41). 파일에 적힌 버전이 정본이고, 필수 필드
+        # 목록은 그 버전의 것을 쓴다 -- 새 리더가 옛 파일을 새 규칙으로
+        # 검사해서 "필드가 없다" 고 하면 안 되기 때문이다.
+        raw_ver = meta.attrs.get("dataset_version", "")
+        version = normalize_schema_version(raw_ver)
+        required = schema_required_fields(version)
+        if required is None:
+            problems.append(
+                f"모르는 스키마 버전: {str(raw_ver)!r} "
+                f"(아는 버전: {', '.join(sorted(SCHEMA_FIELDS))})")
+        elif not schema_is_readable(version):
+            problems.append(
+                f"이 코드가 읽을 수 없는 스키마 버전: {version} "
+                f"(리더 {SCHEMA_VERSION} -- MAJOR 가 다르다)")
+        if "schema_version" in meta.attrs:
+            # 두 표기가 함께 있으면 반드시 같은 버전을 가리켜야 한다.
+            if normalize_schema_version(meta.attrs["schema_version"]) != version:
+                problems.append(
+                    f"dataset_version({raw_ver!r})과 "
+                    f"schema_version({meta.attrs['schema_version']!r})이 다르다")
+
         try:
             md = _read_md_checked(meta)
         except Exception as e:  # noqa: BLE001
@@ -141,6 +169,17 @@ def verify_scene_file(path: Path) -> list[str]:
             if md is not None and "scene_id" in grp.attrs and str(grp.attrs["scene_id"]) != md.scene_id:
                 problems.append(f"{name}: scene_id 가 metadata 와 다르다")
             n = int(grp.attrs.get("num_samples", -1))
+            # 그 파일의 버전이 요구하는 필드가 실제로 있는가 (issue #41).
+            # 여분의 필드는 문제 삼지 않는다 -- MINOR 는 추가만 하므로 새
+            # 파일에 모르는 필드가 있는 것이 정상이다.
+            if required is not None:
+                for ds in required["episode_datasets"]:
+                    if ds not in grp:
+                        problems.append(f"{name}: {version} 필수 데이터셋 {ds!r} 가 없다")
+                obs = grp.get("obs")
+                for ds in required["obs_datasets"]:
+                    if obs is None or ds not in obs:
+                        problems.append(f"{name}: {version} 필수 관측 obs/{ds} 가 없다")
             if "actions" not in grp or "obs" not in grp:
                 problems.append(f"{name}: actions/obs 페이로드가 없다")
             elif grp["actions"].shape[0] != n:
