@@ -204,7 +204,7 @@ GUI/도구가 scene-v1 대비 다음이 늘었다. 상세 사용법은 각 커�
 - **게이트 안전화**: 자동 정렬이 켜져 있어도 리더가 GATE_RAD 밖이면 당기지
   않고 기다린다. Start 버튼·Space 는 자세가 맞아야 열린다.
 - **리셋 대기 중 라이브 뷰 유지** (`_reset_wait` 프레임 방출).
-- **실로봇 재생**: Dataset/Gallery 버튼 + 중단 버튼. `experiments/replay_episode.py`
+- **실로봇 재생**: Dataset/Gallery 버튼 + 중단 버튼. `scripts/analyze/replay_episode.py`
   (양포맷, 램프+클램프+감속, 노드 미기동/잠금/없는 에피소드는 친절 오류).
 - **3×3 워크스페이스 격자**: `gello/grid_overlay.py` + 편집 다이얼로그(꼭짓점
   드래그, 상하좌우 정렬, 변환, 실행취소, 이름 저장/불러오기), Live 오버레이

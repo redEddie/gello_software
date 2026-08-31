@@ -8,7 +8,7 @@ from pathlib import Path
 WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
 sys.path.insert(0, WT)
 sys.path.insert(0, WT + "/apps")
-sys.path.insert(0, WT + "/experiments")
+sys.path.insert(0, WT + "/scripts/analyze")
 sys.argv = ["t"]
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 

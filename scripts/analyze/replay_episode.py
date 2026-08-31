@@ -16,7 +16,7 @@ scene(``episode_NNN``) 파일을 모두 지원한다.
 ``(pylibfranka-venv) python scripts/launch/launch_nodes.py --robot fr3``).
 
 사용:
-    (lerobot-venv) python experiments/replay_episode.py \
+    (lerobot-venv) python scripts/analyze/replay_episode.py \
         ~/libero_datasets/scene_000.hdf5 episode_000 --speed 0.5
 """
 

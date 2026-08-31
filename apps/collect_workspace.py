@@ -196,7 +196,7 @@ PYLIBFRANKA_PYTHON = STATION.node.python_path
 LAUNCH_NODES_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "launch" / "launch_nodes.py")
 CONVERT_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "convert" / "convert_libero_to_lerobot.py")
 UPLOAD_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "convert" / "upload_to_hub.py")
-REPLAY_SCRIPT = str(Path(__file__).resolve().parent.parent / "experiments" / "replay_episode.py")
+REPLAY_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "analyze" / "replay_episode.py")
 # 새 수집(scene 체계)의 Hub 저장소 기본값 (2026-08-18 결정). 변환본은
 # -lerobot, 원본 HDF5 는 접미사 없이. legacy repo(fr3-pick-place*, 728개)는
 # 재사용하지 않는다 -- 그쪽에 전체 처리를 돌리면 삭제 게이트가 뜬다.
