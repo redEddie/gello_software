@@ -6,9 +6,9 @@ from dm_control import mjcf
 from dm_control.utils.inverse_kinematics import qpos_from_site_pose
 from oculus_reader.reader import OculusReader
 
-from gello.agents.agent import Agent
+from gello.core.agent import Agent
 from gello.agents.spacemouse_agent import apply_transfer, mj2ur, ur2mj
-from gello.dm_control_tasks.arms.ur5e import UR5e
+from gello.sim.dm_control.arms.ur5e import UR5e
 
 # cartensian space control, controller <> robot relative pose matters. This extrinsics is based on
 # our setup, for details please checkout the project page.

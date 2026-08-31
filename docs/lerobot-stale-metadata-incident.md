@@ -13,7 +13,7 @@
 전체 처리 파이프라인의 마지막 단계에서 이렇게 죽었다.
 
 ```
-File "scripts/convert_libero_to_lerobot.py", line 427, in main
+File "scripts/convert/convert_libero_to_lerobot.py", line 427, in main
     ds.push_to_hub(private=args.private)
 File "lerobot/datasets/utils.py", line 452, in create_lerobot_dataset_card
     dataset_structure += f"```json\n{json.dumps(dataset_info.to_dict(), indent=4)}\n```\n"
@@ -138,10 +138,10 @@ v3.0  → 1a9f5ea5   (info.json: 117 에피소드)   ← lerobot이 읽는 쪽
 
 ```bash
 rm -rf ~/lerobot_upload
-python scripts/convert_libero_to_lerobot.py ~/libero_datasets/*_demo.hdf5 \
+python scripts/convert/convert_libero_to_lerobot.py ~/libero_datasets/*_demo.hdf5 \
     --repo-id knu-physical-ai/fr3-pick-place-lerobot \
     --root ~/lerobot_upload                      # --resume 없이
-python scripts/convert_libero_to_lerobot.py \
+python scripts/convert/convert_libero_to_lerobot.py \
     --repo-id knu-physical-ai/fr3-pick-place-lerobot \
     --root ~/lerobot_upload --push-only --replace --no-private
 ```

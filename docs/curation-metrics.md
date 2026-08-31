@@ -1,6 +1,6 @@
 # Analysis 탭 지표 정의 — 큐레이션 후보 목록의 칼럼들
 
-`experiments/collect_workspace.py` Analysis 탭 · 계산은 전부 `gello/episode_stats.py`
+`apps/collect_workspace.py` Analysis 탭 · 계산은 전부 `gello/episode_stats.py`
 
 지표는 셋뿐입니다: **평균과 차이 · 멈춤% · 길이.**
 

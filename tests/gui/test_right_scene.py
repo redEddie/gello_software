@@ -4,13 +4,13 @@ from pathlib import Path
 
 WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
 sys.path.insert(0, WT)
-sys.path.insert(0, WT + "/experiments")
+sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 import collect_workspace as cw  # noqa: E402
-from gello.scene_format import SceneMetadata  # noqa: E402
+from gello.scene.scene_format import SceneMetadata  # noqa: E402
 
 cw.WorkspaceWindow._refresh_cameras = lambda self: None
 cw.WorkspaceWindow._restart_previews = lambda self: None

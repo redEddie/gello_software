@@ -7,14 +7,14 @@ import numpy as np
 
 WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
 sys.path.insert(0, WT)
-sys.path.insert(0, WT + "/experiments")
+sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 
-from gello.grid_overlay import (  # noqa: E402
+from gello.gui.grid_overlay import (  # noqa: E402
     DEFAULT_CORNERS, active_corners, draw_grid, grid_segments,
     load_grid_store, save_grid_store,
 )

@@ -8,7 +8,7 @@ from pathlib import Path
 
 WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
 sys.path.insert(0, WT)
-sys.path.insert(0, WT + "/experiments")
+sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
@@ -29,8 +29,8 @@ def _wait_recs(dlg):
 
 
 import collect_workspace as cw  # noqa: E402
-from gello.props import props_by_id  # noqa: E402
-from gello.scene_format import SceneMetadata  # noqa: E402
+from gello.scene.props import props_by_id  # noqa: E402
+from gello.scene.scene_format import SceneMetadata  # noqa: E402
 
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 cw.QMessageBox.information = staticmethod(lambda *a, **k: None)
@@ -47,7 +47,7 @@ base = SceneMetadata(
 
 TMP = Path(tempfile.mkdtemp(prefix="recreg_"))
 plan_copy = TMP / "pilot.json"
-shutil.copy(f"{WT}/configs/collection_plans/pilot.json", plan_copy)
+shutil.copy(f"{WT}/configs/collection/plans/pilot.json", plan_copy)
 orig = json.loads(plan_copy.read_text())
 
 # ---- 1. RecommendDialog: 문장 체크리스트 표시 + 전체 기본 선택 ----
@@ -73,7 +73,7 @@ assert added[0]["instruction_id"].startswith("I")
 print(f"2 통과: 계획 등록 {len(added)}개 슬롯 (target=10, ID 자동)")
 
 # ---- 3. 등록 검증 게이트: load_plan 을 통과해야 함 ----
-from gello.collection_plan import load_plan  # noqa: E402
+from gello.scene.collection_plan import load_plan  # noqa: E402
 loaded = load_plan(plan_copy)
 assert loaded.scene("S999") is not None
 print("3 통과: 등록된 계획 load_plan 검증 통과")
@@ -133,10 +133,10 @@ print("5 통과: 규칙 통과 시 경고 없음 + 단일 개체 조합엔 short
 # lint 는 '경고'다 (차단 아님 -- load_plan 설계). 여기서는
 # (a) 문법이 스스로 생성한 문장은 전부 lint 통과 (자기일관성),
 # (b) 계획 전 문장에 lint 가 예외 없이 돌아간다(경고 수만 보고)를 검증한다.
-from gello.instruction_grammar import lint  # noqa: E402
+from gello.scene.instruction_grammar import lint  # noqa: E402
 for cb in sents:                          # 추천 체크리스트 = 문법이 생성한 문장
     assert lint(cb.text()) is None, (cb.text(), lint(cb.text()))
-plan = json.loads(Path(f"{WT}/configs/collection_plans/pilot.json").read_text())
+plan = json.loads(Path(f"{WT}/configs/collection/plans/pilot.json").read_text())
 n_warn = 0
 total = 0
 for sc in plan["scenes"]:

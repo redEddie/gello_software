@@ -12,7 +12,7 @@ from pathlib import Path
 WT = str(Path(__file__).resolve().parents[2])  # 리포 루트
 sys.path.insert(0, WT)
 
-from gello.hub_upload_state import (  # noqa: E402
+from gello.data.hub_upload_state import (  # noqa: E402
     changed_files,
     record_uploaded,
     upload_reason,
@@ -76,7 +76,7 @@ print("7. symlink resolve OK")
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.argv = ["t"]
-import gello.hub_upload_state as hus
+import gello.data.hub_upload_state as hus
 
 tmp2 = Path(tempfile.mkdtemp())
 hus.STATE_PATH = tmp2 / "state.json"   # 실제 장부 보호
@@ -90,12 +90,12 @@ hus.record_uploaded(repo2, b2)
 
 from PyQt6.QtWidgets import QApplication
 
-import gello.gui_widgets as gw
+import gello.gui.gui_widgets as gw
 
 # PipelineDialog.steps() 는 Recents 에 repo/경로를 기록한다 -- 실제 GUI
 # 기억 파일을 오염시키지 않게 임시 파일로 돌린다 (2026-08-26 사고 재발 방지).
 gw.RECENTS_PATH = tmp2_recents = Path(tempfile.mkdtemp()) / "recents.json"
-import experiments.collect_workspace as cw
+import apps.collect_workspace as cw
 
 app = QApplication.instance() or QApplication([])
 plan = {"action": "up_to_date", "rows": [], "ambiguous": [],

@@ -9,8 +9,8 @@
 
 ```bash
 git checkout scene-based-collection
-python scripts/check_scene_file.py --selftest          # 로봇·카메라·데이터 불필요
-python scripts/check_scene_file.py --selftest --keep /tmp/scene_demo   # 결과 파일 구경
+python scripts/check/check_scene_file.py --selftest          # 로봇·카메라·데이터 불필요
+python scripts/check/check_scene_file.py --selftest --keep /tmp/scene_demo   # 결과 파일 구경
 ```
 
 selftest가 만드는 `scene_000.hdf5`가 곧 목표 포맷의 실물이다. 출력의 ASCII
@@ -20,7 +20,7 @@ selftest가 만드는 `scene_000.hdf5`가 곧 목표 포맷의 실물이다. 출
 1. 이 문서
 2. Notion 프로토콜 §2(데이터 모델·ID), §4(scene 설계·**통제 변수 레지스트리**),
    §7(HDF5 규격) — [DB 링크](https://app.notion.com/p/jeonchanwook/60b41bd2091f4e55aa383492f41e5875)
-3. `gello/scene_format.py` 모듈 docstring (포맷 정의와 legacy 와의 차이가 전부 있다)
+3. `gello/scene/scene_format.py` 모듈 docstring (포맷 정의와 legacy 와의 차이가 전부 있다)
 4. 이 브랜치의 커밋 메시지 2개 (`git log main..HEAD`)
 
 ## 1. 왜 바꾸나 (한 문단)
@@ -37,7 +37,7 @@ legacy 는 파일 하나 = task 하나였고 **파일명이 사실상 source of 
 |---|---|---|
 | 1 | `problem_info`/`env_args` 스텁 **완전 제거** | 저장소 내 `env_args` 소비자 0곳, 외부 LIBERO 리더 호환 포기 |
 | 2 | `layout` 은 **3×3 격자 존 JSON 고정** | "같은 존 안 이동 = 같은 scene, 경계 넘으면 새 scene ID". 코드가 다른 격자를 거부 |
-| 3 | slot 계획 파일은 **저장소 내 JSON** (`configs/collection_plans/`) | git 이력 = 계획 변경 기록 |
+| 3 | slot 계획 파일은 **저장소 내 JSON** (`configs/collection/plans/`) | git 이력 = 계획 변경 기록 |
 | 4 | `distractors` **필드 없음** — 개념은 운영 관례로만 | objects 에 넣고 description 에 사람 말로. 필요 시 scene-v2 에서 부활 |
 | 5 | 통제 변수는 **metadata 가 아니라 운영 규칙** | Notion §4 레지스트리 표가 정본 (조명·배경·동사 집합·30초 상한 등) |
 
@@ -49,11 +49,11 @@ legacy 는 파일 하나 = task 하나였고 **파일명이 사실상 source of 
 
 | 파일 | 내용 |
 |---|---|
-| `gello/scene_format.py` | `SceneWriter`(생성/resume/append/QA), `SceneMetadata`+validate, `describe_scene`, `count_by_slot`, `iter_scene_files`, `next_scene_id`, `episode_uid` |
-| `gello/props.py` + `configs/props.yaml` | 소품 instance ID 인벤토리 15개 정본. 미등록 ID 는 scene 생성 거부 |
-| `gello/libero_format.py` | `write_episode_payload()` 추출 — legacy `demo_N` 과 scene `episode_NNN` 이 **에피소드 안쪽 페이로드를 공유** (변환기가 같은 코드로 읽게) |
-| `scripts/check_scene_file.py` | 실파일 QA 검사기 + `--selftest`. **모든 작업의 인수 기준이 이 검사기 통과다** |
-| `configs/collection_plans/` | slot 계획 JSON 스키마 + Notion §6 matrix 예시 |
+| `gello/scene/scene_format.py` | `SceneWriter`(생성/resume/append/QA), `SceneMetadata`+validate, `describe_scene`, `count_by_slot`, `iter_scene_files`, `next_scene_id`, `episode_uid` |
+| `gello/scene/props.py` + `configs/scenes/props.yaml` | 소품 instance ID 인벤토리 15개 정본. 미등록 ID 는 scene 생성 거부 |
+| `gello/data/libero_format.py` | `write_episode_payload()` 추출 — legacy `demo_N` 과 scene `episode_NNN` 이 **에피소드 안쪽 페이로드를 공유** (변환기가 같은 코드로 읽게) |
+| `scripts/check/check_scene_file.py` | 실파일 QA 검사기 + `--selftest`. **모든 작업의 인수 기준이 이 검사기 통과다** |
+| `configs/collection/plans/` | slot 계획 JSON 스키마 + Notion §6 matrix 예시 |
 
 핵심 설계 요점 (코드 읽기 전에 알아둘 것):
 
@@ -74,7 +74,7 @@ legacy 는 파일 하나 = task 하나였고 **파일명이 사실상 source of 
 
 ## 4. 남은 작업 (권장 순서)
 
-각 작업의 공통 인수 기준: `python scripts/check_scene_file.py <파일>` 위반 0,
+각 작업의 공통 인수 기준: `python scripts/check/check_scene_file.py <파일>` 위반 0,
 legacy 경로 무변경(기존 `*_demo.hdf5` 수집·변환이 그대로 동작).
 
 ### ⑤ GUI: New/Existing Scene 수집 통합 ← **여기부터. 로봇 필요** ([#30](https://github.com/redEddie/gello_software/issues/30))
@@ -82,13 +82,13 @@ legacy 경로 무변경(기존 `*_demo.hdf5` 수집·변환이 그대로 동작)
 목표: GUI 가 SceneWriter 로 기록할 수 있게 한다. 이게 되면 pilot 수집 가능.
 
 1. **Writer 연결 (GUI 없이 검증 가능한 부분부터)**
-   - `gello/libero_gui_worker.py:881-888` 이 `LiberoTaskWriter` 를 하드코딩 —
+   - `gello/gui/libero_gui_worker.py:881-888` 이 `LiberoTaskWriter` 를 하드코딩 —
      `WorkerConfig`(`:146` 근처)에 scene 모드(scene_id / metadata / resume)를
      추가하고 SceneWriter 분기.
    - `EpisodeSaver`(`:67-137`) 큐가 `(buf, success)` — `(buf, success,
      instruction, instruction_id)` 로 확장. 워커가 에피소드 종료 시점의
      현재 slot 을 캡처해서 큐에 싣는다.
-2. **Configure 페이지 scene 모드** (`experiments/collect_workspace.py`
+2. **Configure 페이지 scene 모드** (`apps/collect_workspace.py`
    `_page_configure:708`)
    - Existing Scene: `iter_scene_files()` 드롭다운 + 선택 시 `describe_scene()`
      표시. 기존 resume 콤보(`_refresh_resume_combo:2509`, `_on_resume_selected:
@@ -121,7 +121,7 @@ instruction 에피소드 공존, 이어찍기에서 새 파일이 생기지 않�
 
 ### ⑦ slot 계획 표시와 카운트 ([#32](https://github.com/redEddie/gello_software/issues/32))
 
-- `configs/collection_plans/*.json` 로드 (스키마는 그 디렉터리 README).
+- `configs/collection/plans/*.json` 로드 (스키마는 그 디렉터리 README).
 - `count_by_slot()` 과 대조해 `S000 / I003 / open the top drawer / 4 of 10
   collected` 표시, 다음 미수집 slot 자동 제시. **collected 는 계획 파일에
   넣지 않는다** — 항상 파일에서 계산.
@@ -130,7 +130,7 @@ instruction 에피소드 공존, 이어찍기에서 새 파일이 생기지 않�
 
 ### ⑧ scene 다양성 추천 (로봇 불필요 — 병행 가능) ([#33](https://github.com/redEddie/gello_software/issues/33))
 
-`gello/scene_diversity.py` + `scripts/recommend_scene.py` CLI 로 먼저 만들고
+`gello/scene/scene_diversity.py` + `scripts/analyze/recommend_scene.py` CLI 로 먼저 만들고
 GUI 통합(New Scene "추천 받기")은 후속.
 
 - **벡터화**: metadata 에서 (category, color, material) multiset + 존 배치 +
@@ -147,7 +147,7 @@ GUI 통합(New Scene "추천 받기")은 후속.
 
 ### ⑨ 변환기 양포맷 지원 (로봇 불필요 — 병행 가능) ([#34](https://github.com/redEddie/gello_software/issues/34))
 
-`scripts/convert_libero_to_lerobot.py`:
+`scripts/convert/convert_libero_to_lerobot.py`:
 
 - `_language_instruction`(`:317-322`)이 "파일 = instruction 하나"를 전제(파일
   레벨 `problem_info` 1회 읽기, 호출 `:717`) — scene 파일이면 **에피소드
@@ -159,7 +159,7 @@ GUI 통합(New Scene "추천 받기")은 후속.
 - `quality_status` 필터: 기본 `success` 만 변환, `--include-failed` 옵션.
 - 테스트: `check_scene_file.py --selftest --keep DIR` 의 더미 scene 파일 +
   legacy 파일 회귀(변환 결과 불변).
-- 범위 외로 명시: `gello/dataset_sync.py` 의 Hub 대조는 task 단위 전제라
+- 범위 외로 명시: `gello/data/dataset_sync.py` 의 Hub 대조는 task 단위 전제라
   scene 포맷에서 (scene, instruction) 슬롯 단위 재설계가 필요 — 별도 작업.
   길이 지문(prefix) 검증 로직 자체는 이식 가능.
 
@@ -184,7 +184,7 @@ GUI 통합(New Scene "추천 받기")은 후속.
 | legacy (재사용 금지) | `knu-physical-ai/fr3-pick-place-lerobot` / `fr3-pick-place` | 728개. 전체 처리 대상 아님 — 삭제 게이트가 막는다 |
 | pilot 시험본 | `knu-physical-ai/fr3-scene-pilot-lerobot` / `fr3-scene-pilot` | S000 4개짜리. 필요 시 삭제 |
 
-기본값은 `experiments/collect_workspace.py` 의 `DEFAULT_REPOS` 에 있고, recents 에
+기본값은 `apps/collect_workspace.py` 의 `DEFAULT_REPOS` 에 있고, recents 에
 legacy repo 만 남아 있어도 기본값으로 되살리지 않는다(`LEGACY_REPOS`).
 
 ## 6. 참고

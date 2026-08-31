@@ -13,17 +13,17 @@ import h5py
 
 WT = str(Path(__file__).resolve().parents[2])  # 리포 루트
 sys.path.insert(0, WT)
-sys.path.insert(0, WT + "/experiments")
+sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 import collect_workspace as cw  # noqa: E402
-from gello.scene_format import list_scene_episodes  # noqa: E402
+from gello.scene.scene_format import list_scene_episodes  # noqa: E402
 
 d = Path(tempfile.mkdtemp(prefix="relabel_"))
-subprocess.run([sys.executable, WT + "/scripts/check_scene_file.py",
+subprocess.run([sys.executable, WT + "/scripts/check/check_scene_file.py",
                 "--selftest", "--keep", str(d)], check=True, capture_output=True)
 scene = d / "scene_000.hdf5"
 legacy = d / "selftest_task_demo.hdf5"

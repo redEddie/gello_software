@@ -14,17 +14,17 @@ import numpy as np
 
 WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
 sys.path.insert(0, WT)
-sys.path.insert(0, WT + "/experiments")
+sys.path.insert(0, WT + "/apps")
 sys.path.insert(0, WT + "/scripts")
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 
-from gello.dataset_schema import DatasetSchemaConfig  # noqa: E402
-from gello.gui_widgets import DatasetSchemaDialog  # noqa: E402
-from gello.libero_format import LiberoTaskWriter, schema_from_episode  # noqa: E402
-from gello.libero_gui_worker import CollectionWorker, WorkerConfig  # noqa: E402
+from gello.data.dataset_schema import DatasetSchemaConfig  # noqa: E402
+from gello.gui.gui_widgets import DatasetSchemaDialog  # noqa: E402
+from gello.data.libero_format import LiberoTaskWriter, schema_from_episode  # noqa: E402
+from gello.gui.libero_gui_worker import CollectionWorker, WorkerConfig  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="depth17_"))
 r = np.random.default_rng(0)

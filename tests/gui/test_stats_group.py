@@ -11,11 +11,11 @@ import numpy as np
 WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
 sys.path.insert(0, WT)
 
-from gello.episode_stats import scan_dataset, task_table  # noqa: E402
-from gello.scene_format import SceneMetadata, SceneWriter, list_scene_episodes  # noqa: E402
+from gello.data.episode_stats import scan_dataset, task_table  # noqa: E402
+from gello.scene.scene_format import SceneMetadata, SceneWriter, list_scene_episodes  # noqa: E402
 
 d = Path(tempfile.mkdtemp(prefix="statsgrp_"))
-subprocess.run([sys.executable, WT + "/scripts/check_scene_file.py",
+subprocess.run([sys.executable, WT + "/scripts/check/check_scene_file.py",
                 "--selftest", "--keep", str(d)], check=True, capture_output=True)
 scene0 = d / "scene_000.hdf5"
 eps0 = list_scene_episodes(scene0)
@@ -65,7 +65,7 @@ assert any(r_["scene"] == "S000" and r_["task"] == sentence for r_ in rows)
 print(f"통과: (scene,문장) 그룹 분리 -- 그룹 {len(by_group)}개, S001 느린 궤적이 S000 기준으로 튀지 않음")
 
 # ---- GUI: 큐레이션 후보의 그룹 콤보 필터 ----
-sys.path.insert(0, WT + "/experiments")
+sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 

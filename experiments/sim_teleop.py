@@ -6,7 +6,7 @@ to be held in any particular start position.
 
 Usage:
     # terminal 1
-    python experiments/launch_nodes.py --robot sim_panda
+    python scripts/launch/launch_nodes.py --robot sim_panda
     # terminal 2
     python experiments/sim_teleop.py
 """
@@ -20,7 +20,7 @@ import numpy as np
 import tyro
 
 from gello.agents.gello_agent import PORT_CONFIG_MAP, GelloAgent
-from gello.zmq_core.robot_node import ZMQClientRobot
+from gello.comm.zmq_core.robot_node import ZMQClientRobot
 
 
 @dataclass

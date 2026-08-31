@@ -7,20 +7,20 @@ import numpy as np
 
 WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
 sys.path.insert(0, WT)
-sys.path.insert(0, WT + "/experiments")
+sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
 # ---- 1. 추천기 selftest (거리·제약·결정성·비중복) ----
-r = subprocess.run([sys.executable, WT + "/scripts/recommend_scene.py",
+r = subprocess.run([sys.executable, WT + "/scripts/analyze/recommend_scene.py",
                     "--selftest"], capture_output=True, text=True)
 assert r.returncode == 0, r.stdout + r.stderr
 assert "selftest 통과" in r.stdout
 print("1 통과: recommend_scene --selftest")
 
 # ---- 2. 추천 결과의 검증 통과 + 거리 근거 ----
-from gello.props import active_prop_ids, props_by_id  # noqa: E402
-from gello.scene_diversity import AXES, recommend, recommend_detailed  # noqa: E402
-from gello.scene_format import SceneMetadata  # noqa: E402
+from gello.scene.props import active_prop_ids, props_by_id  # noqa: E402
+from gello.scene.scene_diversity import AXES, recommend, recommend_detailed  # noqa: E402
+from gello.scene.scene_format import SceneMetadata  # noqa: E402
 
 props = props_by_id()
 base = SceneMetadata(
@@ -169,7 +169,7 @@ win._render_depth()
 assert "커서 (10,20)" in win.depth_status.text()
 assert "0.600 m" in win.depth_status.text()
 win._depth_cursor = None
-from gello.gui_widgets import DepthCloudWorker  # noqa: E402
+from gello.gui.gui_widgets import DepthCloudWorker  # noqa: E402
 
 assert DepthCloudWorker("x", mode="depth").mode == "depth"
 assert DepthCloudWorker("x").mode == "cloud"

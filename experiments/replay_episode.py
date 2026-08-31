@@ -13,7 +13,7 @@ scene(``episode_NNN``) 파일을 모두 지원한다.
 - ``--dry-run`` 은 로봇 없이 궤적 통계만 출력
 
 전제: 로봇 노드가 떠 있어야 한다 (GUI '노드 시작' 또는
-``(pylibfranka-venv) python experiments/launch_nodes.py --robot fr3``).
+``(pylibfranka-venv) python scripts/launch/launch_nodes.py --robot fr3``).
 
 사용:
     (lerobot-venv) python experiments/replay_episode.py \
@@ -31,7 +31,7 @@ import h5py
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from gello.station import load_station  # noqa: E402
+from gello.core.station import load_station  # noqa: E402
 
 STATION = load_station()
 RAMP_STEP = 0.05      # rad/tick 램프 (수집기·정책 클라이언트와 동일 상수)
@@ -121,7 +121,7 @@ def main() -> None:
         print("[replay] dry-run 종료 (로봇 미접촉)")
         return
 
-    from gello.lerobot_plugin import JOINT_KEYS, FR3ZMQRobot, FR3ZMQRobotConfig
+    from gello.agents.lerobot_plugin import JOINT_KEYS, FR3ZMQRobot, FR3ZMQRobotConfig
 
     robot = FR3ZMQRobot(FR3ZMQRobotConfig(
         id="fr3", host=STATION.node.host, port=STATION.node.port, cameras={}))
@@ -132,7 +132,7 @@ def main() -> None:
             f"[replay] 로봇 노드에 연결하지 못했습니다 "
             f"({STATION.node.host}:{STATION.node.port}, {type(e).__name__}).\n"
             "  노드를 먼저 띄우세요 -- GUI '노드 시작' 또는\n"
-            "  (pylibfranka-venv) python experiments/launch_nodes.py --robot fr3")
+            "  (pylibfranka-venv) python scripts/launch/launch_nodes.py --robot fr3")
 
     def joints(obs) -> np.ndarray:
         return np.array([obs[k] for k in JOINT_KEYS[:7]])

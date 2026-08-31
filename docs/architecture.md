@@ -87,7 +87,7 @@ REQ/REP 의 락스텝이 중요하다. 노드가 한 틱 늦으면 워커가 그
 `recv()` 와 `send()` 사이에서 빠져나가면 소켓이 영구히 어긋난다. 그래서
 `ZMQServerRobot` 은 `RCVTIMEO` 를 걸고 `zmq.Again` 을 명시적으로 처리한다.
 
-카메라는 ZMQ 카메라 노드(`gello/zmq_core/camera_node.py`)를 **거치지 않는다**.
+카메라는 ZMQ 카메라 노드(`gello/comm/zmq_core/camera_node.py`)를 **거치지 않는다**.
 그 경로는 존재하지만 이 GUI 는 쓰지 않고, lerobot 의 `RealSenseCamera` 를 GUI
 프로세스 안에서 직접 연다. 640×480 RGB 를 매 틱 pickle 로 왕복시킬 이유가 없다.
 

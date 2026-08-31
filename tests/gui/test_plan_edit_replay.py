@@ -7,6 +7,7 @@ from pathlib import Path
 
 WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
 sys.path.insert(0, WT)
+sys.path.insert(0, WT + "/apps")
 sys.path.insert(0, WT + "/experiments")
 sys.argv = ["t"]
 from PyQt6.QtWidgets import QApplication  # noqa: E402
@@ -16,7 +17,7 @@ import collect_workspace as cw  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="planedit_"))
 plan_copy = TMP / "pilot.json"
-shutil.copy(f"{WT}/configs/collection_plans/pilot.json", plan_copy)
+shutil.copy(f"{WT}/configs/collection/plans/pilot.json", plan_copy)
 
 # 1. 편집 다이얼로그: 유효한 수정 -> 저장됨
 dlg = cw.PlanJsonDialog(None, plan_copy)
@@ -56,7 +57,7 @@ from replay_episode import load_trajectory  # noqa: E402
 import subprocess  # noqa: E402
 
 _d = Path(tempfile.mkdtemp(prefix="replay_"))
-subprocess.run([sys.executable, WT + "/scripts/check_scene_file.py",
+subprocess.run([sys.executable, WT + "/scripts/check/check_scene_file.py",
                 "--selftest", "--keep", str(_d)], check=True, capture_output=True)
 t1 = load_trajectory(_d / "scene_000.hdf5", "episode_000")
 assert t1["q"].shape[1] == 7 and len(t1["grip"]) == len(t1["q"])

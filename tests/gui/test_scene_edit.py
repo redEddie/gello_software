@@ -13,16 +13,16 @@ import numpy as np
 
 WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
 sys.path.insert(0, WT)
-sys.path.insert(0, WT + "/experiments")
-sys.path.insert(0, WT + "/scripts")
+sys.path.insert(0, WT + "/apps")
+sys.path.insert(0, WT + "/scripts/check")
 sys.argv = ["t"]
 
-from gello.scene_format import (  # noqa: E402
+from gello.scene.scene_format import (  # noqa: E402
     SceneWriter, delete_scene_episodes, list_scene_episodes, read_scene_metadata,
 )
 
 d = Path(tempfile.mkdtemp(prefix="sceneedit_"))
-subprocess.run([sys.executable, WT + "/scripts/check_scene_file.py",
+subprocess.run([sys.executable, WT + "/scripts/check/check_scene_file.py",
                 "--selftest", "--keep", str(d)], check=True, capture_output=True)
 scene = d / "scene_000.hdf5"
 eps0 = list_scene_episodes(scene)
@@ -89,7 +89,7 @@ r = np.random.default_rng(1)
 print("3 통과: SceneWriter.delete_episode 후 연속 번호")
 
 # ---- 4. Trim: scene 에피소드도 끝 다듬기 가능 ----
-from gello.episode_trim import plan_trim, trim_tail  # noqa: E402
+from gello.data.episode_trim import plan_trim, trim_tail  # noqa: E402
 
 # 짧은 selftest 에피소드는 최소 길이 규칙에 막힌다 (규칙 적용 확인)
 short = list_scene_episodes(scene)[0]
@@ -124,7 +124,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 import collect_workspace as cw  # noqa: E402
-from gello.libero_format import hdf5_repack_status  # noqa: E402
+from gello.data.libero_format import hdf5_repack_status  # noqa: E402
 
 cw.WorkspaceWindow._refresh_cameras = lambda self: None
 cw.WorkspaceWindow._restart_previews = lambda self: None
@@ -161,7 +161,7 @@ assert not probs, probs
 print("6 통과: check_scene_file 불변식 (연속 번호·slot E 연속·uid 일치) 통과")
 
 # ---- 7. 삭제 확인창: 목록 + Hub 안내는 uid 단위 (네트워크 스텁 3경로) ----
-import gello.dataset_sync as _sync  # noqa: E402
+import gello.data.dataset_sync as _sync  # noqa: E402
 
 cur = list_scene_episodes(scene)
 targets = {scene: [e["name"] for e in cur][:2]}
@@ -187,7 +187,7 @@ if have_repo:
 print(f"7 통과: 확인창 목록 {len(rows)}행 + Hub 안내 uid 단위 3경로 (repo 설정={'O' if have_repo else '-'})")
 
 # ---- 8. 회귀: WorkspaceWindow 메서드 중복 정의 없음 ----
-src = Path(WT) / "experiments" / "collect_workspace.py"
+src = Path(WT) / "apps" / "collect_workspace.py"
 tree = ast.parse(src.read_text(encoding="utf-8"))
 for node in ast.walk(tree):
     if isinstance(node, ast.ClassDef) and node.name == "WorkspaceWindow":
@@ -250,7 +250,7 @@ print("9 통과: 버튼 슬롯 경로에서 확인창 문구 실제 동작 기�
 
 # ---- 10. 썸네일 캐시 무효화: scene 삭제/renumber 로 uid 가 재배정되면
 #    기존 썸네일이 잘못된 에피소드에 표시될 수 있다.
-from gello.scene_gallery import invalidate_scene_thumbs  # noqa: E402
+from gello.gui.scene_gallery import invalidate_scene_thumbs  # noqa: E402
 
 td = Path(tempfile.mkdtemp(prefix="thumbs_"))
 (td / "EP-S000-I000-E000.jpg").write_text("a")

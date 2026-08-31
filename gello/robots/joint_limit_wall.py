@@ -80,7 +80,7 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-from gello.dynamixel.driver import (
+from gello.hw.dynamixel.driver import (
     CURRENT_CONTROL_MODE,
     POSITION_CONTROL_MODE,
     DynamixelDriverProtocol,

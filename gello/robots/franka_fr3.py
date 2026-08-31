@@ -14,7 +14,7 @@ call freezes the 1 kHz control thread and the robot aborts with
 Design
 ------
 The GELLO teleop stack drives the robot through a synchronous ZMQ REQ/REP
-server (:class:`gello.zmq_core.robot_node.ZMQServerRobot`).  Each
+server (:class:`gello.comm.zmq_core.robot_node.ZMQServerRobot`).  Each
 ``command_joint_state`` call must return quickly.  ``pylibfranka`` on the other
 hand exposes an *active control* interface that has to be serviced at 1 kHz
 (``readOnce``/``writeOnce``).  We bridge the two:
@@ -75,7 +75,7 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from gello.robots.robot import Robot
+from gello.core.robot import Robot
 
 # FR3 gripper stroke (m).  Franka Hand opens to ~0.08 m.
 MAX_GRIPPER_WIDTH = 0.08
@@ -125,7 +125,7 @@ FR3_COLLISION_TORQUE = [100.0, 100.0, 100.0, 100.0, 40.0, 40.0, 40.0]
 # These are data, not enforcement.  The follower deliberately does NOT clamp
 # commands to them -- silently overriding the leader decouples the two arms and
 # leaves the operator with a dead zone.  They exist so the *leader* can be given
-# a physical wall at the same place (scripts/gello_joint_limit_wall.py).
+# a physical wall at the same place (scripts/check/gello_joint_limit_wall.py).
 FR3_Q_LOWER = np.array([-2.7437, -1.7837, -2.9007, -3.0421, -2.8065, 0.5445, -3.0159])
 FR3_Q_UPPER = np.array([2.7437, 1.7837, 2.9007, -0.1518, 2.8065, 4.5169, 3.0159])
 

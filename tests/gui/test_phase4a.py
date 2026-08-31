@@ -8,21 +8,21 @@ from pathlib import Path
 
 WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
 sys.path.insert(0, WT)
-sys.path.insert(0, WT + "/experiments")
+sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 
-from gello.collection_plan import (  # noqa: E402
+from gello.scene.collection_plan import (  # noqa: E402
     check_scene_against_plan,
     list_plans,
     load_plan,
 )
-from gello.scene_format import list_scene_episodes  # noqa: E402
+from gello.scene.scene_format import list_scene_episodes  # noqa: E402
 
-PLANS = Path(WT) / "configs" / "collection_plans"
+PLANS = Path(WT) / "configs" / "collection" / "plans"
 
 # ---- 1. 로더: pilot.json + 규칙 검증 ----
 plan = load_plan(PLANS / "pilot.json")

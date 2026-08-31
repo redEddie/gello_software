@@ -3,7 +3,7 @@ from typing import Dict
 
 import numpy as np
 
-from gello.robots.robot import Robot
+from gello.core.robot import Robot
 
 MAX_OPEN = 0.09
 

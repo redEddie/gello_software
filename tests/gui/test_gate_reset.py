@@ -8,15 +8,15 @@ import numpy as np
 
 WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
 sys.path.insert(0, WT)
-sys.path.insert(0, WT + "/experiments")
+sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 
-from gello.lerobot_plugin import JOINT_KEYS  # noqa: E402
-from gello.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
+from gello.agents.lerobot_plugin import JOINT_KEYS  # noqa: E402
+from gello.gui.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
 
 CFG = WorkerConfig(task_name="t", language_instruction="t", data_root="/tmp",
                    auto_match_pose=True, reset_wait_seconds=0.4)

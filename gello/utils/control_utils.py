@@ -7,8 +7,8 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from gello.agents.agent import Agent
-from gello.env import RobotEnv
+from gello.core.agent import Agent
+from gello.core.env import RobotEnv
 
 DEFAULT_MAX_JOINT_DELTA = 1.0
 
@@ -85,7 +85,7 @@ class SaveInterface:
             agent_name: Name of agent (used for subdirectory)
             expand_user: Whether to expand ~ in data_dir path
         """
-        from gello.data_utils.keyboard_interface import KBReset
+        from gello.data.utils.keyboard_interface import KBReset
 
         self.kb_interface = KBReset()
         self.data_dir = Path(data_dir).expanduser() if expand_user else Path(data_dir)
@@ -106,7 +106,7 @@ class SaveInterface:
         Returns:
             Optional[str]: "quit" if user wants to exit, None otherwise
         """
-        from gello.data_utils.format_obs import save_frame
+        from gello.data.utils.format_obs import save_frame
 
         dt = datetime.datetime.now()
         state = self.kb_interface.update()

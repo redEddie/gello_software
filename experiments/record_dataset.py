@@ -1,7 +1,7 @@
 """FR3 + GELLO LeRobot 데이터셋 수집 도구 (lerobot-venv에서 실행).
 
 사전 조건: robot node가 떠 있어야 한다 --
-  (pylibfranka-venv) python experiments/launch_nodes.py --robot fr3
+  (pylibfranka-venv) python scripts/launch/launch_nodes.py --robot fr3
 
 사용 예:
   (lerobot-venv) python experiments/record_dataset.py \
@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 import zmq
 
-from gello.lerobot_plugin import (
+from gello.agents.lerobot_plugin import (
     JOINT_KEYS,
     FR3ZMQRobot,
     FR3ZMQRobotConfig,
@@ -40,7 +40,7 @@ from gello.lerobot_plugin import (
     GelloFR3TeleopConfig,
 )
 from gello.robots.franka_fr3 import DEFAULT_RESET_POSE, FR3_RESET_POSES
-from gello.station import load_station
+from gello.core.station import load_station
 from lerobot.cameras.realsense import RealSenseCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.feature_utils import (

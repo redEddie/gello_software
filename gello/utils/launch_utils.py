@@ -48,7 +48,7 @@ class SimpleLaunchManager:
             use_fake_fallback = dynamixel_config.get("use_fake_fallback", True)
 
             # Use enhanced driver with retry logic and fallback
-            from gello.dynamixel.driver import DynamixelDriver
+            from gello.hw.dynamixel.driver import DynamixelDriver
             from gello.robots.dynamixel import DynamixelRobot
 
             driver = DynamixelDriver(
@@ -65,8 +65,8 @@ class SimpleLaunchManager:
 
     def setup_communication(self):
         """Setup ZMQ communication for the robot."""
-        from gello.env import RobotEnv
-        from gello.zmq_core.robot_node import ZMQClientRobot, ZMQServerRobot
+        from gello.core.env import RobotEnv
+        from gello.comm.zmq_core.robot_node import ZMQClientRobot, ZMQServerRobot
 
         robot_cfg = self.cfg["robot"]
 

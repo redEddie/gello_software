@@ -10,4 +10,4 @@ set -e
 cd "$(dirname "${BASH_SOURCE[0]}")"
 git pull --ff-only 2>/dev/null || echo "[scene-collector] git pull 실패 (오프라인?) -- 현재 코드로 실행합니다"
 source /home/franka/lerobot-venv/bin/activate
-exec python experiments/collect_workspace.py
+exec python apps/collect_workspace.py

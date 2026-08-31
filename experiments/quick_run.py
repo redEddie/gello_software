@@ -9,11 +9,11 @@ from typing import Optional
 import numpy as np
 import tyro
 
-from gello.agents.agent import DummyAgent
+from gello.core.agent import DummyAgent
 from gello.agents.gello_agent import GelloAgent
 from gello.agents.spacemouse_agent import SpacemouseAgent
-from gello.env import RobotEnv
-from gello.zmq_core.robot_node import ZMQClientRobot, ZMQServerRobot
+from gello.core.env import RobotEnv
+from gello.comm.zmq_core.robot_node import ZMQClientRobot, ZMQServerRobot
 
 
 @dataclass
@@ -37,14 +37,14 @@ def launch_robot_server(port: int, args: Args):
         )
         xml = MENAGERIE_ROOT / "universal_robots_ur5e" / "ur5e.xml"
         gripper_xml = MENAGERIE_ROOT / "robotiq_2f85" / "2f85.xml"
-        from gello.robots.sim_robot import MujocoRobotServer
+        from gello.sim.sim_robot import MujocoRobotServer
 
         server = MujocoRobotServer(
             xml_path=xml, gripper_xml_path=gripper_xml, port=port, host=args.hostname
         )
         server.serve()
     elif args.robot == "sim_panda":
-        from gello.robots.sim_robot import MujocoRobotServer
+        from gello.sim.sim_robot import MujocoRobotServer
 
         MENAGERIE_ROOT: Path = (
             Path(__file__).parent.parent / "third_party" / "mujoco_menagerie"

@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
-from gello.agents.agent import Agent
+from gello.core.agent import Agent
 from gello.robots.dynamixel import DynamixelRobot
 from gello.robots.franka_fr3 import FR3_Q_LOWER, FR3_Q_UPPER, GRIPPER_CLOSE_AT
 

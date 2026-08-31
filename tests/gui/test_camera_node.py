@@ -13,12 +13,12 @@ import numpy as np
 WT = str(Path(__file__).resolve().parents[2])  # 리포 루트
 sys.path.insert(0, WT)
 
-from gello.camera_client import NodeCamera, fetch_aligned, node_ping  # noqa: E402
+from gello.comm.camera_client import NodeCamera, fetch_aligned, node_ping  # noqa: E402
 
 PUB, CTL = 16021, 16022  # 실제 기본 포트와 겹치지 않게
 
 node = subprocess.Popen(
-    [sys.executable, "-m", "gello.camera_node",
+    [sys.executable, "-m", "gello.comm.camera_node",
      "--cam", "agent:FAKE-A", "--cam", "wrist:FAKE-W",
      "--pub-port", str(PUB), "--ctl-port", str(CTL), "--fake"],
     cwd=WT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

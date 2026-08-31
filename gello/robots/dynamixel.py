@@ -2,7 +2,7 @@ from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
-from gello.robots.robot import Robot
+from gello.core.robot import Robot
 
 
 class DynamixelRobot(Robot):
@@ -21,7 +21,7 @@ class DynamixelRobot(Robot):
         joint_limits: Optional[Tuple[np.ndarray, np.ndarray]] = None,
         servo_types: Optional[Sequence[str]] = None,
     ):
-        from gello.dynamixel.driver import (
+        from gello.hw.dynamixel.driver import (
             DynamixelDriver,
             DynamixelDriverProtocol,
             FakeDynamixelDriver,

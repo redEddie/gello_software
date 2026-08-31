@@ -6,16 +6,16 @@
   <img src="imgs/libero_collector_gui.jpg" width="90%" />
 </p>
 
-- **`experiments/collect_workspace.py`** -- PyQt6 메인 GUI (워크스페이스형). VS Code 식 레이아웃: 왼쪽 액티비티 바(Configure/Collect/Dataset/Upload/Statistics/Settings)가 왼쪽 패널만 바꾸고, **카메라 미리보기는 항상 중앙에 유지된다** -- 3단계 마법사(준비/수집/정리)를 대체한 것으로, 단계 전환마다 화면 전체가(카메라까지) 바뀌던 문제를 없앴다. 중앙은 Live/Playback 탭, 오른쪽은 로봇·카메라·기록 상태, 아래는 Log/Upload/Validation 탭, 맨 아래 상태바. 로봇 노드 시작/종료, 자세 매칭 게이트(조인트별 델타 바), 에피소드 제어, 데이터셋 탐색기와 20fps 재생, 재압축·HDF5 업로드·LeRobot 변환/업로드까지 한 창에서 처리한다. 모든 패널은 스플리터로 자유롭게 조절된다.
-- **`scripts/check_cameras.py`** -- 카메라 USB 링크 속도와 실제 프레임 수신을 세션 전에 확인하는 독립 스크립트 (`scripts/check_cameras.py`, `--stream` 붙이면 실제 프레임까지). sysfs에서 협상된 링크 속도를 읽으므로 GUI가 켜져 있어도 정확하고, librealsense 쪽에서는 수집기가 쓰는 시리얼을 가져와 둘을 대조한다 -- USB에는 붙어 있는데 SDK가 못 보면 접촉 불량이다. `devnum`이 높으면 재연결이 잦았다는 뜻이라 함께 경고한다. 종료 코드 0=정상, 1=문제, 2=일부 확인 못 함.
-- **`gello/gui_widgets.py`** -- 두 GUI가 공유하던 위젯·대화상자를 분리한 모듈 (VideoView, DeltaBar, EpisodeLoadWorker, CameraPreviewWorker, 스키마/변환/업로드/재압축 대화상자).
-- **`gello/libero_gui_worker.py`** -- `record_dataset.py`의 홈복귀→리셋대기→자세게이트→접근램프→기록 상태 머신을 커맨드큐+Qt시그널 방식으로 이식한 백그라운드 `QThread`.
-- **`gello/libero_format.py`** -- LIBERO 표준 HDF5(`<task>_demo.hdf5`) writer. 재시작된 `launch_nodes.py` 같은 자식 프로세스가 fork+exec로 파일 fd를 물려받아 계속 잠가버리는 문제를 막기 위해 `FD_CLOEXEC` 설정.
-- **`gello/dataset_schema.py`** -- 저장할 데이터 구조를 세션별로 커스터마이징. GUI의 "데이터셋 구조: 기본/사용자 지정" 버튼에서: action space 선택(EE-delta/EE-pose absolute/Joint-angle delta/Joint-angle absolute), action에 그리퍼 포함 여부, 그리퍼 인코딩(-1/+1 robosuite 관례 vs observation과 동일한 0/1), action의 각 열 이름을 개별로 오버라이드(기본값은 observation과 맞춰짐 -- 예: Joint-angle absolute는 `joint1.pos`.."joint7.pos"/`gripper.pos`), 저장할 observation 필드 선택(이미지 2종/joint states/gripper state/EE pos·ori·states), 추가 필드(joint velocities, timestamp), 이미지 해상도(256x256 LIBERO 기본 vs 원본 해상도). "기본값 사용"이 켜져 있으면 나머지 설정과 무관하게 항상 원래 LIBERO 고정 스키마(EE-delta, 그리퍼 -1/+1, obs 전부, 256x256)로 저장됨 -- GELLO는 조인트 공간으로 텔레옵하지만 기본 action은 실현된 EE 궤적에서 계산한 델타 포즈(OSC_POSE 스타일, [-1,1] 정규화)로 LIBERO 관례에 맞춤. 선택은 `~/libero_gui_logs/dataset_schema.json`에 저장되어 다음 실행에도 유지.
-- **`scripts/convert_libero_to_lerobot.py`** -- 위 스키마를 실제로 반영해 변환 (파일의 `obs`/`actions` 실물을 읽어 action space·obs 필드·그리퍼 포함 여부·커스텀 열 이름까지 자동 감지, 여러 파일을 함께 변환할 때 스키마가 다르면 변환 시작 전에 에러로 막음). `--resume`으로 이미 Hub에 올라간 데이터셋에 새 task의 에피소드만 이어붙이는 진짜 증분 업로드 지원 -- 기존 task는 재변환/재인코딩하지 않음 (다만 두 명이 동시에 같은 repo에 --resume+push 하면 서로 덮어써서 데이터가 조용히 유실될 수 있음 -- 스크립트 docstring과 GUI 경고 문구 참고). 이미지는 아직 256x256만 지원 -- "원본 해상도 유지"로 수집한 파일은 변환 전 에러로 안내.
-- **`scripts/upload_to_hub.py`** -- 변환 없이 원본 HDF5 파일 자체를 Hugging Face Hub 데이터셋 repo에 그대로 업로드 (GUI의 데이터셋 탐색기 "HDF5 업로드..." 버튼). raw HDF5와 LeRobot 변환본을 각각 다른 repo에 올리는 이원화 업로드 과정은 별도 정리해둠.
-- **`gello/i18n.py`** -- GUI 오른쪽 위 English/한국어 토글이 쓰는 문자열 테이블. 실시간 로그·서브프로세스(runme.sh, 변환/업로드 스크립트) 출력은 번역 대상이 아니라 한국어 그대로 유지.
-- **버그 수정 (기존 파일)**: `GelloAgent.close()`가 leader의 Dynamixel 시리얼 포트를 한 번도 닫지 않아, 같은 프로세스에서 재연결 시 포트가 자기 자신에 의해 점유된 것으로 잡혀 `fuser -k`가 자기 자신을 죽이는 버그를 고침 (`gello/agents/gello_agent.py`, `gello/robots/dynamixel.py`, `gello/dynamixel/driver.py`). 홈 복귀 중 그리퍼가 직전 상태를 그대로 유지하던(안 열리던) 버그도 고침 (`gello/libero_gui_worker.py`의 `_ramp_to`).
+- **`apps/collect_workspace.py`** -- PyQt6 메인 GUI (워크스페이스형). VS Code 식 레이아웃: 왼쪽 액티비티 바(Configure/Collect/Dataset/Upload/Statistics/Settings)가 왼쪽 패널만 바꾸고, **카메라 미리보기는 항상 중앙에 유지된다** -- 3단계 마법사(준비/수집/정리)를 대체한 것으로, 단계 전환마다 화면 전체가(카메라까지) 바뀌던 문제를 없앴다. 중앙은 Live/Playback 탭, 오른쪽은 로봇·카메라·기록 상태, 아래는 Log/Upload/Validation 탭, 맨 아래 상태바. 로봇 노드 시작/종료, 자세 매칭 게이트(조인트별 델타 바), 에피소드 제어, 데이터셋 탐색기와 20fps 재생, 재압축·HDF5 업로드·LeRobot 변환/업로드까지 한 창에서 처리한다. 모든 패널은 스플리터로 자유롭게 조절된다.
+- **`scripts/check/check_cameras.py`** -- 카메라 USB 링크 속도와 실제 프레임 수신을 세션 전에 확인하는 독립 스크립트 (`scripts/check/check_cameras.py`, `--stream` 붙이면 실제 프레임까지). sysfs에서 협상된 링크 속도를 읽으므로 GUI가 켜져 있어도 정확하고, librealsense 쪽에서는 수집기가 쓰는 시리얼을 가져와 둘을 대조한다 -- USB에는 붙어 있는데 SDK가 못 보면 접촉 불량이다. `devnum`이 높으면 재연결이 잦았다는 뜻이라 함께 경고한다. 종료 코드 0=정상, 1=문제, 2=일부 확인 못 함.
+- **`gello/gui/gui_widgets.py`** -- 두 GUI가 공유하던 위젯·대화상자를 분리한 모듈 (VideoView, DeltaBar, EpisodeLoadWorker, CameraPreviewWorker, 스키마/변환/업로드/재압축 대화상자).
+- **`gello/gui/libero_gui_worker.py`** -- `record_dataset.py`의 홈복귀→리셋대기→자세게이트→접근램프→기록 상태 머신을 커맨드큐+Qt시그널 방식으로 이식한 백그라운드 `QThread`.
+- **`gello/data/libero_format.py`** -- LIBERO 표준 HDF5(`<task>_demo.hdf5`) writer. 재시작된 `launch_nodes.py` 같은 자식 프로세스가 fork+exec로 파일 fd를 물려받아 계속 잠가버리는 문제를 막기 위해 `FD_CLOEXEC` 설정.
+- **`gello/data/dataset_schema.py`** -- 저장할 데이터 구조를 세션별로 커스터마이징. GUI의 "데이터셋 구조: 기본/사용자 지정" 버튼에서: action space 선택(EE-delta/EE-pose absolute/Joint-angle delta/Joint-angle absolute), action에 그리퍼 포함 여부, 그리퍼 인코딩(-1/+1 robosuite 관례 vs observation과 동일한 0/1), action의 각 열 이름을 개별로 오버라이드(기본값은 observation과 맞춰짐 -- 예: Joint-angle absolute는 `joint1.pos`.."joint7.pos"/`gripper.pos`), 저장할 observation 필드 선택(이미지 2종/joint states/gripper state/EE pos·ori·states), 추가 필드(joint velocities, timestamp), 이미지 해상도(256x256 LIBERO 기본 vs 원본 해상도). "기본값 사용"이 켜져 있으면 나머지 설정과 무관하게 항상 원래 LIBERO 고정 스키마(EE-delta, 그리퍼 -1/+1, obs 전부, 256x256)로 저장됨 -- GELLO는 조인트 공간으로 텔레옵하지만 기본 action은 실현된 EE 궤적에서 계산한 델타 포즈(OSC_POSE 스타일, [-1,1] 정규화)로 LIBERO 관례에 맞춤. 선택은 `~/libero_gui_logs/dataset_schema.json`에 저장되어 다음 실행에도 유지.
+- **`scripts/convert/convert_libero_to_lerobot.py`** -- 위 스키마를 실제로 반영해 변환 (파일의 `obs`/`actions` 실물을 읽어 action space·obs 필드·그리퍼 포함 여부·커스텀 열 이름까지 자동 감지, 여러 파일을 함께 변환할 때 스키마가 다르면 변환 시작 전에 에러로 막음). `--resume`으로 이미 Hub에 올라간 데이터셋에 새 task의 에피소드만 이어붙이는 진짜 증분 업로드 지원 -- 기존 task는 재변환/재인코딩하지 않음 (다만 두 명이 동시에 같은 repo에 --resume+push 하면 서로 덮어써서 데이터가 조용히 유실될 수 있음 -- 스크립트 docstring과 GUI 경고 문구 참고). 이미지는 아직 256x256만 지원 -- "원본 해상도 유지"로 수집한 파일은 변환 전 에러로 안내.
+- **`scripts/convert/upload_to_hub.py`** -- 변환 없이 원본 HDF5 파일 자체를 Hugging Face Hub 데이터셋 repo에 그대로 업로드 (GUI의 데이터셋 탐색기 "HDF5 업로드..." 버튼). raw HDF5와 LeRobot 변환본을 각각 다른 repo에 올리는 이원화 업로드 과정은 별도 정리해둠.
+- **`gello/gui/i18n.py`** -- GUI 오른쪽 위 English/한국어 토글이 쓰는 문자열 테이블. 실시간 로그·서브프로세스(runme.sh, 변환/업로드 스크립트) 출력은 번역 대상이 아니라 한국어 그대로 유지.
+- **버그 수정 (기존 파일)**: `GelloAgent.close()`가 leader의 Dynamixel 시리얼 포트를 한 번도 닫지 않아, 같은 프로세스에서 재연결 시 포트가 자기 자신에 의해 점유된 것으로 잡혀 `fuser -k`가 자기 자신을 죽이는 버그를 고침 (`gello/agents/gello_agent.py`, `gello/robots/dynamixel.py`, `gello/hw/dynamixel/driver.py`). 홈 복귀 중 그리퍼가 직전 상태를 그대로 유지하던(안 열리던) 버그도 고침 (`gello/gui/libero_gui_worker.py`의 `_ramp_to`).
 
 실행: `run_libero_collector.sh` 또는 바탕화면 바로가기로 GUI만 켜면, 그 안에서 로봇 노드까지 관리 가능.
 
@@ -37,7 +37,7 @@
 
 ## 학습된 정책 실행 (policy client)
 
-`experiments/fr3_policy_client.py` — GPU 머신의 정책 서버(mamba-embeddingvla
+`apps/fr3_policy_client.py` — GPU 머신의 정책 서버(mamba-embeddingvla
 `real_deploy/fr3_policy_server.py`)에 관측을 보내고 8-dim 절대 관절각 청크를 받아
 실행한다. 이 컴퓨터에서는 모델 연산 없음.
 
@@ -53,13 +53,13 @@
 **실행 순서** (FR3 컨트롤러 컴퓨터):
 ```bash
 # 0) 통신 테스트 (로봇/카메라 불필요 — 합성 관측으로 서버 왕복 확인)
-(lerobot-venv) PYTHONPATH=$PWD python experiments/fr3_policy_client.py --dry-run
+(lerobot-venv) PYTHONPATH=$PWD python apps/fr3_policy_client.py --dry-run
 
 # 1) 로봇 노드 (robot_ip 기본값은 FR3의 172.16.0.2 — 정책 서버 주소가 아니다)
-(pylibfranka-venv) python experiments/launch_nodes.py --robot fr3
+(pylibfranka-venv) python scripts/launch/launch_nodes.py --robot fr3
 
 # 2) 클라이언트
-(lerobot-venv) PYTHONPATH=$PWD python experiments/fr3_policy_client.py \
+(lerobot-venv) PYTHONPATH=$PWD python apps/fr3_policy_client.py \
     --instruction "pick up the white cup and place it on the yellow bowl" --max-seconds 60
 ```
 
@@ -237,7 +237,7 @@ Set your GELLO and robot arm to a known, matching configuration (see images belo
 
 **UR Robot:**
 ```bash
-python scripts/gello_get_offset.py \
+python scripts/calib/gello_get_offset.py \
     --start-joints 0 -1.57 1.57 -1.57 -1.57 0 \
     --joint-signs 1 1 -1 1 1 1 \
     --port /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT7WBG6
@@ -245,7 +245,7 @@ python scripts/gello_get_offset.py \
 
 **Franka FER (Panda):**
 ```bash
-python scripts/gello_get_offset.py \
+python scripts/calib/gello_get_offset.py \
     --start-joints 0 0 0 -1.57 0 1.57 0 \
     --joint-signs 1 1 1 1 1 -1 1 \
     --port /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT7WBG6
@@ -253,7 +253,7 @@ python scripts/gello_get_offset.py \
 
 **I2RT YAM:**
 ```bash
-python scripts/gello_get_offset.py \
+python scripts/calib/gello_get_offset.py \
     --start-joints 0 0 0 0 0 0 \
     --joint-signs 1 -1 -1 -1 1 1 \
     --port /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTAAMLV6-if00-port0
@@ -339,15 +339,15 @@ First, install robot-specific dependencies:
 **1. Launch the robot node:**
 ```bash
 # For simulation
-python experiments/launch_nodes.py --robot <sim_ur|sim_panda|sim_xarm>
+python scripts/launch/launch_nodes.py --robot <sim_ur|sim_panda|sim_xarm>
 
 # For real hardware
-python experiments/launch_nodes.py --robot <ur|panda|xarm>
+python scripts/launch/launch_nodes.py --robot <ur|panda|xarm>
 ```
 
 **2. Launch GELLO controller:**
 ```bash
-python experiments/run_env.py --agent=gello
+python scripts/launch/run_env.py --agent=gello
 ```
 
 ### Troubleshooting
@@ -362,7 +362,7 @@ If some joints in your arm are not behaving as expected, you may need to modify 
 
 Use `--start-joints` to specify GELLO's starting configuration for automatic robot reset:
 ```bash
-python experiments/run_env.py --agent=gello --start-joints <joint_angles>
+python scripts/launch/run_env.py --agent=gello --start-joints <joint_angles>
 ```
 
 ## Advanced Features
@@ -380,7 +380,7 @@ After launching, you can begin saving with `s` and stop saving with `q`. Data sa
 
 For non-YAM setups, use the following:
 ```bash
-python experiments/run_env.py --agent=gello --use-save-interface
+python scripts/launch/run_env.py --agent=gello --use-save-interface
 ```
 Process collected data:
 ```bash
@@ -397,8 +397,8 @@ python experiments/launch_yaml.py --left-config-path configs/gello_1.yaml --righ
 
 For non-YAM setups, use:
 ```bash
-python experiments/launch_nodes.py --robot=bimanual_ur
-python experiments/run_env.py --agent=gello --bimanual
+python scripts/launch/launch_nodes.py --robot=bimanual_ur
+python scripts/launch/run_env.py --agent=gello --bimanual
 ```
 ### FACTR Gravity Compensation
 If you want to activate gravity compensation, all the code can be found in `gello/factr`. It works similarly to the regular launch but for now it's self-contained inside its own subdirectory and supports the YAM arm in sim and in hardware.
@@ -407,7 +407,7 @@ The YAML provides important fields that can control the strength of the gravity 
 
 One important step is to add the URDF. We have provided the URDF for the active GELLO in the [Hardware Repository](https://github.com/wuphilipp/gello_mechanical). You will need to update the path in the YAML to the entry point of the URDF. 
 ```bash
-python gello/factr/gravity_compensation.py --config configs/yam_gello_factr_hw.yaml
+python gello/hw/factr/gravity_compensation.py --config configs/yam_gello_factr_hw.yaml
 
 ```
 

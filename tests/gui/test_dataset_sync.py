@@ -13,7 +13,7 @@ sys.path.insert(0, WT)
 sys.path.insert(0, WT + "/scripts")
 sys.argv = ["t"]
 
-from gello.dataset_sync import (  # noqa: E402
+from gello.data.dataset_sync import (  # noqa: E402
     LEROBOT_TAG,
     hub_episode_uids,
     hub_meta,
@@ -93,7 +93,7 @@ def test_mixed_at_repack_cleared():
     task = "mixed pick and place task"
 
     # ---- scene 파일: 같은 문장의 success 에피소드 1개
-    from gello.scene_format import SceneMetadata, SceneWriter  # noqa: E402
+    from gello.scene.scene_format import SceneMetadata, SceneWriter  # noqa: E402
 
     md = SceneMetadata(
         scene_id="S000",

@@ -7,7 +7,7 @@ from pathlib import Path
 
 WT = str(Path(__file__).resolve().parents[2])   # 리포 루트
 sys.path.insert(0, WT)
-sys.path.insert(0, WT + "/experiments")
+sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
@@ -17,7 +17,7 @@ import collect_workspace as cw  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="planform_"))
 plan_copy = TMP / "pilot.json"
-shutil.copy(f"{WT}/configs/collection_plans/pilot.json", plan_copy)
+shutil.copy(f"{WT}/configs/collection/plans/pilot.json", plan_copy)
 orig = json.loads(plan_copy.read_text())
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 cw.QMessageBox.information = staticmethod(lambda *a, **k: None)
