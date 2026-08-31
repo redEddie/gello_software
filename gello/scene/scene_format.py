@@ -93,7 +93,7 @@ from gello.data.libero_format import (
 
 #: 파일에 적히는 형식 버전. 2026-08-31 부터 SemVer 표기 ``knu-X.Y.Z``
 #: (issue #41) 이고, 정본과 규약은 gello.data.dataset_schema 에 있다.
-#: 그 전 파일은 전부 ``scene-v1`` 인데 필드 구성이 knu-0.1.0 과 같아
+#: 그 전 파일은 전부 ``scene-v1`` 인데 필드 구성이 knu-1.0.0 과 같아
 #: 소급 기록 없이 별칭으로 해석한다 (normalize_schema_version).
 SCENE_DATASET_VERSION = SCHEMA_VERSION
 
@@ -244,7 +244,7 @@ def _read_metadata(meta: h5py.Group) -> SceneMetadata:
         layout=json.loads(meta.attrs["layout"]),
         description=str(meta.attrs.get("description", "")),
         station=str(meta.attrs.get("station", "")),
-        # 옛 표기(scene-v1)는 여기서 knu-0.1.0 으로 풀어 준다 -- 읽는 쪽은
+        # 옛 표기(scene-v1)는 여기서 knu-1.0.0 으로 풀어 준다 -- 읽는 쪽은
         # 어느 시절 파일인지 신경 쓰지 않고 SemVer 하나만 보면 된다.
         dataset_version=normalize_schema_version(
             meta.attrs.get("dataset_version", "")),

@@ -13,16 +13,16 @@ and that module ever disagree, the module is right and this document is a bug.
 
 | Bump | Means | Example |
 |---|---|---|
-| MINOR | **Fields added only.** Nothing existing changes. | joint torques → `knu-0.2.0` |
+| MINOR | **Fields added only.** Nothing existing changes. | joint torques → `knu-1.1.0` |
 | MAJOR | A field's meaning, unit, or name changes, or a field is removed. | angles in degrees instead of radians |
 | PATCH | This document changed; the data did not. | wording fix |
 
 Because MINOR only ever *adds*, compatibility holds in both directions inside
 one MAJOR:
 
-- **Backward** — a `knu-0.2.0` reader opens `knu-0.1.0` data; the fields added
-  in 0.2.0 are simply absent.
-- **Forward** — a `knu-0.1.0` reader opens `knu-0.2.0` data; every field it
+- **Backward** — a `knu-1.1.0` reader opens `knu-1.0.0` data; the fields added
+  in 1.1.0 are simply absent.
+- **Forward** — a `knu-1.0.0` reader opens `knu-1.1.0` data; every field it
   knows is still there, and it ignores the new ones.
 
 So a reader must accept every MINOR within its own MAJOR
@@ -43,18 +43,25 @@ validator fails the file otherwise.
 ### Files recorded before versioning
 
 Everything collected up to 2026-08-31 (`scene_000` … `scene_014`, 1100
-episodes) carries `dataset_version = "scene-v1"`. Those files were surveyed
-field by field and are **identical** to what is frozen below as `knu-0.1.0`, so
-they are interpreted through an alias rather than rewritten:
+episodes) was written with the older label `dataset_version = "scene-v1"`.
+Those files were surveyed field by field and are **identical** to what is
+frozen below, so they were stamped in place with
+`scripts/convert/stamp_schema_version.py`: both version attributes now read
+`knu-1.0.0`. Only those two attributes changed — no episode was touched, no
+data was rewritten, and `edit_count` was deliberately left alone (bumping it
+would force a full LeRobot rebuild, and no episode changed).
+
+The alias table stays anyway, permanently:
 
 ```
-"scene-v1" -> "knu-0.1.0"
-""         -> "knu-0.1.0"     # very early files with no version attribute
+"scene-v1" -> "knu-1.0.0"
+""         -> "knu-1.0.0"     # very early files with no version attribute
 ```
 
-No migration, re-packing, or re-upload is needed for the version scheme itself.
+Copies that left this machine before the stamping — the Hub upload, backups,
+`old_data/` — still carry the old label, and readers must keep resolving it.
 
-## `knu-0.1.0` — frozen 2026-08-31
+## `knu-1.0.0` — frozen 2026-08-31
 
 One HDF5 file per scene: `scene_NNN.hdf5`.
 
@@ -96,15 +103,15 @@ never stalls the operator) and re-compressed to `gzip` by
 `scripts/convert/repack_hdf5.py` afterwards. **Compression is not part of the
 schema** — the same version can be stored either way.
 
-### Not in 0.1.0
+### Not in 1.0.0
 
 - **Depth.** `DatasetSchemaConfig` has `save_agentview_depth` /
   `save_eye_in_hand_depth`, but both are force-disabled (`_FIXED`): the camera
   driver in use (lerobot 0.5.0 `RealSenseCamera`) has no `read_latest_depth`.
   No recorded file contains depth. When the driver supports it, depth is a
-  field **addition** → `knu-0.2.0`.
+  field **addition** → `knu-1.1.0`.
 - **Joint torques / external forces** (`tau_J`, `tau_ext_hat_filtered`,
-  `O_F_ext_hat_K`) — issue #16. Also an addition → `knu-0.2.0`.
+  `O_F_ext_hat_K`) — issue #16. Also an addition → `knu-1.1.0`.
 
 ## How to bump a MINOR
 

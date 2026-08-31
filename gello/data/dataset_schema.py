@@ -39,33 +39,36 @@ DEFAULT_CONFIG_PATH = Path.home() / "libero_gui_logs" / "dataset_schema.json"
 #
 #   MINOR = 필드 '추가'만. 옛 리더가 새 파일을 열어도 자기가 아는 필드는
 #           그대로 있으니 읽힌다(전방 호환), 새 리더가 옛 파일을 열면
-#           추가 필드만 없다(후방 호환). 예: 조인트 토크 추가 -> knu-0.2.0.
+#           추가 필드만 없다(후방 호환). 예: 조인트 토크 추가 -> knu-1.1.0.
 #   MAJOR = 기존 필드의 의미·단위·이름 변경이나 삭제. 리더는 자기 MAJOR
 #           안의 모든 MINOR 를 읽을 수 있어야 한다.
 #   PATCH = 데이터에 영향 없는 명세 문서 수정.
 #
 # 명세 문서는 docs/dataset-schema.md 이고, 이 상수들이 그 문서의 코드 쪽
 # 정본이다 (문서와 어긋나면 검증기가 잡는다).
-SCHEMA_VERSION = "knu-0.1.0"
+SCHEMA_VERSION = "knu-1.0.0"
 
 #: 버전 문자열이 없던 시절의 표기 -> 현재 버전. 기존 파일(scene_000~014)은
-#: 전부 ``dataset_version="scene-v1"`` 이고 필드 구성이 knu-0.1.0 과 완전히
+#: 전부 ``dataset_version="scene-v1"`` 이고 필드 구성이 knu-1.0.0 과 완전히
 #: 같아, 소급 기록 없이 별칭으로만 해석한다.
 SCHEMA_VERSION_ALIASES = {
-    "scene-v1": "knu-0.1.0",
-    "": "knu-0.1.0",      # 아주 초기 파일: 표기 자체가 없다
+    # 2026-08-31 이전 파일의 표기. 대부분은 아래 stamp 스크립트로 실제
+    # knu-1.0.0 을 써 넣었지만, Hub 사본·백업·old_data 처럼 손대지 않은
+    # 사본이 남아 있으므로 별칭은 영구히 유지한다.
+    "scene-v1": "knu-1.0.0",
+    "": "knu-1.0.0",      # 아주 초기 파일: 표기 자체가 없다
 }
 
 #: 버전별 필수 필드. 검증기(scripts/check/check_scene_file.py)가 이걸 본다.
 #: 새 MINOR 를 추가할 때는 이전 항목을 고치지 말고 새 키를 넣는다 -- 옛
 #: 파일을 옛 규칙으로 계속 검사할 수 있어야 한다.
 SCHEMA_FIELDS = {
-    "knu-0.1.0": {
+    "knu-1.0.0": {
         # episode 그룹 바로 아래
         "episode_datasets": ("actions", "dones", "rewards"),
         # episode/obs 아래. depth 는 여기 없다 -- 카메라 드라이버가 아직
         # depth 읽기를 지원하지 않아 수집 자체가 꺼져 있다(_FIXED 참조).
-        # 되살아나면 필드 '추가'이므로 knu-0.2.0 이다.
+        # 되살아나면 필드 '추가'이므로 knu-1.1.0 이다.
         "obs_datasets": (
             "agentview_rgb", "eye_in_hand_rgb",
             "joint_states", "commanded_joint_states",
@@ -101,7 +104,7 @@ def normalize_schema_version(value) -> str:
 
 
 def parse_schema_version(value) -> "tuple[int, int, int] | None":
-    """``knu-0.1.0`` -> ``(0, 1, 0)``. 형식이 아니면 None."""
+    """``knu-1.0.0`` -> ``(1, 0, 0)``. 형식이 아니면 None."""
     s = normalize_schema_version(value)
     if not s.startswith("knu-"):
         return None
@@ -257,17 +260,17 @@ def save_schema_config(cfg: DatasetSchemaConfig, path: Path = DEFAULT_CONFIG_PAT
 def selftest() -> None:
     """버저닝 규약 자체 검증 (issue #41). 하드웨어·파일 불필요."""
     # 별칭: 옛 표기는 현재 버전으로 풀린다 (파일 소급 수정 없이)
-    assert normalize_schema_version("scene-v1") == "knu-0.1.0"
-    assert normalize_schema_version("") == "knu-0.1.0"
-    assert normalize_schema_version("knu-0.2.0") == "knu-0.2.0"
-    assert parse_schema_version("scene-v1") == (0, 1, 0)
+    assert normalize_schema_version("scene-v1") == "knu-1.0.0"
+    assert normalize_schema_version("") == "knu-1.0.0"
+    assert normalize_schema_version("knu-1.1.0") == "knu-1.1.0"
+    assert parse_schema_version("scene-v1") == (1, 0, 0)
     assert parse_schema_version("모르는버전") is None
 
     # 같은 MAJOR 안이면 위·아래 MINOR 모두 읽는다 (MINOR = 추가만)
-    assert schema_is_readable("knu-0.1.0", reader="knu-0.1.0")
-    assert schema_is_readable("knu-0.1.0", reader="knu-0.2.0")   # 후방 호환
-    assert schema_is_readable("knu-0.2.0", reader="knu-0.1.0")   # 전방 호환
-    assert not schema_is_readable("knu-1.0.0", reader="knu-0.1.0")  # MAJOR 다름
+    assert schema_is_readable("knu-1.0.0", reader="knu-1.0.0")
+    assert schema_is_readable("knu-1.0.0", reader="knu-1.1.0")   # 후방 호환
+    assert schema_is_readable("knu-1.1.0", reader="knu-1.0.0")   # 전방 호환
+    assert not schema_is_readable("knu-2.0.0", reader="knu-1.0.0")  # MAJOR 다름
     assert not schema_is_readable("이상한거")
 
     # 현재 버전은 필드 목록을 갖고 있고, 그 목록이 문서와 같은 정본이다
@@ -276,10 +279,10 @@ def selftest() -> None:
     assert set(cur) == {"episode_datasets", "obs_datasets",
                         "episode_attrs", "metadata_attrs"}
     # depth 는 0.1.0 에 없다 -- 드라이버 미지원으로 수집 자체가 꺼져 있고,
-    # 되살아나면 '추가'라 0.2.0 이다 (docs/dataset-schema.md)
+    # 되살아나면 '추가'라 1.1.0 이다 (docs/dataset-schema.md)
     assert not any("depth" in f for f in cur["obs_datasets"])
     assert "save_agentview_depth" in DatasetSchemaConfig._FIXED
-    # 토크도 아직 없다 (issue #16 -> 0.2.0)
+    # 토크도 아직 없다 (issue #16 -> 1.1.0)
     assert not any("torque" in f for f in cur["obs_datasets"])
 
     # 모르는 버전은 필드 목록이 없다 -> 검증기가 "모르는 스키마 버전" 으로 잡는다
