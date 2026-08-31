@@ -1219,7 +1219,13 @@ class CollectionWorker(QThread):
                     self.node_status.emit(True)
                     need_reset = True
         except Exception as e:  # noqa: BLE001
-            self.fatal_error.emit(f"{type(e).__name__}: {e}")
+            # 원인 체인 유지: wall 폴트는 "joint-limit wall thread failed"
+            # from <실제 원인> 으로 올라오는데, str(e) 만 보내면 서보 ID 와
+            # 에러 비트(0x20 등)가 든 원인 쪽이 통째로 사라진다.
+            msg = f"{type(e).__name__}: {e}"
+            if e.__cause__ is not None:
+                msg += f" -- 원인: {e.__cause__}"
+            self.fatal_error.emit(msg)
         finally:
             try:
                 self._writer.discard_episode()

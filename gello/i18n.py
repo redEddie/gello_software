@@ -289,6 +289,13 @@ _EN: dict[str, str] = {
     "Joint-angle delta (변화량)": "Joint-angle delta (change)",
     "Joint-angle absolute (절대 목표값)": "Joint-angle absolute (target value)",
 
+    # ---- menu items ----
+    "리더암 서보 보호 해제 (재부팅)": "Leader arm: clear servo protection (reboot)",
+    "\n\n서보 보호모드가 걸렸습니다. 세션 종료 후 "
+    "Tools > 리더암 서보 보호 해제 (재부팅) 으로 복구하세요.":
+        "\n\nA servo tripped its torque protection. End the session, then run "
+        "Tools > Leader arm: clear servo protection (reboot) to recover.",
+
     # ---- language toggle button itself ----
     "한국어 / English": "한국어 / English",
 }

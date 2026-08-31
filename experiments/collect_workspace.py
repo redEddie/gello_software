@@ -278,6 +278,7 @@ def _grid_overlay(img):
         out[:, x] = out[:, x] // 2 + c // 2
     return out
 CHECK_CAMERAS = str(Path(__file__).resolve().parent.parent / "scripts" / "check_cameras.py")
+RESET_PROTECTION = str(Path(__file__).resolve().parent.parent / "scripts" / "gello_reset_protection.py")
 
 
 def _read(path: Path) -> str:
@@ -5131,6 +5132,8 @@ class WorkspaceWindow(QMainWindow):
         m = mb.addMenu(tr("Tools"))
         m.addAction(tr("시스템 튜닝 실행 (runme.sh)"), self._run_runme)
         m.addAction(tr("카메라 점검 (USB 속도·프레임)"), self._on_check_cameras)
+        m.addAction(tr("리더암 서보 보호 해제 (재부팅)"),
+                    self._on_reset_leader_protection)
         m.addAction(tr("Hugging Face 계정..."), self._on_hf_accounts)
         m.addSeparator()
         m.addAction(tr("데이터셋 구조 사용자 설정..."), self._on_schema)
@@ -5996,6 +5999,12 @@ class WorkspaceWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_fatal(self, msg) -> None:
         self.log(f"[치명적 오류] {msg}")
+        # 서보 과토크 보호(overload 0x20 등 hardware error)로 죽은 세션은
+        # GUI 재시작이 아니라 서보 Reboot 으로만 복구된다 -- 그 툴이 있는
+        # 위치를 오류 대화상자에서 바로 알려준다 (#37B).
+        if "hardware error" in msg:
+            msg += tr("\n\n서보 보호모드가 걸렸습니다. 세션 종료 후 "
+                      "Tools > 리더암 서보 보호 해제 (재부팅) 으로 복구하세요.")
         self._alert(tr("오류"), msg, QMessageBox.Icon.Critical)
 
     @pyqtSlot(int, str)
@@ -7827,6 +7836,40 @@ class WorkspaceWindow(QMainWindow):
         self._camera_check_process = proc
         self.bottom_tabs.setCurrentWidget(self.validation_view)
         self.log("=== 카메라 점검 ===", "validation")
+        proc.start()
+
+    def _on_reset_leader_protection(self) -> None:
+        """scripts/gello_reset_protection.py 실행 -- 과토크 보호모드 해제 (#37B).
+
+        서보의 overload(0x20) 래치는 Reboot 으로만 풀린다. 스크립트가 리더암
+        시리얼 포트를 직접 여므로, 세션(worker)이 포트를 잡고 있는 동안은
+        실행하지 않는다 -- wall 스레드와 같은 버스를 두고 싸우는 경로 자체를
+        막는다. 재부팅 후 재설정은 필요 없다: operating mode 는 EEPROM 이라
+        살아남고, 다음 세션의 wall.start() 가 나머지를 다시 세팅한다.
+        """
+        p = getattr(self, "_reset_protection_process", None)
+        if p is not None and p.state() != QProcess.ProcessState.NotRunning:
+            self.log("[리더암] 보호 해제가 이미 실행 중입니다.")
+            return
+        if self.worker is not None:
+            self.log("[리더암] 세션이 리더암 포트를 잡고 있어 실행할 수 없습니다 -- "
+                     "Robot > 세션 종료 후 다시 시도하세요.")
+            return
+        proc = QProcess(self)
+        proc.setProgram(sys.executable)
+        proc.setArguments([RESET_PROTECTION])
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(
+            lambda: [self.log(f"[리더암] {ln}")
+                     for ln in self._proc_text(proc).splitlines() if ln.strip()])
+        proc.finished.connect(lambda c, _s: self.log(
+            {0: "[리더암] 보호 해제 완료 -- 새 세션을 시작할 수 있습니다.",
+             1: "[리더암] 일부 서보가 복구되지 않았습니다 -- 5V 전원을 껐다 켜고 "
+                "관절이 물리적으로 걸려 있지 않은지 확인하세요.",
+             2: "[리더암] 리더암 포트를 열지 못했습니다 -- 연결/전원을 확인하세요."}
+            .get(c, f"[리더암] 보호 해제 종료 (exit={c})")))
+        self._reset_protection_process = proc
+        self.log("=== 리더암 서보 보호 해제 ===")
         proc.start()
 
     def _run_runme(self) -> None:
