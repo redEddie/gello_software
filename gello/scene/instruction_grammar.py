@@ -29,6 +29,14 @@ large_bowl (selftest 가 두 category 의 색 겹침을 금지해 모호성을 �
 커트러리 전용 동사 (2026-08-31 사용자 확정):
     Tidy (여러 낱개를 반복 운반해 정리):
         tidy the cutlery into the {TARGET}   TARGET ∈ 그릇들 | wooden tray | drawer
+
+집합 지칭 동사 (2026-08-31 사용자 확정):
+    Stack (같은 것 여러 개를 포개기):
+        stack all the {색} {복수명사}        (같은 (색, category) 2개 이상일 때만)
+동일 외형이 여럿이면 개별 지칭("the pink striped bowl")은 모호하지만, 집합
+전체를 부르는 문장은 모호하지 않다 -- 그래서 똑같은 그릇 2개는 예비품으로
+빼둘 것이 아니라 stack 과제의 재료가 된다. QUALIFIER 로 하나를 콕 집는
+문법과 상호 보완이다 (저건 '어느 하나', 이건 '전부').
 더미(pile)를 옮기는 동작은 단일 픽앤플레이스와 운동 구조가 달라서, 같은
 "pick up" 동사·스킬로 두면 학습 시 작업 구분이 안 된다. 그래서 커트러리는
 pick/drag 문장에서 빠지고(tidy 만 생성) 스킬도 tidy-into 로 따로 집계된다.
@@ -107,6 +115,21 @@ _DRAWER_INSIDE_OBJS = {"cutlery"}
 _BESIDE_CATS = {"cup", "small_bowl", "bowl", "large_bowl", "tray"}
 # tidy 목적지 (담을 수 있는 것): 그릇들 + 트레이 + 서랍
 _TIDY_TARGETS = _BOWL_CATS | {"tray", "drawer"}
+# 포갤 수 있는 것 (stack 대상) -- 컵·그릇은 서로 겹쳐 쌓인다. 커트러리(더미),
+# 트레이·서랍(고정물)은 제외.
+_STACKABLE = _BOWL_CATS | {"cup"}
+#: 추천기가 "같은 색 2개를 넣어도 되는 category" 판단에 쓰는 공개 이름.
+STACKABLE_CATS = _STACKABLE
+
+# 집합 지칭용 복수 명사구. stack 문장은 개별 지칭이 아니라 이걸 쓴다.
+PLURAL_MAP = {
+    "cup": "cups",
+    "small_bowl": "small bowls",
+    "bowl": "bowls",
+    "large_bowl": "large bowls",
+}
+# 파싱은 긴 것부터 -- "small bowls" 가 "bowls" 에 잡아먹히지 않게.
+_PLURAL_ORDER = sorted(PLURAL_MAP.items(), key=lambda kv: -len(kv[1]))
 
 # QUALIFIER 문구 (OBJECT 바로 뒤, 필요할 때만)
 _QUALIFIERS = ("farthest from", "closest to", "to the left of", "to the right of")
@@ -165,6 +188,27 @@ def _parse_object_phrase(phrase: str) -> Optional[tuple[str, str]]:
                 continue
             if cat == "_bowl_alias":
                 cat = "bowl" if color in _bowl_category_colors() else "large_bowl"
+            return (color, cat)
+    return None
+
+
+def _parse_group_phrase(phrase: str) -> Optional[tuple[str, str]]:
+    """집합 지칭 "the pink striped bowls" -> ("pink striped", "bowl").
+
+    개별 지칭(_parse_object_phrase)과 달리 복수 명사구를 받는다. "bowls"
+    약칭은 개별 지칭과 같은 규칙으로 인벤토리에서 해소한다.
+    """
+    phrase = phrase.strip().lower()
+    if not phrase.startswith("the "):
+        return None
+    rest = phrase[4:].strip()
+    for cat, plural in _PLURAL_ORDER:
+        if rest.endswith(" " + plural):
+            color = rest[: -(len(plural) + 1)].strip()
+            if not color or color not in _known_colors():
+                continue
+            if cat == "bowl" and color not in _bowl_category_colors():
+                cat = "large_bowl"   # legacy 약칭: "the white bowls"
             return (color, cat)
     return None
 
@@ -292,6 +336,13 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
         sentences.add("open the top drawer")
         sentences.add("close the top drawer")
 
+    # 6) stack all the {색} {복수} -- 동일 외형이 2개 이상일 때만. 개별
+    # 지칭이 모호해 위 문장들에서 빠진 바로 그 물체들이 여기서 재료가 된다.
+    for cat in sorted(_STACKABLE):
+        for color in sorted({c for c, _ in by_cat.get(cat, [])}):
+            if _count(color, cat, md, props) >= 2:
+                sentences.add(f"stack all the {color} {PLURAL_MAP[cat]}")
+
     return sorted(sentences)
 
 
@@ -310,15 +361,19 @@ _DRAG_RE = re.compile(
 )
 # 커트러리 정리 (2026-08-31): QUALIFIER 없음 -- 더미 전체가 한 대상이다.
 _TIDY_RE = re.compile(r"^tidy the (?P<obj>.+?) into the (?P<tgt>.+)$")
+# 집합 쌓기 (2026-08-31): QUALIFIER 없음 -- 'all' 이 이미 전부를 뜻한다.
+_STACK_RE = re.compile(r"^stack all (?P<grp>the .+)$")
 
 
 #: 문법이 표현할 수 있는 스킬(동사×관계) 전집합 — skill_of() 의 치역.
 #: scene 추천의 지시문 단계(gello.scene.skill_stats)가 "실행 가능한 스킬 중
 #: 누적 수집횟수가 가장 적은 것 우선" 을 판단할 때의 단위다.
-#: tidy-into 는 반복 운반(더미 정리)이라 pick 계열과 운동 구조가 달라
-#: 별도 스킬로 집계한다 (2026-08-31 사용자 결정).
+#: tidy-into 는 반복 운반(더미 정리), stack-all 은 같은 것 여러 개를 포개기
+#: -- 둘 다 pick 계열과 운동 구조가 달라 별도 스킬로 집계한다
+#: (2026-08-31 사용자 결정).
 SKILLS = ("pick-on", "pick-inside", "pick-next_to", "pick-on_top_of",
-          "drag-next_to", "tidy-into", "drawer-open", "drawer-close")
+          "drag-next_to", "tidy-into", "stack-all",
+          "drawer-open", "drawer-close")
 
 
 def skill_of(sentence: str) -> Optional[str]:
@@ -341,6 +396,8 @@ def skill_of(sentence: str) -> Optional[str]:
         return "drag-next_to"
     if _TIDY_RE.match(s) is not None:
         return "tidy-into"
+    if _STACK_RE.match(s) is not None:
+        return "stack-all"
     return None
 
 
@@ -411,6 +468,25 @@ def lint(sentence: str, md: Optional[SceneMetadata] = None,
                 "'pick up the X and place it inside the Y'")
     if " that is " in sentence:
         return "QUALIFIER 는 'that is' 없이 붙인다 (예: the blue cup farthest from ...)"
+
+    # stack: 집합 지칭 (2026-08-31). 개별 지칭이 아니라 복수 명사구를 받고,
+    # 같은 (색, category) 가 2개 이상이어야 성립한다 -- 1개면 포갤 짝이 없다.
+    st = _STACK_RE.match(sentence)
+    if st is not None:
+        parsed = _parse_group_phrase(st.group("grp"))
+        if parsed is None:
+            return f"stack 집합 지칭 파싱 실패: {st.group('grp')!r} (복수형이 필요)"
+        color, cat = parsed
+        if cat not in _STACKABLE:
+            return f"{NOUN_MAP[cat]} 는 포갤 수 없다"
+        if md is not None and props is not None:
+            n = _count(color, cat, md, props)
+            if n == 0:
+                return f"stack 대상이 scene 에 없음: the {color} {PLURAL_MAP[cat]}"
+            if n < 2:
+                return (f"stack 은 같은 물체가 2개 이상일 때만 성립한다 "
+                        f"(the {color} {NOUN_MAP[cat]} 는 1개)")
+        return None
 
     # tidy: 커트러리 전용 (2026-08-31). QUALIFIER 없음.
     t = _TIDY_RE.match(sentence)
@@ -531,7 +607,10 @@ def selftest() -> None:
         },
     )
     s2 = enumerate_instructions(md2, props)
-    assert not any("white cup" in x for x in s2)
+    # 개별 지칭("the white cup")은 모호해 생성되지 않는다. 집합 지칭
+    # ("the white cups")은 2026-08-31 부터 stack 문장으로 생성된다.
+    assert not any(re.search(r"the white cup\b(?!s)", x) for x in s2)
+    assert "stack all the white cups" in s2
     err = lint("pick up the white cup and place it on the blue small bowl", md2, props)
     assert err is not None and "QUALIFIER" in err, err
     assert lint("pick up the white cup farthest from the blue small bowl "
@@ -610,6 +689,34 @@ def selftest() -> None:
     assert skill_of("tidy the cutlery into the wooden tray") == "tidy-into"
     assert skill_of("tidy the cutlery into the blue japanese bowl") == "tidy-into"
     assert all(skill_of(s) in SKILLS for s in s4)
+
+    # 집합 지칭 stack (2026-08-31): 동일 외형 2개는 예비품이 아니라 재료다.
+    md7 = SceneMetadata(
+        scene_id="S007",
+        objects=["OBJ-BOWLM-PNKSTR-01", "OBJ-BOWLM-PNKSTR-02", "OBJ-CUP-RED-01"],
+        layout={"grid": [3, 3], "placements": {
+            "OBJ-BOWLM-PNKSTR-01": {"zone": [0, 0]},
+            "OBJ-BOWLM-PNKSTR-02": {"zone": [1, 0]},
+            "OBJ-CUP-RED-01": {"zone": [0, 1]}}})
+    s7 = enumerate_instructions(md7, props)
+    assert "stack all the pink striped bowls" in s7
+    # 개별 지칭은 여전히 모호 -> 그 물체가 든 개별 문장은 생성 안 됨
+    assert not any("the pink striped bowl " in x for x in s7)
+    assert lint("stack all the pink striped bowls", md7, props) is None
+    assert skill_of("stack all the pink striped bowls") == "stack-all"
+    assert all(skill_of(s) in SKILLS for s in s7)
+    # 1개뿐이면 stack 불가 (포갤 짝이 없다)
+    err = lint("stack all the red cups", md7, props)
+    assert err is not None and "2개 이상" in err, err
+    # 없는 대상 / 못 포개는 것 / 단수형
+    assert lint("stack all the pink striped bowls", md1, props) is not None
+    assert lint("stack all the cutlery", md4, props) is not None
+    assert lint("stack all the pink striped bowl", md7, props) is not None
+    # 파싱: 복수 어순과 legacy 약칭
+    assert _parse_group_phrase("the pink striped bowls") == ("pink striped", "bowl")
+    assert _parse_group_phrase("the white bowls") == ("white", "large_bowl")
+    assert _parse_group_phrase("the blue cups") == ("blue", "cup")
+    assert _parse_group_phrase("the blue cup") is None      # 단수는 집합 지칭이 아니다
 
     # bowl(15cm) category (2026-08-31): 색 토큰이 여러 단어여도 동작하고,
     # "the {색} bowl" 은 인벤토리로 bowl/large_bowl 을 해소한다.

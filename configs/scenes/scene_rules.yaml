@@ -2,7 +2,15 @@
 # 읽는 코드는 gello/scene_rules.py.
 version: 1
 compose:
-  - rule: no_lookalike_pair            # 같은 (category, color) 2개 금지 (전 소품)
+  # 같은 (category, color) 2개 금지 (전 소품) -- 개별 지칭이 모호해지기 때문.
+  # 예외 (2026-08-31 사용자 확정): 포갤 수 있는 그릇류는 "stack all the {색}
+  # {복수}" 라는 집합 지칭 문장이 성립하므로 모호성이 문제가 되지 않는다.
+  # 똑같은 그릇 2개(핑크 스트라이프)는 예비품이 아니라 stack 과제의 재료다.
+  # 한 씬에 한 쌍까지만 -- 두 쌍이면 개별 지칭 문장이 과하게 줄어든다.
+  # 컵은 제외한다: 색 학습용 color_diverse 규칙이 걸려 있는 category 다.
+  - rule: no_lookalike_pair
+    stack_pair_categories: [small_bowl, bowl, large_bowl]
+    max_stack_pairs: 1
   - rule: color_diverse                # 같은 category 2개 이상이면 색은 전부 달라야
     category: cup
   # shortcut 방지 (2026-08-24 사용자 확정): 아래 category 는 scene 에

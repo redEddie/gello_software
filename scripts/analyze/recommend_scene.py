@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -110,7 +111,10 @@ def _selftest() -> None:
     sents_a = enumerate_instructions(base, props)
     sents_b = enumerate_instructions(base, props)
     assert sents_a == sents_b
-    assert all("white cup" not in x for x in enumerate_instructions(
+    # 개별 지칭만 배제된다 -- 집합 지칭("stack all the white cups")은
+    # 2026-08-31 부터 정상 생성 (모호하지 않다).
+    assert all(not re.search(r"the white cup\b(?!s)", x)
+               for x in enumerate_instructions(
         SceneMetadata(
             scene_id="S001",
             objects=["OBJ-CUP-WHT-01", "OBJ-CUP-WHT-02", "OBJ-BOWLS-BLU-01"],

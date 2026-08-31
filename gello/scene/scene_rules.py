@@ -25,6 +25,21 @@ _KNOWN_RULES = {"no_lookalike_pair", "color_diverse", "ban_zones",
                 "pair_if_present", "exclusive_column"}
 
 
+def stack_pair_categories(rules_data: Optional[dict] = None) -> set:
+    """동일 외형 쌍이 허용되는 category 집합 (no_lookalike_pair 의 stack 예외).
+
+    추천기(scene_diversity)가 "같은 색 2개를 넣어도 되는가" 를 판단할 때
+    쓴다 -- 규칙 YAML 이 정본이고, 코드에 목록을 중복시키지 않는다.
+    """
+    data = rules_data if rules_data is not None else _default_rules()
+    out: set = set()
+    for entry in data.get("compose", []) or []:
+        if entry.get("rule") == "no_lookalike_pair" \
+                and int(entry.get("max_stack_pairs", 0)) > 0:
+            out |= set(entry.get("stack_pair_categories", []) or [])
+    return out
+
+
 def _validate_rules(data: dict, path: "str | Path" = RULES_PATH) -> None:
     """data 의 rule 이름을 검증한다. 알 수 없는 이름이면 ValueError."""
     if not isinstance(data, dict):
@@ -91,12 +106,25 @@ def check(md: SceneMetadata, props: dict[str, Prop],
     for entry in data.get("compose", []) or []:
         rule = entry.get("rule")
         if rule == "no_lookalike_pair":
+            # stack 예외 (2026-08-31): 포갤 수 있는 category 의 동일 외형
+            # '쌍'은 "stack all the {색} {복수}" 로 모호성 없이 지칭되므로
+            # 씬당 max_stack_pairs 쌍까지 허용한다. 3개 이상은 예외가
+            # 아니다 -- 쌍이 아니라 더미이고, 배치 규칙도 흔들린다.
+            stack_cats = set(entry.get("stack_pair_categories", []) or [])
+            budget = int(entry.get("max_stack_pairs", 0))
             counter = Counter((cat, color) for _, cat, color in triples)
             for (cat, color), n in sorted(counter.items()):
-                if n >= 2:
-                    violations.append(
-                        f"no_lookalike_pair: ({cat}, {color}) 가 {n}개"
-                    )
+                if n < 2:
+                    continue
+                if n == 2 and cat in stack_cats and budget > 0:
+                    budget -= 1
+                    continue
+                violations.append(
+                    f"no_lookalike_pair: ({cat}, {color}) 가 {n}개"
+                    + (" -- stack 예외는 씬당 "
+                       f"{int(entry.get('max_stack_pairs', 0))}쌍까지"
+                       if cat in stack_cats else "")
+                )
         elif rule == "color_diverse":
             cat = entry.get("category")
             colors = [color for _, c, color in triples if c == cat]
@@ -206,6 +234,22 @@ def selftest() -> None:
     )
     v = check(look_md, props, rules)
     assert any("no_lookalike_pair" in x for x in v)
+
+    # stack 예외 (2026-08-31): 포갤 수 있는 그릇류의 동일 외형 '쌍'은 허용
+    # ("stack all the pink striped bowls" 로 모호성 없이 지칭된다).
+    stack_md = SceneMetadata(
+        scene_id="S003",
+        objects=["OBJ-BOWLM-PNKSTR-01", "OBJ-BOWLM-PNKSTR-02",
+                 "OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01"],
+        layout={"grid": [3, 3], "placements": {
+            "OBJ-BOWLM-PNKSTR-01": {"zone": [0, 0]},
+            "OBJ-BOWLM-PNKSTR-02": {"zone": [1, 0]},
+            "OBJ-CUP-BLU-01": {"zone": [0, 1]},
+            "OBJ-CUP-WHT-01": {"zone": [1, 1]}}})
+    assert check(stack_md, props, rules) == [], check(stack_md, props, rules)
+    assert "bowl" in stack_pair_categories(rules)
+    # 컵은 예외 대상이 아니다 (color_diverse 로 색 학습을 강제하는 category)
+    assert "cup" not in stack_pair_categories(rules)
 
     # drawer 중앙 존
     drawer_md = SceneMetadata(

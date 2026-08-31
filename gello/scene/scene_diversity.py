@@ -241,7 +241,9 @@ def generate_candidate(props: dict, rng: random.Random,
     tray)는 확률적 단일 추가. pickable 판정은 문법(PICKABLE_CATS)이 정본.
     새 소품은 props.yaml + NOUN_MAP 등록만으로 추천 대상이 된다."""
     from gello.scene.instruction_grammar import PICKABLE_CATS
+    from gello.scene.scene_rules import stack_pair_categories
 
+    stack_cats = stack_pair_categories()
     active = [p for p in props.values() if not p.retired]
     # pair_if_present 규칙(2026-08-24) 아래에서는 물체 단위 무작위 뽑기가
     # 거의 다 기각된다 -- category 단위로 "짝"을 뽑는다.
@@ -263,6 +265,16 @@ def generate_candidate(props: dict, rng: random.Random,
             rng.shuffle(colors)
             take = rng.randint(2, min(3, len(colors)))
             picked += [rng.choice(by_cat[c][col]) for col in colors[:take]]
+        # 동일 외형 쌍 (2026-08-31): 포갤 수 있는 category 는 같은 색 2개를
+        # 넣어 "stack all the {색} {복수}" 과제를 만든다 -- 규칙의 stack
+        # 예외가 허용하는 범위(씬당 1쌍)와 같은 목록을 쓴다.
+        if len(picked) <= 4 and rng.random() < 0.25:
+            twins = [
+                (p, q) for p in picked if p.category in stack_cats
+                for q in by_cat[p.category][p.color] if q.id != p.id
+            ]
+            if twins:
+                picked.append(rng.choice(twins)[1])
         for c in single_cats:
             if len(picked) <= 4 and rng.random() < 0.4:
                 picked.append(rng.choice(by_cat[c][next(iter(by_cat[c]))]))
