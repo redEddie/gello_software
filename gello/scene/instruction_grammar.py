@@ -25,6 +25,14 @@ lint 는 기존 계획 파일의 "bowl" 약칭도 받아들여 하위호환을 �
 large_bowl (selftest 가 두 category 의 색 겹침을 금지해 모호성을 차단한다).
 커트러리는 2026-08-31 부터 색 없는 단일 번들("the cutlery")로 지칭한다 --
 색 지칭("the pink cutlery")은 옛 계획/데이터 하위호환으로 lint 만 받는다.
+
+커트러리 전용 동사 (2026-08-31 사용자 확정):
+    Tidy (여러 낱개를 반복 운반해 정리):
+        tidy the cutlery into the {TARGET}   TARGET ∈ 그릇들 | wooden tray | drawer
+더미(pile)를 옮기는 동작은 단일 픽앤플레이스와 운동 구조가 달라서, 같은
+"pick up" 동사·스킬로 두면 학습 시 작업 구분이 안 된다. 그래서 커트러리는
+pick/drag 문장에서 빠지고(tidy 만 생성) 스킬도 tidy-into 로 따로 집계된다.
+기존 수집분의 "pick up the {색} cutlery ..." 는 lint 하위호환으로만 남는다.
 """
 
 from __future__ import annotations
@@ -78,21 +86,27 @@ _CUTLERY_PHRASES = {"cutlery", "plastic cutlery"}
 _NO_COLOR_CATS = {"drawer", "tray", "cutlery"}
 
 # 들어 옮길 수 있는 것 (pick up 대상). bowl(15cm)은 림 파지 가능
-# (2026-08-31 실기 확인).
-_PICKABLE = {"cup", "small_bowl", "bowl", "cutlery"}
+# (2026-08-31 실기 확인). cutlery 는 더미라 pick/drag 가 아니라 tidy 동사
+# 전용 (2026-08-31 사용자 확정 -- 모듈 docstring 참고).
+_PICKABLE = {"cup", "small_bowl", "bowl"}
 #: 추천기(scene_diversity)가 쓰는 공개 이름 -- "씬에 최소 한 종류" 제약의 정본.
 PICKABLE_CATS = _PICKABLE
 # 끌 수 있는 것 (drag 대상 -- 들지 않으므로 큰 그릇도 가능)
-_DRAGGABLE = {"cup", "small_bowl", "bowl", "large_bowl", "cutlery"}
+_DRAGGABLE = {"cup", "small_bowl", "bowl", "large_bowl"}
 # on / inside 목적지 (그릇)
 _BOWL_CATS = {"small_bowl", "bowl", "large_bowl"}
 # 'on' 목적지 = 그릇 + 트레이
 _ON_CATS = _BOWL_CATS | {"tray"}
-# drawer 안('inside the drawer')에 넣을 수 있는 것 -- 커트러리만
+# drawer 안('inside the drawer')에 넣을 수 있는 것 -- 커트러리만. tidy 전환
+# 이후 새 문장은 안 만들지만, 기존 수집분의 "pick up the {색} cutlery and
+# place it inside the drawer" 를 lint 가 계속 받기 위한 하위호환 집합.
 # (컵/그릇은 서랍 높이에 안 들어간다; 2026-08-27 사용자 확정 범위)
 _DRAWER_INSIDE_OBJS = {"cutlery"}
-# next to 목적지 (탁상 위 아무 물체)
-_BESIDE_CATS = {"cup", "small_bowl", "bowl", "large_bowl", "cutlery", "tray"}
+# next to 목적지 (탁상 위 아무 물체). 어질러진 커트러리 더미는 위치 기준이
+# 못 되므로 제외.
+_BESIDE_CATS = {"cup", "small_bowl", "bowl", "large_bowl", "tray"}
+# tidy 목적지 (담을 수 있는 것): 그릇들 + 트레이 + 서랍
+_TIDY_TARGETS = _BOWL_CATS | {"tray", "drawer"}
 
 # QUALIFIER 문구 (OBJECT 바로 뒤, 필요할 때만)
 _QUALIFIERS = ("farthest from", "closest to", "to the left of", "to the right of")
@@ -227,13 +241,9 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
                 "and place it on top of the drawer"
             )
 
-    # 2b) pick up {cutlery} and place it inside the drawer (커트러리만)
-    if "drawer" in by_cat:
-        for ocolor, ocat, _ in refs(_DRAWER_INSIDE_OBJS):
-            sentences.add(
-                f"pick up {_reference(ocolor, ocat, md, props)} "
-                "and place it inside the drawer"
-            )
+    # 2b) (2026-08-31 폐지) "pick up {cutlery} ... inside the drawer" 는 더
+    # 이상 생성하지 않는다 -- 커트러리는 tidy 전용(2d), drawer 목적지도
+    # tidy 가 담당. _DRAWER_INSIDE_OBJS 는 옛 문장 lint 하위호환용으로만 남음.
 
     # 2c) pick up {obj} and place it on the wooden tray
     if "tray" in by_cat:
@@ -241,6 +251,14 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
             sentences.add(
                 f"pick up {_reference(ocolor, ocat, md, props)} "
                 f"and place it on the {NOUN_MAP['tray']}"
+            )
+
+    # 2d) tidy the cutlery into {container} -- 커트러리 전용 동사. 더미를
+    # 반복 운반하는 동작이라 pick/drag 와 스킬(tidy-into)부터 분리된다.
+    if "cutlery" in by_cat:
+        for tcolor, tcat, _ in refs(_TIDY_TARGETS):
+            sentences.add(
+                f"tidy the cutlery into {_reference(tcolor, tcat, md, props)}"
             )
 
     # 3) pick up {obj} and place it next to {obj2}
@@ -290,13 +308,17 @@ _DRAG_RE = re.compile(
     rf"(?: (?P<qual>(?:{_QUAL_RE}) the .+?))?"
     r" next to the (?P<tgt>.+)$"
 )
+# 커트러리 정리 (2026-08-31): QUALIFIER 없음 -- 더미 전체가 한 대상이다.
+_TIDY_RE = re.compile(r"^tidy the (?P<obj>.+?) into the (?P<tgt>.+)$")
 
 
 #: 문법이 표현할 수 있는 스킬(동사×관계) 전집합 — skill_of() 의 치역.
 #: scene 추천의 지시문 단계(gello.scene.skill_stats)가 "실행 가능한 스킬 중
 #: 누적 수집횟수가 가장 적은 것 우선" 을 판단할 때의 단위다.
+#: tidy-into 는 반복 운반(더미 정리)이라 pick 계열과 운동 구조가 달라
+#: 별도 스킬로 집계한다 (2026-08-31 사용자 결정).
 SKILLS = ("pick-on", "pick-inside", "pick-next_to", "pick-on_top_of",
-          "drag-next_to", "drawer-open", "drawer-close")
+          "drag-next_to", "tidy-into", "drawer-open", "drawer-close")
 
 
 def skill_of(sentence: str) -> Optional[str]:
@@ -317,6 +339,8 @@ def skill_of(sentence: str) -> Optional[str]:
         return "pick-" + m.group("rel").replace(" ", "_")
     if _DRAG_RE.match(s) is not None:
         return "drag-next_to"
+    if _TIDY_RE.match(s) is not None:
+        return "tidy-into"
     return None
 
 
@@ -388,28 +412,46 @@ def lint(sentence: str, md: Optional[SceneMetadata] = None,
     if " that is " in sentence:
         return "QUALIFIER 는 'that is' 없이 붙인다 (예: the blue cup farthest from ...)"
 
+    # tidy: 커트러리 전용 (2026-08-31). QUALIFIER 없음.
+    t = _TIDY_RE.match(sentence)
+    if t is not None:
+        obj = _check_ref(t.group("obj"), "tidy", {"cutlery"})
+        if isinstance(obj, str):
+            return obj
+        tgt_parsed = _check_ref(t.group("tgt"), "tidy-into", _TIDY_TARGETS)
+        if isinstance(tgt_parsed, str):
+            return tgt_parsed
+        return None
+
     m = _PICK_RE.match(sentence)
     d = _DRAG_RE.match(sentence) if m is None else None
     if m is None and d is None:
         return "통일 문법 템플릿에 맞지 않음"
 
+    # cutlery 는 tidy 전용이지만 기존 수집분/계획의 색 지칭 문장("the pink
+    # cutlery")은 lint 하위호환으로 계속 받는다 -- 색 없는 새 지칭("the
+    # cutlery")이 pick/drag 에 오면 아래에서 tidy 로 안내한다.
     if m is not None:
         obj_phrase, qual, rel, tgt = (m.group("obj"), m.group("qual"),
                                       m.group("rel"), m.group("tgt"))
-        obj_allowed = _PICKABLE
+        obj_allowed = _PICKABLE | {"cutlery"}
         tgt_allowed = {"on": _ON_CATS, "inside": _BOWL_CATS | {"drawer"},
-                       "next to": _BESIDE_CATS, "on top of": {"drawer"}}[rel]
+                       "next to": _BESIDE_CATS | {"cutlery"},
+                       "on top of": {"drawer"}}[rel]
         verb_role = ("pick", f"place-{rel}")
     else:
         obj_phrase, qual, tgt = d.group("obj"), d.group("qual"), d.group("tgt")
         rel = "next to"
-        obj_allowed = _DRAGGABLE
-        tgt_allowed = _BESIDE_CATS
+        obj_allowed = _DRAGGABLE | {"cutlery"}
+        tgt_allowed = _BESIDE_CATS | {"cutlery"}
         verb_role = ("drag", "next-to")
 
     obj = _check_ref(obj_phrase, verb_role[0], obj_allowed, qualified=bool(qual))
     if isinstance(obj, str):
         return obj
+    if obj == ("", "cutlery"):
+        return ("커트러리 더미는 pick/drag 가 아니라 "
+                "'tidy the cutlery into the ...' 를 쓴다 (2026-08-31)")
     if qual:
         parsed_q = _parse_qualifier(qual)
         if parsed_q is None:
@@ -421,6 +463,8 @@ def lint(sentence: str, md: Optional[SceneMetadata] = None,
     tgt_parsed = _check_ref(tgt, verb_role[1], tgt_allowed)
     if isinstance(tgt_parsed, str):
         return tgt_parsed
+    if tgt_parsed == ("", "cutlery"):
+        return "어질러진 커트러리 더미는 위치 기준(next to)으로 못 쓴다"
     if rel == "inside" and tgt_parsed[1] == "drawer" \
             and obj[1] not in _DRAWER_INSIDE_OBJS:
         return ("drawer 안에는 커트러리만 넣는다 -- "
@@ -520,23 +564,30 @@ def selftest() -> None:
             "OBJ-TRAY-01": {"zone": [0, 1]},
             "OBJ-DRAWER-01": {"zone": [0, 2]}}})
     s4 = enumerate_instructions(md4, props)
-    assert "pick up the cutlery and place it on the wooden tray" in s4
-    assert "pick up the cutlery and place it inside the drawer" in s4
-    assert "pick up the cutlery and place it on top of the drawer" in s4
+    # tidy 전용 동사 (2026-08-31): 더미 정리는 pick 과 스킬부터 분리
+    assert "tidy the cutlery into the wooden tray" in s4
+    assert "tidy the cutlery into the drawer" in s4
+    assert not any(x.startswith("pick up the cutlery") for x in s4)
+    assert not any("drag the cutlery" in x for x in s4)
     assert not any("mixed" in x for x in s4)   # 인벤토리 색(mixed)은 문장에 안 나온다
-    assert lint("pick up the cutlery and place it on the wooden tray",
-                md4, props) is None
+    assert lint("tidy the cutlery into the wooden tray", md4, props) is None
     # "the plastic cutlery" / 짧은 "the tray" 지칭도 lint 는 허용
-    assert lint("pick up the plastic cutlery and place it on the tray",
-                md4, props) is None
-    assert lint("pick up the cutlery and place it inside the drawer",
-                md4, props) is None
+    assert lint("tidy the plastic cutlery into the tray", md4, props) is None
+    assert lint("tidy the cutlery into the drawer", md4, props) is None
+    # 색 없는 커트러리를 pick 에 쓰면 tidy 로 안내
+    err = lint("pick up the cutlery and place it on the wooden tray", md4, props)
+    assert err is not None and "tidy" in err, err
+    # 커트러리 없는 씬에서 tidy -> 오류
+    err = lint("tidy the cutlery into the wooden tray", md1, props)
+    assert err is not None
+    # tidy 목적지는 담을 수 있는 것만 (컵 불가)
+    err = lint("tidy the cutlery into the blue cup", md4, props)
+    assert err is not None
     # 컵은 drawer 안에 못 넣는다 (2026-08-27 확정 범위: 커트러리만)
     err = lint("pick up the blue cup and place it inside the drawer", md1, props)
     assert err is not None and "커트러리" in err, err
-    # 은퇴한 낱개 커트러리가 든 옛 scene: 색 지칭은 lint 만 허용(하위호환),
-    # 새로 생성되는 문장은 색 없는 "the cutlery" 뿐이고 자기 자신 옆에 놓는
-    # 문장("the cutlery next to the cutlery")은 안 나온다.
+    # 은퇴한 낱개 커트러리가 든 옛 scene: 색 지칭 pick 문장은 lint 만
+    # 허용(하위호환), 새로 생성되는 문장은 tidy 뿐이다.
     md5 = SceneMetadata(
         scene_id="S005",
         objects=["OBJ-SPOON-PNK-01", "OBJ-FORK-PNK-01", "OBJ-TRAY-01"],
@@ -546,16 +597,19 @@ def selftest() -> None:
             "OBJ-TRAY-01": {"zone": [0, 1]}}})
     s5 = enumerate_instructions(md5, props)
     assert not any("pink cutlery" in x for x in s5)
-    assert "pick up the cutlery and place it on the wooden tray" in s5
-    assert not any("the cutlery next to the cutlery" in x for x in s5)
+    assert "tidy the cutlery into the wooden tray" in s5
+    assert not any(x.startswith("pick up the cutlery") for x in s5)
     assert lint("pick up the pink cutlery and place it on the wooden tray",
                 md5, props) is None   # legacy 색 지칭
+    assert lint("drag the pink cutlery next to the wooden tray",
+                md5, props) is None   # legacy drag 도 하위호환
     # tray 없는 씬에서 tray 목적지 -> 오류
     err = lint("pick up the blue cup and place it on the tray", md1, props)
     assert err is not None and "tray" in err, err
-    # 새 문장도 기존 스킬 체계로 떨어진다 (신규 스킬 없음)
-    assert skill_of("pick up the cutlery and place it on the wooden tray") == "pick-on"
-    assert skill_of("pick up the cutlery and place it inside the drawer") == "pick-inside"
+    # tidy 는 별도 스킬로 분류된다
+    assert skill_of("tidy the cutlery into the wooden tray") == "tidy-into"
+    assert skill_of("tidy the cutlery into the blue japanese bowl") == "tidy-into"
+    assert all(skill_of(s) in SKILLS for s in s4)
 
     # bowl(15cm) category (2026-08-31): 색 토큰이 여러 단어여도 동작하고,
     # "the {색} bowl" 은 인벤토리로 bowl/large_bowl 을 해소한다.
