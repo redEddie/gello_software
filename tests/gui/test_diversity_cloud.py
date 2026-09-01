@@ -10,6 +10,8 @@ sys.path.insert(0, WT)
 sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
+from apps.dialogs._image_utils import _depth_colormap  # noqa: E402
+
 # ---- 1. 추천기 selftest (거리·제약·결정성·비중복) ----
 r = subprocess.run([sys.executable, WT + "/scripts/analyze/recommend_scene.py",
                     "--selftest"], capture_output=True, text=True)
@@ -65,7 +67,7 @@ assert win.cameras.cloud_worker is None
 rng = np.random.default_rng(0)
 pts = rng.standard_normal((2000, 3)).astype(np.float32)
 rgb = rng.integers(0, 255, (2000, 3), dtype=np.uint8)
-win._on_cloud(pts, rgb)
+win.depth_ops.on_cloud(pts, rgb)
 assert win.cloud_view.pixmap() is not None
 assert "2,000" in win.cloud_status.text() or "2000" in win.cloud_status.text()
 win.cloud_yaw.setValue(60)      # 시점 변경 -> 재렌더 경로
@@ -116,11 +118,11 @@ assert win.cameras.depth_consumer == "depth" and win.cameras.cloud_worker is Non
 z = np.full((48, 64), 0.6, np.float32)
 z[:10] = 0.0            # 무측정
 z[20:30] = 5.0          # 최대 거리 밖
-win._on_depth_img(z)
+win.depth_ops.on_depth_img(z)
 assert win.depth_view.pixmap() is not None
 assert "유효 픽셀" in win.depth_status.text()
 win.depth_range_slider.setValue(50)          # 0.5m -> 0.6m 픽셀도 무효
-win._render_depth()
+win.depth_ops.render_depth()
 assert "0.5 m" in win.depth_range_label.text()
 win._on_center_tab_changed(0)
 assert win.cameras.depth_consumer is None
@@ -128,10 +130,10 @@ print("6 통과: Depth 탭 -- 진입/이탈, 컬러맵 렌더, 범위 슬라이�
 
 # ---- 7. 척도 바: 큰 프레임엔 그려지고 작은 프레임엔 생략 ----
 big = np.full((480, 640), 0.6, np.float32)
-out = cw._depth_colormap(big, 1.2)
+out = _depth_colormap(big, 1.2)
 bar = out[120:360, 640 - 28:640 - 10]        # 오른쪽 컬러바 영역
 assert bar.std() > 20, "척도 바가 안 그려짐"    # 그라데이션 존재
-small = cw._depth_colormap(np.full((48, 64), 0.6, np.float32), 1.2)
+small = _depth_colormap(np.full((48, 64), 0.6, np.float32), 1.2)
 assert small.shape == (48, 64, 3)              # 작은 입력은 바 생략, 무오류
 print("7 통과: depth 척도 바 (대형 프레임 표시 / 소형 생략)")
 
@@ -150,11 +152,11 @@ class _P:                                      # QPointF 흉내
         return self._y
 
 
-uv = win._depth_uv(_P(5.0, 30.0))              # 라벨 안쪽 -> 픽셀 좌표
+uv = win.depth_ops.depth_uv(_P(5.0, 30.0))              # 라벨 안쪽 -> 픽셀 좌표
 assert uv is not None and 0 <= uv[0] < 64 and 0 <= uv[1] < 48
-assert win._depth_uv(_P(-30.0, -30.0)) is None  # 프레임 밖
+assert win.depth_ops.depth_uv(_P(-30.0, -30.0)) is None  # 프레임 밖
 win.cameras.depth_cursor = (10, 20)
-win._render_depth()
+win.depth_ops.render_depth()
 assert "커서 (10,20)" in win.depth_status.text()
 assert "0.600 m" in win.depth_status.text()
 win.cameras.depth_cursor = None
@@ -164,7 +166,7 @@ assert DepthCloudWorker("x", mode="depth").mode == "depth"
 assert DepthCloudWorker("x").mode == "cloud"
 # 프레임 크기 변경 등으로 범위 밖에 남은 커서는 조용히 지운다
 win.cameras.depth_cursor = (999, 999)
-win._render_depth()
+win.depth_ops.render_depth()
 assert win.cameras.depth_cursor is None
 assert "커서" not in win.depth_status.text()
 assert not win.cloud_view._square_guide and not win.depth_view._square_guide

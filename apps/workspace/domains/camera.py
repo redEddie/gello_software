@@ -348,7 +348,7 @@ class CameraOps:
                                    "세션 종료 후 노드를 내리세요."))
             return
         self.win.cameras.camera_node_user_stopped = True
-        self.win._stop_cloud(restore_previews=False)
+        self.win.depth_ops.stop_cloud(restore_previews=False)
         self.stop_previews_async()
         self.stop_camera_node()
         for role in ("agent", "wrist"):

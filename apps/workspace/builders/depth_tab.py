@@ -37,7 +37,7 @@ def build_depth_tab(win) -> QWidget:
     win.depth_cam_combo = QComboBox()
     win.depth_cam_combo.addItem("Agent", "agent")
     win.depth_cam_combo.addItem("Wrist", "wrist")
-    win.depth_cam_combo.currentIndexChanged.connect(win._on_cloud_cam_changed)
+    win.depth_cam_combo.currentIndexChanged.connect(win.depth_ops.on_cloud_cam_changed)
     row.addWidget(win.depth_cam_combo)
     row.addSpacing(12)
     row.addWidget(QLabel(tr("최대 거리")))
@@ -45,7 +45,7 @@ def build_depth_tab(win) -> QWidget:
     win.depth_range_slider.setRange(30, 300)      # 0.3 ~ 3.0 m
     win.depth_range_slider.setValue(120)
     win.depth_range_slider.valueChanged.connect(
-        lambda *_: win._render_depth())
+        lambda *_: win.depth_ops.render_depth())
     row.addWidget(win.depth_range_slider, 1)
     win.depth_range_label = QLabel("1.2 m")
     win.depth_range_label.setStyleSheet("color:#888;")
