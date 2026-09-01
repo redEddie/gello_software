@@ -207,16 +207,3 @@ class NewSceneDialog(QDialog):
         self.metadata = md
         super().accept()
 
-
-class StatusLight(QLabel):
-    """One status-bar indicator: a colored dot plus a short label."""
-
-    def __init__(self, label: str) -> None:
-        super().__init__()
-        self._label = label
-        self.set("off", "-")
-
-    def set(self, state: str, text: str) -> None:
-        self.setText(_dot(state, f"{self._label} {text}"))
-
-
