@@ -87,6 +87,7 @@ class DynamixelRobot(Robot):
             self._driver = FakeDynamixelDriver(joint_ids)
         self._torque_on = False
         self._last_pos = None
+        self._turn_k = None   # 관절별 바퀴 번호 (resolve_turns 히스테리시스)
         self._alpha = 0.99
         # (lower, upper) follower limits, arm joints only.  When set,
         # get_joint_state removes any phantom full turn from the reading (a
@@ -126,11 +127,15 @@ class DynamixelRobot(Robot):
         # its encoder wrap (e.g. FR3 J3 at q~=0) stays continuous instead of
         # feeding a 2*pi jump into the EWMA.  Arm joints only.
         if self._joint_limits is not None:
-            from gello.robots.joint_limit_wall import wrap_into_limits
+            from gello.robots.joint_limit_wall import resolve_turns
 
             n_arm = len(pos) - (1 if self.gripper_open_close is not None else 0)
             lower, upper = self._joint_limits
-            pos[:n_arm] = wrap_into_limits(pos[:n_arm], lower, upper)
+            # 고른 바퀴를 기억해서 다음 읽기에 넘긴다 (2026-09-01). 매번 새로
+            # 고르면 ±180° 경계에서 센서 노이즈만으로 답이 한 바퀴 튀고,
+            # 원점이 반 바퀴 어긋난 것처럼 보인다. resolve_turns 참고.
+            pos[:n_arm], self._turn_k = resolve_turns(
+                pos[:n_arm], lower, upper, prev_k=self._turn_k)
 
         if self.gripper_open_close is not None:
             # map pos to [0, 1]

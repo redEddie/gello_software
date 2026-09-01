@@ -279,9 +279,42 @@ def wrap_into_limits(q: np.ndarray, lower, upper) -> np.ndarray:
     still see it).
     """
     q = np.asarray(q, dtype=float)
+    return resolve_turns(q, lower, upper)[0]
+
+
+#: 바퀴 선택의 불감대 반폭 (rad). 경계는 가동범위 중심의 정반대(±π)인데,
+#: 그 점에서 답이 한 바퀴 튀므로 센서 노이즈가 오갈 때마다 읽는 각도가
+#: 2π 씩 뛴다 -- 한계벽은 미는 방향이 뒤집혀 최대 강도로 떨고, 원점은
+#: 한 바퀴 어긋난 것처럼 보인다 (2026-09-01 실제 사고).
+#:
+#: 그래서 경계를 하나 두는 대신 **어느 쪽에서 왔는지에 따라 다르게** 둔다:
+#: 이미 고른 바퀴는 ±(π + margin) 까지 유지하고, 거기를 넘어야 다음 바퀴로
+#: 넘어간다. 170~190° 가 불감대가 되어 한 번 지나가면 한 번만 바뀌고,
+#: 노이즈로는 절대 바뀌지 않는다. 경계를 170° 로 '옮기는' 것만으로는
+#: 안 되는 이유가 이것이다 -- 옮긴 자리에서 똑같이 튄다.
+WRAP_HYSTERESIS_RAD = 0.175      # 10도
+
+
+def resolve_turns(q, lower, upper, prev_k=None,
+                  margin: float = WRAP_HYSTERESIS_RAD):
+    """(보정된 위치, 바퀴 번호). ``prev_k`` 를 주면 히스테리시스가 붙는다.
+
+    바퀴 번호 ``k`` 는 ``q + 2πk`` 가 가동범위 중심에서 ±π 안에 오도록
+    고른 정수다. ``prev_k`` 가 주어지면 그 선택을 먼저 존중해서, 중심에서
+    ±(π + margin) 안이면 그대로 유지한다 -- 경계에서 답이 튀지 않는다.
+
+    순수 함수다: 상태는 호출자가 ``k`` 를 들고 다음 호출에 넘겨 준다.
+    ``prev_k=None`` 이면 예전과 똑같이 매번 새로 고른다.
+    """
+    q = np.asarray(q, dtype=float)
     center = (np.asarray(lower, dtype=float) + np.asarray(upper, dtype=float)) / 2.0
     k = np.round((center - q) / (2 * np.pi))
-    return q + 2 * np.pi * k
+    if prev_k is not None:
+        prev_k = np.asarray(prev_k, dtype=float)
+        # 이전 바퀴로도 불감대 안에 들어오면 바꾸지 않는다.
+        keep = np.abs(q + 2 * np.pi * prev_k - center) <= (np.pi + margin)
+        k = np.where(keep, prev_k, k)
+    return q + 2 * np.pi * k, k
 
 
 def _allocate_budget(cur: np.ndarray, i_trig: float, budget: float,
@@ -493,6 +526,9 @@ class JointLimitWall:
         # 뒤집힘 구역 상태 (issue #37A 후속). 구역에 든 관절은 정렬도 벽도
         # 전부 꺼서 손에 넘긴다 -- 케이블을 풀려면 그 관절이 자유로워야 한다.
         self._wrap_center = (self._lower + self._upper) / 2.0
+        # 바퀴 번호를 들고 다닌다 -- 경계에서 읽는 각도가 튀지 않게
+        # (resolve_turns 의 히스테리시스). None 이면 첫 틱에 새로 고른다.
+        self._turn_k = None
         self._wrap_mask = np.zeros(self._n_arm, dtype=bool)
         self._match_aborted_wrap = False
         self._match_tol = match_tol
@@ -738,7 +774,8 @@ class JointLimitWall:
                 q = (raw_q[: self._n_arm] - self._offsets) * self._signs
                 # Undo any phantom full turn so the wall pushes at the real limit,
                 # not 2*pi away from it (same correction the agent applies).
-                q = wrap_into_limits(q, self._lower, self._upper)
+                q, self._turn_k = resolve_turns(
+                    q, self._lower, self._upper, prev_k=self._turn_k)
                 dq = raw_dq[: self._n_arm] * self._signs
 
                 match_target = self._match_target  # snapshot -- see set_match_target
@@ -1256,6 +1293,27 @@ def selftest() -> None:
     weak = np.array([50.0, 20.0, 10.0])
     pulling9 = armed9 & (np.abs(err9) > 0.05) & (np.abs(weak) < floor9)
     assert list(pulling9) == [True, False, False]
+    # 10. 바퀴 선택 히스테리시스 (2026-09-01): 경계를 오가도 답이 한 번만
+    #     바뀌고, 노이즈로는 절대 바뀌지 않는다.
+    lo1, hi1 = np.array([-2.74]), np.array([2.74])   # 중심 0, 경계 ±π
+    k10 = None
+    seen = []
+    for x in (3.00, 3.10, 3.14, 3.20, 3.30, 3.35, 3.30, 3.20, 3.10):
+        qq, k10 = resolve_turns(np.array([x]), lo1, hi1, prev_k=k10)
+        seen.append((x, float(qq[0]), int(k10[0])))
+    ks = [k for _, _, k in seen]
+    assert ks.count(0) and ks.count(-1), ks          # 한 번은 넘어간다
+    assert sum(a != b for a, b in zip(ks, ks[1:])) == 1, f"바퀴가 여러 번 바뀐다: {ks}"
+    # 경계를 넘기 전까지 값이 연속이다 (2π 점프 없음)
+    vals = [v for _, v, _ in seen[:5]]
+    assert all(abs(b - a) < 0.2 for a, b in zip(vals, vals[1:])), vals
+    # 경계 위에서 노이즈만 흔들려도 바퀴는 그대로
+    k11 = np.array([0.0])
+    for x in (3.1416, 3.1400, 3.1430, 3.1410):
+        _, k11 = resolve_turns(np.array([x]), lo1, hi1, prev_k=k11)
+        assert int(k11[0]) == 0, "노이즈에 바퀴가 바뀌었다"
+    # prev_k 없이 부르면 예전 동작 그대로 (하위호환)
+    assert wrap_into_limits(np.array([3.20]), lo1, hi1)[0] < 0
     print("joint_limit_wall selftest 통과")
 
 
