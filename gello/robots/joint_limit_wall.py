@@ -753,18 +753,19 @@ class JointLimitWall:
                 # 한계벽을 끄면 도달 불가능한 명령이 그대로 나가고, 애초에
                 # 여기까지 오려면 벽을 밀고 한참 나가야 한다. 케이블을 푸는
                 # 것은 정렬/대기 중에 하는 일이다.
-                if self._in_teleop:
-                    self._wrap_mask = np.zeros(self._n_arm, dtype=bool)
-                else:
-                    entered = _wrap_zone(
-                        q, self._wrap_center, self._lower, self._upper,
-                        WRAP_ABORT_RAD,
-                    )
-                    # 한계 안으로 (여유분만큼) 돌아오면 자동으로 벽이 다시
-                    # 선다. 그 전까지는 계속 사람 손에 있다 -- _wrap_latch 참고.
-                    inside = ((q >= self._lower + WRAP_RELEASE_RAD)
-                              & (q <= self._upper - WRAP_RELEASE_RAD))
-                    self._wrap_mask = _wrap_latch(self._wrap_mask, entered, inside)
+                # 자동 해제는 껐다 (2026-09-01). 벽을 놓아 주면 관절이
+                # 뒤집힘 지점을 지나 머물 수 있는데, 그 자리에서
+                # wrap_into_limits 는 반대쪽 바퀴를 답으로 고른다 -- 인코더
+                # 기준 원점이 한 바퀴 어긋난 것으로 보이고, 리더가 꼬인 채로
+                # 읽힌다. 지터를 없애려다 그보다 중요한 기능을 깨뜨렸다.
+                #
+                # 판정 함수(_wrap_zone/_wrap_latch)와 그 검사는 남겨 둔다:
+                # 다음 시도는 (1) wrap_into_limits 의 바퀴 선택 자체에
+                # 히스테리시스를 걸어 경계에서 답이 튀지 않게 하고(그러면
+                # 벽을 끄지 않고도 지터가 사라진다), (2) 케이블 정리는
+                # 자동이 아니라 사람이 명시적으로 요청하는 동작으로 두는
+                # 방향이다 -- 그래야 원점이 언제 흔들릴 수 있는지 사람이 안다.
+                self._wrap_mask = np.zeros(self._n_arm, dtype=bool)
                 if np.any(self._wrap_mask) and match_target is not None:
                     # 사람이 케이블을 푸는 중이다 -- 정렬은 취소하고 왜
                     # 취소했는지를 남긴다. 조용히 지우면 호출자는 이유를

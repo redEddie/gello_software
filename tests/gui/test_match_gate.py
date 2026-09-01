@@ -157,71 +157,33 @@ finally:
     w2.stop()
 
 # ---------------------------------------------------------------- 8
-# 뒤집힘 구역: 롤 관절(J1, J3)을 한 바퀴 가까이 돌리면 그 관절만 손에
-# 넘어가고(정렬·벽 둘 다 off) 정렬은 사유와 함께 취소된다.
-# 여기서는 실제 FR3 한계를 쓴다 -- 이 기능의 값어치가 "합법 자세에서는
-# 발동하지 않는다" 이므로 진짜 범위로 확인해야 의미가 있다.
+# 뒤집힘 구역 자동 해제는 2026-09-01 에 껐다 (원점이 한 바퀴 어긋나는 회귀).
+# 판정 함수는 남아 있고 wall selftest 가 검사한다 -- 여기서는 "벽이 항상
+# 서 있다" 는 현재 계약만 확인한다.
 from gello.robots.franka_fr3 import FR3_Q_LOWER, FR3_Q_UPPER  # noqa: E402
 
 LO7 = np.asarray(FR3_Q_LOWER, dtype=float)
 HI7 = np.asarray(FR3_Q_UPPER, dtype=float)
 CTR = (LO7 + HI7) / 2.0
 
-for j, label in ((0, "J1"), (2, "J3")):     # 둘 다 자유롭게 도는 롤 관절
-    drv3 = FakeDynamixelDriver(list(range(1, N_ARM + 2)))
-    target = CTR.copy()
-    _put_leader_at(drv3, CTR + 0.05)        # 목표 바로 옆에서 시작
-    w3 = JointLimitWall(
-        drv3, LO7, HI7,
-        offsets=np.zeros(N_ARM), signs=np.ones(N_ARM), n_arm=N_ARM,
-        hz=200.0, health_every=0.0,
-        match_max_current=np.full(N_ARM, 400.0),
-        match_kp=np.full(N_ARM, 2800.0),
-    )
-    w3.start()
-    try:
-        w3.set_match_target(target)
-        st = _settle(w3)
-        assert st["match_engaged"] is True, f"{label}: 정상 자세에서 정렬이 안 걸린다"
-        assert not np.asarray(st["wrap_mask"]).any(), \
-            f"{label}: 정상 자세인데 뒤집힘 구역으로 오판했다"
-        assert st["match_aborted_wrap"] is False
-
-        # 사람이 그 관절만 한 바퀴 가까이 돌린다 (중심의 정반대 = 뒤집힘 지점)
-        q_spun = CTR.copy()
-        q_spun[j] = CTR[j] + np.pi
-        _put_leader_at(drv3, q_spun)
-        st = _settle(w3)
-        wm = np.asarray(st["wrap_mask"])
-        assert wm[j] and wm.sum() == 1, f"{label}: 그 관절만 걸려야 한다 (mask={wm})"
-        assert st["match_aborted_wrap"] is True, f"{label}: 취소 사유가 안 남았다"
-        assert drv3._ids[j] not in drv3._torque_ids, \
-            f"{label}: 돌린 관절의 토크가 아직 켜져 있다 (손으로 못 푼다)"
-        assert np.abs(np.asarray(st["cur"]))[j] == 0.0, \
-            f"{label}: 벽 힘이 남아 있다 -- 지터의 원인"
-        # 한계벽도 꺼졌는가: 그 관절은 한계 밖인데도 전류가 0 이어야 한다
-        assert q_spun[j] > HI7[j] or q_spun[j] < LO7[j]
-
-        # 래치: 계속 돌려 한계와 뒤집힘 지점 사이(벽이 최대 강도로 서 있던
-        # 구간)로 와도 여전히 손에 있어야 한다. 여기서 벽이 다시 서면
-        # 한 바퀴 도는 내내 힘이 켜졌다 꺼졌다 한다.
-        q_between = CTR.copy()
-        q_between[j] = HI7[j] + 0.05          # 한계 바로 밖 (뒤집힘 지점에서 멂)
-        _put_leader_at(drv3, q_between)
-        st = _settle(w3)
-        assert np.asarray(st["wrap_mask"])[j], \
-            f"{label}: 한계 밖인데 벽이 다시 섰다 (한 바퀴 도는 중 지터)"
-        assert drv3._ids[j] not in drv3._torque_ids, f"{label}: 토크가 다시 켜졌다"
-        assert np.abs(np.asarray(st["cur"]))[j] == 0.0, f"{label}: 벽 힘이 되살아났다"
-
-        # 한계 안으로 돌아오면 자동으로 벽 복귀 (따로 풀 필요 없음)
-        _put_leader_at(drv3, CTR)
-        st = _settle(w3)
-        assert not np.asarray(st["wrap_mask"])[j], \
-            f"{label}: 한계 안으로 돌아왔는데 벽이 안 선다"
-        print(f"8-{label} 통과: 한 바퀴 도는 내내 그 관절만 토크 off "
-              f"(한계 밖 전 구간 유지), 한계 복귀 시 자동 원복")
-    finally:
-        w3.stop()
+drv3 = FakeDynamixelDriver(list(range(1, N_ARM + 2)))
+q_spun = CTR.copy()
+q_spun[0] = CTR[0] + np.pi          # J1 을 뒤집힘 지점에 둔다
+_put_leader_at(drv3, q_spun)
+w3 = JointLimitWall(
+    drv3, LO7, HI7,
+    offsets=np.zeros(N_ARM), signs=np.ones(N_ARM), n_arm=N_ARM,
+    hz=200.0, health_every=0.0,
+    match_max_current=np.full(N_ARM, 400.0),
+    match_kp=np.full(N_ARM, 2800.0),
+)
+w3.start()
+try:
+    st = _settle(w3)
+    assert not np.asarray(st["wrap_mask"]).any(), "자동 해제가 아직 살아 있다"
+    assert st["match_aborted_wrap"] is False
+    print("8 통과: 뒤집힘 구역 자동 해제 off -- 벽이 항상 선다")
+finally:
+    w3.stop()
 
 print("\nmatch well 검증 통과")
