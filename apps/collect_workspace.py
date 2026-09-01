@@ -113,7 +113,7 @@ from gello.gui.gui_widgets import (  # noqa: E402
     is_progress_line,
 )
 from apps.workspace.constants import LOG_DIR  # noqa: E402
-from apps.workspace.models import ProcessRegistry  # noqa: E402
+from apps.workspace.models import PlaybackState, ProcessRegistry  # noqa: E402
 from apps.workspace.builders import (  # noqa: E402
     build_bottom,
     build_center,
@@ -263,6 +263,7 @@ class WorkspaceWindow(QMainWindow):
 
         self.worker: CollectionWorker | None = None
         self.procs = ProcessRegistry()
+        self.playback = PlaybackState()
         # 카메라 노드 (2026-08-25 3-프로세스 분리): RealSense 를 독점 소유하는
         # 별도 프로세스. GUI 미리보기·포인트클라우드·수집 worker 는 전부 이
         # 노드의 구독자다 -- GIL 기아·device busy·wedge 를 없앤 구조.
@@ -291,9 +292,6 @@ class WorkspaceWindow(QMainWindow):
         self._cloud_serial = ""            # 지금 depth 워커가 연 카메라
         self._depth_consumer = None        # "cloud" | "depth" | None
         self._depth_img = None
-        self._play_loader: EpisodeLoadWorker | None = None
-        self._play_frames: dict = {"agent": None, "wrist": None}
-        self._play_key = None
 
         # 두 벌을 든다. _session 은 Connect 마다 0 으로 돌아가므로 "지금 찍고 있는
         # task 를 몇 개 모았나"이고, _cumulative 는 GUI 를 켠 뒤 전체다. 예전에는
@@ -320,11 +318,6 @@ class WorkspaceWindow(QMainWindow):
         self._dying_previews: list = []
         # 확정 전까지의 트림 상태. 누른 만큼 오르내리는 정수 하나면 충분하다 --
         # +/- 가 양쪽으로 있으므로 되돌리기용 이력을 따로 들 이유가 없다.
-        self._trim_key: tuple | None = None
-        self._trim_n_pending: int = 0
-        self._trim_frames: dict = {"agent": None, "wrist": None}
-        self._trim_n: int = 0
-        self._trim_loader = None
         self._connect_wait_since = None
         self._episodes_at_connect = 0
         self._recents = Recents()
@@ -353,9 +346,9 @@ class WorkspaceWindow(QMainWindow):
         self._fps_timer.timeout.connect(self._tick_fps)
         self._fps_timer.start(1000)
 
-        self._play_timer = QTimer(self)
-        self._play_timer.setInterval(int(1000 / PLAYBACK_FPS))
-        self._play_timer.timeout.connect(self._on_play_tick)
+        self.playback.play_timer = QTimer(self)
+        self.playback.play_timer.setInterval(int(1000 / PLAYBACK_FPS))
+        self.playback.play_timer.timeout.connect(self._on_play_tick)
 
         # App-wide, not window-scoped: the operator's hands are on the leader,
         # so whichever widget happens to hold focus must not swallow the keys.
@@ -1104,7 +1097,7 @@ class WorkspaceWindow(QMainWindow):
         it = items[0]
         path = it.parent().data(0, Qt.ItemDataRole.UserRole)
         self._show_trim_for(path, it.data(0, Qt.ItemDataRole.UserRole))
-        self.center_tabs.setCurrentIndex(self._trim_tab_index)
+        self.center_tabs.setCurrentIndex(self.playback.trim_tab_index)
 
     # ------------------------------------------------------------------ Trim
     def _show_trim_for(self, path: str, demo: str) -> None:
@@ -1114,71 +1107,71 @@ class WorkspaceWindow(QMainWindow):
         if self.active_file_path is not None and Path(path) == self.active_file_path:
             self.trim_summary.setText(tr("수집 중인 파일은 편집할 수 없습니다."))
             return
-        self._trim_key = (path, demo)
-        self._trim_n_pending = 0
+        self.playback.trim_key = (path, demo)
+        self.playback.trim_n_pending = 0
         try:
             series = load_series(path, demo)
         except Exception as e:  # noqa: BLE001
             self.trim_summary.setText(tr("불러오기 실패: {e}").format(e=e))
             return
-        self._trim_series = series
-        self._trim_n = int(series["n"])
+        self.playback.trim_series = series
+        self.playback.trim_n = int(series["n"])
         for plot, dims in self.trim_plots.values():
             plot.set_data(series, dims)
-        self._trim_frames = {"agent": None, "wrist": None}
+        self.playback.trim_frames = {"agent": None, "wrist": None}
         for v in self.trim_views.values():
             v.clear_frame(tr("영상 불러오는 중..."))
-        if self._trim_loader is not None:
-            self._trim_loader.wait()
-        self._trim_loader = EpisodeLoadWorker(path, demo)
-        self._trim_loader.loaded.connect(self._on_trim_loaded)
-        self._trim_loader.failed.connect(
+        if self.playback.trim_loader is not None:
+            self.playback.trim_loader.wait()
+        self.playback.trim_loader = EpisodeLoadWorker(path, demo)
+        self.playback.trim_loader.loaded.connect(self._on_trim_loaded)
+        self.playback.trim_loader.failed.connect(
             lambda m: [v.clear_frame(tr("영상 없음")) for v in self.trim_views.values()])
-        self._trim_loader.start()
+        self.playback.trim_loader.start()
         self._trim_update()
 
     @pyqtSlot(str, str, object, object)
     def _on_trim_loaded(self, path, demo, agent, wrist) -> None:
-        if self._trim_key != (path, demo):
+        if self.playback.trim_key != (path, demo):
             return
-        self._trim_frames = {"agent": agent, "wrist": wrist}
+        self.playback.trim_frames = {"agent": agent, "wrist": wrist}
         self._trim_update()
         self._trim_seek(self._trim_keep() - 1)
 
     def _trim_pending(self) -> int:
-        return self._trim_n_pending
+        return self.playback.trim_n_pending
 
     def _trim_keep(self) -> int:
-        return max(0, self._trim_n - self._trim_pending())
+        return max(0, self.playback.trim_n - self._trim_pending())
 
     def _trim_add(self, n: int) -> None:
         """+/- 를 누른 만큼 옮긴다. 0 아래로는 못 간다 -- 원본보다 길어질 수 없다."""
-        if self._trim_key is None:
+        if self.playback.trim_key is None:
             return
-        self._trim_n_pending = max(0, self._trim_n_pending + n)
+        self.playback.trim_n_pending = max(0, self.playback.trim_n_pending + n)
         self._trim_update()
         self._trim_seek(self._trim_keep() - 1)
 
     def _trim_reset(self) -> None:
         """정정 -- 고른 것을 통째로 0으로. 한 단계씩 물리는 것보다, 잘못 짚었을 때
         처음부터 다시 보는 쪽이 실제 흐름에 맞는다."""
-        if self._trim_key is None:
+        if self.playback.trim_key is None:
             return
-        self._trim_n_pending = 0
+        self.playback.trim_n_pending = 0
         self._trim_update()
         self._trim_seek(self._trim_keep() - 1)
 
     def _trim_suggest(self) -> None:
-        if self._trim_key is None:
+        if self.playback.trim_key is None:
             return
-        n = suggest_trim(*self._trim_key)
-        self._trim_n_pending = n
+        n = suggest_trim(*self.playback.trim_key)
+        self.playback.trim_n_pending = n
         self.log(f"[트림] 추천 {n}프레임" + ("" if n else " (이미 조용하게 끝납니다)"))
         self._trim_update()
         self._trim_seek(self._trim_keep() - 1)
 
     def _trim_seek(self, i: int) -> None:
-        n = self._trim_n
+        n = self.playback.trim_n
         if n <= 0:
             return
         i = max(0, min(n - 1, i))
@@ -1191,13 +1184,13 @@ class WorkspaceWindow(QMainWindow):
     def _trim_show_frame(self, i: int) -> None:
         keep = self._trim_keep()
         for role, v in self.trim_views.items():
-            arr = self._trim_frames.get(role)
+            arr = self.playback.trim_frames.get(role)
             if arr is None or len(arr) == 0:
                 continue
             v.set_frame(arr[min(i, len(arr) - 1)])
         mark = tr(" ← 잘린 뒤 마지막") if i == keep - 1 else (
             tr("  (잘려나갈 구간)") if i >= keep else "")
-        self.trim_pos.setText(f"{i + 1}/{self._trim_n}{mark}")
+        self.trim_pos.setText(f"{i + 1}/{self.playback.trim_n}{mark}")
         for plot, _ in self.trim_plots.values():
             plot.set_cursor(i)
 
@@ -1206,31 +1199,31 @@ class WorkspaceWindow(QMainWindow):
 
     def _on_trim_play(self) -> None:
         """잘린 뒤 구간만 훑는다 -- 확인하려는 것이 '새 끝'이기 때문이다."""
-        if self._trim_key is None:
+        if self.playback.trim_key is None:
             return
         keep = self._trim_keep()
         self._trim_seek(max(0, keep - 40))
-        if not hasattr(self, "_trim_timer"):
-            self._trim_timer = QTimer(self)
-            self._trim_timer.setInterval(50)
-            self._trim_timer.timeout.connect(self._trim_tick)
-        self._trim_timer.start()
+        if self.playback.trim_timer is None:
+            self.playback.trim_timer = QTimer(self)
+            self.playback.trim_timer.setInterval(50)
+            self.playback.trim_timer.timeout.connect(self._trim_tick)
+        self.playback.trim_timer.start()
         self.trim_play_btn.setText(tr("정지"))
 
     def _trim_tick(self) -> None:
         i = self.trim_slider.value() + 1
         if i >= self._trim_keep():
-            self._trim_timer.stop()
+            self.playback.trim_timer.stop()
             self.trim_play_btn.setText(tr("재생"))
             return
         self._trim_seek(i)
 
     def _trim_update(self) -> None:
         """Recomputes every label, guard and shading from the pending count."""
-        has = self._trim_key is not None
-        self.trim_play_btn.setEnabled(has and self._trim_frames.get("agent") is not None)
+        has = self.playback.trim_key is not None
+        self.trim_play_btn.setEnabled(has and self.playback.trim_frames.get("agent") is not None)
         self.trim_slider.setEnabled(has)
-        self.trim_reset_btn.setEnabled(bool(self._trim_n_pending))
+        self.trim_reset_btn.setEnabled(bool(self.playback.trim_n_pending))
         if not has:
             self.trim_count.setText(tr("에피소드를 고르세요"))
             self.trim_apply_btn.setEnabled(False)
@@ -1238,16 +1231,16 @@ class WorkspaceWindow(QMainWindow):
             for plot, _ in self.trim_plots.values():
                 plot.set_cut(None)
             return
-        path, demo = self._trim_key
+        path, demo = self.playback.trim_key
         n_trim, keep = self._trim_pending(), self._trim_keep()
         plan = plan_trim(path, [demo], max(n_trim, 1))[0]
         self.trim_summary.setText(
             tr("{d} · {n}프레임 ({s:.1f}s) · 마지막 그리퍼 동작 −{g}프레임").format(
-                d=demo, n=self._trim_n, s=self._trim_n / 20.0,
+                d=demo, n=self.playback.trim_n, s=self.playback.trim_n / 20.0,
                 g=plan.gripper_tail if plan.gripper_tail is not None else "?"))
         self.trim_count.setText(
-            tr("{a} → {b} 프레임   (−{n})").format(a=self._trim_n, b=keep, n=n_trim)
-            if n_trim else tr("{a} 프레임 — 자를 구간 없음").format(a=self._trim_n))
+            tr("{a} → {b} 프레임   (−{n})").format(a=self.playback.trim_n, b=keep, n=n_trim)
+            if n_trim else tr("{a} 프레임 — 자를 구간 없음").format(a=self.playback.trim_n))
         for plot, _ in self.trim_plots.values():
             plot.set_cut(keep if n_trim else None)
         blocked = plan_trim(path, [demo], n_trim)[0].blocked if n_trim else None
@@ -1260,15 +1253,15 @@ class WorkspaceWindow(QMainWindow):
             self.trim_warn.setText("")
 
     def _trim_apply(self) -> None:
-        if self._trim_key is None or not self._trim_pending():
+        if self.playback.trim_key is None or not self._trim_pending():
             return
-        path, demo = self._trim_key
+        path, demo = self.playback.trim_key
         n_trim, keep = self._trim_pending(), self._trim_keep()
         if QMessageBox.question(
                 self, tr("끝 다듬기 확정"),
                 tr("{f}\n{d}\n\n{a} → {b} 프레임 (뒤에서 {n}개 삭제)\n\n"
                    "되돌릴 수 없습니다. 진행할까요?").format(
-                       f=Path(path).name, d=demo, a=self._trim_n, b=keep, n=n_trim),
+                       f=Path(path).name, d=demo, a=self.playback.trim_n, b=keep, n=n_trim),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
@@ -1278,7 +1271,7 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.critical(self, tr("다듬기 실패"), f"{type(e).__name__}: {e}")
             self.log(f"[트림 실패] {Path(path).name} {demo}: {type(e).__name__}: {e}")
             return
-        self.log(f"[트림] {Path(path).name} {demo}: {self._trim_n} → {new_n}프레임 "
+        self.log(f"[트림] {Path(path).name} {demo}: {self.playback.trim_n} → {new_n}프레임 "
                  f"(−{n_trim})")
         self._refresh_dataset_tree()
         self._refresh_analysis(force=True)
@@ -1358,10 +1351,10 @@ class WorkspaceWindow(QMainWindow):
         self._layout_show()
 
     def _layout_toggle_play(self) -> None:
-        self._layout_playing = not self._layout_playing
+        self.playback.layout_playing = not self.playback.layout_playing
         self.layout_play_btn.setText(
-            tr("일시정지") if self._layout_playing else tr("재생"))
-        if self._layout_playing and \
+            tr("일시정지") if self.playback.layout_playing else tr("재생"))
+        if self.playback.layout_playing and \
                 self.center_tabs.currentIndex() == self._layout_tab_index:
             self._layout_timer.start()
         else:
@@ -1645,7 +1638,7 @@ class WorkspaceWindow(QMainWindow):
             else:
                 self._layout_show()
             self._layout_apply_interval()
-            if self._layout_playing:
+            if self.playback.layout_playing:
                 self._layout_timer.start()
             if self.layout_blink_check.isChecked():
                 self._layout_blink_timer.start()
@@ -3773,29 +3766,29 @@ class WorkspaceWindow(QMainWindow):
 
     def _play_episode(self, path: str, demo: str) -> None:
         """Dataset 트리와 Analysis 순위표가 공유하는 재생 진입점."""
-        if self._play_key == (path, demo):
+        if self.playback.play_key == (path, demo):
             self.center_tabs.setCurrentIndex(1)
             return
         if self.active_file_path is not None and Path(path) == self.active_file_path:
             self.play_caption.setText(tr("수집 중인 파일은 재생할 수 없습니다."))
             return
         self._stop_playback()
-        self._play_key = (path, demo)
+        self.playback.play_key = (path, demo)
         self.play_caption.setText(tr("불러오는 중... {d}").format(d=demo))
         self.center_tabs.setCurrentIndex(1)
-        if self._play_loader is not None:
-            self._play_loader.wait()
-        self._play_loader = EpisodeLoadWorker(path, demo)
-        self._play_loader.loaded.connect(self._on_episode_loaded)
-        self._play_loader.failed.connect(
+        if self.playback.play_loader is not None:
+            self.playback.play_loader.wait()
+        self.playback.play_loader = EpisodeLoadWorker(path, demo)
+        self.playback.play_loader.loaded.connect(self._on_episode_loaded)
+        self.playback.play_loader.failed.connect(
             lambda m: self.play_caption.setText(tr("재생 실패: {m}").format(m=m)))
-        self._play_loader.start()
+        self.playback.play_loader.start()
 
     @pyqtSlot(str, str, object, object)
     def _on_episode_loaded(self, path, demo, agent, wrist) -> None:
-        if self._play_key != (path, demo):
+        if self.playback.play_key != (path, demo):
             return
-        self._play_frames = {"agent": agent, "wrist": wrist}
+        self.playback.play_frames = {"agent": agent, "wrist": wrist}
         n = len(agent) if agent is not None else len(wrist)
         self.play_slider.blockSignals(True)
         self.play_slider.setRange(0, max(0, n - 1))
@@ -3807,12 +3800,12 @@ class WorkspaceWindow(QMainWindow):
         self._apply_speed()
         self._refresh_play_caption()
         self._show_frame(0)
-        self._play_timer.start()
+        self.playback.play_timer.start()
 
     def _stop_playback(self) -> None:
-        self._play_timer.stop()
-        self._play_frames = {"agent": None, "wrist": None}
-        self._play_key = None
+        self.playback.play_timer.stop()
+        self.playback.play_frames = {"agent": None, "wrist": None}
+        self.playback.play_key = None
         self.play_btn.setEnabled(False)
         self.play_btn.setText(tr("재생"))
         self.play_slider.setEnabled(False)
@@ -3826,16 +3819,16 @@ class WorkspaceWindow(QMainWindow):
 
     def _apply_speed(self) -> None:
         interval = max(1, int(round(1000.0 / (PLAYBACK_FPS * self._speed()))))
-        self._play_timer.setInterval(interval)
+        self.playback.play_timer.setInterval(interval)
 
     def _on_speed_changed(self) -> None:
         self._apply_speed()
         self._refresh_play_caption()
 
     def _refresh_play_caption(self) -> None:
-        if not self._play_key:
+        if not self.playback.play_key:
             return
-        path, demo = self._play_key
+        path, demo = self.playback.play_key
         n = self.play_slider.maximum() + 1
         speed = self._speed()
         eff = PLAYBACK_FPS * speed
@@ -3845,11 +3838,11 @@ class WorkspaceWindow(QMainWindow):
                else tr("{f:g} fps (실제 속도)").format(f=eff)))
 
     def _on_play_toggle(self) -> None:
-        if self._play_timer.isActive():
-            self._play_timer.stop()
+        if self.playback.play_timer.isActive():
+            self.playback.play_timer.stop()
             self.play_btn.setText(tr("재생"))
         else:
-            self._play_timer.start()
+            self.playback.play_timer.start()
             self.play_btn.setText(tr("일시정지"))
 
     def _on_play_tick(self) -> None:
@@ -3859,7 +3852,7 @@ class WorkspaceWindow(QMainWindow):
 
     def _show_frame(self, i: int) -> None:
         for key, view in self.play_views.items():
-            frames = self._play_frames.get(key)
+            frames = self.playback.play_frames.get(key)
             if frames is not None and i < len(frames):
                 view.set_frame(frames[i])
         self.play_pos.setText(f"{i + 1}/{self.play_slider.maximum() + 1}")
@@ -4835,9 +4828,9 @@ class WorkspaceWindow(QMainWindow):
 
     # ------------------------------------------------------------- close
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
-        self._play_timer.stop()
-        if self._play_loader is not None:
-            self._play_loader.wait(3000)
+        self.playback.play_timer.stop()
+        if self.playback.play_loader is not None:
+            self.playback.play_loader.wait(3000)
         self._stop_cloud(restore_previews=False)
         self._stop_previews_blocking()
         self._stop_camera_node()

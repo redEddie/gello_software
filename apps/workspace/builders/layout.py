@@ -168,7 +168,7 @@ def build_center(win) -> None:
     play_col.addWidget(win.play_caption)
     win.center_tabs.addTab(play, tr("Playback"))
     win.center_tabs.addTab(build_analysis_tab(win), tr("Analysis"))
-    win._trim_tab_index = win.center_tabs.addTab(build_trim_tab(win), tr("Trim"))
+    win.playback.trim_tab_index = win.center_tabs.addTab(build_trim_tab(win), tr("Trim"))
     win._layout_tab_index = win.center_tabs.addTab(
         build_layout_tab(win), tr("레이아웃"))
     win._gallery_tab_index = win.center_tabs.addTab(

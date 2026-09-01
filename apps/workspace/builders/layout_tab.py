@@ -25,7 +25,7 @@ def build_layout_tab(win) -> QWidget:
     """
     win._layout_entries: list = []      # (suite, name, agent_png, wrist_png)
     win._layout_idx = 0
-    win._layout_playing = True
+    win.playback.layout_playing = True
     win._layout_ref: dict = {}          # role -> (224,224,3) RGB
     win._last_cam_frame: dict = {}      # role -> 카메라 원본 (640x480)
 
