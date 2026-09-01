@@ -74,3 +74,11 @@ print(f"도메인 {n}개, 창에서 읽는 이름 전부 실재 OK")
 win.close()
 win.deleteLater()
 app.processEvents()
+
+# 진짜 창을 하나 만들어 두었으므로 인터프리터를 정상 종료시키면 Qt 객체가
+# 잘못된 순서로 풀리며 "double free" 로 죽는다 (검사는 이미 다 끝난 뒤라
+# 결과는 맞는데 종료 코드만 0이 아니게 된다 -- run_all.sh 는 그것을 FAIL 로
+# 읽는다). 창을 만드는 다른 인수 테스트들과 같은 방식으로 끝낸다.
+import os  # noqa: E402
+
+os._exit(0)
