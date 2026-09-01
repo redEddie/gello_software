@@ -7,8 +7,8 @@
 - Plan 1단계 후속 정리(Claude 검증 반영):
   - `pipeline_dialog.py` / `new_scene_dialog.py`의 중복 정의(`StatusLight`, `SceneInfoView`, `PlanJsonDialog`, `_relax_min_widths`, `_shrinkable_combo`) 제거.
   - `tests/gui/test_hub_upload_state.py`에 `scripts=` 인자 추가.
-  - `tests/gui/test_dialog_modules.py` 신규: `apps/dialogs` 패키지의 클래스 중복/이름 해결/순환 임포트/`__all__` 계약 검증.
-  - `tests/gui/run_all.sh`에 `test_dialog_modules` 추가.
+  - `tests/gui/test_app_structure.py` 신규: `apps/` 전체의 클래스 중복 / 이름 해석 / 화살표 방향 / 순환 임포트 / `__all__` 계약 검증.
+  - `tests/gui/run_all.sh`에 `test_app_structure` 추가 (총 18개).
 
 ## 목표
 
@@ -22,9 +22,9 @@
 
 분해 전체에서 지켜야 할 규칙:
 
-1. 한 클래스는 한 모듈에만 정의한다. `test_dialog_modules.py`의 AST 중복 검사를 WorkspaceWindow 분해에도 확장한다.
+1. 한 클래스는 한 모듈에만 정의한다. `test_app_structure.py` 의 AST 중복 검사가 `apps/` 전체를 본다.
 2. `apps/` -> `gello/` 의존은 허용, `gello/` -> `apps/` 의존은 금지.
-3. 순환 임포트 금지. `apps/dialogs`에서 시작한 `test_dialog_modules` 검증을 `apps/workspace`로 확장한다.
+3. 순환 임포트 금지. `test_app_structure.py` 가 `apps/` 전체의 순환과 화살표 역류를 검사한다.
 4. 상태는 가능한 한 순수 데이터 클래스/객체로 묶고, UI 메서드는 상태를 읽기만 한다.
 5. 하드웨어/프로세스 제어(로봇, 칩 인자 camera node, QProcess)는 WorkspaceWindow가 마지막으로 소유한다.
 
@@ -101,7 +101,7 @@ apps/workspace/
 
 - `py_compile`
 - `tests/gui/test_plan_form.py`, `test_right_scene.py`
-- `test_dialog_modules.py` 패턴을 `apps/workspace`로 확장한 테스트 초안 추가
+- `tests/gui/run_all.sh` (test_app_structure 포함)
 
 ## Phase 4 - Domain 분리
 
@@ -136,11 +136,8 @@ apps/workspace/
 ## 검증 체크리스트 (모든 phase 공통)
 
 - [ ] `python -m py_compile apps/collect_workspace.py` 및 새 모듈 전체
-- [ ] `PYTHONPATH="" python tests/gui/test_dialog_modules.py` (구조 계약)
-- [ ] `PYTHONPATH="" python tests/gui/test_plan_form.py`
-- [ ] `PYTHONPATH="" python tests/gui/test_grid_replay.py`
-- [ ] `PYTHONPATH="" python tests/gui/test_scene_edit.py`
-- [ ] `tests/gui/run_all.sh` 17/17 통과
+- [ ] `bash tests/gui/run_all.sh /home/franka/lerobot-venv/bin/python` 18/18 통과 (개별 테스트를 골라 돌리지 않는다 -- 2026-09-01 회귀 2건이 그 구멍으로 샜다)
+- [ ] 옮긴 이름의 잔여 참조 확인: `grep -cw <이름> <원본파일>` (매 단계 고아 임포트가 남았다)
 - [ ] 화면 검증: offscreen 또는 실제 GUI에서 전체 처리/새 씬 대화상자 열어보기
 
 ## 단기계획 (다음에 바로 시작할 것)
@@ -151,7 +148,7 @@ apps/workspace/
 2. `toolbar.py`/`layout.py`/`gallery_tab.py`/`trim_tab.py`/`layout_tab.py`/`cloud_tab.py`/`depth_tab.py`/`analysis_tab.py`로 `_build_*` 14개 이동.
 3. `pages/configure.py`/`collect.py`/`dataset.py`/`upload.py`/`stats.py`/`layout.py`/`settings.py`로 `_page_*` 7개 이동.
 4. `collect_workspace.py`에서 이동한 21개 메서드 삭제, `apps/workspace/builders/__init__.py`에서 편의 임포트.
-5. `test_dialog_modules.py`를 `apps/workspace`로 확장할 초안 테스트 추가.
+5. (완료) `test_app_structure.py` 가 `apps/` 전체를 검사한다.
 6. `py_compile` + `test_plan_form.py` + `test_grid_replay.py` + `test_scene_edit.py` + offscreen GUI smoke test.
 7. 커밋.
 

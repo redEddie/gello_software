@@ -57,7 +57,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-from PyQt6.QtCore import (QEvent, QProcess, QSize, Qt, QThread, QTimer,
+from PyQt6.QtCore import (QEvent, QProcess, Qt, QThread, QTimer,
                           pyqtSignal, pyqtSlot)
 from PyQt6.QtGui import QAction, QActionGroup, QFont, QIcon, QTextCursor
 from PyQt6 import sip
@@ -79,7 +79,6 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
@@ -89,7 +88,6 @@ from PyQt6.QtWidgets import (
     QRadioButton,
     QSlider,
     QSpinBox,
-    QSplitter,
     QStackedWidget,
     QTabWidget,
     QTextBrowser,
@@ -109,7 +107,6 @@ from gello.data.dataset_schema import (  # noqa: E402
 )
 from gello.data.dataset_sync import plan_sync  # noqa: E402
 from gello.data.episode_stats import (  # noqa: E402
-    STILL_VEL,
     TASK_DEV_LIMIT,
     hdf5_files,
     load_series,
@@ -117,7 +114,6 @@ from gello.data.episode_stats import (  # noqa: E402
     summarize,
 )
 from gello.data.episode_trim import plan_trim, suggest_trim, tail_speed, trim_tail  # noqa: E402
-from gello.gui.plot_widgets import BarStrip, Histogram, SeriesPlot  # noqa: E402
 from gello.gui.gui_widgets import (  # noqa: E402
     TODO_MARK,
     repo_id_error,
@@ -167,6 +163,7 @@ from apps.dialogs.plan_json_dialog import PlanJsonDialog  # noqa: E402
 from apps.dialogs.recommend_dialog import RecommendDialog  # noqa: E402
 from gello.gui.grid_overlay import (  # noqa: E402
     DEFAULT_CORNERS,
+    draw_alignment_grid,
     active_corners,
     draw_grid,
     grid_segments,
@@ -235,6 +232,8 @@ LEGACY_REPOS = {
     "knu-physical-ai/fr3-pick-place-lerobot", "knu-physical-ai/fr3-pick-place",
 }
 RUNME_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "runme.sh")
+CHECK_CAMERAS = str(Path(__file__).resolve().parent.parent / "scripts" / "check" / "check_cameras.py")
+RESET_PROTECTION = str(Path(__file__).resolve().parent.parent / "scripts" / "check" / "gello_reset_protection.py")
 # LIBERO 초기 배치 참조 이미지. 리모트에는 zip 만 올라가고(3.9MB), 풀린
 # png 들은 .gitignore 의 *.png 에 걸린다. GUI 가 뜰 때 zip 이 바뀌었으면 다시
 # 푼다 -- _ensure_layout_refs().
@@ -246,20 +245,6 @@ def _new_stats() -> dict:
     """수집 카운터 한 벌. 이번 task 용과 누적용이 같은 모양이라 같은 곳에서 만든다."""
     return {"saved": 0, "success": 0, "failed": 0, "discarded": 0,
             "frames": 0, "t0": time.monotonic()}
-
-
-def _grid_overlay(img):
-    """1/8 간격 격자를 절반 밝기로 덧그린다 -- 수평/중앙 확인용. 사본에만."""
-    out = img.copy()
-    h, w = out.shape[:2]
-    for i in range(1, 8):
-        y, x = h * i // 8, w * i // 8
-        c = 255 if i == 4 else 190        # 중앙선만 조금 더 밝게
-        out[y, :] = out[y, :] // 2 + c // 2
-        out[:, x] = out[:, x] // 2 + c // 2
-    return out
-CHECK_CAMERAS = str(Path(__file__).resolve().parent.parent / "scripts" / "check" / "check_cameras.py")
-RESET_PROTECTION = str(Path(__file__).resolve().parent.parent / "scripts" / "check" / "gello_reset_protection.py")
 
 
 def _read(path: Path) -> str:
@@ -441,58 +426,6 @@ class WorkspaceWindow(QMainWindow):
         QTimer.singleShot(0, self._startup_tuning)
 
     # ------------------------------------------------------------ gallery
-    def _build_gallery_tab(self) -> QWidget:
-        """scene 에피소드 갤러리 (#31): 썸네일 그리드 + instruction 필터.
-
-        더블클릭 = Playback 재생(기존 경로 재사용), 재판정 버튼 = Dataset
-        페이지와 같은 코어(_relabel_episodes). 썸네일은 uid 기반 캐시라
-        (에피소드 immutable) 첫 로드 이후에는 즉시 뜬다.
-        """
-        w = QWidget()
-        col = QVBoxLayout(w)
-        row = QHBoxLayout()
-        self.gallery_scene_combo = QComboBox()
-        shrinkable_combo(self.gallery_scene_combo)
-        self.gallery_scene_combo.currentIndexChanged.connect(self._refresh_gallery)
-        row.addWidget(self.gallery_scene_combo, 2)
-        self.gallery_filter_combo = QComboBox()
-        shrinkable_combo(self.gallery_filter_combo)
-        self.gallery_filter_combo.currentIndexChanged.connect(self._apply_gallery_filter)
-        row.addWidget(self.gallery_filter_combo, 2)
-        b = QPushButton("↻")
-        b.setToolTip(tr("scene 목록·썸네일 새로고침"))
-        b.setMaximumWidth(32)
-        b.clicked.connect(self._refresh_gallery_scenes)
-        row.addWidget(b)
-        self.gallery_relabel_btn = QPushButton(tr("선택 재판정"))
-        self.gallery_relabel_btn.clicked.connect(self._on_gallery_relabel)
-        row.addWidget(self.gallery_relabel_btn)
-        self.gallery_replay_btn = QPushButton(tr("실로봇 재생"))
-        self.gallery_replay_btn.setToolTip(tr(
-            "선택한 에피소드의 관절 명령을 실로봇에 다시 보냅니다.\n"
-            "로봇 노드가 켜져 있어야 하고, 로봇이 실제로 움직입니다."))
-        self.gallery_replay_btn.clicked.connect(self._on_gallery_replay)
-        row.addWidget(self.gallery_replay_btn)
-        col.addLayout(row)
-        self.gallery_list = QListWidget()
-        self.gallery_list.setViewMode(QListWidget.ViewMode.IconMode)
-        self.gallery_list.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.gallery_list.setMovement(QListWidget.Movement.Static)
-        self.gallery_list.setIconSize(QSize(200, 150))
-        self.gallery_list.setSpacing(8)
-        self.gallery_list.setSelectionMode(
-            QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.gallery_list.itemActivated.connect(self._on_gallery_activated)
-        col.addWidget(self.gallery_list, 1)
-        self.gallery_status = QLabel(tr("scene 을 선택하세요"))
-        self.gallery_status.setStyleSheet("color:#888;")
-        self.gallery_status.setWordWrap(True)
-        col.addWidget(self.gallery_status)
-        self._gallery_loader = None
-        self._gallery_episodes = []
-        self._refresh_gallery_scenes()
-        return w
-
     def _refresh_gallery_scenes(self) -> None:
         combo = self.gallery_scene_combo
         cur = combo.currentData()
@@ -2001,209 +1934,7 @@ class WorkspaceWindow(QMainWindow):
         self._refresh_analysis(force=True)
         self._show_trim_for(path, demo)
 
-    def _build_trim_tab(self) -> QWidget:
-        """Analysis's layout, aimed at one question: where should this take end.
-
-        The plots are the same five as Analysis -- the tail wobble is visible
-        there as clearly as anywhere -- but the right column is the episode's
-        own video instead of dataset-wide statistics, because the check that
-        actually matters ("did I cut the release?") is a thing you look at, not
-        a number. Nothing is written until 확정; every button before that only
-        moves a pending count.
-        """
-        page = QWidget()
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(4, 4, 4, 4)
-        split = QSplitter(Qt.Orientation.Horizontal)
-
-        left = QWidget()
-        lcol = QVBoxLayout(left)
-        lcol.setContentsMargins(0, 0, 0, 0)
-        self.trim_summary = QLabel(tr("Dataset 트리나 Analysis 순위표에서 에피소드를 고르세요."))
-        self.trim_summary.setWordWrap(True)
-        self.trim_summary.setStyleSheet("font-weight:bold;")
-        lcol.addWidget(self.trim_summary)
-
-        grid = QGridLayout()
-        self.trim_plots = {}
-        for i, (title, dims) in enumerate((
-            ("joint1.pos, joint2.pos", [(0, "joint1.pos"), (1, "joint2.pos")]),
-            ("joint4.pos, joint5.pos", [(3, "joint4.pos"), (4, "joint5.pos")]),
-            ("joint6.pos, joint7.pos", [(5, "joint6.pos"), (6, "joint7.pos")]),
-            ("joint3.pos", [(2, "joint3.pos")]),
-            ("gripper.pos", [(7, "gripper.pos")]),
-        )):
-            plot = SeriesPlot(title)
-            self.trim_plots[title] = (plot, dims)
-            grid.addWidget(plot, i // 2, i % 2)
-        lcol.addLayout(grid, 1)
-        legend = QLabel(tr("실선 observation.state   ┄ 파선 observation.commanded_state"
-                           "   ┈ 점선 action     ▨ 빨간 음영 = 잘려나갈 구간"))
-        legend.setStyleSheet("color:#888;")
-        lcol.addWidget(legend)
-        split.addWidget(left)
-
-        right = QWidget()
-        rcol = QVBoxLayout(right)
-        rcol.setContentsMargins(0, 0, 0, 0)
-
-        vids = QHBoxLayout()
-        self.trim_views = {}
-        for role, cap in (("agent", tr("agent")), ("wrist", tr("wrist"))):
-            box = QVBoxLayout()
-            v = VideoView()
-            v.clear_frame(tr("에피소드를 선택하세요"))
-            v.set_crop_guide(**self._crop_params[role])
-            self.trim_views[role] = v
-            box.addWidget(v, 1)
-            lab = QLabel(cap)
-            lab.setStyleSheet("color:#888;")
-            lab.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-            box.addWidget(lab)
-            vids.addLayout(box, 1)
-        rcol.addLayout(vids, 1)
-
-        # 슬라이더는 '지금 몇 번째 프레임을 보고 있나'다. 자를 지점을 정하는
-        # 것과 별개로, 잘린 뒤 마지막 프레임이 어떤 장면인지 눈으로 확인해야
-        # 하기 때문에 재생/스크럽을 그대로 둔다.
-        srow = QHBoxLayout()
-        self.trim_play_btn = QPushButton(tr("재생"))
-        self.trim_play_btn.setEnabled(False)
-        self.trim_play_btn.clicked.connect(self._on_trim_play)
-        srow.addWidget(self.trim_play_btn)
-        self.trim_slider = QSlider(Qt.Orientation.Horizontal)
-        self.trim_slider.setEnabled(False)
-        self.trim_slider.valueChanged.connect(self._on_trim_scrub)
-        srow.addWidget(self.trim_slider, 1)
-        self.trim_pos = QLabel("-/-")
-        self.trim_pos.setMinimumWidth(72)
-        srow.addWidget(self.trim_pos)
-        rcol.addLayout(srow)
-
-        box = QGroupBox(tr("끝 다듬기"))
-        bcol = QVBoxLayout(box)
-        self.trim_count = QLabel(tr("에피소드를 고르세요"))
-        self.trim_count.setStyleSheet("font-size:15px; font-weight:bold;")
-        self.trim_count.setWordWrap(True)
-        bcol.addWidget(self.trim_count)
-
-        # 누른 만큼 쌓이고, + 로 되물린다. -1..-20 을 늘어놓는 대신 네 개만 두면
-        # 한 자리에서 오르내릴 수 있어 "몇 번 눌렀더라"를 셀 필요가 없다.
-        step_row = QHBoxLayout()
-        # 라벨의 부호는 *에피소드 길이* 기준이다: "−5" 는 5프레임 짧아진다는 뜻이라
-        # 자를 양(pending)은 +5 만큼 는다. 둘을 같은 부호로 두면 −5 가 되돌리기가
-        # 되어 버린다.
-        for label, n in ((tr("−5"), 5), (tr("−1"), 1), (tr("+1"), -1), (tr("+5"), -5)):
-            b = QPushButton(label)
-            b.setToolTip(
-                tr("누를 때마다 {n}프레임씩 더 자릅니다 (아직 파일은 그대로)")
-                .format(n=n) if n > 0 else
-                tr("누를 때마다 {n}프레임씩 되돌립니다 (원본 길이 이상으로는 안 갑니다)")
-                .format(n=-n))
-            b.clicked.connect(lambda _=False, k=n: self._trim_add(k))
-            step_row.addWidget(b)
-        bcol.addLayout(step_row)
-
-        act_row = QHBoxLayout()
-        sug = QPushButton(tr("추천"))
-        sug.setToolTip(tr("끝에서부터 속도가 그 에피소드 중앙값 아래로 떨어지는 "
-                          "지점까지를 제안합니다 (최대 15프레임)"))
-        sug.clicked.connect(self._trim_suggest)
-        act_row.addWidget(sug)
-        self.trim_reset_btn = QPushButton(tr("정정"))
-        self.trim_reset_btn.setToolTip(tr("고른 프레임 수를 0으로 되돌립니다. "
-                                          "확정 전에는 파일이 바뀌지 않습니다."))
-        self.trim_reset_btn.clicked.connect(self._trim_reset)
-        act_row.addWidget(self.trim_reset_btn)
-        self.trim_apply_btn = QPushButton(tr("확정 (파일에 적용)"))
-        self.trim_apply_btn.setStyleSheet("background-color:#c0392b; color:white; padding:6px;")
-        self.trim_apply_btn.setToolTip(tr("여기서부터 .hdf5 가 실제로 바뀝니다. "
-                                          "되돌릴 수 없습니다."))
-        self.trim_apply_btn.clicked.connect(self._trim_apply)
-        act_row.addWidget(self.trim_apply_btn, 1)
-        bcol.addLayout(act_row)
-
-        self.trim_warn = QLabel("")
-        self.trim_warn.setWordWrap(True)
-        self.trim_warn.setStyleSheet("color:#e67e22;")
-        bcol.addWidget(self.trim_warn)
-        rcol.addWidget(box)
-        split.addWidget(right)
-        split.setSizes([640, 490])
-        outer.addWidget(split)
-        self._trim_update()
-        return page
-
     # ------------------------------------------------- layout check tab
-    def _build_layout_tab(self) -> QWidget:
-        """LIBERO 초기 배치와 현재 카메라를 비교하는 탭.
-
-        위: 참조 이미지와 카메라를 50%씩 섞은 겹침 뷰 (agent / wrist).
-        아래: 참조·카메라 4장을 나란히. 로그 자리가 필요하므로 이 탭이
-        보이는 동안은 하단 로그 패널을 접는다(_on_center_tab_changed).
-        카메라 쪽은 변환 파이프라인과 같은 크롭(wrist 는 +31px)을 거치므로
-        보이는 그대로가 학습 입력 프레이밍이다.
-        """
-        self._layout_entries: list = []      # (suite, name, agent_png, wrist_png)
-        self._layout_idx = 0
-        self._layout_playing = True
-        self._layout_ref: dict = {}          # role -> (224,224,3) RGB
-        self._last_cam_frame: dict = {}      # role -> 카메라 원본 (640x480)
-
-        w = QWidget()
-        col = QVBoxLayout(w)
-        col.setContentsMargins(4, 4, 4, 4)
-
-        # 컨트롤(suite·재생·간격·투명도·번갈아 보기)은 왼쪽 Layout 페이지에
-        # 있다(_page_layout) -- 뷰를 보면서 조작할 수 있도록. 탭에는 지금 몇
-        # 번째 스틸인지만 남긴다.
-        self._layout_blink_state = False
-        self.layout_name_label = QLabel("")
-        self.layout_name_label.setStyleSheet("color:#888;")
-        col.addWidget(self.layout_name_label)
-
-        split = QSplitter(Qt.Orientation.Horizontal)
-        self.layout_overlay_views = {}
-        for role, title in (("agent", "Agent 비교"), ("wrist", "Wrist 비교")):
-            box = QGroupBox(tr(title))
-            inner = QVBoxLayout(box)
-            inner.setContentsMargins(4, 4, 4, 4)
-            v = VideoView()
-            v.setText(tr("참조 이미지 없음"))
-            inner.addWidget(v)
-            self.layout_overlay_views[role] = v
-            split.addWidget(box)
-        split.setSizes([600, 600])
-        col.addWidget(split, 1)
-
-        strip = QHBoxLayout()
-        self.layout_strip_views = {}
-        for key, cap in (("agent_ref", "LIBERO agent"), ("agent_live", tr("카메라 agent")),
-                         ("wrist_ref", "LIBERO wrist"), ("wrist_live", tr("카메라 wrist"))):
-            cell = QVBoxLayout()
-            v = VideoView()
-            v.setMinimumSize(120, 120)
-            cell.addWidget(v, 1)
-            lab = QLabel(cap)
-            lab.setStyleSheet("color:#888;")
-            lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            cell.addWidget(lab)
-            self.layout_strip_views[key] = v
-            strip.addLayout(cell, 1)
-        strip_w = QWidget()
-        strip_w.setLayout(strip)
-        strip_w.setMinimumHeight(150)
-        strip_w.setMaximumHeight(220)
-        col.addWidget(strip_w)
-
-        self._layout_timer = QTimer(self)
-        self._layout_timer.setInterval(5000)
-        self._layout_timer.timeout.connect(lambda: self._layout_step(+1, user=False))
-        self._layout_blink_timer = QTimer(self)
-        self._layout_blink_timer.setInterval(500)
-        self._layout_blink_timer.timeout.connect(self._layout_blink_tick)
-        return w
-
     def _ensure_layout_refs(self) -> bool:
         """Unpacks assets/libero_init_layouts.zip next to itself.
 
@@ -2361,100 +2092,10 @@ class WorkspaceWindow(QMainWindow):
             shown = ((live.astype(np.uint16) * (100 - a)
                       + ref.astype(np.uint16) * a) // 100).astype(np.uint8)
         if self.layout_grid_check.isChecked():
-            shown = _grid_overlay(shown)
+            shown = draw_alignment_grid(shown)
         self.layout_overlay_views[role].set_frame(shown)
 
     # -------------------------------------------------------- point cloud
-    def _build_cloud_tab(self) -> QWidget:
-        """agent 카메라의 depth 포인트클라우드 뷰 (탭이 보일 때만 스트림).
-
-        depth 는 상시로 켜 두면 USB 대역·안정성을 잡아먹으므로, 이 탭에
-        들어올 때 RGB 미리보기를 잠깐 내리고 depth 워커를 올린다. 탭을
-        떠나면 반대로 되돌린다 (수집 세션과는 아예 공존 불가 -- 세션 중엔
-        안내만 보여준다).
-        """
-        w = QWidget()
-        col = QVBoxLayout(w)
-        col.setContentsMargins(4, 4, 4, 4)
-        self.cloud_view = VideoView()
-        self.cloud_view.setText(tr("탭에 들어오면 depth 스트림을 켭니다"))
-        # 크롭 가이드는 학습 프레이밍용 -- 3D 뷰에는 의미가 없고 어둡게만 보인다
-        self.cloud_view.set_square_guide(False)
-        col.addWidget(self.cloud_view, 1)
-        row = QHBoxLayout()
-        row.addWidget(QLabel(tr("카메라")))
-        self.cloud_cam_combo = QComboBox()
-        self.cloud_cam_combo.addItem("Agent", "agent")
-        self.cloud_cam_combo.addItem("Wrist", "wrist")
-        self.cloud_cam_combo.setToolTip(tr(
-            "포인트클라우드를 읽을 카메라. 탭이 열려 있으면 즉시 전환합니다."))
-        self.cloud_cam_combo.currentIndexChanged.connect(self._on_cloud_cam_changed)
-        row.addWidget(self.cloud_cam_combo)
-        row.addSpacing(12)
-        row.addWidget(QLabel(tr("회전")))
-        self.cloud_yaw = QSlider(Qt.Orientation.Horizontal)
-        self.cloud_yaw.setRange(-80, 80)
-        self.cloud_yaw.setValue(25)
-        self.cloud_yaw.valueChanged.connect(lambda *_: self._render_cloud())
-        row.addWidget(self.cloud_yaw, 1)
-        row.addWidget(QLabel(tr("기울임")))
-        self.cloud_pitch = QSlider(Qt.Orientation.Horizontal)
-        self.cloud_pitch.setRange(-80, 80)
-        self.cloud_pitch.setValue(-30)
-        self.cloud_pitch.valueChanged.connect(lambda *_: self._render_cloud())
-        row.addWidget(self.cloud_pitch, 1)
-        col.addLayout(row)
-        self.cloud_status = QLabel("")
-        self.cloud_status.setStyleSheet("color:#888;")
-        col.addWidget(self.cloud_status)
-        return w
-
-    def _build_depth_tab(self) -> QWidget:
-        """depth 컬러맵 라이브 뷰 -- Point Cloud 와 같은 워커·같은 수명주기.
-
-        스키마의 depth 기록(#17)과 별개다: 여기는 수집 전에 depth 품질과
-        범위를 눈으로 확인하는 뷰고, 기록 여부는 Settings 의 스키마
-        체크박스가 정한다.
-        """
-        w = QWidget()
-        col = QVBoxLayout(w)
-        col.setContentsMargins(4, 4, 4, 4)
-        self.depth_view = VideoView()
-        self.depth_view.setText(tr("탭에 들어오면 depth 스트림을 켭니다"))
-        # depth 는 원본 해상도 그대로 기록/표시 -- 크롭 가이드 비적용
-        self.depth_view.set_square_guide(False)
-        # 마우스가 가리키는 지점의 실거리 표시 (eventFilter 에서 처리)
-        self.depth_view.setMouseTracking(True)
-        self.depth_view.installEventFilter(self)
-        self._depth_cursor = None
-        col.addWidget(self.depth_view, 1)
-        row = QHBoxLayout()
-        row.addWidget(QLabel(tr("카메라")))
-        self.depth_cam_combo = QComboBox()
-        self.depth_cam_combo.addItem("Agent", "agent")
-        self.depth_cam_combo.addItem("Wrist", "wrist")
-        self.depth_cam_combo.currentIndexChanged.connect(self._on_cloud_cam_changed)
-        row.addWidget(self.depth_cam_combo)
-        row.addSpacing(12)
-        row.addWidget(QLabel(tr("최대 거리")))
-        self.depth_range_slider = QSlider(Qt.Orientation.Horizontal)
-        self.depth_range_slider.setRange(30, 300)      # 0.3 ~ 3.0 m
-        self.depth_range_slider.setValue(120)
-        self.depth_range_slider.valueChanged.connect(
-            lambda *_: self._render_depth())
-        row.addWidget(self.depth_range_slider, 1)
-        self.depth_range_label = QLabel("1.2 m")
-        self.depth_range_label.setStyleSheet("color:#888;")
-        row.addWidget(self.depth_range_label)
-        col.addLayout(row)
-        self.depth_status = QLabel(tr(
-            "가까움=빨강, 멂=파랑, 검정=측정 불가. 기록 여부는 Settings 의 "
-            "스키마 체크박스(#17)가 정합니다."))
-        self.depth_status.setStyleSheet("color:#888;")
-        self.depth_status.setWordWrap(True)
-        col.addWidget(self.depth_status)
-        return w
-
     def _depth_role_combo(self) -> QComboBox:
         return (self.depth_cam_combo if self._depth_consumer == "depth"
                 else self.cloud_cam_combo)
@@ -2661,152 +2302,6 @@ class WorkspaceWindow(QMainWindow):
         else:
             self._layout_timer.stop()
             self._layout_blink_timer.stop()
-
-    def _build_analysis_tab(self) -> QWidget:
-        """Center-tab analysis: the curve view plus the curation list.
-
-        It lives in the center, next to Live/Playback, because judging a take
-        means looking at its curves and its video together -- putting the plots
-        in a side panel would have made them too narrow to read.
-        """
-        page = QWidget()
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(4, 4, 4, 4)
-        split = QSplitter(Qt.Orientation.Horizontal)
-
-        left = QWidget()
-        lcol = QVBoxLayout(left)
-        lcol.setContentsMargins(0, 0, 0, 0)
-        self.analysis_summary = QLabel(tr("Statistics 패널에서 '다시 분석'을 누르세요."))
-        self.analysis_summary.setWordWrap(True)
-        self.analysis_summary.setStyleSheet("font-weight:bold;")
-        lcol.addWidget(self.analysis_summary)
-
-        self.plot_grid = QGridLayout()
-        self.series_plots = {}
-        # LeRobot 뷰어와 같은 묶음: 인접 관절끼리 스케일이 비슷해 같은 축에 얹힌다.
-        for i, (title, dims) in enumerate((
-            ("joint1.pos, joint2.pos", [(0, "joint1.pos"), (1, "joint2.pos")]),
-            ("joint4.pos, joint5.pos", [(3, "joint4.pos"), (4, "joint5.pos")]),
-            ("joint6.pos, joint7.pos", [(5, "joint6.pos"), (6, "joint7.pos")]),
-            ("joint3.pos", [(2, "joint3.pos")]),
-            ("gripper.pos", [(7, "gripper.pos")]),
-        )):
-            plot = SeriesPlot(title)
-            self.series_plots[title] = (plot, dims)
-            self.plot_grid.addWidget(plot, i // 2, i % 2)
-        lcol.addLayout(self.plot_grid, 1)
-        legend = QLabel(tr("실선 observation.state   ┄ 파선 observation.commanded_state"
-                           "   ┈ 점선 action"))
-        legend.setStyleSheet("color:#888;")
-        lcol.addWidget(legend)
-        split.addWidget(left)
-
-        right = QWidget()
-        rcol = QVBoxLayout(right)
-        rcol.setContentsMargins(0, 0, 0, 0)
-
-        self.dim_bars = BarStrip()
-        dim_box = QGroupBox(tr("차원별 σ(Δa) — 전체 평균"))
-        QVBoxLayout(dim_box).addWidget(self.dim_bars)
-        rcol.addWidget(dim_box)
-
-        self.da_hist = Histogram(tr("에피소드 평균 |Δa| 분포"))
-        rcol.addWidget(self.da_hist)
-
-        filt = QGroupBox(tr("큐레이션 후보"))
-        fcol = QVBoxLayout(filt)
-        row = QHBoxLayout()
-        row.addWidget(QLabel(tr("기준")))
-        self.rank_combo = QComboBox()
-        # 정렬 키는 전부 아래 표에 칼럼으로도 나온다 -- 정렬 기준을 바꿔야만
-        # 보이는 "점수" 칸이 있으면 지금 무슨 수를 보고 있는지 알 수 없다.
-        for label, key in (("평균과 차이 큰 순 = 급한 순 (권장)", "fast"),
-                           ("평균과 차이 작은 순 = 느린 순", "slow"),
-                           ("멈춤 비율 높은 순", "still"),
-                           ("길이 짧은 순", "short"),
-                           ("길이 긴 순", "long")):
-            self.rank_combo.addItem(tr(label), key)
-        self.rank_combo.currentIndexChanged.connect(self._refresh_rank_list)
-        row.addWidget(self.rank_combo, 1)
-        fcol.addLayout(row)
-
-        # 그룹(scene·문장) 필터 -- 편차는 이미 그룹 단위로 계산되지만, 후보
-        # 목록도 한 그룹만 놓고 보아야 "이 작업 안에서 어떤 테이크가 튀나"가
-        # 읽힌다 (파일 선택은 scene 단위까지만 좁혀 주었다).
-        grow = QHBoxLayout()
-        grow.addWidget(QLabel(tr("그룹")))
-        self.group_combo = QComboBox()
-        shrinkable_combo(self.group_combo)
-        self.group_combo.addItem(tr("(전체)"), None)
-        self.group_combo.currentIndexChanged.connect(self._refresh_rank_list)
-        grow.addWidget(self.group_combo, 1)
-        fcol.addLayout(grow)
-
-        len_row = QHBoxLayout()
-        len_row.addWidget(QLabel(tr("길이(초)")))
-        self.len_min_spin = QSlider(Qt.Orientation.Horizontal)
-        self.len_max_spin = QSlider(Qt.Orientation.Horizontal)
-        for s in (self.len_min_spin, self.len_max_spin):
-            s.setRange(0, 300)
-            s.valueChanged.connect(self._refresh_rank_list)
-        self.len_min_spin.setValue(0)
-        self.len_max_spin.setValue(300)
-        len_row.addWidget(self.len_min_spin, 1)
-        len_row.addWidget(self.len_max_spin, 1)
-        self.len_label = QLabel("-")
-        self.len_label.setMinimumWidth(96)
-        len_row.addWidget(self.len_label)
-        fcol.addLayout(len_row)
-
-        self.rank_tree = QTreeWidget()
-        self.rank_tree.setColumnCount(5)
-        self.rank_tree.setHeaderLabels([tr("에피소드"), tr("평균과 차이"), tr("멈춤%"),
-                                        tr("길이"), tr("task")])
-        self.rank_tree.setRootIsDecorated(False)
-        self.rank_tree.setColumnWidth(0, 150)
-        for c in range(1, 4):
-            self.rank_tree.setColumnWidth(c, 76)
-        for c, tip in enumerate((
-                tr("파일 · 에피소드"),
-                tr("이 에피소드의 평균 |Δa| 에서 같은 (scene·문장) 그룹 평균을 뺀 값 (rad/frame).\n"
-                   "+ 는 그 작업의 보통 테이크보다 급하게, - 는 느리게 움직인 것.\n"
-                   "±{d} 를 넘으면 빨강/파랑").format(d=TASK_DEV_LIMIT),
-                tr("속도가 {v} rad/frame 미만이던 프레임 비율 — 망설임").format(v=STILL_VEL),
-                tr("에피소드 길이 (초)"),
-                tr("language instruction"))):
-            self.rank_tree.headerItem().setToolTip(c, tip)
-        self.rank_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.rank_tree.itemSelectionChanged.connect(self._on_rank_selected)
-        self.rank_tree.setMinimumHeight(220)
-        fcol.addWidget(self.rank_tree, 1)
-        # 판정선만 한 줄로 남긴다. 나머지 정의는 헤더 툴팁 -- 조작자가 코드를
-        # 열지 않고도 "몇이면 이상한가"를 알아야 하지만, 그게 목록을 밀어내면
-        # 정작 봐야 할 후보가 안 보인다.
-        cols_row = QHBoxLayout()
-        cols = QLabel(tr("같은 (scene·문장) 그룹 평균과의 차 — ±{d} 밖이면 급함(빨강)/느림(파랑)")
-                      .format(d=TASK_DEV_LIMIT))
-        cols.setStyleSheet("color:#888;")
-        cols_row.addWidget(cols, 1)
-        helpb = QPushButton("?")
-        helpb.setFixedWidth(24)
-        helpb.setToolTip(tr("칼럼 정의와 판정 기준 (docs/curation-metrics.md)"))
-        helpb.clicked.connect(self._on_metric_help)
-        cols_row.addWidget(helpb)
-        fcol.addLayout(cols_row)
-
-        btns = QHBoxLayout()
-        for text, slot in ((tr("재생해서 확인"), self._on_rank_play),
-                           (tr("선택 삭제"), self._on_rank_delete)):
-            b = QPushButton(text)
-            b.clicked.connect(slot)
-            btns.addWidget(b)
-        fcol.addLayout(btns)
-        rcol.addWidget(filt, 1)
-        split.addWidget(right)
-        split.setSizes([700, 430])
-        outer.addWidget(split)
-        return page
 
     def _page_layout(self) -> QWidget:
         """카메라 레이아웃 설정 -- 레이아웃 탭의 뷰를 보면서 조작하는 왼쪽 패널."""

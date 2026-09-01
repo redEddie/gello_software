@@ -95,3 +95,19 @@ def draw_grid(img: np.ndarray, corners, alpha_pct: int,
         cv2.line(lines, a, b, color, thick, cv2.LINE_AA)
     a = max(0, min(100, int(alpha_pct))) / 100.0
     return cv2.addWeighted(lines, a, overlay, 1.0 - a, 0.0)
+
+
+def draw_alignment_grid(img: np.ndarray) -> np.ndarray:
+    """1/8 간격 격자를 절반 밝기로 덧그린다 -- 수평/중앙 확인용. 사본에만.
+
+    draw_grid() 가 그리는 것은 조작자가 네 모서리로 정의한 작업 격자이고,
+    이쪽은 카메라가 삐뚤어졌는지 보려고 화면에 고정으로 얹는 보조선이다.
+    """
+    out = img.copy()
+    h, w = out.shape[:2]
+    for i in range(1, 8):
+        y, x = h * i // 8, w * i // 8
+        c = 255 if i == 4 else 190        # 중앙선만 조금 더 밝게
+        out[y, :] = out[y, :] // 2 + c // 2
+        out[:, x] = out[:, x] // 2 + c // 2
+    return out

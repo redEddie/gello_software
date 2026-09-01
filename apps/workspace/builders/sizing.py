@@ -45,6 +45,8 @@ def relax_min_widths(root: QWidget) -> None:
 
 
 
+
+
 def shrinkable_combo(c: QComboBox) -> None:
     """항목 텍스트(카메라 이름, scene 설명 등)가 길어도 콤보가 패널 폭에 맞춰
     줄어들 수 있게 한다. 기본 정책은 가장 긴 항목만큼 최소 폭을 요구해서,

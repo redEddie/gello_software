@@ -30,6 +30,16 @@ from apps.dialogs._widgets import SceneInfoView, TODO_STYLE, mark_todo
 from apps.workspace.builders.sizing import relax_min_widths
 from apps.workspace.constants import ACTIVITIES, PLAYBACK_SPEEDS, WIDE_FIELDS
 
+# Tab builders are imported here rather than through the package __init__ to
+# avoid a circular import (this module is re-exported by __init__, and the tabs
+# are only needed inside build_center).
+from .analysis_tab import build_analysis_tab
+from .cloud_tab import build_cloud_tab
+from .depth_tab import build_depth_tab
+from .gallery_tab import build_gallery_tab
+from .layout_tab import build_layout_tab
+from .trim_tab import build_trim_tab
+
 
 def build_center(win) -> None:
     # 카메라별 크롭 정렬 -- 뷰 가이드·레이아웃 겹침·수집·변환이 전부 이
@@ -156,16 +166,16 @@ def build_center(win) -> None:
     win.play_caption.setStyleSheet("color:#888;")
     play_col.addWidget(win.play_caption)
     win.center_tabs.addTab(play, tr("Playback"))
-    win.center_tabs.addTab(win._build_analysis_tab(), tr("Analysis"))
-    win._trim_tab_index = win.center_tabs.addTab(win._build_trim_tab(), tr("Trim"))
+    win.center_tabs.addTab(build_analysis_tab(win), tr("Analysis"))
+    win._trim_tab_index = win.center_tabs.addTab(build_trim_tab(win), tr("Trim"))
     win._layout_tab_index = win.center_tabs.addTab(
-        win._build_layout_tab(), tr("레이아웃"))
+        build_layout_tab(win), tr("레이아웃"))
     win._gallery_tab_index = win.center_tabs.addTab(
-        win._build_gallery_tab(), tr("Gallery"))
+        build_gallery_tab(win), tr("Gallery"))
     win._cloud_tab_index = win.center_tabs.addTab(
-        win._build_cloud_tab(), tr("Point Cloud"))
+        build_cloud_tab(win), tr("Point Cloud"))
     win._depth_tab_index = win.center_tabs.addTab(
-        win._build_depth_tab(), tr("Depth"))
+        build_depth_tab(win), tr("Depth"))
     win.center_tabs.currentChanged.connect(win._on_center_tab_changed)
 
 
