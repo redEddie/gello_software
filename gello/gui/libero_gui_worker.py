@@ -854,8 +854,14 @@ class CollectionWorker(QThread):
                         f"[GATE] 아직 자세가 맞지 않습니다 (최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
                     )
                 run_auto = False
-                if auto_pending:
-                    # 켜 둔 자동 정렬은 게이트에 들어온 즉시 한 번 발동한다.
+                if auto_pending and all_ok:
+                    # '자동' 정렬은 리더가 게이트 안에 들어온 뒤에 한 번만
+                    # 발동한다 (2026-09-01 복구). 오차와 무관하게 발동하게
+                    # 했더니, 세션을 열자마자 팔이 스스로 리셋 자세로
+                    # 끌려가고 수렴 뒤에는 모터가 자세를 붙잡아서 -- 손으로
+                    # 움직일 수 없으니 오차 게이지가 멈춘 것처럼 보이고,
+                    # 손목 관절은 계속 저항하며, 피치 관절은 과부하까지 갔다.
+                    # 버튼으로 누르는 수동 정렬은 여전히 오차와 무관하다.
                     auto_pending = False
                     run_auto = True
                 if cmd and cmd[0] == "auto_match_pose":

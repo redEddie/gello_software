@@ -49,19 +49,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 
-
-def _wait_recs(dlg):
-    """RecommendDialog 의 백그라운드 추천 계산이 끝날 때까지 기다린다."""
-    import time
-    for _ in range(600):
-        if dlg._worker is None or not dlg._worker.isRunning():
-            break
-        app.processEvents()
-        time.sleep(0.01)
-    else:
-        raise AssertionError("RecommendDialog worker timeout")
-    app.processEvents()
-
+from tests.gui.helpers import _wait_recs  # noqa: E402
 
 import collect_workspace as cw  # noqa: E402
 
