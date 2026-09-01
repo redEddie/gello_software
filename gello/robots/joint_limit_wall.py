@@ -49,14 +49,27 @@ the pull is losing, so the assist gives up and latches off until the caller
 sets a target again; servos are more expensive than one alignment.
 It lives here for the same reason the limit spring does -- ``set_current``
 sync-writes the whole servo vector, so a second control loop calling it
-concurrently would fight this one over the bus. While a match target is set
-the arm servos are force-armed regardless of limit slack (the limit spring
-alone only arms near a limit); once the caller clears the target (typically
-right after ``status()`` reports ``match_done``), arming reverts to the
-limit-only rule, which disarms torque again at a normal (not-near-a-limit)
-pose -- so the leader goes back to being freely back-drivable for teleop
-without any extra cleanup call. Gains/tolerances below are untuned defaults
-(no access to the real leader while writing this) -- expect to retune
+concurrently would fight this one over the bus. Arming follows the assist per
+joint: a joint within ``match_arm_rad`` of its target is energized, the rest
+stay torque-off, and clearing the target (typically right after ``status()``
+reports ``match_done``) drops them all back to the limit-only rule -- so the
+leader goes back to being freely back-drivable for teleop with no extra
+cleanup call.
+
+One place the wall deliberately stops being a wall: half a turn from a
+joint's range centre, ``wrap_into_limits`` flips which turn it reports, so the
+same physical pose reads as "past the upper limit" one tick and "past the
+lower limit" the next, and the limit spring reverses at full strength --
+violent chatter, and it drags the joint back the short way round, re-twisting
+a cable the operator was trying to unwind. Inside ``WRAP_ABORT_RAD`` of that
+point (and only outside the follower's own limits, so a legal pose can never
+qualify) the joint is handed over instead: its match assist and its limit
+spring both go to zero and its torque is cut, alignment is cancelled with a
+reason the caller can read (``match_aborted_wrap``), and the other joints keep
+holding the arm up. See ``_wrap_zone``.
+
+Gains/tolerances below are untuned defaults (no access to the real leader
+while writing this) -- expect to retune
 ``match_kp``/``match_kd``/``match_max_current`` on hardware.
 
 The same thread also optionally drives a lightweight, *empirical* gravity
@@ -119,6 +132,21 @@ ADDR_TEMPERATURE = 146    # Present Temperature (1 B, deg C)
 #: 숫자로 성립해야 하기 때문이다 (GitHub issue #37A).
 MATCH_GATE_RAD = 0.5
 
+#: 뒤집힘 지점(가동범위 중심의 반대편)으로부터 이 각도 안에 들어오면 그
+#: 관절을 "케이블 푸는 중" 으로 보고 손에 완전히 넘긴다 -- 정렬을 취소하고
+#: 그 관절의 토크를 끊는다. 자세한 이유는 _wrap_zone 참고.
+WRAP_ABORT_RAD = 0.2
+
+#: 뒤집힘 구역에서 빠져나온 것으로 볼 여유분 (히스테리시스). 경계에서
+#: 토크가 켜졌다 꺼졌다 하는 것 자체가 또 다른 지터라 반드시 필요하다.
+WRAP_RELEASE_RAD = 0.15
+
+#: 정렬 전류 상한이 어떤 이유로도 이 아래로 내려가지 않게 하는 하한 (mA).
+#: 한때 정렬 모드의 상한을 200 mA 로 낮춘 적이 있는데, J2 는 자세를
+#: *유지* 하는 데만 ~430 mA 가 필요해서(아래 적분기 주석) 피치가 처지고
+#: 정렬이 수렴하지 못했다. 200 은 상한이 아니라 하한이다.
+IDLE_MIN_CURRENT = 200.0
+
 
 def _engage_gate(engaged: bool, err: float, gate: float, release: float) -> bool:
     """토크를 켤지 말지 (히스테리시스). 순수 함수 -- selftest 에서 검증.
@@ -132,6 +160,41 @@ def _engage_gate(engaged: bool, err: float, gate: float, release: float) -> bool
     차라리 팔을 완전히 자유롭게 두자" 는 결정이다.
     """
     return err <= (gate + release) if engaged else err <= gate
+
+
+def _wrap_zone(q, center, lower, upper, margin: float,
+               was_in: "np.ndarray | None" = None,
+               release: float = WRAP_RELEASE_RAD) -> np.ndarray:
+    """조인트별 "여기서는 벽이 어느 쪽으로 밀어야 할지 모른다" 구역.
+
+    ``wrap_into_limits`` 는 관절을 가동범위 중심에 가장 가까운 한 바퀴로
+    정규화한다. 그 선택이 뒤집히는 곳이 **중심의 정반대**, 즉
+    ``|q - center| = π`` 다. 그 점을 지나는 순간 읽는 각도가 2π 점프해서
+    한계벽이 "상한 초과"에서 "하한 초과"로 바뀌고, 미는 방향이 반대가
+    된다 -- 센서 노이즈가 그 점을 왔다갔다 하면 매 틱 방향이 뒤집히며
+    최대 강도로 떤다. 사용자가 본 "180도 경계 지터" 가 이것이다.
+
+    그래서 판정은 0 이 아니라 **중심** 기준이다. 중심이 0 이 아닌 관절
+    (FR3 의 J4=-1.60, J6=+2.53)에서는 ``|q| ~ π`` 로 재면 엉뚱한 곳에서
+    발동한다 -- 실제로 J4 의 -3.0 이나 J6 의 3.0 은 지극히 정상적인
+    자세인데도 걸린다.
+
+    두 번째 조건(가동범위 밖)이 안전장치다. FR3 는 일곱 관절 모두
+    뒤집힘 지점이 팔로워 가동범위 바깥에 있으므로, 이 조건을 걸면
+    **합법 자세에서는 구조적으로 발동할 수 없다**. 리더는 팔로워와 달리
+    물리적으로 한 바퀴 돌 수 있어서 그 구역에 실제로 들어갈 수 있고,
+    그때가 바로 사람이 케이블 꼬임을 푸는 순간이다.
+
+    ``was_in`` 을 주면 히스테리시스가 붙는다: 이미 구역 안이던 관절은
+    ``margin + release`` 만큼 벗어나야 빠져나온 것으로 본다.
+    """
+    q = np.asarray(q, dtype=float)
+    d = np.abs(_wrap_pi(q - np.asarray(center, dtype=float)))
+    m = np.full_like(d, float(margin))
+    if was_in is not None:
+        m = np.where(np.asarray(was_in, dtype=bool), float(margin) + release, m)
+    outside = (q < np.asarray(lower)) | (q > np.asarray(upper))
+    return (d > (np.pi - m)) & outside
 
 
 def _well_assist(abs_err: np.ndarray, well: float) -> np.ndarray:
@@ -294,6 +357,7 @@ class JointLimitWall:
         match_kp=400.0,  # scalar or per-arm-joint sequence (mA/rad)
         match_kd: float = 20.0,
         match_max_current=350.0,  # scalar or per-arm-joint sequence (mA)
+        idle_hold_current: float = 0.0,  # 0 = 정렬 모드에서도 캡을 낮추지 않음
         match_tol: float = 0.05,
         match_vel_tol: float = 0.15,
         match_hold_s: float = 0.3,
@@ -389,6 +453,13 @@ class JointLimitWall:
         self._match_max_current = np.broadcast_to(
             np.asarray(match_max_current, dtype=float), (self._n_arm,)
         ).copy()
+        self._idle_hold_current = float(idle_hold_current)
+        self._in_teleop = False  # issue #37A: teleop vs. alignment
+        # 뒤집힘 구역 상태 (issue #37A 후속). 구역에 든 관절은 정렬도 벽도
+        # 전부 꺼서 손에 넘긴다 -- 케이블을 풀려면 그 관절이 자유로워야 한다.
+        self._wrap_center = (self._lower + self._upper) / 2.0
+        self._wrap_mask = np.zeros(self._n_arm, dtype=bool)
+        self._match_aborted_wrap = False
         self._match_tol = match_tol
         self._match_vel_tol = match_vel_tol
         # A step target is what makes the leader lurch: kp=400 against a 1 rad
@@ -515,6 +586,22 @@ class JointLimitWall:
         if stiction_gain is not None:
             self._stiction_gain = float(stiction_gain)
 
+    def set_teleop_mode(self, in_teleop: bool) -> None:
+        """Tell the wall whether the operator is actively teleoperating.
+
+        The engage rule itself does not depend on this -- "put the leader down
+        anywhere and nothing pulls" holds in every mode. What it decides is
+        whether the wrap zone (see ``_wrap_zone``) may hand a joint over to the
+        operator: only outside teleop. During teleop the follower is tracking
+        the leader, so dropping the limit wall would let unreachable commands
+        through, and reaching that zone at all would mean forcing the leader
+        far past the wall first. Untwisting a cable is something you do while
+        aligning, not mid-episode (issue #37A).
+        """
+        self._in_teleop = bool(in_teleop)
+        # Cap change can turn a previously-valid integrator into stale bias.
+        self._match_int = np.zeros(self._n_arm)
+
     def set_match_target(self, target: Optional[np.ndarray]) -> None:
         """Arm (target given) or release (``None``) the pose-match assist.
 
@@ -535,6 +622,11 @@ class JointLimitWall:
         self._match_engaged = False
         self._match_stall_since = None
         self._match_blocked = False
+        # 취소 사유도 새 요청에서만 지운다. 단, 루프가 스스로 취소하며
+        # 세우는 플래그는 그 뒤에 세워지므로 여기서 지워도 덮이지 않는다
+        # (호출자가 다시 걸 때만 초기화되는 것이 맞다).
+        if target is not None:
+            self._match_aborted_wrap = False
         # A fresh target means a fresh pose: the learned holding current of
         # the previous pose is wrong for it, so the integrator restarts.
         self._match_int = np.zeros(self._n_arm)
@@ -621,6 +713,26 @@ class JointLimitWall:
                 # 힘 우물 + 원거리 해제 (issue #37A). goal_err 은 여기서 한 번만
                 # 구해 아래 match 절이 그대로 쓴다 -- 우물 세기와 arming 판단이
                 # 같은 오차를 봐야 하기 때문이다.
+                # 뒤집힘 구역 판정 (관절별, 히스테리시스). 텔레옵 중에는
+                # 보지 않는다: 그때는 팔로워가 리더를 따라가는 중이라
+                # 한계벽을 끄면 도달 불가능한 명령이 그대로 나가고, 애초에
+                # 여기까지 오려면 벽을 밀고 한참 나가야 한다. 케이블을 푸는
+                # 것은 정렬/대기 중에 하는 일이다.
+                if self._in_teleop:
+                    self._wrap_mask = np.zeros(self._n_arm, dtype=bool)
+                else:
+                    self._wrap_mask = _wrap_zone(
+                        q, self._wrap_center, self._lower, self._upper,
+                        WRAP_ABORT_RAD, was_in=self._wrap_mask,
+                    )
+                if np.any(self._wrap_mask) and match_target is not None:
+                    # 사람이 케이블을 푸는 중이다 -- 정렬은 취소하고 왜
+                    # 취소했는지를 남긴다. 조용히 지우면 호출자는 이유를
+                    # 모른 채 타임아웃까지 기다린다.
+                    self.set_match_target(None)
+                    self._match_aborted_wrap = True
+                    match_target = None
+
                 goal_err = match_assist = None
                 match_err = None
                 if match_target is not None:
@@ -631,6 +743,8 @@ class JointLimitWall:
                     # 조인트별 토크 on/off: arm 반경 밖 관절은 전류 0 이
                     # 아니라 토크 자체를 끊는다 (전류제어 0 도 토크 오프보다
                     # 끌린다 -- 위 참조). 히스테리시스는 관절마다 따로.
+                    # 정렬 중이냐 텔레옵 중이냐로 이 규칙을 바꾸지 않는다 --
+                    # "어디에 놓아두든 안 당긴다" 는 모드와 무관한 약속이다.
                     if self._match_blocked:
                         self._match_arm_mask = np.zeros(self._n_arm, dtype=bool)
                     else:
@@ -642,6 +756,8 @@ class JointLimitWall:
                         self._match_arm_mask = abs_err <= thr
                 else:
                     self._match_arm_mask = np.zeros(self._n_arm, dtype=bool)
+                # 구역 안 관절은 어떤 경우에도 정렬하지 않는다.
+                self._match_arm_mask &= ~self._wrap_mask
                 self._match_engaged = bool(self._match_arm_mask.any())
                 match_active = match_target is not None and self._match_engaged
 
@@ -667,6 +783,12 @@ class JointLimitWall:
                     want_mask = np.ones(self._n_arm, dtype=bool)
                 else:
                     want_mask = self._match_arm_mask.copy()
+                # 뒤집힘 구역의 관절은 한계벽까지 끈다. 그 점에서는 벽이
+                # 어느 쪽으로 밀어야 할지 자체가 모호해서(읽는 각도가 2π
+                # 점프하며 상한 초과 <-> 하한 초과가 뒤집힌다) 미는 것이
+                # 보호가 아니라 지터다. 끄는 것이 곧 지터 해결이고, 동시에
+                # 그 관절이 손에 완전히 넘어가 케이블을 풀 수 있게 된다.
+                want_mask &= ~self._wrap_mask
                 if not np.array_equal(want_mask, self._armed_mask):
                     ids = list(self._driver._ids[: self._n_arm])
                     off = [i for i, w, a in zip(ids, want_mask, self._armed_mask)
@@ -689,6 +811,10 @@ class JointLimitWall:
                 cur = (-self._kp * (q - self._hi) - self._kd * dq) * over_hi
                 cur += (-self._kp * (q - self._lo) - self._kd * dq) * over_lo
                 cur = np.clip(cur, -self._max_current, self._max_current)
+                # 뒤집힘 구역에서는 벽 힘을 0 으로. 위 arming 에서 토크도
+                # 끊기지만, status 의 cur 과 실제 지령이 어긋나지 않게 여기서
+                # 값 자체를 없앤다 (그 관절은 사람 손에 넘어간 상태다).
+                cur = np.where(self._wrap_mask, 0.0, cur)
 
                 # Pose-match assist: two-sided spring-damper toward
                 # match_target, summed with the (normally-zero-here, since a
@@ -739,17 +865,31 @@ class JointLimitWall:
                     # 속도에도 곱한다 -- 힘이 풀려 있는 먼 거리에서 적분기만
                     # 가득 차 있다가, 사람이 팔을 되돌려 놓는 순간 그 값이
                     # 통째로 튀어나오는 것을 막는다.
+                    # 정렬 전류 상한 (issue #37A). 한때 정렬 모드에서 이걸
+                    # 200 mA 로 *낮췄는데*, J2 는 자세 유지에만 ~430 mA 가
+                    # 필요해서(아래 적분기 주석) 피치가 처지고 정렬이 수렴하지
+                    # 못했다. 200 은 상한이 아니라 하한이다: 기본값은 아예
+                    # 낮추지 않고(idle_hold_current=0), 낮추더라도
+                    # IDLE_MIN_CURRENT 아래로는 못 내려간다. 설정으로 준
+                    # match_max_current 자체는 그대로 존중한다.
+                    if self._in_teleop or self._idle_hold_current <= 0.0:
+                        match_cap = self._match_max_current
+                    else:
+                        match_cap = np.minimum(
+                            self._match_max_current,
+                            max(self._idle_hold_current, IDLE_MIN_CURRENT))
+                    int_cap = self._match_int_max
                     self._match_int = np.clip(
                         self._match_int
                         + self._match_int_gain * goal_err * match_assist * self._dt,
-                        -self._match_int_max, self._match_int_max,
+                        -int_cap, int_cap,
                     )
                     # 우물은 스프링·댐퍼·적분기 전체에 곱한다: 셋의 비율이
                     # 유지되므로 감쇠비가 거리와 무관하게 그대로다 (스프링만
                     # 줄이면 먼 거리에서 상대적으로 과감쇠가 된다).
                     cur_match = match_assist * np.clip(
                         kp * terr - self._match_kd * dq + self._match_int,
-                        -self._match_max_current, self._match_max_current,
+                        -match_cap, match_cap,
                     )  # per-joint caps; np.clip broadcasts elementwise
                     cur = cur + cur_match
                     # 포화 감시: 어느 조인트든 캡 근처를 stall_s 초 이상
@@ -760,7 +900,7 @@ class JointLimitWall:
                     if self._match_stall_s > 0:
                         sat = bool(np.any(
                             np.abs(cur_match)
-                            >= self._match_stall_frac * self._match_max_current
+                            >= self._match_stall_frac * match_cap
                         ))
                         if not sat:
                             self._match_stall_since = None
@@ -889,6 +1029,10 @@ class JointLimitWall:
                     "match_assist": match_assist,
                     "match_well": self._match_well,
                     "armed_mask": self._armed_mask,
+                    # 케이블 푸는 중으로 판단해 손에 넘긴 관절과, 그 때문에
+                    # 정렬이 취소되었는지 (issue #37A 후속).
+                    "wrap_mask": self._wrap_mask,
+                    "match_aborted_wrap": self._match_aborted_wrap,
                     "match_int": self._match_int,
                     "dq": dq,
                     "tau_g": tau_g,
@@ -1001,6 +1145,49 @@ def selftest() -> None:
     # 조인트별로 따로 계산된다 (한 관절만 돌려도 나머지는 계속 버틴다)
     per = _well_assist(np.array([0.02, np.pi, 0.02]), well)
     assert per[0] > 0.98 and per[2] > 0.98 and per[1] < 0.01
+
+    # 8. 뒤집힘 구역 (issue #37A 후속). 실제 FR3 한계로 검사한다 -- 이
+    #    판정의 값어치는 "합법 자세에서는 절대 발동하지 않는다" 이므로,
+    #    합성 숫자가 아니라 진짜 가동범위로 확인해야 의미가 있다.
+    from gello.robots.franka_fr3 import (
+        FR3_Q_LOWER, FR3_Q_UPPER, FR3_RESET_POSES,
+    )
+    lo7, hi7 = np.asarray(FR3_Q_LOWER, dtype=float), np.asarray(FR3_Q_UPPER, dtype=float)
+    ctr = (lo7 + hi7) / 2.0
+
+    def zone(qq, was=None):
+        return _wrap_zone(qq, ctr, lo7, hi7, WRAP_ABORT_RAD, was_in=was)
+
+    # (a) 가동범위 전체를 훑어 단 한 곳도 발동하지 않는다 (오발동 0)
+    for j in range(7):
+        for v in np.linspace(lo7[j], hi7[j], 400):
+            qq = ctr.copy()
+            qq[j] = v
+            assert not zone(qq).any(), f"J{j+1} 합법 범위 {v:.2f} 에서 오발동"
+    # (b) 실제 리셋 포즈들도 전부 무발동 -- robosuite 포즈(J6=2.94)가
+    #     0 기준 판정에서는 걸렸던 자리다
+    for _name, rq in FR3_RESET_POSES.items():
+        assert not zone(np.asarray(rq, dtype=float)[:7]).any(), _name
+    # (c) 중심의 정반대(= wrap_into_limits 가 뒤집히는 지점)에서는 발동한다.
+    #     중심이 0 이 아닌 관절(J4, J6)도 자기 중심 기준으로 잡혀야 한다.
+    for j in (0, 2, 3, 5, 6):
+        q_flip = ctr.copy()
+        q_flip[j] = ctr[j] + np.pi
+        assert zone(q_flip)[j], f"J{j+1} 뒤집힘 지점에서 미발동"
+        assert zone(q_flip).sum() == 1, "한 관절만 걸려야 한다"
+    # (d) 히스테리시스: 한 번 들어가면 release 만큼 더 나가야 빠져나온다
+    q_edge = ctr.copy()
+    q_edge[0] = ctr[0] + np.pi - (WRAP_ABORT_RAD + 0.05)   # 구역 밖 살짝
+    assert not zone(q_edge)[0]
+    was = np.zeros(7, dtype=bool); was[0] = True
+    assert zone(q_edge, was=was)[0], "히스테리시스가 유지하지 않는다"
+    q_out = ctr.copy()
+    q_out[0] = ctr[0] + np.pi - (WRAP_ABORT_RAD + WRAP_RELEASE_RAD + 0.05)
+    assert not zone(q_out, was=was)[0], "히스테리시스가 안 풀린다"
+
+    # 9. 정렬 전류 상한은 하한(IDLE_MIN_CURRENT) 아래로 내려가지 않는다
+    caps = np.maximum(np.array([400.0, 1000.0, 400.0]), IDLE_MIN_CURRENT)
+    assert caps.min() >= IDLE_MIN_CURRENT and caps[1] == 1000.0
     print("joint_limit_wall selftest 통과")
 
 

@@ -951,6 +951,18 @@ class CollectionWorker(QThread):
             err = status["error"]
             done = bool(status["done"])
             self.pose_match_status.emit(float(err) if err is not None else 0.0, done)
+            if status.get("aborted_wrap"):
+                # 어느 관절이 한 바퀴 가까이 돌아 "벽이 어느 쪽으로 밀지
+                # 모르는" 지점에 들어갔다 -- wall 이 그 관절을 손에 넘기고
+                # 정렬을 스스로 취소했다. 케이블을 푸는 중일 때가 대부분이라
+                # 실패가 아니라 안내로 알린다 (issue #37A).
+                self._teleop.cancel_pose_match()
+                self.log_message.emit(
+                    "[자동정렬] 리더가 한 바퀴 가까이 돌아가 그 관절을 "
+                    "풀어 두었습니다 (케이블 꼬임 해제) -- 다 푸신 뒤 "
+                    "자세를 되돌리고 다시 정렬하세요"
+                )
+                return "ok"
             if status.get("blocked"):
                 # wall 이 과부하 보호로 정렬을 포기했다 (어느 조인트가 몇 초째
                 # 캡에 붙어 있었다 = 걸렸거나 붙잡혀 있다). 여기서 다시
@@ -987,99 +999,103 @@ class CollectionWorker(QThread):
     # -------------------------------------------------------------- episode
     def _record_episode(self) -> tuple[str, int]:
         """Returns (outcome, n_frames); outcome is "save", "discard", "quit", or "go_home"."""
-        self.state_changed.emit("recording")
-        self._writer.start_episode()
-        # 이 에피소드에 찍힐 slot 을 기록 시작 시점에 캡처한다. 이후
-        # cmd_set_slot 이 와도(다음 에피소드 준비) 이 에피소드에는 무영향.
-        self._episode_slot = (self._slot_instruction, self._slot_instruction_id)
-        self._cam_stale = {}  # per-episode, see _get_obs
-        self._cam_stale_run = {}
-        self._cam_stale_max_run = {}
-        self._pending_success: Optional[bool] = None
-        budget = 1.0 / self.cfg.fps
-        max_frames = int(self.cfg.max_episode_seconds * self.cfg.fps)
-        t_next = time.monotonic()
-        n = 0
-        outcome = "save"
-        for i in range(max_frames):
-            cmd = self._poll_cmd()
-            if cmd:
-                if cmd[0] == "discard_episode" or cmd[0] == "quit":
-                    outcome = "discard" if cmd[0] == "discard_episode" else "quit"
-                    break
-                if cmd[0] == "go_home":
-                    outcome = "go_home"
-                    break
-                if cmd[0] == "save_episode":
-                    outcome = "save"
-                    self._pending_success = cmd[1]
-                    break
-
-            action = self._teleop.get_action()
-            self._robot.send_action(action)
-            obs = self._get_obs()
-
-            # scene 기준 사진(§6 "사진 1장 필수"): 세션 첫 기록 프레임의
-            # agentview 를 자동 캡처 후보로 보낸다. 이미 있으면 saver 가 무시.
-            if (self.cfg.scene_mode and not self._ref_enqueued
-                    and obs.get("agent") is not None):
-                self._ref_enqueued = True
-                self.saver.enqueue_set_reference(
-                    np.ascontiguousarray(obs["agent"]))
-
-            q = self._joint_vec(obs)
-            q_cmd = self._joint_vec(action)
-            self._writer.add_frame(
-                agentview_rgb=obs["agent"],
-                eye_in_hand_rgb=obs["wrist"],
-                joint_positions=q[:7],
-                gripper_position=obs["gripper.pos"],
-                ee_pos_quat=obs["_ee_pos_quat"],
-                gripper_closed=action["gripper.pos"] > 0.5,
-                joint_velocities=obs["_joint_velocities"][:7],
-                timestamp=time.time(),
-                commanded_joint_positions=q_cmd[:7],
-                commanded_gripper=float(action["gripper.pos"]),
-                agentview_depth=obs.get("_agent_depth"),
-                eye_in_hand_depth=obs.get("_wrist_depth"),
-                joint_torques=obs.get("_joint_torques"),
-                ext_joint_torques=obs.get("_ext_joint_torques"),
-                ee_wrench=obs.get("_ee_wrench"),
-            )
-            self._emit_frames(obs)
-            n = i + 1
-            t_next += budget
-            self.episode_progress.emit(n, n / self.cfg.fps)
-            time.sleep(max(0.0, t_next - time.monotonic()))
-        else:
-            # Loop ran to completion without an explicit save/discard/quit/
-            # go_home -- the operator let it hit max_episode_seconds instead
-            # of clicking a save button. Auto-save as a labeled failure
-            # (not unlabeled) so it's obviously not a clean success.
+        self._teleop.set_teleop_mode(True)
+        try:
+            self.state_changed.emit("recording")
+            self._writer.start_episode()
+            # 이 에피소드에 찍힐 slot 을 기록 시작 시점에 캡처한다. 이후
+            # cmd_set_slot 이 와도(다음 에피소드 준비) 이 에피소드에는 무영향.
+            self._episode_slot = (self._slot_instruction, self._slot_instruction_id)
+            self._cam_stale = {}  # per-episode, see _get_obs
+            self._cam_stale_run = {}
+            self._cam_stale_max_run = {}
+            self._pending_success: Optional[bool] = None
+            budget = 1.0 / self.cfg.fps
+            max_frames = int(self.cfg.max_episode_seconds * self.cfg.fps)
+            t_next = time.monotonic()
+            n = 0
             outcome = "save"
-            self._pending_success = False
-            self.log_message.emit(
-                f"[EP] 에피소드 최대 길이({self.cfg.max_episode_seconds:.0f}s) 초과 -- 실패로 자동 저장"
-            )
-        # Report camera stalls with the episode, while the operator can still
-        # act on it: a frozen image paired with moving joint states is not
-        # something the saved file makes obvious later.
-        # Only a *run* of identical frames means the camera stalled. Isolated
-        # repeats are the 30 fps camera being sampled at 20 Hz -- every
-        # episode has one or two and they carry no information, so reporting
-        # them just trains the operator to ignore this line. A percentage
-        # threshold is useless here too: 1 repeat in a 3-frame episode is 33%
-        # and means nothing.
-        stalls = {k: v for k, v in self._cam_stale_max_run.items() if v >= 3}
-        if stalls and n:
-            detail = ", ".join(
-                f"{k} 최장 {v}틱({v/self.cfg.fps*1000:.0f} ms), 총 {self._cam_stale.get(k, 0)}프레임"
-                for k, v in sorted(stalls.items())
-            )
-            self.log_message.emit(
-                f"[카메라] 정지 감지: {detail} / 전체 {n}프레임  ← 폐기 권장"
-            )
-        return outcome, n
+            for i in range(max_frames):
+                cmd = self._poll_cmd()
+                if cmd:
+                    if cmd[0] == "discard_episode" or cmd[0] == "quit":
+                        outcome = "discard" if cmd[0] == "discard_episode" else "quit"
+                        break
+                    if cmd[0] == "go_home":
+                        outcome = "go_home"
+                        break
+                    if cmd[0] == "save_episode":
+                        outcome = "save"
+                        self._pending_success = cmd[1]
+                        break
+
+                action = self._teleop.get_action()
+                self._robot.send_action(action)
+                obs = self._get_obs()
+
+                # scene 기준 사진(§6 "사진 1장 필수"): 세션 첫 기록 프레임의
+                # agentview 를 자동 캡처 후보로 보낸다. 이미 있으면 saver 가 무시.
+                if (self.cfg.scene_mode and not self._ref_enqueued
+                        and obs.get("agent") is not None):
+                    self._ref_enqueued = True
+                    self.saver.enqueue_set_reference(
+                        np.ascontiguousarray(obs["agent"]))
+
+                q = self._joint_vec(obs)
+                q_cmd = self._joint_vec(action)
+                self._writer.add_frame(
+                    agentview_rgb=obs["agent"],
+                    eye_in_hand_rgb=obs["wrist"],
+                    joint_positions=q[:7],
+                    gripper_position=obs["gripper.pos"],
+                    ee_pos_quat=obs["_ee_pos_quat"],
+                    gripper_closed=action["gripper.pos"] > 0.5,
+                    joint_velocities=obs["_joint_velocities"][:7],
+                    timestamp=time.time(),
+                    commanded_joint_positions=q_cmd[:7],
+                    commanded_gripper=float(action["gripper.pos"]),
+                    agentview_depth=obs.get("_agent_depth"),
+                    eye_in_hand_depth=obs.get("_wrist_depth"),
+                    joint_torques=obs.get("_joint_torques"),
+                    ext_joint_torques=obs.get("_ext_joint_torques"),
+                    ee_wrench=obs.get("_ee_wrench"),
+                )
+                self._emit_frames(obs)
+                n = i + 1
+                t_next += budget
+                self.episode_progress.emit(n, n / self.cfg.fps)
+                time.sleep(max(0.0, t_next - time.monotonic()))
+            else:
+                # Loop ran to completion without an explicit save/discard/quit/
+                # go_home -- the operator let it hit max_episode_seconds instead
+                # of clicking a save button. Auto-save as a labeled failure
+                # (not unlabeled) so it's obviously not a clean success.
+                outcome = "save"
+                self._pending_success = False
+                self.log_message.emit(
+                    f"[EP] 에피소드 최대 길이({self.cfg.max_episode_seconds:.0f}s) 초과 -- 실패로 자동 저장"
+                )
+            # Report camera stalls with the episode, while the operator can still
+            # act on it: a frozen image paired with moving joint states is not
+            # something the saved file makes obvious later.
+            # Only a *run* of identical frames means the camera stalled. Isolated
+            # repeats are the 30 fps camera being sampled at 20 Hz -- every
+            # episode has one or two and they carry no information, so reporting
+            # them just trains the operator to ignore this line. A percentage
+            # threshold is useless here too: 1 repeat in a 3-frame episode is 33%
+            # and means nothing.
+            stalls = {k: v for k, v in self._cam_stale_max_run.items() if v >= 3}
+            if stalls and n:
+                detail = ", ".join(
+                    f"{k} 최장 {v}틱({v/self.cfg.fps*1000:.0f} ms), 총 {self._cam_stale.get(k, 0)}프레임"
+                    for k, v in sorted(stalls.items())
+                )
+                self.log_message.emit(
+                    f"[카메라] 정지 감지: {detail} / 전체 {n}프레임  ← 폐기 권장"
+                )
+            return outcome, n
+        finally:
+            self._teleop.set_teleop_mode(False)
 
     # ------------------------------------------------------------------- run
     def run(self) -> None:  # noqa: C901 - state machine, kept in one place on purpose
@@ -1338,9 +1354,10 @@ class CollectionWorker(QThread):
                     return "go_home"
             self.reset_countdown.emit(time.monotonic() - t0)
             try:
-                # 리셋 중에도 라이브 뷰는 살아 있어야 한다 -- 물체를 되돌리는
-                # 그 시간이 화면을 가장 많이 보는 시간이다.
-                self._emit_frames(self._get_obs())
+                # 리셋 중에도 라이브 뷰와 오차 게이지는 살아 있어야 한다 --
+                # 물체를 되돌리는 그 시간이 화면을 가장 많이 보는 시간이다.
+                # _emit_gate_status()가 _emit_frames()도 함께 호출한다.
+                self._emit_gate_status()
             except Exception:  # noqa: BLE001 -- 일시적 카메라/노드 오류로
                 pass           # 카운트다운을 멈추지 않는다
             time.sleep(0.1)

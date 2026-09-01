@@ -240,6 +240,11 @@ class GelloFR3Teleop(Teleoperator):
         pass
 
     # ------------------------------------------------------- pose-match assist
+    def set_teleop_mode(self, in_teleop: bool) -> None:
+        """See ``GelloAgent.set_teleop_mode``. No-op if not connected."""
+        if self._agent is not None:
+            self._agent.set_teleop_mode(in_teleop)
+
     def start_pose_match(self, target_q: np.ndarray) -> None:
         """See ``GelloAgent.start_pose_match``. Requires ``connect()`` first."""
         assert self._agent is not None, "not connected"
@@ -247,7 +252,8 @@ class GelloFR3Teleop(Teleoperator):
 
     def pose_match_status(self) -> dict[str, Any]:
         if self._agent is None:
-            return {"error": None, "done": True, "engaged": False, "blocked": False}
+            return {"error": None, "done": True, "engaged": False,
+                    "blocked": False, "aborted_wrap": False}
         return self._agent.pose_match_status()
 
     def cancel_pose_match(self) -> None:

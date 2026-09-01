@@ -322,6 +322,14 @@ class GelloAgent(Agent):
         return self._robot.get_joint_state()
 
     # ------------------------------------------------------- pose-match assist
+    def set_teleop_mode(self, in_teleop: bool) -> None:
+        """Forward teleop/alignment mode to the leader wall (issue #37A).
+
+        No-op if the wall is disabled for this port.
+        """
+        if self._wall is not None:
+            self._wall.set_teleop_mode(in_teleop)
+
     def start_pose_match(self, target_q: np.ndarray) -> None:
         """Begin auto-pulling the leader's arm joints onto ``target_q``
         (follower joint space, arm joints only -- same space ``act()``
@@ -347,15 +355,21 @@ class GelloAgent(Agent):
         match can be "in progress" while the leader is still being carried
         into range (issue #37A). ``blocked`` means the wall gave the pull up
         to protect the servos (a joint sat at its current cap); it clears on
-        the next ``start_pose_match``.
+        the next ``start_pose_match``. ``aborted_wrap`` means it gave up for
+        the opposite reason -- a joint reached the point where the wall cannot
+        tell which way to push, so that joint was handed to the operator
+        (typically to untwist a cable).
         """
         if self._wall is None:
             return {"error": None, "done": True,
-                    "engaged": False, "blocked": False}
+                    "engaged": False, "blocked": False,
+                    "aborted_wrap": False}
         s = self._wall.status()
         return {"error": s.get("match_error"), "done": bool(s.get("match_done")),
                 "engaged": bool(s.get("match_engaged")),
-                "blocked": bool(s.get("match_blocked"))}
+                "blocked": bool(s.get("match_blocked")),
+                # 케이블을 푸는 중으로 보고 wall 이 스스로 취소했는가
+                "aborted_wrap": bool(s.get("match_aborted_wrap"))}
 
     def cancel_pose_match(self) -> None:
         """Release the match target early (abort/interrupt). No-op if there
