@@ -151,7 +151,7 @@ win.worker = None
 # 배속 다이얼로그 취소 -> 프로세스 없음
 cw.QInputDialog.getDouble = staticmethod(lambda *a, **k: (0.5, False))
 win._replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
-assert win.replay_process is None
+assert win.procs.replay_process is None
 # 승인 경로: 확인 Yes -> QProcess 시작 (더미 프로그램으로 교체)
 cw.QInputDialog.getDouble = staticmethod(lambda *a, **k: (0.5, True))
 cw.QMessageBox.warning = staticmethod(
@@ -159,23 +159,23 @@ cw.QMessageBox.warning = staticmethod(
 real_repl = cw.REPLAY_SCRIPT
 cw.sys = sys
 win._replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
-assert win.replay_process is not None
-args = win.replay_process.arguments()
+assert win.procs.replay_process is not None
+args = win.procs.replay_process.arguments()
 assert args[0] == real_repl and args[1].endswith("x.hdf5")
 assert args[2] == "episode_000" and args[3:] == ["--speed", "0.5", "--yes"]
 # 재생 중에는 두 진입점 버튼이 '중단' 토글로 바뀐다
 assert "중단" in win.replay_btn.text()
 assert "중단" in win.gallery_replay_btn.text()
-proc = win.replay_process
+proc = win.procs.replay_process
 win._on_replay_selected()            # 토글: 재생 중 클릭 = 중단
 proc.waitForFinished(3000)
 for _ in range(20):                  # finished 시그널(큐잉) 전달
     app.processEvents()
-    if win.replay_process is None:
+    if win.procs.replay_process is None:
         break
     import time
     time.sleep(0.05)
-assert win.replay_process is None
+assert win.procs.replay_process is None
 assert "중단" not in win.replay_btn.text()
 print("4 통과: 재생 가드 + 명령행 + 토글(재생↔중단) 왕복")
 

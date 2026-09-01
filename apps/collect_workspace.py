@@ -113,6 +113,7 @@ from gello.gui.gui_widgets import (  # noqa: E402
     is_progress_line,
 )
 from apps.workspace.constants import LOG_DIR  # noqa: E402
+from apps.workspace.models import ProcessRegistry  # noqa: E402
 from apps.workspace.builders import (  # noqa: E402
     build_bottom,
     build_center,
@@ -261,11 +262,10 @@ class WorkspaceWindow(QMainWindow):
         self.resize(1780, 1020)
 
         self.worker: CollectionWorker | None = None
-        self.node_process: QProcess | None = None
+        self.procs = ProcessRegistry()
         # 카메라 노드 (2026-08-25 3-프로세스 분리): RealSense 를 독점 소유하는
         # 별도 프로세스. GUI 미리보기·포인트클라우드·수집 worker 는 전부 이
         # 노드의 구독자다 -- GIL 기아·device busy·wedge 를 없앤 구조.
-        self.camera_node_process: QProcess | None = None
         self._camera_node_spec = ""
         self._camera_node_crashes: list = []   # 비정상 종료 시각 (loop 방지)
         # 수동 종료 래치 (2026-08-26): VLA 배포 등 다른 프로그램이 카메라를
@@ -273,17 +273,7 @@ class WorkspaceWindow(QMainWindow):
         # 새로고침/콤보 변경이 노드를 몰래 되살리지 않는다 -- 재시작 메뉴나
         # 세션 연결 안내를 통해서만 풀린다.
         self._camera_node_user_stopped = False
-        self.replay_process: QProcess | None = None
         self._grid_store = load_grid_store()
-        self.repack_process: QProcess | None = None
-        self.convert_process: QProcess | None = None
-        self.upload_process: QProcess | None = None
-        self.runme_process: QProcess | None = None
-        self._pipeline_steps: list = []
-        self._pipeline_results: list = []
-        self._pipeline_proc: QProcess | None = None
-        self._pipeline_t0 = 0.0
-        self._pipeline_step_t0 = 0.0
         self._stats: list = []
         self._summary: dict = {}
         self._stream_states: dict = {}
@@ -3167,9 +3157,9 @@ class WorkspaceWindow(QMainWindow):
 
     def _busy_reason(self) -> str:
         """Anything that may currently hold an .hdf5 open, by name."""
-        for proc, label in ((self.repack_process, tr("재압축")),
-                            (self.convert_process, tr("LeRobot 변환")),
-                            (self.upload_process, tr("HDF5 업로드"))):
+        for proc, label in ((self.procs.repack_process, tr("재압축")),
+                            (self.procs.convert_process, tr("LeRobot 변환")),
+                            (self.procs.upload_process, tr("HDF5 업로드"))):
             if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
                 return label
         return ""
@@ -3218,8 +3208,8 @@ class WorkspaceWindow(QMainWindow):
             self._refresh_dataset_tree()
 
     def _replay_running(self) -> bool:
-        return (self.replay_process is not None and
-                self.replay_process.state() != QProcess.ProcessState.NotRunning)
+        return (self.procs.replay_process is not None and
+                self.procs.replay_process.state() != QProcess.ProcessState.NotRunning)
 
     def _on_replay_selected(self) -> None:
         if self._replay_running():      # 토글: 재생 중이면 중단 버튼이다
@@ -3254,8 +3244,8 @@ class WorkspaceWindow(QMainWindow):
                                 tr("{w} 이(가) 파일을 사용 중입니다. 끝난 뒤 "
                                    "다시 시도하세요.").format(w=busy))
             return
-        if self.replay_process is not None and \
-                self.replay_process.state() != QProcess.ProcessState.NotRunning:
+        if self.procs.replay_process is not None and \
+                self.procs.replay_process.state() != QProcess.ProcessState.NotRunning:
             QMessageBox.information(self, tr("이미 재생 중"),
                                     tr("이전 재생이 끝나기를 기다리거나 '재생 "
                                        "중단'을 누르세요."))
@@ -3285,7 +3275,7 @@ class WorkspaceWindow(QMainWindow):
         proc.readyReadStandardOutput.connect(
             lambda: self._pipe(proc, "[실로봇 재생]", "log"))
         proc.finished.connect(self._on_replay_finished)
-        self.replay_process = proc
+        self.procs.replay_process = proc
         self.log(f"[실로봇 재생] ▶ {Path(path).name} / {demo} ({speed:g}x)")
         proc.start()
         self._set_replay_ui(True)
@@ -3293,7 +3283,7 @@ class WorkspaceWindow(QMainWindow):
     def _on_replay_stop(self) -> None:
         """재생 하위 프로세스를 끊는다. 로봇 노드의 레퍼런스 필터가 현재
         포즈를 유지하므로(Ctrl-C 와 동일) 팔이 낙하하지는 않는다."""
-        proc = self.replay_process
+        proc = self.procs.replay_process
         if proc is None or proc.state() == QProcess.ProcessState.NotRunning:
             return
         self.log(tr("[실로봇 재생] 중단 요청 — 현재 포즈에서 정지합니다"))
@@ -3314,7 +3304,7 @@ class WorkspaceWindow(QMainWindow):
                 "background-color:#c0392b; color:white;" if running else "")
 
     def _on_replay_finished(self, code: int, _status) -> None:
-        self.replay_process = None
+        self.procs.replay_process = None
         self._set_replay_ui(False)
         self.log(tr("[실로봇 재생] {r} (exit={c})").format(
             r=tr("완료") if code == 0 else tr("중단/실패 — 로그 확인"), c=code))
@@ -3935,7 +3925,7 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("수집 중"),
                                 tr("수집 중에는 실행할 수 없습니다. 먼저 세션을 종료하세요."))
             return False
-        if self._pipeline_steps:
+        if self.procs.pipeline_steps:
             QMessageBox.information(self, tr("이미 실행 중"),
                                     tr("{w}이(가) 이미 진행 중입니다. 로그를 확인하세요.")
                                     .format(w=what))
@@ -3943,9 +3933,9 @@ class WorkspaceWindow(QMainWindow):
         return True
 
     def _start_pipeline(self, steps: list, tag: str) -> None:
-        self._pipeline_steps = steps
-        self._pipeline_results = []
-        self._pipeline_t0 = time.monotonic()
+        self.procs.pipeline_steps = steps
+        self.procs.pipeline_results = []
+        self.procs.pipeline_t0 = time.monotonic()
         self.bottom_tabs.setCurrentWidget(self.upload_view)
         self.log(f"[{tag}] {len(steps)}단계 시작 — "
                  + " → ".join(st["name"] for st in steps), "upload")
@@ -4247,7 +4237,7 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("수집 중"),
                                 tr("수집 중에는 실행할 수 없습니다. 먼저 세션을 종료하세요."))
             return
-        if self._pipeline_steps:
+        if self.procs.pipeline_steps:
             QMessageBox.information(self, tr("이미 실행 중"),
                                     tr("전체 처리가 이미 진행 중입니다. 로그를 확인하세요."))
             return
@@ -4294,9 +4284,9 @@ class WorkspaceWindow(QMainWindow):
         if not steps:
             self.log("[전체 처리] 할 일이 없습니다.", "upload")
             return
-        self._pipeline_steps = steps
-        self._pipeline_results = []
-        self._pipeline_t0 = time.monotonic()
+        self.procs.pipeline_steps = steps
+        self.procs.pipeline_results = []
+        self.procs.pipeline_t0 = time.monotonic()
         self.log(f"[전체 처리] {len(steps)}단계 시작 — "
                  + " → ".join(s["name"] for s in steps), "upload")
         for st in steps:
@@ -4305,16 +4295,16 @@ class WorkspaceWindow(QMainWindow):
         self._run_next_pipeline_step()
 
     def _run_next_pipeline_step(self) -> None:
-        if not self._pipeline_steps:
+        if not self.procs.pipeline_steps:
             self._finish_pipeline(True)
             return
-        step = self._pipeline_steps[0]
+        step = self.procs.pipeline_steps[0]
         if "program" not in step:
             # 정보용 단계 (예: 'HDF5 원본 업로드 — 생략') -- 프로세스 없이
             # 사유만 로그·요약에 남기고 넘어간다. 자동 선택이 파일을 하나도
             # 안 고른 날, '왜 안 올라갔는지'가 보이게 하는 장치 (2026-08-25).
-            self._pipeline_steps.pop(0)
-            self._pipeline_results.append((step["name"], 0, 0.0))
+            self.procs.pipeline_steps.pop(0)
+            self.procs.pipeline_results.append((step["name"], 0, 0.0))
             self.log(f"\n[전체 처리] · {step['name']} — "
                      f"{step.get('note', '')}", "upload")
             self._run_next_pipeline_step()
@@ -4338,19 +4328,19 @@ class WorkspaceWindow(QMainWindow):
         prefix = f"[{step['name']}]"
         proc.readyReadStandardOutput.connect(lambda: self._pipe(proc, prefix, "upload"))
         proc.finished.connect(self._on_pipeline_step_finished)
-        self._pipeline_proc = proc
-        self._pipeline_step_t0 = time.monotonic()
+        self.procs.pipeline_proc = proc
+        self.procs.pipeline_step_t0 = time.monotonic()
         self.log(f"\n[전체 처리] ▶ {step['name']} 시작", "upload")
         self.statusBar().showMessage(tr("전체 처리: {n}").format(n=step["name"]))
         proc.start()
 
     def _on_pipeline_step_finished(self, code: int, _status) -> None:
-        step = self._pipeline_steps.pop(0)
-        dt = time.monotonic() - self._pipeline_step_t0
-        self._pipeline_results.append((step["name"], code, dt))
+        step = self.procs.pipeline_steps.pop(0)
+        dt = time.monotonic() - self.procs.pipeline_step_t0
+        self.procs.pipeline_results.append((step["name"], code, dt))
         self.log(f"[전체 처리] {'✔' if code == 0 else '✖'} {step['name']} "
                  f"종료 (exit={code}, {dt / 60:.1f}분)", "upload")
-        self._pipeline_proc = None
+        self.procs.pipeline_proc = None
         if code != 0:
             # 뒤 단계가 앞 결과에 의존하므로(변환 -> 업로드) 잘못된 것을 올리지
             # 않는다. 아침에 로그만 보면 어디서 멈췄는지 알 수 있게 남긴다.
@@ -4359,13 +4349,13 @@ class WorkspaceWindow(QMainWindow):
         self._run_next_pipeline_step()
 
     def _finish_pipeline(self, ok: bool) -> None:
-        remaining = [s["name"] for s in self._pipeline_steps]
-        self._pipeline_steps = []
-        total = time.monotonic() - self._pipeline_t0
+        remaining = [s["name"] for s in self.procs.pipeline_steps]
+        self.procs.pipeline_steps = []
+        total = time.monotonic() - self.procs.pipeline_t0
         lines = ["", "=" * 56,
                  tr("전체 처리 요약 — {r} (총 {m:.1f}분)").format(
                      r=tr("완료") if ok else tr("중단됨"), m=total / 60)]
-        for name, code, dt in self._pipeline_results:
+        for name, code, dt in self.procs.pipeline_results:
             lines.append(f"  {'✔' if code == 0 else '✖'} {name:24s} "
                          f"exit={code}  {dt / 60:.1f}분")
         for name in remaining:
@@ -4420,7 +4410,7 @@ class WorkspaceWindow(QMainWindow):
         막는다. 재부팅 후 재설정은 필요 없다: operating mode 는 EEPROM 이라
         살아남고, 다음 세션의 wall.start() 가 나머지를 다시 세팅한다.
         """
-        p = getattr(self, "_reset_protection_process", None)
+        p = self.procs.reset_protection_process
         if p is not None and p.state() != QProcess.ProcessState.NotRunning:
             self.log("[리더암] 보호 해제가 이미 실행 중입니다.")
             return
@@ -4441,7 +4431,7 @@ class WorkspaceWindow(QMainWindow):
                 "관절이 물리적으로 걸려 있지 않은지 확인하세요.",
              2: "[리더암] 리더암 포트를 열지 못했습니다 -- 연결/전원을 확인하세요."}
             .get(c, f"[리더암] 보호 해제 종료 (exit={c})")))
-        self._reset_protection_process = proc
+        self.procs.reset_protection_process = proc
         self.log("=== 리더암 서보 보호 해제 ===")
         proc.start()
 
@@ -4455,8 +4445,8 @@ class WorkspaceWindow(QMainWindow):
             self.log("[튜닝] GELLO_NO_PRIVILEGED -- 관리자 권한 작업을 건너뜁니다. "
                      "필요하면 사람이 scripts/runme.sh 를 직접 실행하세요.")
             return
-        if self.runme_process is not None and \
-                self.runme_process.state() != QProcess.ProcessState.NotRunning:
+        if self.procs.runme_process is not None and \
+                self.procs.runme_process.state() != QProcess.ProcessState.NotRunning:
             self.log("[튜닝] 이미 실행 중입니다.")
             return
         proc = QProcess(self)
@@ -4467,7 +4457,7 @@ class WorkspaceWindow(QMainWindow):
             lambda: [self.log(f"[튜닝] {ln}")
                      for ln in self._proc_text(proc).splitlines() if ln.strip()])
         proc.finished.connect(self._on_runme_finished)
-        self.runme_process = proc
+        self.procs.runme_process = proc
         proc.start()
 
     def _on_runme_finished(self, code: int, _status) -> None:
@@ -4479,7 +4469,7 @@ class WorkspaceWindow(QMainWindow):
                      + (", ".join(t for _k, t in left) if left else "없음"))
             if left:
                 self.log("[튜닝] 취소했거나 실패했습니다. Tools > 시스템 튜닝 실행 으로 다시 할 수 있습니다.")
-        self.runme_process = None
+        self.procs.runme_process = None
 
     # ------------------------------------------------------------- node
     # ------------------------------------------------- 카메라 노드 (별도 프로세스)
@@ -4529,8 +4519,8 @@ class WorkspaceWindow(QMainWindow):
             return
         specs = self._camera_node_specs()
         key = ",".join(specs)
-        running = (self.camera_node_process is not None and
-                   self.camera_node_process.state()
+        running = (self.procs.camera_node_process is not None and
+                   self.procs.camera_node_process.state()
                    != QProcess.ProcessState.NotRunning)
         if running and not restart and key == self._camera_node_spec:
             return
@@ -4546,21 +4536,21 @@ class WorkspaceWindow(QMainWindow):
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.readyReadStandardOutput.connect(self._on_camera_node_output)
         proc.finished.connect(self._on_camera_node_finished)
-        self.camera_node_process = proc
+        self.procs.camera_node_process = proc
         self._camera_node_spec = key
         self.log(f"[카메라노드] 시작: {key}")
         proc.start()
 
     def _on_camera_node_output(self) -> None:
-        if self.camera_node_process is None:
+        if self.procs.camera_node_process is None:
             return
-        for line in self._proc_text(self.camera_node_process).splitlines():
+        for line in self._proc_text(self.procs.camera_node_process).splitlines():
             if line.strip():
                 self.log(f"[카메라노드] {line.rstrip()}")
 
     def _on_camera_node_finished(self, code: int, _status) -> None:
         proc = self.sender()
-        if proc is not self.camera_node_process:
+        if proc is not self.procs.camera_node_process:
             # _stop_camera_node() 나 _ensure(재시작) 가 이미 손을 뗀 프로세스
             # -- 의도된 종료라 조용히 보낸다.
             self.log(f"[카메라노드] 종료 (exit={code})")
@@ -4568,7 +4558,7 @@ class WorkspaceWindow(QMainWindow):
         # 비정상 종료 -- 자동 재시작한다. 단 crash-loop(예: 포트 충돌로
         # 뜨자마자 죽는 상태)이면 로그만 가득 채우므로 60초 내 3회를 넘으면
         # 멈추고 수동(카메라 메뉴)으로 넘긴다.
-        self.camera_node_process = None
+        self.procs.camera_node_process = None
         self._camera_node_spec = ""
         now = time.monotonic()
         self._camera_node_crashes = [
@@ -4583,8 +4573,8 @@ class WorkspaceWindow(QMainWindow):
         QTimer.singleShot(2000, self._ensure_camera_node)
 
     def _stop_camera_node(self) -> None:
-        proc = self.camera_node_process
-        self.camera_node_process = None
+        proc = self.procs.camera_node_process
+        self.procs.camera_node_process = None
         self._camera_node_spec = ""
         if proc is None or proc.state() == QProcess.ProcessState.NotRunning:
             return
@@ -4594,8 +4584,8 @@ class WorkspaceWindow(QMainWindow):
             proc.waitForFinished(2000)
 
     def _on_start_node(self) -> None:
-        if self.node_process is not None and \
-                self.node_process.state() != QProcess.ProcessState.NotRunning:
+        if self.procs.node_process is not None and \
+                self.procs.node_process.state() != QProcess.ProcessState.NotRunning:
             self.log("[노드] 이미 실행 중입니다.")
             return
         proc = QProcess(self)
@@ -4618,7 +4608,7 @@ class WorkspaceWindow(QMainWindow):
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.readyReadStandardOutput.connect(self._on_node_output)
         proc.finished.connect(self._on_node_finished)
-        self.node_process = proc
+        self.procs.node_process = proc
         self.log("[노드] 시작합니다...")
         # 인디케이터는 세션 중 장애 신호(node_status)로만 갱신되고 있어서,
         # 노드가 잘 떠 있어도 '노드 -' 로 남았다 (실화면에서 확인된 혼란).
@@ -4633,21 +4623,21 @@ class WorkspaceWindow(QMainWindow):
         self.right_fields["node"].setText("-")
 
     def _on_node_output(self) -> None:
-        if self.node_process is None:
+        if self.procs.node_process is None:
             return
-        data = self._proc_text(self.node_process)
+        data = self._proc_text(self.procs.node_process)
         for line in data.splitlines():
             if line.strip():
                 self.log(f"[노드] {line}")
 
     def _on_stop_node(self) -> None:
-        if self.node_process is None or \
-                self.node_process.state() == QProcess.ProcessState.NotRunning:
+        if self.procs.node_process is None or \
+                self.procs.node_process.state() == QProcess.ProcessState.NotRunning:
             return
-        self.node_process.terminate()
-        if not self.node_process.waitForFinished(3000):
-            self.node_process.kill()
-            self.node_process.waitForFinished(2000)
+        self.procs.node_process.terminate()
+        if not self.procs.node_process.waitForFinished(3000):
+            self.procs.node_process.kill()
+            self.procs.node_process.waitForFinished(2000)
         self.log("[노드] 종료했습니다.")
 
     # ----------------------------------------------------------- upload
@@ -4688,7 +4678,7 @@ class WorkspaceWindow(QMainWindow):
             lambda: self._pipe(proc, "[재압축]", "upload"))
         proc.finished.connect(lambda c, _s: (self.log(f"[재압축] 종료 (exit={c})", "upload"),
                                              self._refresh_dataset_tree()))
-        self.repack_process = proc
+        self.procs.repack_process = proc
         self.bottom_tabs.setCurrentWidget(self.upload_view)
         self.log(f"[재압축] 시작: {len(selected)}개 파일", "upload")
         proc.start()
@@ -4732,7 +4722,7 @@ class WorkspaceWindow(QMainWindow):
         proc.finished.connect(lambda c, _s: self.log(
             f"[LeRobot] 종료 (exit={c})" + ("" if c == 0 else " -- 실패, 위 로그를 확인하세요"),
             "upload"))
-        self.convert_process = proc
+        self.procs.convert_process = proc
         self.bottom_tabs.setCurrentWidget(self.upload_view)
         self.log(f"[LeRobot] 시작: {' '.join(args)}", "upload")
         proc.start()
@@ -4753,7 +4743,7 @@ class WorkspaceWindow(QMainWindow):
         proc.finished.connect(lambda c, _s: self.log(
             f"[HDF5 업로드] 종료 (exit={c})" + ("" if c == 0 else " -- 실패, 위 로그를 확인하세요"),
             "upload"))
-        self.upload_process = proc
+        self.procs.upload_process = proc
         self.bottom_tabs.setCurrentWidget(self.upload_view)
         self.log(f"[HDF5 업로드] 시작: {' '.join(args)}", "upload")
         proc.start()
@@ -4855,9 +4845,9 @@ class WorkspaceWindow(QMainWindow):
             self.worker.cmd_quit()
             self.worker.wait(5000)
         self._on_stop_node()
-        for proc in (self.repack_process, self.convert_process,
-                     self.upload_process, self.runme_process,
-                     self._pipeline_proc):
+        for proc in (self.procs.repack_process, self.procs.convert_process,
+                     self.procs.upload_process, self.procs.runme_process,
+                     self.procs.pipeline_proc):
             if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
                 proc.terminate()
                 if not proc.waitForFinished(3000):
