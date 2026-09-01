@@ -5857,7 +5857,7 @@ class WorkspaceWindow(QMainWindow):
         for b in (self.skip_btn, self.discard_btn, self.home_btn):
             b.setEnabled(running)
         if not running:
-            self._gate_ok = False
+            self._gate_ok = None
         # Start(기록 시작)는 게이트 자세 조건까지 본다 -- 아래 헬퍼가 전담.
         self._update_start_controls(running)
         for b in (self.save_ok_btn, self.save_ng_btn):
@@ -5890,7 +5890,9 @@ class WorkspaceWindow(QMainWindow):
         """
         if running is None:
             running = self.worker is not None
-        ok = running and (self._current_state != "gate" or self._gate_ok)
+        # _gate_ok 는 게이트 진입 직후 None("아직 모름") 일 수 있다 -- setEnabled 는
+        # bool 만 받으므로 여기서 확정한다.
+        ok = bool(running and (self._current_state != "gate" or self._gate_ok))
         self.start_btn.setEnabled(ok)
         act = getattr(self, "tb_actions", {}).get("record")
         if act is not None:
@@ -5907,8 +5909,10 @@ class WorkspaceWindow(QMainWindow):
             self._pending_verdict_toggle = False
             self.verdict_label.setText("")
         if state == "gate" and self._current_state != "gate":
-            # 새 게이트: 첫 gate_status 가 올 때까지 시작을 잠근다.
-            self._gate_ok = False
+            # 새 게이트: 첫 gate_status 가 올 때까지 시작을 잠근다. None 은
+            # '아직 모름' -- _on_gate 가 변화가 있을 때만 그리므로, 여기서
+            # False 로 두면 첫 상태가 False 일 때 라벨이 안 갱신된다.
+            self._gate_ok = None
         self._current_state = state
         self._update_start_controls()
         self.state_label.setText(STATE_LABELS.get(state, state))
@@ -5938,18 +5942,26 @@ class WorkspaceWindow(QMainWindow):
         for i, bar in enumerate(self.delta_bars):
             if i < len(d):
                 bar.update_delta(float(d[i]), GATE_RAD)
-        self.gate_label.setText(tr("자세 일치 — 시작 가능") if all_ok
-                                else tr("리더를 팔로워 자세에 맞추세요"))
-        self.gate_label.setStyleSheet("color:#2ecc71;" if all_ok else "color:#e67e22;")
-        # Enter/버튼은 워커와 같은 조건에서만 열린다. 잠겨 있는 이유가 보이도록
-        # 게이트 상태의 힌트도 all_ok에 따라 바꾼다.
-        self._gate_ok = all_ok
-        self.match_btn.setEnabled(all_ok)
-        self._update_start_controls()
-        if self._current_state == "gate":
-            self.shortcut_hint.setText(
-                "Space: 텔레옵 시작   Enter: 자동 정렬 다시" if all_ok
-                else "Space: 텔레옵 시작   (Enter: 자세를 더 맞춰야 자동 정렬 가능)")
+        # 아래는 전부 all_ok 가 '바뀔 때만' 의미가 있는 일이다. 게이트는
+        # 초당 45번 오는데, 매번 라벨 텍스트·스타일시트를 다시 쓰고 버튼
+        # 활성 상태를 재계산하면 -- setStyleSheet 은 Qt 가 스타일을 통째로
+        # 다시 파싱하게 만드는 호출이다 -- GUI 스레드가 그 뒤에 밀려 바가
+        # 손을 늦게 따라온다. 워커는 45 Hz 로 멀쩡히 보내고 있었다 (실측
+        # 0.7~2.6 ms/틱), 병목은 이쪽이었다 (2026-09-01).
+        if all_ok != self._gate_ok:
+            self._gate_ok = all_ok
+            self.gate_label.setText(tr("자세 일치 — 시작 가능") if all_ok
+                                    else tr("리더를 팔로워 자세에 맞추세요"))
+            self.gate_label.setStyleSheet(
+                "color:#2ecc71;" if all_ok else "color:#e67e22;")
+            # Enter/버튼은 워커와 같은 조건에서만 열린다. 잠겨 있는 이유가
+            # 보이도록 게이트 상태의 힌트도 all_ok 에 따라 바꾼다.
+            self.match_btn.setEnabled(all_ok)
+            self._update_start_controls()
+            if self._current_state == "gate":
+                self.shortcut_hint.setText(
+                    "Space: 텔레옵 시작   Enter: 자동 정렬 다시" if all_ok
+                    else "Space: 텔레옵 시작   (Enter: 자세를 더 맞춰야 자동 정렬 가능)")
 
     @pyqtSlot(float, bool)
     def _on_pose_match(self, err, done) -> None:

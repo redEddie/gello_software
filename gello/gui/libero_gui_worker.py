@@ -1363,6 +1363,7 @@ class CollectionWorker(QThread):
         """
         self.state_changed.emit("reset_wait")
         t0 = time.monotonic()
+        last_count = 0.0
         while True:
             cmd = self._poll_cmd()
             if cmd:
@@ -1372,7 +1373,16 @@ class CollectionWorker(QThread):
                     return "quit"
                 if cmd[0] == "go_home":
                     return "go_home"
-            self.reset_countdown.emit(time.monotonic() - t0)
+            # 카운트다운은 0.1초마다면 충분하다 (소수 첫째 자리까지만 보인다).
+            # 오차 게이지는 그 주기에 묶여 있으면 안 된다 -- 리셋 중에도
+            # 리더를 손으로 되돌려 놓는데, 10 Hz 로는 손을 눈에 띄게 늦게
+            # 따라온다. 아래 루프는 게이트와 같은 50 Hz 로 돌면서 카운트다운만
+            # 솎아 낸다 (2026-09-01). 틱은 싸다: 카메라를 읽지 않고 상태
+            # 읽기+방출이 1~3 ms 다 (실측).
+            now = time.monotonic()
+            if now - last_count >= 0.1:
+                last_count = now
+                self.reset_countdown.emit(now - t0)
             try:
                 # 리셋 중에도 오차 게이지는 살아 있어야 한다 -- 물체를
                 # 되돌리는 그 시간이 화면을 가장 많이 보는 시간이다. 라이브
@@ -1381,7 +1391,7 @@ class CollectionWorker(QThread):
                 self._emit_gate_status()
             except Exception:  # noqa: BLE001 -- 일시적 카메라/노드 오류로
                 pass           # 카운트다운을 멈추지 않는다
-            time.sleep(0.1)
+            time.sleep(0.02)
 
     def _wait_node_recovery(self) -> bool:
         while True:
