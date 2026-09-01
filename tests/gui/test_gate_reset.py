@@ -1,5 +1,4 @@
 """게이트 자동정렬 범위 조건 + 리셋 중 프레임 방출 + 시작 버튼 잠금 검증."""
-import dataclasses
 import sys
 from pathlib import Path
 import threading
@@ -55,10 +54,7 @@ def make_worker():
     return w
 
 
-# ---- 1. 리더가 범위 밖이면: 자동정렬 대기 + 시작 거부 ----
-# '자동' 정렬은 게이트 안에 들어온 뒤 발동한다. 오차와 무관하게 발동시켰더니
-# 세션을 열자마자 팔이 스스로 끌려가 손으로 못 움직이게 됐다 (2026-09-01).
-# 버튼으로 누르는 수동 정렬(cmd_auto_match_pose)은 여전히 오차와 무관하다.
+# ---- 1. 리더가 범위 밖이면: 자동정렬 발동 금지 + 시작 거부 ----
 w = make_worker()
 logs = []
 w.log_message.connect(logs.append)
@@ -67,13 +63,14 @@ t = threading.Thread(target=lambda: result.update(r=w._pose_gate(timeout=30)))
 t.start()
 time.sleep(0.4)
 app.processEvents()      # 크로스 스레드 시그널(큐잉) 전달
-assert w._teleop.match_started == 0, "범위 밖인데 자동정렬이 발동했다"
+assert w._teleop.match_started == 0, "범위 밖인데 자동정렬이 당김"
+assert any("범위 밖" in m for m in logs), logs
 w.cmd_start_teleop()
 time.sleep(0.3)
 app.processEvents()
 assert t.is_alive(), "자세 불일치인데 start 가 통과됨"
 assert any("자세가 맞지 않습니다" in m for m in logs)
-print("1 통과: 범위 밖 -- 자동정렬 대기 + start 거부")
+print("1 통과: 범위 밖 -- 자동정렬 미발동 + start 거부")
 
 # ---- 2. 범위 안으로 들어오면: 자동정렬 1회 발동, start 통과 ----
 w._teleop.leader_q = np.full(7, GATE_RAD * 0.5)
@@ -96,38 +93,20 @@ tb = threading.Thread(target=lambda: rb.update(r=wb._pose_gate(timeout=30)))
 tb.start()
 time.sleep(0.3)
 assert wb._teleop.match_started == 1                # 정렬 발동
-# 2026-09-01: 정렬 중 리더를 끌어도 중단하지 않는다. wall 이 그 관절을
-# 관절별로 놓아 주고(우물이 약해지고 정렬 반경 밖은 토크 오프), 손을 놓으면
-# 이어서 당긴다 -- 모터가 사람 손과 싸우는 상황이 구조적으로 없어졌다.
 wb._teleop.leader_q = np.full(7, 1.5)               # 정렬 중 범위 밖으로 끌기
 time.sleep(0.3)
 app.processEvents()
-assert tb.is_alive(), "정렬 루프가 죽었다"
-assert not any("중단" in m for m in logs_b), logs_b
-assert wb._teleop.match_started == 1, "정렬이 중복 발동했다"
+assert tb.is_alive(), "이탈 중단 후 게이트로 못 돌아옴"
+assert any("범위 밖으로 벗어나 정렬을 중단" in m for m in logs_b), logs_b
+assert wb._teleop.cancelled >= 1                    # 홀드 해제됨
 wb._teleop.match_done = True
 wb._teleop.leader_q = np.full(7, GATE_RAD * 0.5)    # 다시 범위 안으로
 time.sleep(0.3)
+assert wb._teleop.match_started == 2, "복귀 후 자동 재시도 안 됨"
 wb.cmd_start_teleop()
 tb.join(3)
 assert rb["r"] == "ok"
-print("2b 통과: 정렬 중 이탈해도 중단 없이 이어짐 (wall 이 관절별로 처리)")
-
-# ---- 2c. 수동 버튼은 오차가 커도 즉시 발동한다 ----
-wc = make_worker()
-wc.cfg = dataclasses.replace(CFG, auto_match_pose=False)   # 자동은 끄고
-wc._teleop.match_done = True
-rc = {}
-tc = threading.Thread(target=lambda: rc.update(r=wc._pose_gate(timeout=30)))
-tc.start()
-time.sleep(0.3)
-assert wc._teleop.match_started == 0, "자동이 꺼졌는데 발동했다"
-wc.cmd_auto_match_pose()          # 리더는 여전히 범위 밖(기본 leader_q)
-time.sleep(0.4)
-assert wc._teleop.match_started == 1, "버튼을 눌렀는데 오차가 커서 거부됐다"
-wc.cmd_quit()
-tc.join(3)
-print("2c 통과: 버튼 정렬은 오차와 무관하게 발동")
+print("2b 통과: 정렬 중 이탈 -> 중단(홀드 해제) -> 복귀 시 자동 재시도")
 
 # ---- 3. 자동정렬 꺼짐: 발동 없음, 수동 게이트만 ----
 import dataclasses  # noqa: E402

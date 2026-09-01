@@ -20,7 +20,6 @@ sys.path.insert(0, WT)
 
 from gello.hw.dynamixel.driver import FakeDynamixelDriver  # noqa: E402
 from gello.robots.joint_limit_wall import (  # noqa: E402
-    IDLE_MIN_CURRENT,
     MATCH_GATE_RAD,
     JointLimitWall,
 )
@@ -88,17 +87,13 @@ try:
     cur_green = float(np.abs(_settle(w)["cur"]).max())
     _put_leader_at(drv, np.full(N_ARM, ARM_RAD - 0.05))
     cur_red = float(np.abs(_settle(w)["cur"]).max())
-    # 계약 (2026-09-01): 봉우리 근처는 가진 힘 전부, 멀어질수록 약해지되
-    # 걸려 있는 동안에는 IDLE_MIN_CURRENT 아래로 내려가지 않는다 -- 그래야
-    # 오차가 큰 상태에서 시작한 정렬도 실제로 다가온다.
-    assert cur_at_well >= cur_green >= cur_red, \
-        f"힘이 커진다: well={cur_at_well:.0f} green={cur_green:.0f} red={cur_red:.0f}"
-    assert cur_at_well > cur_red, "우물 모양이 사라졌다 (전 구간 평평)"
-    assert cur_red >= IDLE_MIN_CURRENT - 1e-6, \
-        f"걸린 관절인데 최소 당김({IDLE_MIN_CURRENT:.0f} mA) 아래다: {cur_red:.0f}"
-    print(f"3 통과: 봉우리에서 가장 세고 멀수록 약해지며 하한 유지 "
-          f"(well {cur_at_well:.0f} -> 게이지경계 {cur_green:.0f} -> "
-          f"먼쪽 {cur_red:.0f} mA)")
+    assert cur_at_well > cur_green > cur_red, \
+        f"힘이 단조 감소하지 않는다: well={cur_at_well:.0f} " \
+        f"green={cur_green:.0f} red={cur_red:.0f}"
+    assert cur_red < 0.25 * cur_at_well, \
+        f"빨강 영역인데 힘이 충분히 안 빠졌다 ({cur_red:.0f} mA)"
+    print(f"3 통과: 힘이 부드럽게 풀린다 (well {cur_at_well:.0f} -> "
+          f"게이지경계 {cur_green:.0f} -> 먼쪽 {cur_red:.0f} mA)")
 
     # 케이블 풀기: 한 관절만 크게 돌려도 그 관절만 힘이 빠지고
     # 나머지는 계속 버틴다 (조인트별 우물)

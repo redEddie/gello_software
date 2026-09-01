@@ -141,16 +141,10 @@ WRAP_ABORT_RAD = 0.2
 #: 토크가 켜졌다 꺼졌다 하는 것 자체가 또 다른 지터라 반드시 필요하다.
 WRAP_RELEASE_RAD = 0.15
 
-#: 정렬 중 걸린 관절이 최소한 이만큼은 당긴다 (mA). 상한이 아니라 하한이다
-#: -- 한때 정렬 모드의 '상한' 을 200 mA 로 낮춘 적이 있는데, J2 는 자세를
+#: 정렬 전류 상한이 어떤 이유로도 이 아래로 내려가지 않게 하는 하한 (mA).
+#: 한때 정렬 모드의 상한을 200 mA 로 낮춘 적이 있는데, J2 는 자세를
 #: *유지* 하는 데만 ~430 mA 가 필요해서(아래 적분기 주석) 피치가 처지고
-#: 수렴하지 못했다.
-#:
-#: 우물(_well_assist)은 목표에서 멀수록 힘을 빼는데, 그것만 두면 오차가 큰
-#: 상태에서 시작한 정렬이 영영 다가오지 못한다. 그래서 **걸린 관절에 한해**
-#: 바닥을 깔아 준다: 정렬 반경 밖 관절은 여전히 토크 자체가 꺼져 있어
-#: (손으로 옮기는 데 걸리적거리지 않는다) 이 하한과 무관하다.
-#: 200 mA 는 2026-09-01 사용자 결정.
+#: 정렬이 수렴하지 못했다. 200 은 상한이 아니라 하한이다.
 IDLE_MIN_CURRENT = 200.0
 
 
@@ -223,15 +217,7 @@ def _wrap_zone(q, center, lower, upper, margin: float,
     return (d > (np.pi - m)) & outside
 
 
-#: 우물 세기의 게인. 순수 유리 함수는 봉우리(x=well)에서 1/2 이라, 가장
-#: 세게 당겨야 할 지점에서 쓸 수 있는 힘의 절반을 버리고 있었다. 게인을
-#: 곱하고 1.0 에서 자르면 봉우리 부근이 '가진 힘 전부' 가 되고, 바깥의
-#: 1/x 꼬리(손으로 끌면 놓아주는 성질)는 그대로다 (2026-09-01 사용자 결정).
-WELL_GAIN = 2.0
-
-
-def _well_assist(abs_err: np.ndarray, well: float,
-                 gain: float = WELL_GAIN) -> np.ndarray:
+def _well_assist(abs_err: np.ndarray, well: float) -> np.ndarray:
     """조인트별 정렬 세기 0..1 -- 오차가 커질수록 힘이 부드럽게 풀린다.
 
         a(x) = 1 / (1 + (x/well)^2)
@@ -247,8 +233,7 @@ def _well_assist(abs_err: np.ndarray, well: float,
     한 바퀴 돌릴 때, 그 관절은 힘이 빠지고 나머지는 계속 자세를 지켜야
     팔이 주저앉지 않는다.
     """
-    a = gain / (1.0 + (np.asarray(abs_err, dtype=float) / well) ** 2)
-    return np.minimum(1.0, a)
+    return 1.0 / (1.0 + (np.asarray(abs_err, dtype=float) / well) ** 2)
 
 
 def _wrap_pi(d: np.ndarray) -> np.ndarray:
@@ -279,42 +264,9 @@ def wrap_into_limits(q: np.ndarray, lower, upper) -> np.ndarray:
     still see it).
     """
     q = np.asarray(q, dtype=float)
-    return resolve_turns(q, lower, upper)[0]
-
-
-#: 바퀴 선택의 불감대 반폭 (rad). 경계는 가동범위 중심의 정반대(±π)인데,
-#: 그 점에서 답이 한 바퀴 튀므로 센서 노이즈가 오갈 때마다 읽는 각도가
-#: 2π 씩 뛴다 -- 한계벽은 미는 방향이 뒤집혀 최대 강도로 떨고, 원점은
-#: 한 바퀴 어긋난 것처럼 보인다 (2026-09-01 실제 사고).
-#:
-#: 그래서 경계를 하나 두는 대신 **어느 쪽에서 왔는지에 따라 다르게** 둔다:
-#: 이미 고른 바퀴는 ±(π + margin) 까지 유지하고, 거기를 넘어야 다음 바퀴로
-#: 넘어간다. 170~190° 가 불감대가 되어 한 번 지나가면 한 번만 바뀌고,
-#: 노이즈로는 절대 바뀌지 않는다. 경계를 170° 로 '옮기는' 것만으로는
-#: 안 되는 이유가 이것이다 -- 옮긴 자리에서 똑같이 튄다.
-WRAP_HYSTERESIS_RAD = 0.175      # 10도
-
-
-def resolve_turns(q, lower, upper, prev_k=None,
-                  margin: float = WRAP_HYSTERESIS_RAD):
-    """(보정된 위치, 바퀴 번호). ``prev_k`` 를 주면 히스테리시스가 붙는다.
-
-    바퀴 번호 ``k`` 는 ``q + 2πk`` 가 가동범위 중심에서 ±π 안에 오도록
-    고른 정수다. ``prev_k`` 가 주어지면 그 선택을 먼저 존중해서, 중심에서
-    ±(π + margin) 안이면 그대로 유지한다 -- 경계에서 답이 튀지 않는다.
-
-    순수 함수다: 상태는 호출자가 ``k`` 를 들고 다음 호출에 넘겨 준다.
-    ``prev_k=None`` 이면 예전과 똑같이 매번 새로 고른다.
-    """
-    q = np.asarray(q, dtype=float)
     center = (np.asarray(lower, dtype=float) + np.asarray(upper, dtype=float)) / 2.0
     k = np.round((center - q) / (2 * np.pi))
-    if prev_k is not None:
-        prev_k = np.asarray(prev_k, dtype=float)
-        # 이전 바퀴로도 불감대 안에 들어오면 바꾸지 않는다.
-        keep = np.abs(q + 2 * np.pi * prev_k - center) <= (np.pi + margin)
-        k = np.where(keep, prev_k, k)
-    return q + 2 * np.pi * k, k
+    return q + 2 * np.pi * k
 
 
 def _allocate_budget(cur: np.ndarray, i_trig: float, budget: float,
@@ -526,9 +478,6 @@ class JointLimitWall:
         # 뒤집힘 구역 상태 (issue #37A 후속). 구역에 든 관절은 정렬도 벽도
         # 전부 꺼서 손에 넘긴다 -- 케이블을 풀려면 그 관절이 자유로워야 한다.
         self._wrap_center = (self._lower + self._upper) / 2.0
-        # 바퀴 번호를 들고 다닌다 -- 경계에서 읽는 각도가 튀지 않게
-        # (resolve_turns 의 히스테리시스). None 이면 첫 틱에 새로 고른다.
-        self._turn_k = None
         self._wrap_mask = np.zeros(self._n_arm, dtype=bool)
         self._match_aborted_wrap = False
         self._match_tol = match_tol
@@ -774,8 +723,7 @@ class JointLimitWall:
                 q = (raw_q[: self._n_arm] - self._offsets) * self._signs
                 # Undo any phantom full turn so the wall pushes at the real limit,
                 # not 2*pi away from it (same correction the agent applies).
-                q, self._turn_k = resolve_turns(
-                    q, self._lower, self._upper, prev_k=self._turn_k)
+                q = wrap_into_limits(q, self._lower, self._upper)
                 dq = raw_dq[: self._n_arm] * self._signs
 
                 match_target = self._match_target  # snapshot -- see set_match_target
@@ -943,10 +891,13 @@ class JointLimitWall:
                     # 속도에도 곱한다 -- 힘이 풀려 있는 먼 거리에서 적분기만
                     # 가득 차 있다가, 사람이 팔을 되돌려 놓는 순간 그 값이
                     # 통째로 튀어나오는 것을 막는다.
-                    # 정렬 전류 상한 (issue #37A). 설정으로 준
-                    # match_max_current 를 그대로 쓰고, 낮추고 싶으면
-                    # idle_hold_current 로 낮추되 IDLE_MIN_CURRENT 아래로는
-                    # 못 내려간다 (상한이 아니라 하한).
+                    # 정렬 전류 상한 (issue #37A). 한때 정렬 모드에서 이걸
+                    # 200 mA 로 *낮췄는데*, J2 는 자세 유지에만 ~430 mA 가
+                    # 필요해서(아래 적분기 주석) 피치가 처지고 정렬이 수렴하지
+                    # 못했다. 200 은 상한이 아니라 하한이다: 기본값은 아예
+                    # 낮추지 않고(idle_hold_current=0), 낮추더라도
+                    # IDLE_MIN_CURRENT 아래로는 못 내려간다. 설정으로 준
+                    # match_max_current 자체는 그대로 존중한다.
                     if self._in_teleop or self._idle_hold_current <= 0.0:
                         match_cap = self._match_max_current
                     else:
@@ -966,18 +917,6 @@ class JointLimitWall:
                         kp * terr - self._match_kd * dq + self._match_int,
                         -match_cap, match_cap,
                     )  # per-joint caps; np.clip broadcasts elementwise
-                    # 최소 당김 (2026-09-01): 걸린 관절은 우물이 약해져도
-                    # IDLE_MIN_CURRENT 만큼은 당긴다. 오차가 큰 상태에서
-                    # 시작해도 정렬이 실제로 다가오게 하려는 것이다. 이미
-                    # 도착한 관절(오차가 tol 이내)은 제외한다 -- 다 온 관절을
-                    # 계속 밀 이유가 없다. 텔레옵 중에는 적용하지 않는다.
-                    if not self._in_teleop:
-                        floor = np.minimum(IDLE_MIN_CURRENT, match_cap)
-                        pulling = (self._match_arm_mask
-                                   & (np.abs(goal_err) > self._match_tol)
-                                   & (np.abs(cur_match) < floor))
-                        cur_match = np.where(
-                            pulling, np.sign(goal_err) * floor, cur_match)
                     cur = cur + cur_match
                     # 포화 감시: 어느 조인트든 캡 근처를 stall_s 초 이상
                     # 연속으로 요구하면 정렬을 포기한다. 정상 정렬은
@@ -1219,21 +1158,19 @@ def selftest() -> None:
     #    단조 감소한다 -- "가까이선 잡아주고 크게 끌면 놓아준다".
     well = MATCH_GATE_RAD / 2
     xs = np.linspace(0.0, 4.0, 4001)
-    a_all = _well_assist(xs, well)
-    assert np.all(np.diff(a_all) <= 1e-12), "세기가 바깥에서 다시 커진다"
+    force = xs * _well_assist(xs, well)          # kp 는 상수배라 형태에 무관
+    assert abs(xs[int(np.argmax(force))] - well) < 1e-2, xs[int(np.argmax(force))]
+    tail = force[xs >= well]
+    assert np.all(np.diff(tail) <= 1e-12), "우물 바깥에서 힘이 다시 커진다"
     a = _well_assist(np.array([0.0, well, MATCH_GATE_RAD, 2 * MATCH_GATE_RAD,
                                np.pi]), well)
-    assert a[0] == 1.0                     # 목표 위: 전력 100%
-    assert a[1] == 1.0                     # 봉우리도 100% (게인 전에는 50%)
-    assert 0.35 < a[2] < 0.45              # 게이지 초록 경계에서 비로소 빠지기 시작
-    assert a[3] < 0.12                     # 그 두 배: 10% 남짓
-    assert a[4] < 0.02                     # 반 바퀴 돌리면 2% 미만 -- 손으로 이긴다
-    # 게인은 봉우리만 올리고 꼬리 모양은 그대로다 (1/x 로 잦아든다)
-    assert _well_assist(np.array([np.pi]), well)[0] \
-        == 2.0 * (1.0 / (1.0 + (np.pi / well) ** 2))
+    assert a[0] == 1.0                                   # 목표 위: 전력 100%
+    assert abs(a[1] - 0.5) < 1e-9                        # well: 절반
+    assert a[2] < 0.21                                   # 게이지 초록 경계: 20%
+    assert a[4] < 0.01                                   # 반 바퀴 돌리면 1% 미만
     # 조인트별로 따로 계산된다 (한 관절만 돌려도 나머지는 계속 버틴다)
     per = _well_assist(np.array([0.02, np.pi, 0.02]), well)
-    assert per[0] > 0.98 and per[2] > 0.98 and per[1] < 0.02
+    assert per[0] > 0.98 and per[2] > 0.98 and per[1] < 0.01
 
     # 8. 뒤집힘 구역 (issue #37A 후속). 실제 FR3 한계로 검사한다 -- 이
     #    판정의 값어치는 "합법 자세에서는 절대 발동하지 않는다" 이므로,
@@ -1283,37 +1220,9 @@ def selftest() -> None:
     prev = _wrap_latch(prev, zone(ctr), inside_limits(ctr))
     assert not prev[0], "한계 안으로 돌아왔는데 벽이 안 선다"
 
-    # 9. 최소 당김: 걸린 관절은 우물이 약해져도 IDLE_MIN_CURRENT 만큼 당기고,
-    #    도착한 관절과 캡이 더 낮은 관절은 예외다.
-    cap9 = np.array([400.0, 1000.0, 100.0])
-    floor9 = np.minimum(IDLE_MIN_CURRENT, cap9)
-    assert floor9[0] == IDLE_MIN_CURRENT and floor9[2] == 100.0  # 캡이 하한을 이긴다
-    armed9 = np.array([True, True, False])
-    err9 = np.array([0.4, 0.01, 0.4])        # J2 는 이미 도착 (tol 0.05)
-    weak = np.array([50.0, 20.0, 10.0])
-    pulling9 = armed9 & (np.abs(err9) > 0.05) & (np.abs(weak) < floor9)
-    assert list(pulling9) == [True, False, False]
-    # 10. 바퀴 선택 히스테리시스 (2026-09-01): 경계를 오가도 답이 한 번만
-    #     바뀌고, 노이즈로는 절대 바뀌지 않는다.
-    lo1, hi1 = np.array([-2.74]), np.array([2.74])   # 중심 0, 경계 ±π
-    k10 = None
-    seen = []
-    for x in (3.00, 3.10, 3.14, 3.20, 3.30, 3.35, 3.30, 3.20, 3.10):
-        qq, k10 = resolve_turns(np.array([x]), lo1, hi1, prev_k=k10)
-        seen.append((x, float(qq[0]), int(k10[0])))
-    ks = [k for _, _, k in seen]
-    assert ks.count(0) and ks.count(-1), ks          # 한 번은 넘어간다
-    assert sum(a != b for a, b in zip(ks, ks[1:])) == 1, f"바퀴가 여러 번 바뀐다: {ks}"
-    # 경계를 넘기 전까지 값이 연속이다 (2π 점프 없음)
-    vals = [v for _, v, _ in seen[:5]]
-    assert all(abs(b - a) < 0.2 for a, b in zip(vals, vals[1:])), vals
-    # 경계 위에서 노이즈만 흔들려도 바퀴는 그대로
-    k11 = np.array([0.0])
-    for x in (3.1416, 3.1400, 3.1430, 3.1410):
-        _, k11 = resolve_turns(np.array([x]), lo1, hi1, prev_k=k11)
-        assert int(k11[0]) == 0, "노이즈에 바퀴가 바뀌었다"
-    # prev_k 없이 부르면 예전 동작 그대로 (하위호환)
-    assert wrap_into_limits(np.array([3.20]), lo1, hi1)[0] < 0
+    # 9. 정렬 전류 상한은 하한(IDLE_MIN_CURRENT) 아래로 내려가지 않는다
+    caps = np.maximum(np.array([400.0, 1000.0, 400.0]), IDLE_MIN_CURRENT)
+    assert caps.min() >= IDLE_MIN_CURRENT and caps[1] == 1000.0
     print("joint_limit_wall selftest 통과")
 
 
