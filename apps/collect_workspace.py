@@ -87,8 +87,6 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
-    QScrollArea,
-    QSizePolicy,
     QSlider,
     QSpinBox,
     QSplitter,
@@ -143,7 +141,17 @@ from gello.gui.gui_widgets import (  # noqa: E402
     np_to_pixmap,
 )
 from apps.workspace.constants import LOG_DIR, ACTIVITIES  # noqa: E402
-from apps.workspace.builders import _build_menu, _build_statusbar, _build_toolbar  # noqa: E402
+from apps.workspace.builders import (  # noqa: E402
+    build_bottom,
+    build_center,
+    build_layout,
+    build_left,
+    build_menu,
+    build_right,
+    build_statusbar,
+    build_toolbar,
+)
+from apps.workspace.builders.sizing import shrinkable_combo  # noqa: E402
 from apps.dialogs._image_utils import _depth_colormap  # noqa: E402
 from apps.dialogs._widgets import (  # noqa: E402
     TODO_STYLE,
@@ -266,13 +274,6 @@ def _read(path: Path) -> str:
 # the shape visible is what makes the gap reviewable instead of forgotten.
 # TODO_MARK 는 gello/gui_widgets.py 에서 가져온다 (순환 import 방지).
 
-# 오른쪽 패널에서 값이 길어 좌우 배치로는 읽기 어려운 항목들.
-WIDE_FIELDS = {"ds_file", "ds_task"}
-
-# 0.5배는 접촉 순간을 한 프레임씩 보려고, 2~3배는 긴 에피소드를 훑으려고 쓴다.
-# 3배면 60Hz라 프레임을 건너뛰지 않고도 타이머만으로 낼 수 있다.
-PLAYBACK_SPEEDS = (("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("3x", 3.0))
-
 # 큐레이션 기준값은 전부 gello/episode_stats.py 에 있다 (TASK_DEV_LIMIT /
 # STILL_VEL). 여기서 다시 정의하지 않는 이유는, 화면에 찍히는 수와
 # 판정에 쓰이는 수가 갈라지면 조작자가 둘 중 뭘 믿어야 할지 알 수 없기 때문이다.
@@ -311,46 +312,6 @@ SHORTCUT_HINTS = {
 }
 
 
-def _relax_min_widths(root: QWidget) -> None:
-    """좌측 패널은 가로 스크롤이 없으므로 자식들이 패널 폭에 맞춰 줄어들 수
-    있어야 한다. 버튼·체크박스·라디오는 텍스트 전체 폭을 최소로 고집하는
-    기본 정책이라 좁은 패널에서 페이지를 잘리게 만든다 -- 수평 최소를 풀어
-    좁아지면 글자가 생략되는 쪽을 택한다 (2026-08-13 사용자 결정: 200px
-    수준까지 축소 허용, ... 요약 표시 허용). '...' 찾아보기처럼 명시적으로
-    고정폭을 준 위젯은 건드리지 않는다."""
-    for w in root.findChildren(QWidget):
-        if isinstance(w, (QPushButton, QCheckBox, QRadioButton)):
-            if w.maximumWidth() >= 16777215:  # 명시 고정폭은 존중
-                sp = w.sizePolicy()
-                sp.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
-                w.setSizePolicy(sp)
-    # 폼의 '라벨+입력 나란히' 배치도 최소 폭을 만든다 -- 좁아지면 입력칸이
-    # 라벨 아래로 내려가게 해서 폭 하한을 더 낮춘다.
-    for f in root.findChildren(QFormLayout):
-        f.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-    # 긴 안내문 라벨이 wordWrap 없이 폭을 강제하는 경우가 페이지마다 하나씩
-    # 숨어 있다(업로드 큐 안내문 등). 일괄 줄바꿈 -- 단, 수평 Ignored 정책
-    # 라벨(SceneInfoView 의 격자처럼 일부러 줄바꿈을 막은 것)은 제외.
-    for lb in root.findChildren(QLabel):
-        if lb.sizePolicy().horizontalPolicy() != QSizePolicy.Policy.Ignored:
-            lb.setWordWrap(True)
-            # wordWrap 만으로는 QFormLayout 이 높이를 한 줄치로 줘서 두 줄째가
-            # 잘린다(오른쪽 패널 WIDE_FIELDS 에서 이미 확인된 Qt 동작).
-            # heightForWidth 를 켜야 접힌 만큼 세로가 확보된다.
-            sp = lb.sizePolicy()
-            sp.setHeightForWidth(True)
-            sp.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
-            lb.setSizePolicy(sp)
-
-
-def _shrinkable_combo(c: QComboBox) -> None:
-    """항목 텍스트(카메라 이름, scene 설명 등)가 길어도 콤보가 패널 폭에 맞춰
-    줄어들 수 있게 한다. 기본 정책은 가장 긴 항목만큼 최소 폭을 요구해서,
-    좁은 좌측 패널에서 페이지 전체가 오른쪽으로 잘려 나갔다 (가로 스크롤을
-    쓰지 않는다는 원칙과 충돌). 펼친 목록은 전체 텍스트를 그대로 보여준다."""
-    c.setSizeAdjustPolicy(
-        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-    c.setMinimumContentsLength(6)
 
 
 class WorkspaceWindow(QMainWindow):
@@ -443,20 +404,20 @@ class WorkspaceWindow(QMainWindow):
 
         self.schema = load_schema_config()
 
-        self._build_bottom()          # log view exists before anything logs
+        build_bottom(self)          # log view exists before anything logs
         # 저장된 설정의 depth 플래그가 무시됐다면 여기서(로그 뷰가 생긴 뒤)
         # 보이는 로그로 알린다 -- from_json 의 warnings 는 stderr 로만 가서
         # 데스크톱 아이콘 실행에서는 소실된다 (아래 excepthook 주석과 같은 이유).
         for flag in getattr(self.schema, "ignored_depth_flags", []):
             self.log(f"[스키마] 저장된 {flag}=True 를 무시합니다 -- "
                      "카메라 드라이버가 depth 읽기를 지원하지 않습니다")
-        self._build_center()
-        self._build_left()
-        self._build_right()
-        self._build_layout()
-        _build_toolbar(self)
-        _build_menu(self)
-        _build_statusbar(self)
+        build_center(self)
+        build_left(self)
+        build_right(self)
+        build_layout(self)
+        build_toolbar(self)
+        build_menu(self)
+        build_statusbar(self)
 
         self._fps_timer = QTimer(self)
         self._fps_timer.timeout.connect(self._tick_fps)
@@ -491,11 +452,11 @@ class WorkspaceWindow(QMainWindow):
         col = QVBoxLayout(w)
         row = QHBoxLayout()
         self.gallery_scene_combo = QComboBox()
-        _shrinkable_combo(self.gallery_scene_combo)
+        shrinkable_combo(self.gallery_scene_combo)
         self.gallery_scene_combo.currentIndexChanged.connect(self._refresh_gallery)
         row.addWidget(self.gallery_scene_combo, 2)
         self.gallery_filter_combo = QComboBox()
-        _shrinkable_combo(self.gallery_filter_combo)
+        shrinkable_combo(self.gallery_filter_combo)
         self.gallery_filter_combo.currentIndexChanged.connect(self._apply_gallery_filter)
         row.addWidget(self.gallery_filter_combo, 2)
         b = QPushButton("↻")
@@ -654,174 +615,7 @@ class WorkspaceWindow(QMainWindow):
             self._refresh_dataset_tree()
 
     # ------------------------------------------------------------- center
-    def _build_center(self) -> None:
-        # 카메라별 크롭 정렬 -- 뷰 가이드·레이아웃 겹침·수집·변환이 전부 이
-        # 값을 쓴다. 파일(~/libero_gui_logs/crop_params.json)에서 복원하고,
-        # Layout 페이지 슬라이더가 바꾸면 저장한다.
-        self._crop_params = load_crop_params()
-        """Camera views. This widget is created once and never replaced --
-        every other panel changes around it."""
-        self.center_tabs = QTabWidget()
-        self.center_tabs.setDocumentMode(True)
-
-        live = QWidget()
-        live_col = QVBoxLayout(live)
-        live_col.setContentsMargins(4, 4, 4, 4)
-        self.live_split = QSplitter(Qt.Orientation.Horizontal)
-        self.live_views = {}
-        self.live_boxes = {}
-        self._live_maximized: "str | None" = None
-        for key, title in (("agent", "Agent (정면)"), ("wrist", "Wrist (손목)")):
-            box = QGroupBox(tr(title))
-            inner = QVBoxLayout(box)
-            inner.setContentsMargins(4, 4, 4, 4)
-            view = VideoView()
-            view.setText(tr("카메라를 선택하세요"))
-            view.set_crop_guide(**self._crop_params[key])
-            view.setToolTip(tr("더블클릭: 이 카메라 최대화 / 복원"))
-            view.setMinimumSize(60, 45)   # 최대화 시 반대쪽이 아주 작아질 수 있게
-            view.installEventFilter(self)
-            inner.addWidget(view)
-            self.live_views[key] = view
-            self.live_boxes[key] = box
-            self.live_split.addWidget(box)
-        self.live_split.setSizes([600, 600])
-        live_col.addWidget(self.live_split, 1)
-        self.square_guide_check = QCheckBox(tr("정사각 크롭 가이드"))
-        self.square_guide_check.setChecked(True)
-        self.square_guide_check.setToolTip(tr(
-            "LeRobot 변환은 가운데 정사각만 남깁니다. 켜면 그 바깥이 어둡게 표시됩니다."))
-        self.square_guide_check.toggled.connect(self._on_square_guide)
-        grow = QHBoxLayout()
-        grow.addWidget(QLabel(tr("보기")))
-        # 한 카메라를 전체로 키우고 반대쪽을 왼쪽 아래 PiP 로 겹친다 --
-        # 뷰 더블클릭으로도 토글된다.
-        self.live_view_combo = QComboBox()
-        self.live_view_combo.addItem(tr("나란히"), None)
-        self.live_view_combo.addItem(tr("Agent 최대"), "agent")
-        self.live_view_combo.addItem(tr("Wrist 최대"), "wrist")
-        self.live_view_combo.currentIndexChanged.connect(
-            lambda *_: self._set_live_maximized(self.live_view_combo.currentData()))
-        grow.addWidget(self.live_view_combo)
-        grow.addSpacing(16)
-        grow.addWidget(self.square_guide_check)
-        grow.addSpacing(16)
-        # 3×3 워크스페이스 격자 -- 편집은 격자 편집 다이얼로그, 여기는 표시만.
-        self.grid_live_check = QCheckBox(tr("3×3 격자"))
-        self.grid_live_check.setChecked(bool(self._grid_store.get("live_on")))
-        self.grid_live_check.setToolTip(tr(
-            "저장된 워크스페이스 격자를 agent 라이브 화면에 겹쳐 보입니다.\n"
-            "물체를 어느 칸(A1..C3)에 놓을지 확인하는 용도입니다."))
-        self.grid_live_check.toggled.connect(self._on_grid_live_toggled)
-        grow.addWidget(self.grid_live_check)
-        self.grid_alpha_slider = QSlider(Qt.Orientation.Horizontal)
-        self.grid_alpha_slider.setRange(10, 100)
-        self.grid_alpha_slider.setValue(int(self._grid_store.get("alpha", 60)))
-        self.grid_alpha_slider.setMaximumWidth(140)
-        self.grid_alpha_slider.valueChanged.connect(self._on_grid_alpha)
-        self.grid_alpha_slider.sliderReleased.connect(self._on_grid_alpha_done)
-        grow.addWidget(self.grid_alpha_slider)
-        self.grid_alpha_label = QLabel(
-            tr("{v}%").format(v=self.grid_alpha_slider.value()))
-        self.grid_alpha_label.setStyleSheet("color:#888;")
-        grow.addWidget(self.grid_alpha_label)
-        grid_edit_btn = QPushButton(tr("격자 편집..."))
-        grid_edit_btn.clicked.connect(self._on_edit_grid)
-        grow.addWidget(grid_edit_btn)
-        grow.addStretch(1)
-        live.layout().addLayout(grow)
-        self._live_tab_index = self.center_tabs.addTab(live, tr("Live"))
-
-        play = QWidget()
-        play_col = QVBoxLayout(play)
-        play_col.setContentsMargins(4, 4, 4, 4)
-        self.play_split = QSplitter(Qt.Orientation.Horizontal)
-        self.play_views = {}
-        for key, title in (("agent", "Agent (정면)"), ("wrist", "Wrist (손목)")):
-            box = QGroupBox(tr(title))
-            inner = QVBoxLayout(box)
-            inner.setContentsMargins(4, 4, 4, 4)
-            view = VideoView()
-            view.setText(tr("에피소드를 선택하세요"))
-            view.set_crop_guide(**self._crop_params[key])
-            inner.addWidget(view)
-            self.play_views[key] = view
-            self.play_split.addWidget(box)
-        self.play_split.setSizes([600, 600])
-        play_col.addWidget(self.play_split, 1)
-
-        row = QHBoxLayout()
-        self.play_btn = QPushButton(tr("재생"))
-        self.play_btn.setEnabled(False)
-        self.play_btn.clicked.connect(self._on_play_toggle)
-        row.addWidget(self.play_btn)
-        self.play_slider = QSlider(Qt.Orientation.Horizontal)
-        self.play_slider.setEnabled(False)
-        self.play_slider.valueChanged.connect(self._show_frame)
-        row.addWidget(self.play_slider, 1)
-        self.play_pos = QLabel("-/-")
-        self.play_pos.setMinimumWidth(80)
-        self.play_pos.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        row.addWidget(self.play_pos)
-        # 배속. 3배까지는 타이머 주기만 줄이면 되고(20 -> 60Hz) 프레임을 건너뛸
-        # 필요가 없어서, 빠르게 훑을 때도 놓치는 프레임이 없다.
-        row.addWidget(QLabel(tr("배속")))
-        self.speed_combo = QComboBox()
-        for label, mult in PLAYBACK_SPEEDS:
-            self.speed_combo.addItem(label, mult)
-        self.speed_combo.setCurrentIndex(
-            [m for _l, m in PLAYBACK_SPEEDS].index(1.0))
-        self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
-        self.speed_combo.setMaximumWidth(80)
-        row.addWidget(self.speed_combo)
-        play_col.addLayout(row)
-        self.play_caption = QLabel(tr("Dataset 패널에서 에피소드를 고르면 여기서 재생됩니다."))
-        self.play_caption.setStyleSheet("color:#888;")
-        play_col.addWidget(self.play_caption)
-        self.center_tabs.addTab(play, tr("Playback"))
-        self.center_tabs.addTab(self._build_analysis_tab(), tr("Analysis"))
-        self._trim_tab_index = self.center_tabs.addTab(self._build_trim_tab(), tr("Trim"))
-        self._layout_tab_index = self.center_tabs.addTab(
-            self._build_layout_tab(), tr("레이아웃"))
-        self._gallery_tab_index = self.center_tabs.addTab(
-            self._build_gallery_tab(), tr("Gallery"))
-        self._cloud_tab_index = self.center_tabs.addTab(
-            self._build_cloud_tab(), tr("Point Cloud"))
-        self._depth_tab_index = self.center_tabs.addTab(
-            self._build_depth_tab(), tr("Depth"))
-        self.center_tabs.currentChanged.connect(self._on_center_tab_changed)
-
     # --------------------------------------------------------------- left
-    def _build_left(self) -> None:
-        self.left_stack = QStackedWidget()
-        self.left_pages = {}
-        for key, _icon, title, _tip in ACTIVITIES:
-            page = getattr(self, f"_page_{key}")()
-            wrapper = QWidget()
-            col = QVBoxLayout(wrapper)
-            col.setContentsMargins(6, 6, 6, 6)
-            head = QLabel(title.upper())
-            f = head.font()
-            f.setPointSize(max(8, f.pointSize() - 1))
-            f.setBold(True)
-            head.setFont(f)
-            head.setStyleSheet("color:#888; letter-spacing:1px;")
-            col.addWidget(head)
-            # 페이지가 창보다 길어지면(예: Configure 의 scene 그룹) 세로
-            # 스크롤. 가로 스크롤은 쓰지 않는다 -- 내용이 패널 폭에 맞게
-            # 접히는 것이 원칙이다 (긴 한 줄 표시는 SceneInfoView 처럼 줄바꿈
-            # 또는 Ignored 정책으로 해결).
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QFrame.Shape.NoFrame)
-            scroll.setHorizontalScrollBarPolicy(
-                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            _relax_min_widths(page)
-            scroll.setWidget(page)
-            col.addWidget(scroll, 1)
-            self.left_pages[key] = self.left_stack.count()
-            self.left_stack.addWidget(wrapper)
-
     def _page_configure(self) -> QWidget:
         w = QWidget()
         col = QVBoxLayout(w)
@@ -848,7 +642,7 @@ class WorkspaceWindow(QMainWindow):
         srow = QHBoxLayout(scene_row)
         srow.setContentsMargins(0, 0, 0, 0)
         self.scene_combo = QComboBox()
-        _shrinkable_combo(self.scene_combo)
+        shrinkable_combo(self.scene_combo)
         self.scene_combo.currentIndexChanged.connect(self._on_scene_selected)
         srow.addWidget(self.scene_combo, 1)
         self.scene_refresh_btn = QPushButton("↻")
@@ -863,7 +657,7 @@ class WorkspaceWindow(QMainWindow):
         # 계획이 있으면 시작 문장을 여기서 고른다 -- 고르면 아래 문장·slot ID
         # 가 함께 채워진다 (세션 중 slot 패널의 계획 콤보와 같은 장치).
         self.start_plan_combo = QComboBox()
-        _shrinkable_combo(self.start_plan_combo)
+        shrinkable_combo(self.start_plan_combo)
         self.start_plan_combo.currentIndexChanged.connect(self._on_start_plan_pick)
         sc_form.addRow(tr("계획 문장"), self.start_plan_combo)
         self.lang_edit = QLineEdit()
@@ -876,7 +670,7 @@ class WorkspaceWindow(QMainWindow):
         # 수집 계획 (slot plan). 계획이 있으면 Collect 의 slot 패널이 계획
         # 기반 드롭다운 + 수집 카운트로 동작한다. 없어도 자유 입력은 그대로.
         self.plan_combo = QComboBox()
-        _shrinkable_combo(self.plan_combo)
+        shrinkable_combo(self.plan_combo)
         self.plan_combo.addItem(tr("(계획 없음 — 자유 입력)"), None)
         for p in list_plans():
             self.plan_combo.addItem(p.name, str(p))
@@ -937,7 +731,7 @@ class WorkspaceWindow(QMainWindow):
         self.wrist_combo = QComboBox()
         for c in (self.agent_combo, self.wrist_combo):
             c.setEditable(True)
-            _shrinkable_combo(c)
+            shrinkable_combo(c)
             c.currentTextChanged.connect(self._on_camera_changed)
         cform.addRow(tr("Agent"), self.agent_combo)
         cform.addRow(tr("Wrist"), self.wrist_combo)
@@ -1543,7 +1337,7 @@ class WorkspaceWindow(QMainWindow):
         # 현황("2/10")이 붙고, 고르면 아래 ID·문장이 채워진다. 문장을 손으로
         # 칠 때 생기는 미묘한 갈라짐(실데이터에서 실제 발생)을 막는 장치.
         self.slot_plan_combo = QComboBox()
-        _shrinkable_combo(self.slot_plan_combo)
+        shrinkable_combo(self.slot_plan_combo)
         self.slot_plan_combo.currentIndexChanged.connect(self._on_slot_plan_pick)
         sfrm.addRow(tr("계획 slot"), self.slot_plan_combo)
         self.slot_next_btn = QPushButton(tr("다음 미수집 slot 제시"))
@@ -2943,7 +2737,7 @@ class WorkspaceWindow(QMainWindow):
         grow = QHBoxLayout()
         grow.addWidget(QLabel(tr("그룹")))
         self.group_combo = QComboBox()
-        _shrinkable_combo(self.group_combo)
+        shrinkable_combo(self.group_combo)
         self.group_combo.addItem(tr("(전체)"), None)
         self.group_combo.currentIndexChanged.connect(self._refresh_rank_list)
         grow.addWidget(self.group_combo, 1)
@@ -3219,171 +3013,8 @@ class WorkspaceWindow(QMainWindow):
         return w
 
     # -------------------------------------------------------------- right
-    def _build_right(self) -> None:
-        self.right_panel = QWidget()
-        col = QVBoxLayout(self.right_panel)
-        col.setContentsMargins(6, 6, 6, 6)
-
-        self.right_fields = {}
-        for title, keys in (
-            ("Robot", (("robot", "연결"), ("node", "노드"), ("state", "상태"))),
-            ("Camera", (("cam_agent", "Agent"), ("cam_wrist", "Wrist"), ("fps", "FPS"))),
-            ("Recording", (("recording", "기록"), ("episode", "마지막 에피소드"),
-                           ("frames", "프레임"))),
-            # 파일과 스키마가 한 칸에 같이 있어야 "지금 어디에, 어떤 형식으로
-            # 쌓이는가"가 한눈에 잡힌다. 세션 중에는 그 세션의 값이, 아닐 때는
-            # 트리에서 고른 파일의 값이 뜬다.
-            ("Dataset", (("ds_file", "파일"), ("ds_task", "태스크"),
-                         ("ds_episodes", "에피소드"), ("ds_action", "액션 공간"),
-                         ("ds_gripper", "그리퍼 규약"), ("ds_image", "이미지"),
-                         ("ds_fps", "FPS"), ("ds_repack", "재압축"))),
-        ):
-            box = QGroupBox(tr(title))
-            form = QFormLayout(box)
-            form.setVerticalSpacing(6)
-            for key, label in keys:
-                lab = QLabel("-")
-                lab.setWordWrap(True)
-                if key in WIDE_FIELDS:
-                    # 파일명과 자연어 지시문만 길다. 라벨-값을 좌우로 놓으면 값이
-                    # 150px 남짓에 갇혀 서너 줄로 접히는데, 정작 수집 중 가장
-                    # 자주 확인하는 두 줄이다. 이 둘만 캡션을 위에 올리고 값이
-                    # 패널 폭을 다 쓰게 한다.
-                    cap = QLabel(tr(label))
-                    cap.setStyleSheet("color:#888; font-size:11px;")
-                    lab.setStyleSheet("padding: 2px 0 6px 0;")
-                    lab.setTextInteractionFlags(
-                        Qt.TextInteractionFlag.TextSelectableByMouse)
-                    # QLabel은 wordWrap을 켜도 sizePolicy의 heightForWidth가
-                    # 꺼져 있어 레이아웃이 높이를 한 줄치로만 준다 -- 두 줄짜리
-                    # 지시문이 잘려서 뒤가 안 보였다. 켜 줘야 접힌 만큼 높이가
-                    # 확보된다.
-                    sp = lab.sizePolicy()
-                    sp.setHeightForWidth(True)
-                    sp.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
-                    lab.setSizePolicy(sp)
-                    form.addRow(cap)
-                    form.addRow(lab)
-                else:
-                    form.addRow(tr(label), lab)
-                self.right_fields[key] = lab
-            col.addWidget(box)
-
-        # 지금 수집 중인 scene 의 물체 배치(3×3)를 세션 내내 보여준다 --
-        # 물체를 제자리에 되돌릴 때 Configure 로 오갈 필요가 없게.
-        scene_box = QGroupBox(tr("Scene 배치 (수집 중)"))
-        sv = QVBoxLayout(scene_box)
-        sv.setContentsMargins(6, 6, 6, 6)
-        self.right_scene_view = SceneInfoView()
-        self.right_scene_view.setText(tr("(scene 세션 없음)"))
-        sv.addWidget(self.right_scene_view)
-        col.addWidget(scene_box)
-
-        sysbox = QGroupBox(f"System ({TODO_MARK})")
-        sform = QFormLayout(sysbox)
-        for label in ("CPU", "GPU", "Memory"):
-            sform.addRow(label, QLabel("-"))
-        mark_todo(sysbox, tr("시스템 사용률 표시는 아직 없습니다. 디스크는 Statistics에 있습니다."))
-        col.addWidget(sysbox)
-        col.addStretch()
-
     # ------------------------------------------------------------- bottom
-    def _build_bottom(self) -> None:
-        self.bottom_tabs = QTabWidget()
-        self.bottom_tabs.setDocumentMode(True)
-        self.log_view = QPlainTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(4000)
-        self.bottom_tabs.addTab(self.log_view, tr("Log"))
-        self.upload_view = QPlainTextEdit()
-        self.upload_view.setReadOnly(True)
-        self.upload_view.setMaximumBlockCount(4000)
-        self.bottom_tabs.addTab(self.upload_view, tr("Upload"))
-        self.validation_view = QPlainTextEdit()
-        self.validation_view.setReadOnly(True)
-        self.bottom_tabs.addTab(self.validation_view, tr("Validation"))
-        for title, why in (
-            (tr("ROS2"), tr("이 스택은 ROS2가 아니라 pylibfranka로 직접 구동합니다.")),
-            (tr("Terminal"), tr("임베디드 셸은 아직 없습니다. 로그 탭을 쓰세요.")),
-        ):
-            ph = QPlainTextEdit(f"{title} — {TODO_MARK}\n\n{why}")
-            ph.setReadOnly(True)
-            ph.setStyleSheet(TODO_STYLE)
-            idx = self.bottom_tabs.addTab(ph, f"{title} ({TODO_MARK})")
-            self.bottom_tabs.setTabEnabled(idx, False)
-
     # ------------------------------------------------------------- layout
-    def _build_layout(self) -> None:
-        self.activity_bar = QToolBar()
-        self.activity_bar.setOrientation(Qt.Orientation.Vertical)
-        self.activity_bar.setMovable(False)
-        self.activity_bar.setIconSize(self.activity_bar.iconSize())
-        self.activity_bar.setStyleSheet(
-            "QToolBar{background:#2b2b2b; border:none; spacing:2px; padding:4px;}"
-            "QToolButton{color:#bbb; font-size:20px; padding:8px; border:none;}"
-            "QToolButton:hover{background:#3a3a3a;}"
-            "QToolButton:checked{background:#3a3a3a; color:#fff;"
-            " border-left:2px solid #2ecc71;}"
-        )
-        self._activity_group = QActionGroup(self)
-        self._activity_group.setExclusive(True)
-        self._activity_actions = {}
-        for key, icon, title, tip in ACTIVITIES:
-            act = QAction(icon, self)
-            act.setCheckable(True)
-            act.setToolTip(f"{title} — {tr(tip)}")
-            act.triggered.connect(lambda _c, k=key: self._set_activity(k))
-            self._activity_group.addAction(act)
-            self.activity_bar.addAction(act)
-            self._activity_actions[key] = act
-
-        # 로그는 중앙 열 안에, 카메라 바로 아래에만 둔다. 창 전체 폭으로 깔면
-        # 왼쪽/오른쪽 패널이 로그 높이만큼 잘려서, 정작 세로로 긴 것들(에피소드
-        # 트리, 상태 목록)이 먼저 손해를 본다. VS Code의 사이드바가 전체 높이를
-        # 쓰고 패널이 에디터 아래에만 오는 것과 같은 이유다.
-        self.center_split = QSplitter(Qt.Orientation.Vertical)
-        self.center_split.addWidget(self.center_tabs)
-        self.center_split.addWidget(self.bottom_tabs)
-        self.center_split.setStretchFactor(0, 1)
-        self.center_split.setStretchFactor(1, 0)
-        self.center_split.setSizes([720, 220])
-        self.center_split.setChildrenCollapsible(False)
-
-        self.upper_split = QSplitter(Qt.Orientation.Horizontal)
-        self.left_stack.setMinimumWidth(200)
-        self.right_panel.setMinimumWidth(200)
-        # 배치도가 붙으면서 패널이 창보다 길어질 수 있다 -- 세로 스크롤로
-        # 감싼다 (가로는 원칙대로 없음, 내용이 접힌다).
-        _relax_min_widths(self.right_panel)
-        right_scroll = QScrollArea()
-        right_scroll.setWidgetResizable(True)
-        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        right_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        right_scroll.setWidget(self.right_panel)
-        right_scroll.setMinimumWidth(200)
-        self.right_scroll = right_scroll
-        self.center_tabs.setMinimumWidth(420)
-        self.bottom_tabs.setMinimumHeight(90)
-        self.upper_split.addWidget(self.left_stack)
-        self.upper_split.addWidget(self.center_split)
-        self.upper_split.addWidget(self.right_scroll)
-        # Only the center grows when the window does: the two side panels hold
-        # text at a readable width, the camera is the thing worth more pixels.
-        self.upper_split.setStretchFactor(0, 0)
-        self.upper_split.setStretchFactor(1, 1)
-        self.upper_split.setStretchFactor(2, 0)
-        self.upper_split.setSizes([320, 1120, 300])
-        self.upper_split.setChildrenCollapsible(False)
-
-        central = QWidget()
-        row = QHBoxLayout(central)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(0)
-        row.addWidget(self.activity_bar)
-        row.addWidget(self.upper_split, 1)
-        self.setCentralWidget(central)
-
     # ---------------------------------------------------------- activity
     def _set_activity(self, key: str) -> None:
         """Switch the LEFT panel only. The center camera is untouched -- that

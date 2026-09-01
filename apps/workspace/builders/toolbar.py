@@ -11,7 +11,7 @@ from apps.dialogs._widgets import StatusLight
 from apps.workspace.constants import ACTIVITIES, LOG_DIR
 
 
-def _build_toolbar(win) -> None:
+def build_toolbar(win) -> None:
     tb = QToolBar(tr("주요 작업"))
     tb.setMovable(False)
     tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -45,7 +45,7 @@ def _build_toolbar(win) -> None:
 
 
 
-def _build_menu(win) -> None:
+def build_menu(win) -> None:
     mb = win.menuBar()
 
     m = mb.addMenu(tr("File"))
@@ -130,7 +130,7 @@ def _build_menu(win) -> None:
 
 
 
-def _build_statusbar(win) -> None:
+def build_statusbar(win) -> None:
     sb = win.statusBar()
     win.lights = {}
     for key, label in (("robot", "Robot"), ("camera", "Camera"),

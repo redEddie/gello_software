@@ -1,2 +1,21 @@
-"""UI builders for WorkspaceWindow."""
-from .toolbar import _build_menu, _build_statusbar, _build_toolbar
+"""UI builders for WorkspaceWindow.
+
+Each builder takes the window and hangs the widgets it makes onto it -- the
+same thing the methods did before they moved out, so the move stays checkable
+against the original. Nothing here imports collect_workspace: the arrow points
+one way (window -> builders) and tests/gui/test_dialog_modules.py is where that
+gets nailed down as the rest of WorkspaceWindow follows.
+"""
+from .layout import build_bottom, build_center, build_layout, build_left, build_right
+from .toolbar import build_menu, build_statusbar, build_toolbar
+
+__all__ = [
+    "build_bottom",
+    "build_center",
+    "build_layout",
+    "build_left",
+    "build_menu",
+    "build_right",
+    "build_statusbar",
+    "build_toolbar",
+]
