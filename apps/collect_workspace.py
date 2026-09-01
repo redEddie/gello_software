@@ -113,7 +113,13 @@ from gello.gui.gui_widgets import (  # noqa: E402
     is_progress_line,
 )
 from apps.workspace.constants import LOG_DIR  # noqa: E402
-from apps.workspace.models import CameraState, PlaybackState, ProcessRegistry  # noqa: E402
+from apps.workspace.models import (  # noqa: E402
+    CameraState,
+    PlaybackState,
+    ProcessRegistry,
+    SessionState,
+    _new_stats,
+)
 from apps.workspace.builders import (  # noqa: E402
     build_bottom,
     build_center,
@@ -197,12 +203,6 @@ LAYOUT_ZIP = Path(__file__).resolve().parent.parent / "assets" / "libero_init_la
 LAYOUT_DIR = Path(__file__).resolve().parent.parent / "assets" / "libero_init_layouts"
 
 
-def _new_stats() -> dict:
-    """수집 카운터 한 벌. 이번 task 용과 누적용이 같은 모양이라 같은 곳에서 만든다."""
-    return {"saved": 0, "success": 0, "failed": 0, "discarded": 0,
-            "frames": 0, "t0": time.monotonic()}
-
-
 def _read(path: Path) -> str:
     try:
         return path.read_text().strip()
@@ -266,32 +266,14 @@ class WorkspaceWindow(QMainWindow):
         self.playback = PlaybackState()
         self.cameras = CameraState()
         self.cameras.grid_store = load_grid_store()
-        self._stats: list = []
+        self.session = SessionState()
         self._summary: dict = {}
         self._progress_line: dict = {}
 
-        self.active_file_path: Path | None = None
-        self.active_episode_cache: list | None = None
         self.agent_preview: CameraPreviewWorker | None = None
         self.wrist_preview: CameraPreviewWorker | None = None
         self._cloud_previews_were_on = False
 
-        # 두 벌을 든다. _session 은 Connect 마다 0 으로 돌아가므로 "지금 찍고 있는
-        # task 를 몇 개 모았나"이고, _cumulative 는 GUI 를 켠 뒤 전체다. 예전에는
-        # _session 하나뿐이었고 그것이 Connect 때 리셋되지 않아서, task 를 바꿔
-        # 연결하면 이전 task 의 개수가 그대로 따라왔다 -- 게다가 상태바가
-        # max(목록 길이, 연결시점 + saved) 를 쓰는 탓에 정확한 목록이 도착핵도
-        # 부풀려진 값이 이겨서, 빈 task 가 "에피소드 10개"로 보였다.
-        self._session = _new_stats()
-        self._cumulative = _new_stats()
-        self._pending_success: bool | None = None
-        self._pending_success: bool | None = None
-        self._no_dataset_session = False
-        self._current_state = "idle"
-        self._gate_ok = False
-        self._last_saved_name = None
-        self._last_saved_success = True
-        self._pending_verdict_toggle = False
         # 세션 소유 scene 삭제 후 썸네일 무효화 대기 건수. bool 이 아니라 카운터 --
         # saver 는 삭제 1건마다 episode_list_changed 를 emit 하므로, 첫 emit 에서
         # 플래그를 소진하면 나머지 삭제(추가 renumber/uid 재배정)가 무효화를
@@ -301,7 +283,6 @@ class WorkspaceWindow(QMainWindow):
         # 확정 전까지의 트림 상태. 누른 만큼 오르내리는 정수 하나면 충분하다 --
         # +/- 가 양쪽으로 있으므로 되돌리기용 이력을 따로 들 이유가 없다.
         self._connect_wait_since = None
-        self._episodes_at_connect = 0
         self._recents = Recents()
         self._log_file = None
         if log_path is not None:
@@ -368,7 +349,7 @@ class WorkspaceWindow(QMainWindow):
         if not path:
             self.gallery_status.setText(tr("표시할 scene 파일이 없습니다"))
             return
-        if self.active_file_path is not None and Path(path) == self.active_file_path:
+        if self.session.active_file_path is not None and Path(path) == self.session.active_file_path:
             # HDF5 잠금 -- 실패한 로드 대신 이유와 다음 행동을 말한다
             self.gallery_status.setText(tr(
                 "수집 세션이 이 scene 파일을 사용 중입니다 — 세션을 종료하면 "
@@ -513,7 +494,7 @@ class WorkspaceWindow(QMainWindow):
         root = Path(self.root_edit.text().strip() or ".")
         try:
             path = root / scene_filename(sid)
-            if self.active_file_path is not None and path == self.active_file_path:
+            if self.session.active_file_path is not None and path == self.session.active_file_path:
                 # 세션이 파일을 쥐고 있다 -- 캐시 요약으로 대신한다
                 counts = self._session_slot_counts()
                 lines = [tr("{s} — 수집 세션 진행 중 (배치도는 오른쪽 패널에)")
@@ -642,7 +623,7 @@ class WorkspaceWindow(QMainWindow):
         다시 열지 않고, saver 가 보내준 에피소드 목록으로 계산한다
         (count_by_slot 과 같은 정의: usable = quality_status success)."""
         counts: dict = {}
-        for e in (self.active_episode_cache or []):
+        for e in (self.session.active_episode_cache or []):
             iid = e.get("instruction_id")
             if not iid:
                 continue
@@ -744,7 +725,7 @@ class WorkspaceWindow(QMainWindow):
         sid = self._configure_scene_id()
         if plan is not None and sid is not None:
             counts: dict = {}
-            if self._scene_session and sid == self._session_scene_id():
+            if self.session.scene_session and sid == self._session_scene_id():
                 # 세션이 파일을 쥐고 있다 -- saver 가 보내준 캐시로 센다
                 counts = self._session_slot_counts()
             else:
@@ -770,7 +751,7 @@ class WorkspaceWindow(QMainWindow):
         # 세션 중에는 파일이 잠겨 있으므로 캐시로 (파일 인자 없이)
         self._auto_assign_iid(self.slot_instr_edit.text(), self.slot_iid_edit,
                               scene_id=self._session_scene_id(),
-                              episodes=self.active_episode_cache)
+                              episodes=self.session.active_episode_cache)
 
     # -------------------------------------------------- 수집 계획 (slot plan)
     def _current_plan(self):
@@ -868,9 +849,9 @@ class WorkspaceWindow(QMainWindow):
         self._on_scene_selected()
 
     def _scene_session_file(self):
-        if not self._scene_session or self.active_file_path is None:
+        if not self.session.scene_session or self.session.active_file_path is None:
             return None
-        return self.active_file_path
+        return self.session.active_file_path
 
     def _refresh_slot_panel(self) -> None:
         """계획 slot 드롭다운 + 수집 카운트 + 계획-파일 불일치 경고 갱신.
@@ -894,9 +875,9 @@ class WorkspaceWindow(QMainWindow):
                 w.setStyleSheet("color:#888;" if plan is not None else "")
         # 세션 중이므로 파일을 다시 열지 않는다(HDF5 잠금) -- scene ID 는
         # 워커 설정에서, 에피소드·카운트는 saver 가 보내준 캐시에서.
-        sid = self._session_scene_id() if self._scene_session else None
+        sid = self._session_scene_id() if self.session.scene_session else None
         counts = self._session_slot_counts()
-        episodes = list(self.active_episode_cache or [])
+        episodes = list(self.session.active_episode_cache or [])
         warn: list = []
         if plan is not None and sid is not None:
             slots = plan.slots_for(sid)
@@ -921,7 +902,7 @@ class WorkspaceWindow(QMainWindow):
         """계획에서 목표(target)를 못 채운 첫 slot 을 골라 채워준다 (§6:
         채우지 못한 채 책상을 치우는 것이 재수집의 시작이다)."""
         plan = self._current_plan()
-        sid = self._session_scene_id() if self._scene_session else None
+        sid = self._session_scene_id() if self.session.scene_session else None
         if plan is None or sid is None:
             self.log("[SLOT] 계획이 없거나 scene 세션이 아닙니다")
             return
@@ -941,7 +922,7 @@ class WorkspaceWindow(QMainWindow):
 
     def _on_apply_slot(self) -> None:
         """scene 세션 중 slot 전환 -- worker 의 cmd_set_slot 호출만 한다."""
-        if self.worker is None or not self._scene_session:
+        if self.worker is None or not self.session.scene_session:
             return
         iid = self.slot_iid_edit.text().strip()
         instr = self.slot_instr_edit.text().strip()
@@ -1086,7 +1067,7 @@ class WorkspaceWindow(QMainWindow):
         """Dataset 트리와 Analysis 순위표가 공유하는 트림 진입점."""
         if not path or not demo:
             return
-        if self.active_file_path is not None and Path(path) == self.active_file_path:
+        if self.session.active_file_path is not None and Path(path) == self.session.active_file_path:
             self.trim_summary.setText(tr("수집 중인 파일은 편집할 수 없습니다."))
             return
         self.playback.trim_key = (path, demo)
@@ -1682,7 +1663,7 @@ class WorkspaceWindow(QMainWindow):
         if key == "stats":
             self._refresh_stats()
             self._refresh_plan_progress()
-            if not self._stats:
+            if not self.session.stats:
                 self._refresh_analysis()
         elif key == "dataset":
             self._refresh_dataset_tree()
@@ -1750,33 +1731,33 @@ class WorkspaceWindow(QMainWindow):
         they let go. The re-label goes through the saver queue, so a toggle
         sent while that episode is still being written lands after it.
         """
-        if self.worker is None or self._no_dataset_session:
+        if self.worker is None or self.session.no_dataset_session:
             return
-        if self._last_saved_name is None:
+        if self.session.last_saved_name is None:
             # 저장이 아직 백그라운드에서 돌고 있어 이름을 모른다. 의사만 적어
             # 두고 episode_saved가 오면 그때 반영한다.
-            self._pending_verdict_toggle = not self._pending_verdict_toggle
+            self.session.pending_verdict_toggle = not self.session.pending_verdict_toggle
             self.log("[판정] 저장이 끝나면 직전 에피소드 판정을 뒤집습니다."
-                     if self._pending_verdict_toggle else "[판정] 뒤집기를 취소했습니다.")
+                     if self.session.pending_verdict_toggle else "[판정] 뒤집기를 취소했습니다.")
             self._refresh_verdict_label()
             return
-        self._last_saved_success = not self._last_saved_success
-        self.worker.cmd_set_episode_success(self._last_saved_name, self._last_saved_success)
-        self._bump("success", 1 if self._last_saved_success else -1)
-        self._bump("failed", -1 if self._last_saved_success else 1)
+        self.session.last_saved_success = not self.session.last_saved_success
+        self.worker.cmd_set_episode_success(self.session.last_saved_name, self.session.last_saved_success)
+        self._bump("success", 1 if self.session.last_saved_success else -1)
+        self._bump("failed", -1 if self.session.last_saved_success else 1)
         self._refresh_verdict_label()
         self._refresh_stats()
 
     def _refresh_verdict_label(self) -> None:
-        if self._last_saved_name is None:
+        if self.session.last_saved_name is None:
             self.verdict_label.setText(
-                tr("판정 뒤집기 예약됨 (Esc로 취소)") if self._pending_verdict_toggle else "")
+                tr("판정 뒤집기 예약됨 (Esc로 취소)") if self.session.pending_verdict_toggle else "")
             self.verdict_label.setStyleSheet("color:#f39c12;")
             return
-        ok = self._last_saved_success
+        ok = self.session.last_saved_success
         self.verdict_label.setText(
             tr("직전 {n}: {v}   —   Esc로 뒤집기").format(
-                n=self._last_saved_name, v=tr("성공") if ok else tr("실패")))
+                n=self.session.last_saved_name, v=tr("성공") if ok else tr("실패")))
         self.verdict_label.setStyleSheet(
             "color:#2ecc71; font-weight:bold;" if ok else "color:#e74c3c; font-weight:bold;")
 
@@ -1786,7 +1767,7 @@ class WorkspaceWindow(QMainWindow):
         if self.worker is None:
             self.log("[제어] 아직 연결되지 않았습니다.")
             return
-        self._pending_success = success
+        self.session.pending_success = success
         self.worker.cmd_save_episode(success)
 
     def _browse_root(self) -> None:
@@ -2077,7 +2058,7 @@ class WorkspaceWindow(QMainWindow):
         # 실제로 파일에 쓰이는 그림이어야 하기 때문이다. 그 외 단계(게이트·
         # 리셋 대기)에서는 worker 가 치메라를 아예 안 읽으므로 여기가 유일한
         # 공급원이고, 노드 속도 그대로 나온다.
-        if self._current_state == "recording":
+        if self.session.current_state == "recording":
             return
         cams = self.cameras
         self._update_live_view(role, frame, cams=cams)
@@ -2280,7 +2261,7 @@ class WorkspaceWindow(QMainWindow):
             if value:
                 self._recents.add(key, value)
         # scene 세션 표시 + Collect 페이지 slot 패널 초기값
-        self._scene_session = scene_on
+        self.session.scene_session = scene_on
         if scene_on:
             self.slot_iid_edit.setText(cfg.instruction_id)
             self.slot_instr_edit.setText(cfg.language_instruction)
@@ -2330,7 +2311,7 @@ class WorkspaceWindow(QMainWindow):
         w.saver.log_message.connect(self.log)
         w.saver.save_status.connect(self._on_save_status)
         self.worker = w
-        self._no_dataset_session = no_dataset
+        self.session.no_dataset_session = no_dataset
         # The right panel's serials were only filled by _restart_previews, so
         # they blanked out for the whole session -- exactly when knowing which
         # camera is which matters most.
@@ -2353,7 +2334,7 @@ class WorkspaceWindow(QMainWindow):
         self.worker.cmd_quit()
 
     def _set_running(self, running: bool) -> None:
-        savable = running and not self._no_dataset_session
+        savable = running and not self.session.no_dataset_session
         for key in ("discard", "home"):
             self.tb_actions[key].setEnabled(running)
         for key in ("save", "savefail"):
@@ -2366,7 +2347,7 @@ class WorkspaceWindow(QMainWindow):
                   self.match_btn):
             b.setEnabled(running)
         if not running:
-            self._gate_ok = None
+            self.session.gate_ok = None
         # Start(기록 시작)는 게이트 자세 조건까지 본다 -- 아래 헬퍼가 전담.
         self._update_start_controls(running)
         for b in (self.save_ok_btn, self.save_ng_btn):
@@ -2385,7 +2366,7 @@ class WorkspaceWindow(QMainWindow):
             w.setEnabled(not running)
         self._update_preview_btn()
         # scene 세션에서만 slot 전환 패널 노출
-        self.slot_box.setVisible(running and self._scene_session)
+        self.slot_box.setVisible(running and self.session.scene_session)
         self.lights["robot"].set("ok" if running else "off",
                                  tr("연결됨") if running else tr("끊김"))
         self.right_fields["robot"].setText(tr("연결됨") if running else tr("끊김"))
@@ -2401,7 +2382,7 @@ class WorkspaceWindow(QMainWindow):
             running = self.worker is not None
         # _gate_ok 는 게이트 진입 직후 None("아직 모름") 일 수 있다 -- setEnabled 는
         # bool 만 받으므로 여기서 확정한다.
-        ok = bool(running and (self._current_state != "gate" or self._gate_ok))
+        ok = bool(running and (self.session.current_state != "gate" or self.session.gate_ok))
         self.start_btn.setEnabled(ok)
         act = getattr(self, "tb_actions", {}).get("record")
         if act is not None:
@@ -2410,19 +2391,19 @@ class WorkspaceWindow(QMainWindow):
     # ------------------------------------------------------ worker slots
     @pyqtSlot(str)
     def _on_state(self, state: str) -> None:
-        if state == "recording" and self._current_state != "recording":
+        if state == "recording" and self.session.current_state != "recording":
             # 표시는 에피소드 단위다. 새 기록이 시작되면 항상 성공에서 출발한다.
             # 직전 에피소드 판정은 이 시점부터 더 이상 뒤집을 수 없다 -- 리셋
             # 구간이 끝났고, 이제 '직전'이 무엇인지 헷갈릴 수 있다.
-            self._last_saved_name = None
-            self._pending_verdict_toggle = False
+            self.session.last_saved_name = None
+            self.session.pending_verdict_toggle = False
             self.verdict_label.setText("")
-        if state == "gate" and self._current_state != "gate":
+        if state == "gate" and self.session.current_state != "gate":
             # 새 게이트: 첫 gate_status 가 올 때까지 시작을 잠근다. None 은
             # '아직 모름' -- _on_gate 가 변화가 있을 때만 그리므로, 여기서
             # False 로 두면 첫 상태가 False 일 때 라벨이 안 갱신된다.
-            self._gate_ok = None
-        self._current_state = state
+            self.session.gate_ok = None
+        self.session.current_state = state
         self._update_start_controls()
         self.state_label.setText(STATE_LABELS.get(state, state))
         self.shortcut_hint.setText(SHORTCUT_HINTS.get(state, ""))
@@ -2457,8 +2438,8 @@ class WorkspaceWindow(QMainWindow):
         # 다시 파싱하게 만드는 호출이다 -- GUI 스레드가 그 뒤에 밀려 바가
         # 손을 늦게 따라온다. 워커는 45 Hz 로 멀쩡히 보내고 있었다 (실측
         # 0.7~2.6 ms/틱), 병목은 이쪽이었다 (2026-09-01).
-        if all_ok != self._gate_ok:
-            self._gate_ok = all_ok
+        if all_ok != self.session.gate_ok:
+            self.session.gate_ok = all_ok
             self.gate_label.setText(tr("자세 일치 — 시작 가능") if all_ok
                                     else tr("리더를 팔로워 자세에 맞추세요"))
             self.gate_label.setStyleSheet(
@@ -2467,7 +2448,7 @@ class WorkspaceWindow(QMainWindow):
             # _set_running 이 세션 단위로 켜고 끈다. 잠기는 것은 '텔레옵
             # 시작' 쪽뿐이다.
             self._update_start_controls()
-            if self._current_state == "gate":
+            if self.session.current_state == "gate":
                 self.shortcut_hint.setText(
                     "Space: 텔레옵 시작   Enter: 자동 정렬 다시" if all_ok
                     else "Space: 텔레옵 시작   Enter: 자동 정렬 (오차 커도 가능)")
@@ -2486,17 +2467,17 @@ class WorkspaceWindow(QMainWindow):
     def _on_saved(self, name, n_frames) -> None:
         self._bump("saved")
         self._bump("frames", n_frames)
-        if self._pending_success is not None:
-            self._bump("success" if self._pending_success else "failed")
-            self._pending_success = None
-        self._last_saved_name = name
-        if self._pending_success is not None:
-            self._last_saved_success = self._pending_success
-        if self._pending_verdict_toggle:
+        if self.session.pending_success is not None:
+            self._bump("success" if self.session.pending_success else "failed")
+            self.session.pending_success = None
+        self.session.last_saved_name = name
+        if self.session.pending_success is not None:
+            self.session.last_saved_success = self.session.pending_success
+        if self.session.pending_verdict_toggle:
             # 저장 전에 눌러 둔 뒤집기를 이제 반영한다.
-            self._pending_verdict_toggle = False
-            self._last_saved_success = not self._last_saved_success
-            self.worker.cmd_set_episode_success(name, self._last_saved_success)
+            self.session.pending_verdict_toggle = False
+            self.session.last_saved_success = not self.session.last_saved_success
+            self.worker.cmd_set_episode_success(name, self.session.last_saved_success)
         self._refresh_verdict_label()
         self.log(f"[저장] {name} ({n_frames} frames)")
         self.right_fields["episode"].setText(name)
@@ -2554,19 +2535,19 @@ class WorkspaceWindow(QMainWindow):
             self._restart_previews()
         # 이번 task 카운터는 여기서 0 으로 돌아간다(누적은 그대로). 연습 모드도
         # 마찬가지다 -- NullTaskWriter 도 저장을 받아 넘기므로 카운터는 움직인다.
-        self._session = _new_stats()
-        if self._no_dataset_session:
+        self.session.session = _new_stats()
+        if self.session.no_dataset_session:
             # NullTaskWriter has no real path; claiming one here would make the
             # dataset tree think a file is locked by this session.
             self._update_dataset_panel()
             self.log("[연결] 연습 모드로 연결되었습니다.")
             return
-        self.active_file_path = Path(path)
-        self._episodes_at_connect = int(n_episodes)
+        self.session.active_file_path = Path(path)
+        self.session.episodes_at_connect = int(n_episodes)
         # 직전 세션에서 삭제가 실패해 남았을 수 있는 대기 건수를 청산 --
         # 새 세션의 첫 목록 갱신이 엉뚱한 무효화를 하지 않게.
         self._pending_scene_deletes = 0
-        if self._scene_session:
+        if self.session.scene_session:
             # scene 파일이 실제로 만들어졌으니 보관해 둔 새 scene 구성은 소진.
             self._pending_scene_meta = None
             self._refresh_slot_panel()
@@ -2576,9 +2557,9 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(list)
     def _on_episode_list(self, episodes) -> None:
-        prev_n = len(self.active_episode_cache) if self.active_episode_cache else None
-        self.active_episode_cache = episodes
-        if self._pending_scene_deletes > 0 and self._scene_session:
+        prev_n = len(self.session.active_episode_cache) if self.session.active_episode_cache else None
+        self.session.active_episode_cache = episodes
+        if self._pending_scene_deletes > 0 and self.session.scene_session:
             # 목록이 줄어든 emit 만 삭제 완료로 센다 -- 사이에 낀 저장/재판정
             # emit(개수 불변·증가)이 카운터를 잘못 소진하지 않게. 삭제 1건마다
             # renumber 로 uid 가 재배정되므로 매번 통째로 무효화한다.
@@ -2595,7 +2576,7 @@ class WorkspaceWindow(QMainWindow):
                 except Exception as e:  # noqa: BLE001
                     self.log(f"[썸네일 캐시 정리 실패] {e}")
         self._refresh_dataset_tree()
-        if self._scene_session:
+        if self.session.scene_session:
             # 저장/재판정마다 saver 가 새 목록을 보내온다 -- slot 카운트 갱신
             self._refresh_slot_panel()
             self._refresh_start_plan_combo()   # Configure 쪽 카운트도 동기화
@@ -2630,11 +2611,11 @@ class WorkspaceWindow(QMainWindow):
             # 이미 다른 세션이 시작된 뒤 도착한 옛 워커의 신호 -- 무시.
             return
         self.worker = None
-        self._no_dataset_session = False
-        self.active_file_path = None
-        self.active_episode_cache = None
-        was_scene = self._scene_session
-        self._scene_session = False
+        self.session.no_dataset_session = False
+        self.session.active_file_path = None
+        self.session.active_episode_cache = None
+        was_scene = self.session.scene_session
+        self.session.scene_session = False
         self._set_right_scene(None)
         self._set_running(False)
         self._refresh_dataset_tree()
@@ -2656,8 +2637,8 @@ class WorkspaceWindow(QMainWindow):
         두 dict 를 따로 건드리면 반드시 한쪽만 올리는 자리가 생긴다 -- 판정
         뒤집기처럼 -1 도 있는 경로가 섞여 있어서 더 그렇다.
         """
-        self._session[key] += n
-        self._cumulative[key] += n
+        self.session.session[key] += n
+        self.session.cumulative[key] += n
 
     def _current_task_label(self, limit: int = 0) -> str:
         """수집 중인 task 이름. 연결 전이거나 연습 모드면 빈 문자열.
@@ -2666,7 +2647,7 @@ class WorkspaceWindow(QMainWindow):
         ``put_the_black_bowl_on_the_plate...`` 처럼 길고 앞부분이 서로 다르므로,
         Qt 가 오른쪽 정렬 라벨에서 하듯 앞을 잘라내면 어느 task 인지 알 수 없다.
         """
-        if self.worker is None or self._no_dataset_session:
+        if self.worker is None or self.session.no_dataset_session:
             return ""
         name = getattr(self.worker.cfg, "task_name", "") or ""
         if limit and len(name) > limit:
@@ -2678,16 +2659,16 @@ class WorkspaceWindow(QMainWindow):
         cams.fps_value = cams.fps_count
         cams.fps_count = 0
         self.right_fields["fps"].setText(f"{cams.fps_value:.0f}")
-        if self.worker is not None and not self._no_dataset_session:
+        if self.worker is not None and not self.session.no_dataset_session:
             # max(): 저장이 백그라운드라 episode_list_changed 가 몇 초 늦게 온다.
             # 그 사이를 연결시점 + 이번 task 저장수로 메운다. _session 이 Connect
             # 마다 리셋되므로 두 값 모두 지금 task 의 것이다.
-            total = max(len(self.active_episode_cache or []),
-                        self._episodes_at_connect + self._session["saved"])
+            total = max(len(self.session.active_episode_cache or []),
+                        self.session.episodes_at_connect + self.session.session["saved"])
             count = tr("{k}: 에피소드 {t}개 (이번 +{s})").format(
-                k=self._current_task_label(limit=32), t=total, s=self._session["saved"])
+                k=self._current_task_label(limit=32), t=total, s=self.session.session["saved"])
         else:
-            count = tr("저장 {s}").format(s=self._cumulative["saved"])
+            count = tr("저장 {s}").format(s=self.session.cumulative["saved"])
         self.sb_right.setText(
             f"{cams.fps_value:.0f} fps   |   {count}   |   {self.root_edit.text()}")
     def _refresh_plan_progress(self) -> None:
@@ -2708,7 +2689,7 @@ class WorkspaceWindow(QMainWindow):
             path = root / scene_filename(sp.scene_id)
             counts: dict = {}
             note = ""
-            if self._scene_session and sp.scene_id == self._session_scene_id():
+            if self.session.scene_session and sp.scene_id == self._session_scene_id():
                 counts = self._session_slot_counts()
                 note = tr(" (세션 중 — 캐시)")
             elif path.exists():
@@ -2750,8 +2731,8 @@ class WorkspaceWindow(QMainWindow):
         self.plan_progress_label.setText(text)
 
     def _refresh_stats(self) -> None:
-        for stats, labels in ((self._session, self.stats_labels),
-                              (self._cumulative, self.stats_total_labels)):
+        for stats, labels in ((self.session.session, self.stats_labels),
+                              (self.session.cumulative, self.stats_total_labels)):
             elapsed = time.monotonic() - stats["t0"]
             for key in ("saved", "success", "failed", "discarded", "frames"):
                 labels[key].setText(str(stats[key]))
@@ -2782,8 +2763,8 @@ class WorkspaceWindow(QMainWindow):
         f = self.right_fields
         if self.worker is not None:
             cfg = self.worker.cfg
-            name = (tr("(기록 안 함)") if self._no_dataset_session
-                    else Path(str(self.active_file_path or "-")).name)
+            name = (tr("(기록 안 함)") if self.session.no_dataset_session
+                    else Path(str(self.session.active_file_path or "-")).name)
             f["ds_file"].setText(soft_wrap(name))
             f["ds_file"].setToolTip(name)
             # 연결 시점 설정이 아니라 '지금' slot 을 보여준다 -- scene 세션은
@@ -2792,7 +2773,7 @@ class WorkspaceWindow(QMainWindow):
             cur_instr = getattr(self.worker, "_slot_instruction", None) \
                 or cfg.language_instruction or cfg.task_name
             cur_iid = getattr(self.worker, "_slot_instruction_id", "") or cfg.instruction_id
-            task_text = f"{cur_iid}: {cur_instr}" if (self._scene_session and cur_iid) \
+            task_text = f"{cur_iid}: {cur_instr}" if (self.session.scene_session and cur_iid) \
                 else cur_instr
             f["ds_task"].setText(task_text)
             f["ds_task"].setToolTip(task_text)
@@ -2800,11 +2781,11 @@ class WorkspaceWindow(QMainWindow):
             # 기다리면 방금 저장한 것이 한동안 안 세어져 "지금 몇 개째인지"를
             # 알 수 없다. 연결 시점 개수 + 이번 세션 저장 수로 즉시 계산하고,
             # 목록이 도착하면 그 값이 더 정확하므로 그쪽을 쓴다.
-            listed = len(self.active_episode_cache or [])
-            counted = self._episodes_at_connect + self._session["saved"]
+            listed = len(self.session.active_episode_cache or [])
+            counted = self.session.episodes_at_connect + self.session.session["saved"]
             total = max(listed, counted)
             f["ds_episodes"].setText(
-                tr("{t}개  (이번 +{s})").format(t=total, s=self._session["saved"]))
+                tr("{t}개  (이번 +{s})").format(t=total, s=self.session.session["saved"]))
             f["ds_action"].setText(cfg.schema.action_space)
             f["ds_gripper"].setText(
                 "0/1 (obs와 동일)" if cfg.schema.gripper_action_match_obs else "-1/+1")
@@ -2878,8 +2859,8 @@ class WorkspaceWindow(QMainWindow):
                 tr("{r} 에 *_demo.hdf5 / scene_*.hdf5 가 없습니다.").format(r=root))
             return
         t0 = time.monotonic()
-        self._stats = scan_dataset(files)
-        self._summary = summarize(self._stats)
+        self.session.stats = scan_dataset(files)
+        self._summary = summarize(self.session.stats)
         dt = time.monotonic() - t0
         s = self._summary
         self.analysis_summary.setText(
@@ -2890,10 +2871,10 @@ class WorkspaceWindow(QMainWindow):
 
         self.dim_bars.set_rows(
             [(f"joint{i + 1}", float(s["per_dim_sigma"][i]), "") for i in range(7)])
-        means = [e.mean_da for e in self._stats]
+        means = [e.mean_da for e in self.session.stats]
         self.da_hist.set_values(means, [(s["p50"], tr("중앙값")), (s["p99"], "p99")])
 
-        lens = [e.seconds for e in self._stats]
+        lens = [e.seconds for e in self.session.stats]
         self.len_min_spin.blockSignals(True)
         self.len_max_spin.blockSignals(True)
         self.len_min_spin.setRange(0, int(max(lens) * 10) + 5)
@@ -2919,7 +2900,7 @@ class WorkspaceWindow(QMainWindow):
             node = sel[0] if sel[0].parent() is None else sel[0].parent()
             v = node.data(0, Qt.ItemDataRole.UserRole)
             path = v if isinstance(v, str) and v.endswith(".hdf5") else None
-        out = [e for e in self._stats if lo <= e.seconds <= hi]
+        out = [e for e in self.session.stats if lo <= e.seconds <= hi]
         out = [e for e in out if path is None or e.path == path]
         grp = self.group_combo.currentData() if hasattr(self, "group_combo") else None
         if grp is not None:
@@ -2932,12 +2913,12 @@ class WorkspaceWindow(QMainWindow):
         if not hasattr(self, "group_combo"):
             return
         keep = self.group_combo.currentData()
-        groups = sorted({e.group for e in self._stats})
+        groups = sorted({e.group for e in self.session.stats})
         self.group_combo.blockSignals(True)
         self.group_combo.clear()
         self.group_combo.addItem(tr("(전체)"), None)
         for g in groups:
-            n = sum(1 for e in self._stats if e.group == g)
+            n = sum(1 for e in self.session.stats if e.group == g)
             label = (f"{g[0]} · {g[1]}" if g[0] else g[1])
             self.group_combo.addItem(f"{label}  ({n})", g)
         idx = 0
@@ -2949,7 +2930,7 @@ class WorkspaceWindow(QMainWindow):
         self.group_combo.blockSignals(False)
 
     def _refresh_rank_list(self) -> None:
-        if not self._stats:
+        if not self.session.stats:
             return
         key = self.rank_combo.currentData()
         rows = self._filtered_stats()
@@ -3002,7 +2983,7 @@ class WorkspaceWindow(QMainWindow):
         for plot, dims in self.series_plots.values():
             plot.set_data(series, dims)
             plot.set_cursor(None)
-        stat = next((e for e in self._stats if e.key == (path, demo)), None)
+        stat = next((e for e in self.session.stats if e.key == (path, demo)), None)
         if stat is not None:
             self.analysis_summary.setText(
                 tr("{d} · {n}프레임 ({s:.1f}s) · 평균 |Δa| {m:.5f} · 같은 (scene·문장) 그룹 평균과 "
@@ -3013,7 +2994,7 @@ class WorkspaceWindow(QMainWindow):
                            " (느림)" if stat.task_dev < -TASK_DEV_LIMIT else ""),
                        p=100 * stat.still_frac, t=stat.group_label))
             self.da_hist.set_values(
-                [e.mean_da for e in self._stats],
+                [e.mean_da for e in self.session.stats],
                 [(self._summary["p50"], tr("중앙값")), (stat.mean_da, tr("이 에피소드"))])
 
     def _on_rank_play(self) -> None:
@@ -3067,10 +3048,10 @@ class WorkspaceWindow(QMainWindow):
             item.setData(0, Qt.ItemDataRole.UserRole, str(path))
             self.dataset_tree.addTopLevelItem(item)
             try:
-                if (self.active_file_path is not None
-                        and path == self.active_file_path
-                        and self.active_episode_cache is not None):
-                    episodes = self.active_episode_cache
+                if (self.session.active_file_path is not None
+                        and path == self.session.active_file_path
+                        and self.session.active_episode_cache is not None):
+                    episodes = self.session.active_episode_cache
                 else:
                     from gello.scene.scene_format import list_scene_episodes
 
@@ -3092,11 +3073,11 @@ class WorkspaceWindow(QMainWindow):
             item = QTreeWidgetItem([path.name, "", ""])
             item.setData(0, Qt.ItemDataRole.UserRole, str(path))
             self.dataset_tree.addTopLevelItem(item)
-            if self.active_file_path is not None and path == self.active_file_path:
-                if self.active_episode_cache is None:
+            if self.session.active_file_path is not None and path == self.session.active_file_path:
+                if self.session.active_episode_cache is None:
                     item.setText(1, tr("불러오는 중..."))
                     continue
-                episodes = self.active_episode_cache
+                episodes = self.session.active_episode_cache
             else:
                 try:
                     with h5py.File(path, "r") as f:
@@ -3148,7 +3129,7 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.information(self, tr("선택 필요"),
                                     tr("트리로 볼 파일을 먼저 선택하세요."))
             return
-        if self.active_file_path is not None and path == self.active_file_path:
+        if self.session.active_file_path is not None and path == self.session.active_file_path:
             QMessageBox.information(self, tr("파일 사용 중"), tr(
                 "수집 세션이 이 파일을 쥐고 있습니다 — 세션 종료 후 여세요."))
             return
@@ -3302,10 +3283,10 @@ class WorkspaceWindow(QMainWindow):
             return False
         flipped = skipped_state = skipped_cache = 0
         cache: dict[str, dict] = {}
-        if self.active_file_path is not None and self.active_episode_cache is not None:
-            cache = {e["name"]: e for e in self.active_episode_cache}
+        if self.session.active_file_path is not None and self.session.active_episode_cache is not None:
+            cache = {e["name"]: e for e in self.session.active_episode_cache}
         for path, names in by_file.items():
-            owned = self.active_file_path is not None and path == self.active_file_path
+            owned = self.session.active_file_path is not None and path == self.session.active_file_path
             try:
                 if owned:
                     # 세션 소유 파일: h5py 재오픈 없이 캐시에서 읽고 saver 큐로 쓴다.
@@ -3396,9 +3377,9 @@ class WorkspaceWindow(QMainWindow):
             eps: dict = {}
             try:
                 if path.name.startswith("scene_"):
-                    src = (self.active_episode_cache
-                           if (self.active_file_path is not None
-                               and path == self.active_file_path)
+                    src = (self.session.active_episode_cache
+                           if (self.session.active_file_path is not None
+                               and path == self.session.active_file_path)
                            else list_scene_episodes(path)) or []
                     eps = {e["name"]: e for e in src}
                 else:
@@ -3503,7 +3484,7 @@ class WorkspaceWindow(QMainWindow):
             return False
 
         for path, names in by_file.items():
-            owned = self.active_file_path is not None and path == self.active_file_path
+            owned = self.session.active_file_path is not None and path == self.session.active_file_path
             is_scene = path.name.startswith("scene_")
             if owned:
                 # 세션이 파일을 쥐고 있으면 saver 스레드가 유일한 통로다. 매 삭제
@@ -3588,11 +3569,11 @@ class WorkspaceWindow(QMainWindow):
         Nothing is deleted here. The selection lands in the same tree the
         operator deletes from, so they can play the takes first.
         """
-        if not self._stats:
+        if not self.session.stats:
             self._refresh_analysis()
-        if not self._stats:
+        if not self.session.stats:
             return
-        flagged = {(e.path, e.demo) for e in self._stats if e.flagged}
+        flagged = {(e.path, e.demo) for e in self.session.stats if e.flagged}
         self.dataset_tree.clearSelection()
         n = 0
         for i in range(self.dataset_tree.topLevelItemCount()):
@@ -3648,7 +3629,7 @@ class WorkspaceWindow(QMainWindow):
         if path is None:
             QMessageBox.information(self, tr("선택 필요"), tr("삭제할 파일을 선택하세요."))
             return
-        if self.active_file_path is not None and path == self.active_file_path:
+        if self.session.active_file_path is not None and path == self.session.active_file_path:
             QMessageBox.warning(self, tr("삭제 불가"),
                                 tr("지금 수집 중인 파일입니다. 먼저 세션을 종료하세요."))
             return
@@ -3735,7 +3716,7 @@ class WorkspaceWindow(QMainWindow):
         item = items[0] if items else None
         # 파일 행을 골라도 오른쪽 Dataset 칸은 갱신된다 -- 재생은 에피소드 행에서만.
         self._update_dataset_panel(self._selected_file())
-        if self._stats:
+        if self.session.stats:
             self._refresh_rank_list()
             if item is not None and item.parent() is not None:
                 self._show_analysis_for(
@@ -3754,7 +3735,7 @@ class WorkspaceWindow(QMainWindow):
         if self.playback.play_key == (path, demo):
             self.center_tabs.setCurrentIndex(1)
             return
-        if self.active_file_path is not None and Path(path) == self.active_file_path:
+        if self.session.active_file_path is not None and Path(path) == self.session.active_file_path:
             self.play_caption.setText(tr("수집 중인 파일은 재생할 수 없습니다."))
             return
         self._stop_playback()
@@ -4771,18 +4752,18 @@ class WorkspaceWindow(QMainWindow):
             and QApplication.activeModalWidget() is None
         ):
             key = event.key()
-            state = self._current_state
+            state = self.session.current_state
             if key == Qt.Key.Key_Space:
                 if state == "gate":
                     # 버튼과 같은 조건: 자세가 맞아야 시작 (워커도 거부하지만
                     # 이유를 먼저 보여준다).
-                    if self._gate_ok:
+                    if self.session.gate_ok:
                         self._cmd("cmd_start_teleop")
                     else:
                         self.log("[GATE] 아직 자세가 맞지 않아 시작할 수 없습니다 "
                                  "-- 리더를 팔로워 자세에 맞추세요.")
                     return True
-                if state == "recording" and not self._no_dataset_session:
+                if state == "recording" and not self.session.no_dataset_session:
                     self._save(True)
                     return True
             elif key == Qt.Key.Key_Escape:
@@ -4790,10 +4771,10 @@ class WorkspaceWindow(QMainWindow):
                 # 번복. 버튼을 누르는 행위 자체가 "이 에피소드는 끝났다"는
                 # 판단이므로, 두 키 모두 에피소드를 끝낸다. 성공이었는지는
                 # 팔이 홈으로 가는 동안 다시 보고 정하는 게 자연스럽다.
-                if state == "recording" and not self._no_dataset_session:
+                if state == "recording" and not self.session.no_dataset_session:
                     self._save(False)
                     return True
-                if state in ("reset_wait", "homing") and not self._no_dataset_session:
+                if state in ("reset_wait", "homing") and not self.session.no_dataset_session:
                     self._toggle_last_verdict()
                     return True
             elif key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):

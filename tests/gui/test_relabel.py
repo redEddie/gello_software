@@ -70,8 +70,8 @@ def fail_h5py_File(*args, **kwargs):
 
 h5py.File = fail_h5py_File
 try:
-    win.active_file_path = scene
-    win.active_episode_cache = eps
+    win.session.active_file_path = scene
+    win.session.active_episode_cache = eps
     ok = win._relabel_episodes(
         {scene: [success_ep["name"], bad_data_ep["name"]]})
     assert ok
@@ -87,7 +87,7 @@ print("1 통과: owned scene 재판정이 h5py.File 없이 saver 큐로 전달")
 stub_saver.calls.clear()
 logs: list = []
 win.log = lambda msg: logs.append(str(msg))
-win.active_episode_cache = [success_ep]
+win.session.active_episode_cache = [success_ep]
 ok = win._relabel_episodes({scene: [success_ep["name"], bad_data_ep["name"]]})
 assert ok
 assert len(stub_saver.calls) == 1
@@ -101,8 +101,8 @@ print("2 통과: 캐시에 없는 이름은 건너뜀 집계 + 로그")
 # ---- 3. 비소유 scene 파일 경로 회귀 ----
 # legacy 는 이 함수에 도달하지 않는다 (_on_relabel_selected 의 scene 필터,
 # scene 전용 Gallery) -- 도달 불가 분기를 검증하는 테스트는 두지 않는다.
-win.active_file_path = None
-win.active_episode_cache = None
+win.session.active_file_path = None
+win.session.active_episode_cache = None
 
 eps = list_scene_episodes(scene)
 target_scene = eps[0]

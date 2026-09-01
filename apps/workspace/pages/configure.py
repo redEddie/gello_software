@@ -128,7 +128,7 @@ def build_configure(win) -> QWidget:
     win.scene_info = SceneInfoView()
     sc_form.addRow(win.scene_info)
     win._pending_scene_meta = None
-    win._scene_session = False
+    win.session.scene_session = False
     col.addWidget(scene)
 
     cam = QGroupBox(tr("카메라"))

@@ -2,15 +2,23 @@
 
 These hold the data that was previously scattered across WorkspaceWindow
 attributes.  Phase 3-1 moves process handles and pipeline progress here;
-later phases may move more.
+Phase 3-4 moves session/episode state here.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
+from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QProcess, QTimer
+
+
+def _new_stats() -> dict:
+    """수집 카운터 한 벌. 이번 task 용과 누적용이 같은 모양이라 같은 곳에서 만든다."""
+    return {"saved": 0, "success": 0, "failed": 0, "discarded": 0,
+            "frames": 0, "t0": time.monotonic()}
 
 
 @dataclass
@@ -85,3 +93,40 @@ class CameraState:
     crop_params: dict = field(default_factory=dict)
     grid_store: dict = field(default_factory=dict)
     layout_ref: dict = field(default_factory=dict)
+
+
+@dataclass
+class SessionState:
+    """Session, episode, and collection-count state for WorkspaceWindow.
+
+    Phase 3-4 deliberately moves only the scalar/list/dict fields; the
+    CollectionWorker handle (``worker``) and Qt widgets stay on the window.
+    ``session`` and ``cumulative`` are separate dict instances so that task
+    counters never leak into the cumulative counters.
+    """
+
+    # per-connect task counters and cumulative counters
+    session: dict = field(default_factory=_new_stats)
+    cumulative: dict = field(default_factory=_new_stats)
+
+    # analysis / episode-stat rows
+    stats: list = field(default_factory=list)
+
+    # scene/no-dataset session bookkeeping
+    scene_session: bool = False
+    no_dataset_session: bool = False
+    episodes_at_connect: int = 0
+
+    # currently active scene file and its cached episode list
+    active_file_path: Path | None = None
+    active_episode_cache: list | None = None
+
+    # last-saved episode verdict + pending toggles
+    last_saved_name: str | None = None
+    last_saved_success: bool = True
+    pending_verdict_toggle: bool = False
+    pending_success: bool | None = None
+
+    # worker state mirror (updated from worker signals, not read directly)
+    current_state: str = "idle"
+    gate_ok: bool = False

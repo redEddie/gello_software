@@ -77,7 +77,7 @@ cw.WorkspaceWindow._restart_previews = lambda self: None
 cw.WorkspaceWindow._startup_tuning = lambda self: None   # pkexec 비밀번호 창 차단
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
-win._stats = stats
+win.session.stats = stats
 win._refresh_group_combo()
 assert win.group_combo.count() == 1 + len(by_group)
 i = next(k for k in range(win.group_combo.count())

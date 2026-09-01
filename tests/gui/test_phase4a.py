@@ -108,10 +108,10 @@ class FakeW:
 
 
 win.worker = FakeW()
-win._scene_session = True
-win.active_file_path = scene_copy
+win.session.scene_session = True
+win.session.active_file_path = scene_copy
 # 세션 캐시를 합성으로 주입 (파일 잠금 상황과 동일한 경로)
-win.active_episode_cache = [
+win.session.active_episode_cache = [
     {"name": "episode_000", "instruction_id": "I000",
      "instruction": "pick up the blue cup and place it on the blue bowl",
      "quality_status": "success", "num_samples": 100, "success": True,
