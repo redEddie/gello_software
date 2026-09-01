@@ -87,8 +87,6 @@ class CameraState:
     cloud_rgb: Any | None = None
     cloud_serial: str = ""
 
-    cloud_pitch: Any | None = None
-    cloud_yaw: Any | None = None
 
     crop_params: dict = field(default_factory=dict)
     grid_store: dict = field(default_factory=dict)
@@ -101,12 +99,12 @@ class SessionState:
 
     Phase 3-4 deliberately moves only the scalar/list/dict fields; the
     CollectionWorker handle (``worker``) and Qt widgets stay on the window.
-    ``session`` and ``cumulative`` are separate dict instances so that task
+    ``counters`` and ``cumulative`` are separate dict instances so that task
     counters never leak into the cumulative counters.
     """
 
     # per-connect task counters and cumulative counters
-    session: dict = field(default_factory=_new_stats)
+    counters: dict = field(default_factory=_new_stats)
     cumulative: dict = field(default_factory=_new_stats)
 
     # analysis / episode-stat rows

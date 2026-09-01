@@ -1551,8 +1551,8 @@ class WorkspaceWindow(QMainWindow):
         pts, rgb = self.cameras.cloud_pts, self.cameras.cloud_rgb
         if pts is None or len(pts) == 0:
             return
-        yaw = np.deg2rad(self.cameras.cloud_yaw.value())
-        pitch = np.deg2rad(self.cameras.cloud_pitch.value())
+        yaw = np.deg2rad(self.cloud_yaw.value())
+        pitch = np.deg2rad(self.cloud_pitch.value())
         cy, sy = np.cos(yaw), np.sin(yaw)
         cp, sp = np.cos(pitch), np.sin(pitch)
         ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
@@ -2535,7 +2535,7 @@ class WorkspaceWindow(QMainWindow):
             self._restart_previews()
         # 이번 task 카운터는 여기서 0 으로 돌아간다(누적은 그대로). 연습 모드도
         # 마찬가지다 -- NullTaskWriter 도 저장을 받아 넘기므로 카운터는 움직인다.
-        self.session.session = _new_stats()
+        self.session.counters = _new_stats()
         if self.session.no_dataset_session:
             # NullTaskWriter has no real path; claiming one here would make the
             # dataset tree think a file is locked by this session.
@@ -2637,7 +2637,7 @@ class WorkspaceWindow(QMainWindow):
         두 dict 를 따로 건드리면 반드시 한쪽만 올리는 자리가 생긴다 -- 판정
         뒤집기처럼 -1 도 있는 경로가 섞여 있어서 더 그렇다.
         """
-        self.session.session[key] += n
+        self.session.counters[key] += n
         self.session.cumulative[key] += n
 
     def _current_task_label(self, limit: int = 0) -> str:
@@ -2664,9 +2664,9 @@ class WorkspaceWindow(QMainWindow):
             # 그 사이를 연결시점 + 이번 task 저장수로 메운다. _session 이 Connect
             # 마다 리셋되므로 두 값 모두 지금 task 의 것이다.
             total = max(len(self.session.active_episode_cache or []),
-                        self.session.episodes_at_connect + self.session.session["saved"])
+                        self.session.episodes_at_connect + self.session.counters["saved"])
             count = tr("{k}: 에피소드 {t}개 (이번 +{s})").format(
-                k=self._current_task_label(limit=32), t=total, s=self.session.session["saved"])
+                k=self._current_task_label(limit=32), t=total, s=self.session.counters["saved"])
         else:
             count = tr("저장 {s}").format(s=self.session.cumulative["saved"])
         self.sb_right.setText(
@@ -2731,7 +2731,7 @@ class WorkspaceWindow(QMainWindow):
         self.plan_progress_label.setText(text)
 
     def _refresh_stats(self) -> None:
-        for stats, labels in ((self.session.session, self.stats_labels),
+        for stats, labels in ((self.session.counters, self.stats_labels),
                               (self.session.cumulative, self.stats_total_labels)):
             elapsed = time.monotonic() - stats["t0"]
             for key in ("saved", "success", "failed", "discarded", "frames"):
@@ -2782,10 +2782,10 @@ class WorkspaceWindow(QMainWindow):
             # 알 수 없다. 연결 시점 개수 + 이번 세션 저장 수로 즉시 계산하고,
             # 목록이 도착하면 그 값이 더 정확하므로 그쪽을 쓴다.
             listed = len(self.session.active_episode_cache or [])
-            counted = self.session.episodes_at_connect + self.session.session["saved"]
+            counted = self.session.episodes_at_connect + self.session.counters["saved"]
             total = max(listed, counted)
             f["ds_episodes"].setText(
-                tr("{t}개  (이번 +{s})").format(t=total, s=self.session.session["saved"]))
+                tr("{t}개  (이번 +{s})").format(t=total, s=self.session.counters["saved"]))
             f["ds_action"].setText(cfg.schema.action_space)
             f["ds_gripper"].setText(
                 "0/1 (obs와 동일)" if cfg.schema.gripper_action_match_obs else "-1/+1")

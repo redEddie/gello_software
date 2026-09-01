@@ -68,7 +68,7 @@ rgb = rng.integers(0, 255, (2000, 3), dtype=np.uint8)
 win._on_cloud(pts, rgb)
 assert win.cloud_view.pixmap() is not None
 assert "2,000" in win.cloud_status.text() or "2000" in win.cloud_status.text()
-win.cameras.cloud_yaw.setValue(60)      # 시점 변경 -> 재렌더 경로
+win.cloud_yaw.setValue(60)      # 시점 변경 -> 재렌더 경로
 win._on_center_tab_changed(0)   # 탭 이탈 -> 워커 없음이면 no-op
 assert win.cameras.cloud_worker is None
 # 세션 중 진입 차단
