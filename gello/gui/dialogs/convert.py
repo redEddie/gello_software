@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.gui.dialogs.hf_account import HfAccountDialog, hf_account
-from gello.gui.gui_widgets import Recents
+from gello.gui.widgets import Recents
 from gello.gui.i18n import tr
 from gello.gui.text_utils import repo_id_error
 

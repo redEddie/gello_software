@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.gui.dialogs import hf_account
-from gello.gui.gui_widgets import TODO_MARK
+from gello.gui.constants import TODO_MARK
 from gello.gui.i18n import tr
 
 from apps.dialogs._widgets import mark_todo

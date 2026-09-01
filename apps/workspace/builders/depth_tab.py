@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gello.gui.gui_widgets import VideoView
+from gello.gui.widgets import VideoView
 from gello.gui.i18n import tr
 
 

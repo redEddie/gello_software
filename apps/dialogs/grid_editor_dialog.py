@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from gello.gui.gui_widgets import np_to_pixmap
+from gello.gui.widgets import np_to_pixmap
 from gello.gui.grid_overlay import (
     DEFAULT_CORNERS,
     active_corners,

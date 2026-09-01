@@ -77,10 +77,8 @@ from gello.data.dataset_schema import (  # noqa: E402
     save_schema_config,
 )
 from gello.gui.dialogs import DatasetSchemaDialog, hf_account  # noqa: E402
-from gello.gui.gui_widgets import (  # noqa: E402
-    PLAYBACK_FPS,
-    Recents,
-)
+from gello.gui.constants import PLAYBACK_FPS  # noqa: E402
+from gello.gui.widgets import Recents  # noqa: E402
 from gello.gui.workers import CameraPreviewWorker, GalleryLoadWorker  # noqa: E402
 from gello.gui.text_utils import clean_stream_lines, is_progress_line, repo_id_error  # noqa: E402
 from apps.workspace.constants import LOG_DIR, LAYOUT_DIR, LAYOUT_ZIP  # noqa: E402
@@ -154,7 +152,6 @@ def _read(path: Path) -> str:
 # shown, disabled and greyed, rather than omitted: a missing tab reads as "this
 # tool cannot do that", while a greyed one says "not built yet" -- and leaving
 # the shape visible is what makes the gap reviewable instead of forgotten.
-# TODO_MARK 는 gello/gui_widgets.py 에서 가져온다 (순환 import 방지).
 
 # 큐레이션 기준값은 전부 gello/episode_stats.py 에 있다 (TASK_DEV_LIMIT /
 # STILL_VEL). 여기서 다시 정의하지 않는 이유는, 화면에 찍히는 수와

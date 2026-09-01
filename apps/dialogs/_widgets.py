@@ -2,7 +2,7 @@
 
 from PyQt6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from gello.gui.gui_widgets import TODO_MARK
+from gello.gui.constants import TODO_MARK
 from gello.gui.i18n import tr
 
 # Status-dot colors used by StatusLight and similar indicators.

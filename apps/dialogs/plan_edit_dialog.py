@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
 )
 
 from apps.dialogs.plan_json_dialog import PlanJsonDialog
-from gello.gui.gui_widgets import Recents
+from gello.gui.widgets import Recents
 from gello.gui.i18n import tr
 from gello.scene.collection_plan import load_plan
 from gello.scene.scene_format import INSTRUCTION_ID_RE, SCENE_ID_RE

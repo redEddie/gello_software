@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
 from gello.data.episode_stats import load_series
 from gello.data.episode_trim import plan_trim, suggest_trim, trim_tail
-from gello.gui.gui_widgets import PLAYBACK_FPS
+from gello.gui.constants import PLAYBACK_FPS
 from gello.gui.workers import EpisodeLoadWorker
 from gello.gui.i18n import tr
 from gello.data.libero_format import describe_episode, hdf5_repack_status

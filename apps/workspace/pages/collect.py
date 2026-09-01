@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gello.gui.gui_widgets import DeltaBar
+from gello.gui.widgets import DeltaBar
 from gello.gui.i18n import tr
 
 from apps.workspace.builders.sizing import shrinkable_combo

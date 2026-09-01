@@ -23,7 +23,8 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.data.libero_format import load_crop_params
-from gello.gui.gui_widgets import TODO_MARK, VideoView
+from gello.gui.constants import TODO_MARK
+from gello.gui.widgets import VideoView
 from gello.gui.i18n import tr
 
 from apps.dialogs._widgets import SceneInfoView, TODO_STYLE, mark_todo

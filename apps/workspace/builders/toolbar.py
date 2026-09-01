@@ -4,7 +4,7 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QLabel, QMessageBox, QToolBar
 
 from gello.data.episode_stats import TASK_DEV_LIMIT
-from gello.gui.gui_widgets import TODO_MARK
+from gello.gui.constants import TODO_MARK
 from gello.gui.i18n import tr
 
 from apps.dialogs._widgets import StatusLight

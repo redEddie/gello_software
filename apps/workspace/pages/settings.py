@@ -1,7 +1,7 @@
 """Settings page builder for WorkspaceWindow."""
 from PyQt6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
-from gello.gui.gui_widgets import TODO_MARK
+from gello.gui.constants import TODO_MARK
 from gello.gui.i18n import tr
 
 from apps.dialogs._widgets import mark_todo
