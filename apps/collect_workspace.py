@@ -89,7 +89,6 @@ from gello.data.episode_stats import (  # noqa: E402
     scan_dataset,
     summarize,
 )
-from gello.data.episode_trim import plan_trim, suggest_trim, trim_tail  # noqa: E402
 from gello.gui.gui_widgets import (  # noqa: E402
     repo_id_error,
     PLAYBACK_FPS,
@@ -97,7 +96,6 @@ from gello.gui.gui_widgets import (  # noqa: E402
     DatasetSchemaDialog,
     DepthCloudWorker,
     GalleryLoadWorker,
-    EpisodeLoadWorker,
     Recents,
     VideoView,
     clean_stream_lines,
@@ -105,7 +103,7 @@ from gello.gui.gui_widgets import (  # noqa: E402
     is_progress_line,
 )
 from apps.workspace.constants import LOG_DIR  # noqa: E402
-from apps.workspace.domains import UploadOps  # noqa: E402
+from apps.workspace.domains import PlaybackOps, UploadOps  # noqa: E402
 from apps.workspace.models import (  # noqa: E402
     CameraState,
     PlaybackState,
@@ -138,7 +136,6 @@ from gello.gui.grid_overlay import (  # noqa: E402
 from gello.gui.i18n import tr  # noqa: E402
 from gello.data.libero_format import (  # noqa: E402
     default_crop_params,
-    describe_episode,
     hdf5_repack_status,
     renumber_episodes,
     resize_rgb,
@@ -170,7 +167,6 @@ from gello.core.station import load_station  # noqa: E402
 STATION = load_station()
 PYLIBFRANKA_PYTHON = STATION.node.python_path
 LAUNCH_NODES_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "launch" / "launch_nodes.py")
-REPLAY_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "analyze" / "replay_episode.py")
 # 새 수집(scene 체계)의 Hub 저장소 기본값 (2026-08-18 결정). 변환본은
 # -lerobot, 원본 HDF5 는 접미사 없이. legacy repo(fr3-pick-place*, 728개)는
 # 재사용하지 않는다 -- 그쪽에 전체 처리를 돌리면 삭제 게이트가 뜬다.
@@ -280,6 +276,7 @@ class WorkspaceWindow(QMainWindow):
         self.schema = load_schema_config()
 
         self.upload = UploadOps(self)
+        self.playback_ops = PlaybackOps(self)
 
         build_bottom(self)          # log view exists before anything logs
         # 저장된 설정의 depth 플래그가 무시됐다면 여기서(로그 뷰가 생긴 뒤)
@@ -302,7 +299,7 @@ class WorkspaceWindow(QMainWindow):
 
         self.playback.play_timer = QTimer(self)
         self.playback.play_timer.setInterval(int(1000 / PLAYBACK_FPS))
-        self.playback.play_timer.timeout.connect(self._on_play_tick)
+        self.playback.play_timer.timeout.connect(self.playback_ops.on_play_tick)
 
         # App-wide, not window-scoped: the operator's hands are on the leader,
         # so whichever widget happens to hold focus must not swallow the keys.
@@ -409,21 +406,7 @@ class WorkspaceWindow(QMainWindow):
     def _on_gallery_activated(self, item) -> None:
         d = item.data(Qt.ItemDataRole.UserRole)
         if d:
-            self._play_episode(d[0], d[1])
-
-    def _on_gallery_replay(self) -> None:
-        if self._replay_running():      # 토글: 재생 중이면 중단 버튼이다
-            self._on_replay_stop()
-            return
-        picks = [item.data(Qt.ItemDataRole.UserRole)
-                 for item in self.gallery_list.selectedItems()]
-        picks = [d for d in picks if d]
-        if len(picks) != 1:
-            QMessageBox.information(
-                self, tr("선택 필요"),
-                tr("실로봇 재생은 에피소드 하나만 선택하세요."))
-            return
-        self._replay_on_robot(picks[0][0], picks[0][1])
+            self.playback_ops.play_episode(d[0], d[1])
 
     def _on_gallery_relabel(self) -> None:
         by_file: dict = {}
@@ -1030,196 +1013,6 @@ class WorkspaceWindow(QMainWindow):
         return b
 
     # ------------------------------------------------------------- 분석 탭
-    def _on_open_trim(self) -> None:
-        items = [i for i in self.dataset_tree.selectedItems() if i.parent() is not None]
-        if not items:
-            QMessageBox.information(self, tr("선택 필요"),
-                                    tr("에피소드를 하나 선택하세요 (파일이 아니라)."))
-            return
-        it = items[0]
-        path = it.parent().data(0, Qt.ItemDataRole.UserRole)
-        self._show_trim_for(path, it.data(0, Qt.ItemDataRole.UserRole))
-        self.center_tabs.setCurrentIndex(self.playback.trim_tab_index)
-
-    # ------------------------------------------------------------------ Trim
-    def _show_trim_for(self, path: str, demo: str) -> None:
-        """Dataset 트리와 Analysis 순위표가 공유하는 트림 진입점."""
-        if not path or not demo:
-            return
-        if self.session.active_file_path is not None and Path(path) == self.session.active_file_path:
-            self.trim_summary.setText(tr("수집 중인 파일은 편집할 수 없습니다."))
-            return
-        self.playback.trim_key = (path, demo)
-        self.playback.trim_n_pending = 0
-        try:
-            series = load_series(path, demo)
-        except Exception as e:  # noqa: BLE001
-            self.trim_summary.setText(tr("불러오기 실패: {e}").format(e=e))
-            return
-        self.playback.trim_series = series
-        self.playback.trim_n = int(series["n"])
-        for plot, dims in self.trim_plots.values():
-            plot.set_data(series, dims)
-        self.playback.trim_frames = {"agent": None, "wrist": None}
-        for v in self.trim_views.values():
-            v.clear_frame(tr("영상 불러오는 중..."))
-        if self.playback.trim_loader is not None:
-            self.playback.trim_loader.wait()
-        self.playback.trim_loader = EpisodeLoadWorker(path, demo)
-        self.playback.trim_loader.loaded.connect(self._on_trim_loaded)
-        self.playback.trim_loader.failed.connect(
-            lambda m: [v.clear_frame(tr("영상 없음")) for v in self.trim_views.values()])
-        self.playback.trim_loader.start()
-        self._trim_update()
-
-    @pyqtSlot(str, str, object, object)
-    def _on_trim_loaded(self, path, demo, agent, wrist) -> None:
-        if self.playback.trim_key != (path, demo):
-            return
-        self.playback.trim_frames = {"agent": agent, "wrist": wrist}
-        self._trim_update()
-        self._trim_seek(self._trim_keep() - 1)
-
-    def _trim_pending(self) -> int:
-        return self.playback.trim_n_pending
-
-    def _trim_keep(self) -> int:
-        return max(0, self.playback.trim_n - self._trim_pending())
-
-    def _trim_add(self, n: int) -> None:
-        """+/- 를 누른 만큼 옮긴다. 0 아래로는 못 간다 -- 원본보다 길어질 수 없다."""
-        if self.playback.trim_key is None:
-            return
-        self.playback.trim_n_pending = max(0, self.playback.trim_n_pending + n)
-        self._trim_update()
-        self._trim_seek(self._trim_keep() - 1)
-
-    def _trim_reset(self) -> None:
-        """정정 -- 고른 것을 통째로 0으로. 한 단계씩 물리는 것보다, 잘못 짚었을 때
-        처음부터 다시 보는 쪽이 실제 흐름에 맞는다."""
-        if self.playback.trim_key is None:
-            return
-        self.playback.trim_n_pending = 0
-        self._trim_update()
-        self._trim_seek(self._trim_keep() - 1)
-
-    def _trim_suggest(self) -> None:
-        if self.playback.trim_key is None:
-            return
-        n = suggest_trim(*self.playback.trim_key)
-        self.playback.trim_n_pending = n
-        self.log(f"[트림] 추천 {n}프레임" + ("" if n else " (이미 조용하게 끝납니다)"))
-        self._trim_update()
-        self._trim_seek(self._trim_keep() - 1)
-
-    def _trim_seek(self, i: int) -> None:
-        n = self.playback.trim_n
-        if n <= 0:
-            return
-        i = max(0, min(n - 1, i))
-        self.trim_slider.blockSignals(True)
-        self.trim_slider.setRange(0, n - 1)
-        self.trim_slider.setValue(i)
-        self.trim_slider.blockSignals(False)
-        self._trim_show_frame(i)
-
-    def _trim_show_frame(self, i: int) -> None:
-        keep = self._trim_keep()
-        for role, v in self.trim_views.items():
-            arr = self.playback.trim_frames.get(role)
-            if arr is None or len(arr) == 0:
-                continue
-            v.set_frame(arr[min(i, len(arr) - 1)])
-        mark = tr(" ← 잘린 뒤 마지막") if i == keep - 1 else (
-            tr("  (잘려나갈 구간)") if i >= keep else "")
-        self.trim_pos.setText(f"{i + 1}/{self.playback.trim_n}{mark}")
-        for plot, _ in self.trim_plots.values():
-            plot.set_cursor(i)
-
-    def _on_trim_scrub(self, i: int) -> None:
-        self._trim_show_frame(i)
-
-    def _on_trim_play(self) -> None:
-        """잘린 뒤 구간만 훑는다 -- 확인하려는 것이 '새 끝'이기 때문이다."""
-        if self.playback.trim_key is None:
-            return
-        keep = self._trim_keep()
-        self._trim_seek(max(0, keep - 40))
-        if self.playback.trim_timer is None:
-            self.playback.trim_timer = QTimer(self)
-            self.playback.trim_timer.setInterval(50)
-            self.playback.trim_timer.timeout.connect(self._trim_tick)
-        self.playback.trim_timer.start()
-        self.trim_play_btn.setText(tr("정지"))
-
-    def _trim_tick(self) -> None:
-        i = self.trim_slider.value() + 1
-        if i >= self._trim_keep():
-            self.playback.trim_timer.stop()
-            self.trim_play_btn.setText(tr("재생"))
-            return
-        self._trim_seek(i)
-
-    def _trim_update(self) -> None:
-        """Recomputes every label, guard and shading from the pending count."""
-        has = self.playback.trim_key is not None
-        self.trim_play_btn.setEnabled(has and self.playback.trim_frames.get("agent") is not None)
-        self.trim_slider.setEnabled(has)
-        self.trim_reset_btn.setEnabled(bool(self.playback.trim_n_pending))
-        if not has:
-            self.trim_count.setText(tr("에피소드를 고르세요"))
-            self.trim_apply_btn.setEnabled(False)
-            self.trim_warn.setText("")
-            for plot, _ in self.trim_plots.values():
-                plot.set_cut(None)
-            return
-        path, demo = self.playback.trim_key
-        n_trim, keep = self._trim_pending(), self._trim_keep()
-        plan = plan_trim(path, [demo], max(n_trim, 1))[0]
-        self.trim_summary.setText(
-            tr("{d} · {n}프레임 ({s:.1f}s) · 마지막 그리퍼 동작 −{g}프레임").format(
-                d=demo, n=self.playback.trim_n, s=self.playback.trim_n / 20.0,
-                g=plan.gripper_tail if plan.gripper_tail is not None else "?"))
-        self.trim_count.setText(
-            tr("{a} → {b} 프레임   (−{n})").format(a=self.playback.trim_n, b=keep, n=n_trim)
-            if n_trim else tr("{a} 프레임 — 자를 구간 없음").format(a=self.playback.trim_n))
-        for plot, _ in self.trim_plots.values():
-            plot.set_cut(keep if n_trim else None)
-        blocked = plan_trim(path, [demo], n_trim)[0].blocked if n_trim else None
-        self.trim_apply_btn.setEnabled(bool(n_trim) and not blocked)
-        if blocked:
-            self.trim_warn.setText(tr("⚠ {b}").format(b=blocked))
-        elif plan.already:
-            self.trim_warn.setText(tr("이미 다듬은 이력: {a}").format(a=plan.already))
-        else:
-            self.trim_warn.setText("")
-
-    def _trim_apply(self) -> None:
-        if self.playback.trim_key is None or not self._trim_pending():
-            return
-        path, demo = self.playback.trim_key
-        n_trim, keep = self._trim_pending(), self._trim_keep()
-        if QMessageBox.question(
-                self, tr("끝 다듬기 확정"),
-                tr("{f}\n{d}\n\n{a} → {b} 프레임 (뒤에서 {n}개 삭제)\n\n"
-                   "되돌릴 수 없습니다. 진행할까요?").format(
-                       f=Path(path).name, d=demo, a=self.playback.trim_n, b=keep, n=n_trim),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            new_n = trim_tail(path, demo, n_trim)
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, tr("다듬기 실패"), f"{type(e).__name__}: {e}")
-            self.log(f"[트림 실패] {Path(path).name} {demo}: {type(e).__name__}: {e}")
-            return
-        self.log(f"[트림] {Path(path).name} {demo}: {self.playback.trim_n} → {new_n}프레임 "
-                 f"(−{n_trim})")
-        self._refresh_dataset_tree()
-        self._refresh_analysis(force=True)
-        self._show_trim_for(path, demo)
-
-    # ------------------------------------------------- layout check tab
     def _ensure_layout_refs(self) -> bool:
         """Unpacks assets/libero_init_layouts.zip next to itself.
 
@@ -2272,7 +2065,7 @@ class WorkspaceWindow(QMainWindow):
         w.node_status.connect(self._on_node_status)
         w.fatal_error.connect(self._on_fatal)
         w.connected.connect(self._on_connected)
-        w.episode_list_changed.connect(self._on_episode_list)
+        w.episode_list_changed.connect(self.playback_ops.on_episode_list)
         w.session_summary.connect(self._on_summary)
         # 세션 해제(버튼 복구, worker=None)는 session_summary가 아니라 finished에
         # 걸어야 한다. summary는 run()의 finally에서만 나오는데, 연결 실패는 그
@@ -2286,7 +2079,7 @@ class WorkspaceWindow(QMainWindow):
         # 에피소드 수·세션 통계·실패 표시 해제·탐색기 목록이 전부 멈춘 채로
         # 있는다 -- 실제로 10개를 저장한 세션 로그에 [저장] 줄이 한 줄도 없었다.
         w.saver.episode_saved.connect(self._on_saved)
-        w.saver.episode_list_changed.connect(self._on_episode_list)
+        w.saver.episode_list_changed.connect(self.playback_ops.on_episode_list)
         w.saver.log_message.connect(self.log)
         w.saver.save_status.connect(self._on_save_status)
         self.worker = w
@@ -2535,32 +2328,6 @@ class WorkspaceWindow(QMainWindow):
         self._refresh_dataset_tree()
 
     @pyqtSlot(list)
-    def _on_episode_list(self, episodes) -> None:
-        prev_n = len(self.session.active_episode_cache) if self.session.active_episode_cache else None
-        self.session.active_episode_cache = episodes
-        if self._pending_scene_deletes > 0 and self.session.scene_session:
-            # 목록이 줄어든 emit 만 삭제 완료로 센다 -- 사이에 낀 저장/재판정
-            # emit(개수 불변·증가)이 카운터를 잘못 소진하지 않게. 삭제 1건마다
-            # renumber 로 uid 가 재배정되므로 매번 통째로 무효화한다.
-            if prev_n is not None and len(episodes) < prev_n:
-                self._pending_scene_deletes = max(
-                    0, self._pending_scene_deletes - (prev_n - len(episodes)))
-                try:
-                    # 파일은 saver 가 잠그고 있다 -- 다시 열지 않고 세션 설정에서
-                    # scene_id 를 얻는다 (_session_scene_id).
-                    sid = self._session_scene_id()
-                    n_thumbs = invalidate_scene_thumbs(sid) if sid else 0
-                    if n_thumbs:
-                        self.log(f"[썸네일] {sid}: {n_thumbs}개 캐시 무효화")
-                except Exception as e:  # noqa: BLE001
-                    self.log(f"[썸네일 캐시 정리 실패] {e}")
-        self._refresh_dataset_tree()
-        if self.session.scene_session:
-            # 저장/재판정마다 saver 가 새 목록을 보내온다 -- slot 카운트 갱신
-            self._refresh_slot_panel()
-            self._refresh_start_plan_combo()   # Configure 쪽 카운트도 동기화
-
-    @pyqtSlot(dict)
     def _on_summary(self, summary) -> None:
         # 해제는 여기서 하지 않는다 -- 정상 종료에만 오는 신호다. 실제 해제는
         # 모든 종료 경로에서 오는 finished(_on_worker_finished)가 맡는다.
@@ -2948,7 +2715,7 @@ class WorkspaceWindow(QMainWindow):
             return
         path, demo = items[0].data(0, Qt.ItemDataRole.UserRole)
         self._show_analysis_for(path, demo)
-        self._show_trim_for(path, demo)
+        self.playback_ops.show_trim_for(path, demo)
 
     def _show_analysis_for(self, path: str, demo: str) -> None:
         """Dataset 트리와 순위표가 공유하는 곡선 표시 경로."""
@@ -2975,13 +2742,6 @@ class WorkspaceWindow(QMainWindow):
             self.da_hist.set_values(
                 [e.mean_da for e in self.session.stats],
                 [(self._summary["p50"], tr("중앙값")), (stat.mean_da, tr("이 에피소드"))])
-
-    def _on_rank_play(self) -> None:
-        items = self.rank_tree.selectedItems()
-        if not items:
-            return
-        path, demo = items[0].data(0, Qt.ItemDataRole.UserRole)
-        self._play_episode(path, demo)
 
     def _on_rank_delete(self) -> None:
         """Hands the selection to the same delete path the Dataset panel uses --
@@ -3138,108 +2898,6 @@ class WorkspaceWindow(QMainWindow):
             return
         if self._relabel_episodes(by_file):
             self._refresh_dataset_tree()
-
-    def _replay_running(self) -> bool:
-        return (self.procs.replay_process is not None and
-                self.procs.replay_process.state() != QProcess.ProcessState.NotRunning)
-
-    def _on_replay_selected(self) -> None:
-        if self._replay_running():      # 토글: 재생 중이면 중단 버튼이다
-            self._on_replay_stop()
-            return
-        picks = [(Path(i.parent().data(0, Qt.ItemDataRole.UserRole)),
-                  i.data(0, Qt.ItemDataRole.UserRole))
-                 for i in self.dataset_tree.selectedItems()
-                 if i.parent() is not None]
-        if len(picks) != 1:
-            QMessageBox.information(
-                self, tr("선택 필요"),
-                tr("실로봇 재생은 에피소드 하나만 선택하세요."))
-            return
-        self._replay_on_robot(str(picks[0][0]), picks[0][1])
-
-    def _replay_on_robot(self, path: str, demo: str) -> None:
-        """Dataset 트리와 Gallery 가 공유하는 실로봇 재생 진입점.
-
-        replay_episode.py 를 --yes 로 하위 프로세스 실행한다 (램프·틱당
-        클램프 같은 안전장치는 스크립트 쪽에 있다). 로봇을 쥐는 것은 결국
-        로봇 노드 하나이므로, 여기서는 GUI 세션과의 충돌만 막는다.
-        """
-        if self.worker is not None:
-            QMessageBox.warning(self, tr("재생 불가"),
-                                tr("수집 세션 중에는 실로봇 재생을 할 수 "
-                                   "없습니다. 먼저 세션을 종료하세요."))
-            return
-        busy = self._busy_reason()
-        if busy:
-            QMessageBox.warning(self, tr("재생 불가"),
-                                tr("{w} 이(가) 파일을 사용 중입니다. 끝난 뒤 "
-                                   "다시 시도하세요.").format(w=busy))
-            return
-        if self.procs.replay_process is not None and \
-                self.procs.replay_process.state() != QProcess.ProcessState.NotRunning:
-            QMessageBox.information(self, tr("이미 재생 중"),
-                                    tr("이전 재생이 끝나기를 기다리거나 '재생 "
-                                       "중단'을 누르세요."))
-            return
-        speed, ok = QInputDialog.getDouble(
-            self, tr("실로봇 재생"),
-            tr("재생 배속 (0.1~1.0, 첫 재생은 0.5 권장)"),
-            0.5, 0.1, 1.0, 1)
-        if not ok:
-            return
-        ans = QMessageBox.warning(
-            self, tr("로봇이 움직입니다"),
-            tr("{d} ({f}) 을(를) {s}배속으로 실로봇에서 재현합니다.\n\n"
-               "· 로봇 노드가 켜져 있어야 합니다\n"
-               "· 로봇이 시작 포즈로 이동한 뒤 바로 재생됩니다\n"
-               "· 주변 공간을 비우고, 비상정지를 준비하세요\n\n"
-               "시작할까요?").format(d=demo, f=Path(path).name, s=speed),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        if ans != QMessageBox.StandardButton.Yes:
-            return
-        proc = QProcess(self)
-        proc.setProgram(sys.executable)
-        proc.setArguments([REPLAY_SCRIPT, path, demo,
-                           "--speed", f"{speed:g}", "--yes"])
-        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        proc.readyReadStandardOutput.connect(
-            lambda: self._pipe(proc, "[실로봇 재생]", "log"))
-        proc.finished.connect(self._on_replay_finished)
-        self.procs.replay_process = proc
-        self.log(f"[실로봇 재생] ▶ {Path(path).name} / {demo} ({speed:g}x)")
-        proc.start()
-        self._set_replay_ui(True)
-
-    def _on_replay_stop(self) -> None:
-        """재생 하위 프로세스를 끊는다. 로봇 노드의 레퍼런스 필터가 현재
-        포즈를 유지하므로(Ctrl-C 와 동일) 팔이 낙하하지는 않는다."""
-        proc = self.procs.replay_process
-        if proc is None or proc.state() == QProcess.ProcessState.NotRunning:
-            return
-        self.log(tr("[실로봇 재생] 중단 요청 — 현재 포즈에서 정지합니다"))
-        proc.terminate()
-        if not proc.waitForFinished(2000):
-            proc.kill()
-
-    def _set_replay_ui(self, running: bool) -> None:
-        """재생/중단 토글 -- 두 진입점(Dataset·Gallery) 버튼이 함께 바뀐다."""
-        for b, idle_text in ((getattr(self, "replay_btn", None),
-                              tr("선택 재생 (실로봇)")),
-                             (getattr(self, "gallery_replay_btn", None),
-                              tr("실로봇 재생"))):
-            if b is None:
-                continue
-            b.setText(tr("■ 재생 중단") if running else idle_text)
-            b.setStyleSheet(
-                "background-color:#c0392b; color:white;" if running else "")
-
-    def _on_replay_finished(self, code: int, _status) -> None:
-        self.procs.replay_process = None
-        self._set_replay_ui(False)
-        self.log(tr("[실로봇 재생] {r} (exit={c})").format(
-            r=tr("완료") if code == 0 else tr("중단/실패 — 로그 확인"), c=code))
 
     def _relabel_episodes(self, by_file: dict) -> bool:
         """재판정 공용 코어 -- Dataset 트리와 Gallery 가 같은 것을 쓴다.
@@ -3648,42 +3306,6 @@ class WorkspaceWindow(QMainWindow):
             self.log(f"[파일 삭제 실패] {path.name}: {e}")
         self._refresh_dataset_tree()
 
-    def _on_show_structure(self) -> None:
-        path = self._selected_file()
-        if path is None:
-            QMessageBox.information(self, tr("선택 필요"), tr("파일을 선택하세요."))
-            return
-        if path.name.startswith("scene_"):
-            # scene 파일은 legacy 구조 검사 대신 표준 뷰(격자 지도 + slot 현황).
-            try:
-                md = read_scene_metadata(path)
-                counts = count_by_slot(path)
-                text = describe_scene(md)
-                if counts:
-                    text += "\n\nslot 현황: " + "  ".join(
-                        f"{iid} {c['usable']}/{c['total']}"
-                        for iid, c in sorted(counts.items()))
-                text += "\n\n" + tr("정밀 검사: python scripts/check/check_scene_file.py {p}").format(p=path)
-            except Exception as e:  # noqa: BLE001
-                text = f"{path.name}\n읽기 실패: {type(e).__name__}: {e}"
-            self._alert(tr("Scene 구조"), text, icon=QMessageBox.Icon.Information)
-            return
-        st = hdf5_repack_status(path)
-        lines = [f"{path.name}",
-                 f"  에피소드 {st['episodes']}개, {st['size'] / 1e6:.1f} MB",
-                 f"  이미지 압축: {st['compression']} (혼합={st['mixed']})",
-                 f"  재압축 이력: {st['marker'] or '-'}"]
-        try:
-            with h5py.File(path, "r") as f:
-                names = sorted(f["data"], key=lambda s: int(s.split("_")[1]))
-                if names:
-                    lines.append("  " + describe_episode(f["data"][names[0]]).replace("\n", "\n  "))
-        except Exception as e:  # noqa: BLE001
-            lines.append(f"  (구조 읽기 실패: {e})")
-        self.log("\n".join(lines), view="validation")
-        self.bottom_tabs.setCurrentWidget(self.validation_view)
-
-    # ----------------------------------------------------------- playback
     def _on_dataset_selection(self) -> None:
         items = self.dataset_tree.selectedItems()
         item = items[0] if items else None
@@ -3701,102 +3323,8 @@ class WorkspaceWindow(QMainWindow):
         demo = item.data(0, Qt.ItemDataRole.UserRole)
         if not path or not demo:
             return
-        self._play_episode(path, demo)
+        self.playback_ops.play_episode(path, demo)
 
-    def _play_episode(self, path: str, demo: str) -> None:
-        """Dataset 트리와 Analysis 순위표가 공유하는 재생 진입점."""
-        if self.playback.play_key == (path, demo):
-            self.center_tabs.setCurrentIndex(1)
-            return
-        if self.session.active_file_path is not None and Path(path) == self.session.active_file_path:
-            self.play_caption.setText(tr("수집 중인 파일은 재생할 수 없습니다."))
-            return
-        self._stop_playback()
-        self.playback.play_key = (path, demo)
-        self.play_caption.setText(tr("불러오는 중... {d}").format(d=demo))
-        self.center_tabs.setCurrentIndex(1)
-        if self.playback.play_loader is not None:
-            self.playback.play_loader.wait()
-        self.playback.play_loader = EpisodeLoadWorker(path, demo)
-        self.playback.play_loader.loaded.connect(self._on_episode_loaded)
-        self.playback.play_loader.failed.connect(
-            lambda m: self.play_caption.setText(tr("재생 실패: {m}").format(m=m)))
-        self.playback.play_loader.start()
-
-    @pyqtSlot(str, str, object, object)
-    def _on_episode_loaded(self, path, demo, agent, wrist) -> None:
-        if self.playback.play_key != (path, demo):
-            return
-        self.playback.play_frames = {"agent": agent, "wrist": wrist}
-        n = len(agent) if agent is not None else len(wrist)
-        self.play_slider.blockSignals(True)
-        self.play_slider.setRange(0, max(0, n - 1))
-        self.play_slider.setValue(0)
-        self.play_slider.blockSignals(False)
-        self.play_slider.setEnabled(True)
-        self.play_btn.setEnabled(True)
-        self.play_btn.setText(tr("일시정지"))
-        self._apply_speed()
-        self._refresh_play_caption()
-        self._show_frame(0)
-        self.playback.play_timer.start()
-
-    def _stop_playback(self) -> None:
-        self.playback.play_timer.stop()
-        self.playback.play_frames = {"agent": None, "wrist": None}
-        self.playback.play_key = None
-        self.play_btn.setEnabled(False)
-        self.play_btn.setText(tr("재생"))
-        self.play_slider.setEnabled(False)
-        self.play_pos.setText("-/-")
-        for v in self.play_views.values():
-            v.clear_frame(tr("에피소드를 선택하세요"))
-
-    def _speed(self) -> float:
-        data = self.speed_combo.currentData()
-        return float(data) if data else 1.0
-
-    def _apply_speed(self) -> None:
-        interval = max(1, int(round(1000.0 / (PLAYBACK_FPS * self._speed()))))
-        self.playback.play_timer.setInterval(interval)
-
-    def _on_speed_changed(self) -> None:
-        self._apply_speed()
-        self._refresh_play_caption()
-
-    def _refresh_play_caption(self) -> None:
-        if not self.playback.play_key:
-            return
-        path, demo = self.playback.play_key
-        n = self.play_slider.maximum() + 1
-        speed = self._speed()
-        eff = PLAYBACK_FPS * speed
-        self.play_caption.setText(
-            f"{Path(path).name} · {demo} · {n} frames · "
-            + (tr("{s:g}배속 ({f:g} fps)").format(s=speed, f=eff) if speed != 1
-               else tr("{f:g} fps (실제 속도)").format(f=eff)))
-
-    def _on_play_toggle(self) -> None:
-        if self.playback.play_timer.isActive():
-            self.playback.play_timer.stop()
-            self.play_btn.setText(tr("재생"))
-        else:
-            self.playback.play_timer.start()
-            self.play_btn.setText(tr("일시정지"))
-
-    def _on_play_tick(self) -> None:
-        n = self.play_slider.maximum() + 1
-        if n > 1:
-            self.play_slider.setValue((self.play_slider.value() + 1) % n)
-
-    def _show_frame(self, i: int) -> None:
-        for key, view in self.play_views.items():
-            frames = self.playback.play_frames.get(key)
-            if frames is not None and i < len(frames):
-                view.set_frame(frames[i])
-        self.play_pos.setText(f"{i + 1}/{self.play_slider.maximum() + 1}")
-
-    # ---------------------------------------------------------- 시스템 튜닝
     @staticmethod
     def check_tuning() -> list:
         """What scripts/runme.sh would change, read without touching anything.

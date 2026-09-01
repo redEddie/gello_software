@@ -156,7 +156,7 @@ def build_analysis_tab(win) -> QWidget:
     fcol.addLayout(cols_row)
 
     btns = QHBoxLayout()
-    for text, slot in ((tr("재생해서 확인"), win._on_rank_play),
+    for text, slot in ((tr("재생해서 확인"), win.playback_ops.on_rank_play),
                        (tr("선택 삭제"), win._on_rank_delete)):
         b = QPushButton(text)
         b.clicked.connect(slot)

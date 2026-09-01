@@ -44,6 +44,7 @@ assert load_grid_store(TMP / "none.json")["grids"] == {}
 print("1 통과: 격자 계산(원근 항등 검증)·그리기·저장 왕복")
 
 import collect_workspace as cw  # noqa: E402
+from apps.workspace.constants import REPLAY_SCRIPT  # noqa: E402
 from gello.gui.grid_overlay import DEFAULT_CORNERS  # noqa: E402
 
 # ---- 2. 편집 다이얼로그: 정렬/변환/저장/불러오기 ----
@@ -142,23 +143,23 @@ win.dataset_tree.clear()   # 합성 항목(UserRole 없음)이 뒤 재생 가드
 print("3c 통과: 실패만 선택이 scene 'failed' 표기도 잡음")   # 안 섞이게
 
 # 재생 가드: 선택 없음 -> 안내, 세션 중 -> 경고
-win._on_replay_selected()
+win.playback_ops.on_replay_selected()
 assert infos and "하나만" in infos[-1]
 win.worker = object()
-win._replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
+win.playback_ops.replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
 assert warns and "세션" in warns[-1]
 win.worker = None
 # 배속 다이얼로그 취소 -> 프로세스 없음
 cw.QInputDialog.getDouble = staticmethod(lambda *a, **k: (0.5, False))
-win._replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
+win.playback_ops.replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
 assert win.procs.replay_process is None
 # 승인 경로: 확인 Yes -> QProcess 시작 (더미 프로그램으로 교체)
 cw.QInputDialog.getDouble = staticmethod(lambda *a, **k: (0.5, True))
 cw.QMessageBox.warning = staticmethod(
     lambda *a, **k: cw.QMessageBox.StandardButton.Yes)
-real_repl = cw.REPLAY_SCRIPT
+real_repl = REPLAY_SCRIPT
 cw.sys = sys
-win._replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
+win.playback_ops.replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
 assert win.procs.replay_process is not None
 args = win.procs.replay_process.arguments()
 assert args[0] == real_repl and args[1].endswith("x.hdf5")
@@ -167,7 +168,7 @@ assert args[2] == "episode_000" and args[3:] == ["--speed", "0.5", "--yes"]
 assert "중단" in win.replay_btn.text()
 assert "중단" in win.gallery_replay_btn.text()
 proc = win.procs.replay_process
-win._on_replay_selected()            # 토글: 재생 중 클릭 = 중단
+win.playback_ops.on_replay_selected()            # 토글: 재생 중 클릭 = 중단
 proc.waitForFinished(3000)
 for _ in range(20):                  # finished 시그널(큐잉) 전달
     app.processEvents()

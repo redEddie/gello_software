@@ -61,7 +61,7 @@ def build_dataset(win) -> QWidget:
     # 나란히 있으면 그 차이가 라벨 글자에만 남는다.
     for pair in ((("새로고침", win._refresh_dataset_tree,
                    "데이터 폴더를 다시 읽어 목록을 새로 그립니다."),
-                  ("구조 확인", win._on_show_structure,
+                  ("구조 확인", win.playback_ops.on_show_structure,
                    "선택한 *파일*의 에피소드 수·용량·이미지 압축·재압축 이력과\n"
                    "첫 에피소드의 데이터 구조를 보여줍니다.")),
                  (("HDF5 트리 뷰어", win._on_hdf5_tree,
@@ -95,7 +95,7 @@ def build_dataset(win) -> QWidget:
     trim_btn.setToolTip(tr(
         "선택한 에피소드를 Trim 탭에서 엽니다.\n"
         "저장 키를 누를 때 흔들린 마지막 몇 프레임을 잘라냅니다."))
-    trim_btn.clicked.connect(win._on_open_trim)
+    trim_btn.clicked.connect(win.playback_ops.on_open_trim)
     col.addWidget(trim_btn)
 
     relabel_btn = QPushButton(tr("선택 재판정 (성공↔실패)"))
@@ -114,7 +114,7 @@ def build_dataset(win) -> QWidget:
         "재현합니다.\n로봇 노드가 켜져 있어야 하고, 로봇이 실제로 "
         "움직입니다. 주변을 비우세요.\n재생 중에는 이 버튼이 '재생 중단'"
         "이 됩니다 (중단 시 로봇은 현재 포즈 유지)."))
-    win.replay_btn.clicked.connect(win._on_replay_selected)
+    win.replay_btn.clicked.connect(win.playback_ops.on_replay_selected)
     col.addWidget(win.replay_btn)
 
     del_btn = QPushButton(tr("선택한 에피소드 삭제"))

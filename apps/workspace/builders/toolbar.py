@@ -62,7 +62,7 @@ def build_menu(win) -> None:
                 win._on_select_jerky)
     m.addAction(tr("에피소드 삭제"), win._on_delete_selected)
     m.addAction(tr("파일 삭제"), win._on_delete_file)
-    m.addAction(tr("구조 확인..."), win._on_show_structure)
+    m.addAction(tr("구조 확인..."), win.playback_ops.on_show_structure)
     m.addSeparator()
     m.addAction(tr("용량 최적화 (재압축)..."), win.upload.on_repack)
     m.addAction(tr("LeRobot 변환/업로드..."), win.upload.on_lerobot)

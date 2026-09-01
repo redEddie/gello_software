@@ -46,7 +46,7 @@ def build_gallery_tab(win) -> QWidget:
     win.gallery_replay_btn.setToolTip(tr(
         "선택한 에피소드의 관절 명령을 실로봇에 다시 보냅니다.\n"
         "로봇 노드가 켜져 있어야 하고, 로봇이 실제로 움직입니다."))
-    win.gallery_replay_btn.clicked.connect(win._on_gallery_replay)
+    win.gallery_replay_btn.clicked.connect(win.playback_ops.on_gallery_replay)
     row.addWidget(win.gallery_replay_btn)
     col.addLayout(row)
     win.gallery_list = QListWidget()

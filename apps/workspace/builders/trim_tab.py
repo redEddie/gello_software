@@ -85,11 +85,11 @@ def build_trim_tab(win) -> QWidget:
     srow = QHBoxLayout()
     win.trim_play_btn = QPushButton(tr("재생"))
     win.trim_play_btn.setEnabled(False)
-    win.trim_play_btn.clicked.connect(win._on_trim_play)
+    win.trim_play_btn.clicked.connect(win.playback_ops.on_trim_play)
     srow.addWidget(win.trim_play_btn)
     win.trim_slider = QSlider(Qt.Orientation.Horizontal)
     win.trim_slider.setEnabled(False)
-    win.trim_slider.valueChanged.connect(win._on_trim_scrub)
+    win.trim_slider.valueChanged.connect(win.playback_ops.on_trim_scrub)
     srow.addWidget(win.trim_slider, 1)
     win.trim_pos = QLabel("-/-")
     win.trim_pos.setMinimumWidth(72)
@@ -116,7 +116,7 @@ def build_trim_tab(win) -> QWidget:
             .format(n=n) if n > 0 else
             tr("누를 때마다 {n}프레임씩 되돌립니다 (원본 길이 이상으로는 안 갑니다)")
             .format(n=-n))
-        b.clicked.connect(lambda _=False, k=n: win._trim_add(k))
+        b.clicked.connect(lambda _=False, k=n: win.playback_ops.trim_add(k))
         step_row.addWidget(b)
     bcol.addLayout(step_row)
 
@@ -124,18 +124,18 @@ def build_trim_tab(win) -> QWidget:
     sug = QPushButton(tr("추천"))
     sug.setToolTip(tr("끝에서부터 속도가 그 에피소드 중앙값 아래로 떨어지는 "
                       "지점까지를 제안합니다 (최대 15프레임)"))
-    sug.clicked.connect(win._trim_suggest)
+    sug.clicked.connect(win.playback_ops.trim_suggest)
     act_row.addWidget(sug)
     win.trim_reset_btn = QPushButton(tr("정정"))
     win.trim_reset_btn.setToolTip(tr("고른 프레임 수를 0으로 되돌립니다. "
                                       "확정 전에는 파일이 바뀌지 않습니다."))
-    win.trim_reset_btn.clicked.connect(win._trim_reset)
+    win.trim_reset_btn.clicked.connect(win.playback_ops.trim_reset)
     act_row.addWidget(win.trim_reset_btn)
     win.trim_apply_btn = QPushButton(tr("확정 (파일에 적용)"))
     win.trim_apply_btn.setStyleSheet("background-color:#c0392b; color:white; padding:6px;")
     win.trim_apply_btn.setToolTip(tr("여기서부터 .hdf5 가 실제로 바뀝니다. "
                                       "되돌릴 수 없습니다."))
-    win.trim_apply_btn.clicked.connect(win._trim_apply)
+    win.trim_apply_btn.clicked.connect(win.playback_ops.trim_apply)
     act_row.addWidget(win.trim_apply_btn, 1)
     bcol.addLayout(act_row)
 
@@ -147,6 +147,6 @@ def build_trim_tab(win) -> QWidget:
     split.addWidget(right)
     split.setSizes([640, 490])
     outer.addWidget(split)
-    win._trim_update()
+    win.playback_ops.trim_update()
     return page
 

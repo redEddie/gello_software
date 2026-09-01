@@ -11,6 +11,7 @@ WT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONVERT_SCRIPT = str(WT_ROOT / "scripts" / "convert" / "convert_libero_to_lerobot.py")
 UPLOAD_SCRIPT = str(WT_ROOT / "scripts" / "convert" / "upload_to_hub.py")
 REPACK_SCRIPT = str(WT_ROOT / "scripts" / "convert" / "repack_hdf5.py")
+REPLAY_SCRIPT = str(WT_ROOT / "scripts" / "analyze" / "replay_episode.py")
 
 # Activity bar entries: (key, icon, title, tooltip). Icons are emoji rather
 # than a theme lookup -- an icon theme that is missing on this machine would
