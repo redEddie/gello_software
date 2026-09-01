@@ -110,6 +110,8 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
+from gello.config.constants import IDLE_MIN_CURRENT, MATCH_GATE_RAD
+
 from gello.hw.dynamixel.driver import (
     CURRENT_CONTROL_MODE,
     POSITION_CONTROL_MODE,
@@ -121,18 +123,6 @@ ADDR_HW_ERROR = 70        # Hardware Error Status (1 B, bitfield)
 ADDR_INPUT_VOLTAGE = 144  # Present Input Voltage (2 B, units of 0.1 V)
 ADDR_TEMPERATURE = 146    # Present Temperature (1 B, deg C)
 
-#: 자세 정렬을 걸기 시작하는 최대 조인트 오차 (rad) -- 이 파일이 정본이다.
-#: 수집 GUI 의 "자세 매칭" 게이지가 초록/빨강을 가르는 값과 같은 상수여야
-#: 한다 (gello.gui.libero_gui_worker.GATE_RAD 가 이걸 가져다 쓴다): 게이지가
-#: 초록일 때만 모터가 당긴다는 규칙이 눈에 보이는 것과 실제 동작에서 같은
-#: 숫자로 성립해야 하기 때문이다 (GitHub issue #37A).
-MATCH_GATE_RAD = 0.5
-
-#: 정렬 전류 상한이 어떤 이유로도 이 아래로 내려가지 않게 하는 하한 (mA).
-#: 한때 정렬 모드의 상한을 200 mA 로 낮춘 적이 있는데, J2 는 자세를
-#: *유지* 하는 데만 ~430 mA 가 필요해서(아래 적분기 주석) 피치가 처지고
-#: 정렬이 수렴하지 못했다. 200 은 상한이 아니라 하한이다.
-IDLE_MIN_CURRENT = 200.0
 
 
 def _engage_gate(engaged: bool, err: float, gate: float, release: float) -> bool:

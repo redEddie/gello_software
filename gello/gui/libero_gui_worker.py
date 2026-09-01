@@ -33,7 +33,7 @@ from gello.agents.lerobot_plugin import (
 )
 from gello.data.libero_format import LiberoTaskWriter, NullTaskWriter
 from gello.robots.franka_fr3 import FR3_RESET_POSES
-from gello.robots.joint_limit_wall import MATCH_GATE_RAD
+from gello.config.constants import MATCH_GATE_RAD
 from gello.scene.scene_format import QUALITY_FAILED, QUALITY_SUCCESS, SceneMetadata, SceneWriter
 from gello.core.station import load_station
 
