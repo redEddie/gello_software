@@ -9,6 +9,7 @@ from .collect import build_collect
 from .configure import build_configure
 from .dataset import build_dataset
 from .layout import build_layout_page
+from .settings import build_settings
 from .stats import build_stats
 from .upload import build_upload
 
@@ -17,6 +18,7 @@ PAGE_BUILDERS = {
     "collect": build_collect,
     "dataset": build_dataset,
     "layout": build_layout_page,
+    "settings": build_settings,
     "stats": build_stats,
     "upload": build_upload,
 }
@@ -27,6 +29,7 @@ __all__ = [
     "build_configure",
     "build_dataset",
     "build_layout_page",
+    "build_settings",
     "build_stats",
     "build_upload",
 ]
