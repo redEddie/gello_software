@@ -123,7 +123,7 @@ win.session.active_episode_cache = [
      "episode_id": 1, "episode_uid": "EP-S000-I000-E001", "collector": "t",
      "timestamp": ""},
 ]
-win._refresh_slot_panel()
+win.scene_ops.refresh_slot_panel()
 items = [(win.slot_plan_combo.itemText(i), win.slot_plan_combo.itemData(i))
          for i in range(win.slot_plan_combo.count())]
 assert any("I000 · 1/10" in t for t, _ in items), f"카운트 표시 실패: {items}"
@@ -136,13 +136,13 @@ assert win.slot_instr_edit.text() == "pick up the blue cup and place it on the b
 # 다음 미수집 slot (I000 2/10 -> 그대로 I000)
 win.slot_iid_edit.clear()
 win.slot_instr_edit.clear()
-win._on_next_slot()
+win.scene_ops.on_next_slot()
 assert win.slot_iid_edit.text() == "I000" and win.slot_instr_edit.text()
 print("3 통과: 계획 자동선택, 카운트(2/10), 불일치 경고, 드롭다운 채움, 다음 slot 제시")
 
 # ---- 4. 계획 없음 회귀 ----
 win.plan_combo.setCurrentIndex(0)  # (계획 없음)
-win._refresh_slot_panel()
+win.scene_ops.refresh_slot_panel()
 assert win.slot_plan_combo.count() == 1  # (직접 입력) 만
 calls = []
 class FW:
@@ -153,7 +153,7 @@ class FW:
 win.worker = FW()
 win.slot_iid_edit.setText("I009")
 win.slot_instr_edit.setText("open the top drawer")
-win._on_apply_slot()
+win.scene_ops.on_apply_slot()
 assert calls, "계획 없이 자유 입력 적용 실패"
 # 오른쪽 패널 Dataset '태스크' 가 적용 즉시 현재 slot 으로 바뀐다
 assert win.right_fields["ds_task"].text() == "I009: open the top drawer"

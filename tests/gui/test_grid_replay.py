@@ -10,7 +10,7 @@ sys.path.insert(0, WT)
 sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QInputDialog  # noqa: E402
 
 app = QApplication(sys.argv)
 
@@ -150,11 +150,11 @@ win.playback_ops.replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
 assert warns and "세션" in warns[-1]
 win.worker = None
 # 배속 다이얼로그 취소 -> 프로세스 없음
-cw.QInputDialog.getDouble = staticmethod(lambda *a, **k: (0.5, False))
+QInputDialog.getDouble = staticmethod(lambda *a, **k: (0.5, False))
 win.playback_ops.replay_on_robot(str(TMP / "x.hdf5"), "episode_000")
 assert win.procs.replay_process is None
 # 승인 경로: 확인 Yes -> QProcess 시작 (더미 프로그램으로 교체)
-cw.QInputDialog.getDouble = staticmethod(lambda *a, **k: (0.5, True))
+QInputDialog.getDouble = staticmethod(lambda *a, **k: (0.5, True))
 cw.QMessageBox.warning = staticmethod(
     lambda *a, **k: cw.QMessageBox.StandardButton.Yes)
 real_repl = REPLAY_SCRIPT

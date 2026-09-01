@@ -37,7 +37,6 @@ old wizard so both could share them without one importing the other's window.
 from __future__ import annotations
 
 import os
-import re
 
 # Must run before numpy/cv2/h5py are imported -- see gello/gui_widgets.py for
 # why this GUI caps the BLAS/OpenCV thread pools at 1.
@@ -63,7 +62,6 @@ from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
     QFileDialog,
-    QInputDialog,
     QLabel,
     QListWidgetItem,
     QMainWindow,
@@ -99,8 +97,8 @@ from gello.gui.gui_widgets import (  # noqa: E402
     hf_account,
     is_progress_line,
 )
-from apps.workspace.constants import LOG_DIR  # noqa: E402
-from apps.workspace.domains import CameraOps, DepthOps, PlaybackOps, UploadOps  # noqa: E402
+from apps.workspace.constants import LOG_DIR, LAYOUT_DIR, LAYOUT_ZIP  # noqa: E402
+from apps.workspace.domains import CameraOps, DepthOps, PlaybackOps, SceneOps, UploadOps  # noqa: E402
 from apps.workspace.models import (  # noqa: E402
     CameraState,
     PlaybackState,
@@ -120,8 +118,6 @@ from apps.workspace.builders import (  # noqa: E402
 )
 from apps.dialogs.grid_editor_dialog import GridEditorDialog  # noqa: E402
 from apps.dialogs.hdf5_tree_dialog import Hdf5TreeDialog  # noqa: E402
-from apps.dialogs.new_scene_dialog import NewSceneDialog  # noqa: E402
-from apps.dialogs.plan_edit_dialog import PlanEditDialog  # noqa: E402
 from gello.gui.grid_overlay import (  # noqa: E402
     draw_alignment_grid,
     load_grid_store,
@@ -135,21 +131,12 @@ from gello.data.libero_format import (  # noqa: E402
     resize_rgb,
     save_crop_params,
 )
-from gello.scene.collection_plan import (  # noqa: E402
-    PLANS_DIR,
-    check_scene_against_plan,
-    list_plans,
-    load_plan,
-)
 from gello.gui.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
 from gello.scene.scene_rules import check  # noqa: E402
 from gello.scene.scene_format import (  # noqa: E402
-    INSTRUCTION_ID_RE,
     count_by_slot,
     delete_scene_episodes,
-    describe_scene,
     iter_scene_files,
-    next_scene_id,
     read_scene_metadata,
     scene_filename,
 )
@@ -175,13 +162,6 @@ LEGACY_REPOS = {
 RUNME_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "runme.sh")
 CHECK_CAMERAS = str(Path(__file__).resolve().parent.parent / "scripts" / "check" / "check_cameras.py")
 RESET_PROTECTION = str(Path(__file__).resolve().parent.parent / "scripts" / "check" / "gello_reset_protection.py")
-# LIBERO 초기 배치 참조 이미지. 리모트에는 zip 만 올라가고(3.9MB), 풀린
-# png 들은 .gitignore 의 *.png 에 걸린다. GUI 가 뜰 때 zip 이 바뀌었으면 다시
-# 푼다 -- _ensure_layout_refs().
-LAYOUT_ZIP = Path(__file__).resolve().parent.parent / "assets" / "libero_init_layouts.zip"
-LAYOUT_DIR = Path(__file__).resolve().parent.parent / "assets" / "libero_init_layouts"
-
-
 def _read(path: Path) -> str:
     try:
         return path.read_text().strip()
@@ -271,6 +251,7 @@ class WorkspaceWindow(QMainWindow):
 
         self.upload = UploadOps(self)
         self.playback_ops = PlaybackOps(self)
+        self.scene_ops = SceneOps(self)
         self.camera_ops = CameraOps(self)
         self.depth_ops = DepthOps(self)
 
@@ -421,521 +402,33 @@ class WorkspaceWindow(QMainWindow):
     # ------------------------------------------------------------- center
     # --------------------------------------------------------------- left
     # ------------------------------------------------------- scene 수집 UI
-    def _refresh_scene_combo(self) -> None:
-        """저장 경로의 scene_*.hdf5 목록. 파일명이 아니라 내부 metadata 로
-        표시한다 (경로 역산 금지)."""
-        self.scene_combo.blockSignals(True)
-        self.scene_combo.clear()
-        root = Path(self.root_edit.text().strip() or ".")
-        try:
-            sid_next = next_scene_id(root)
-        except Exception:  # noqa: BLE001
-            sid_next = "S???"
-        self.scene_combo.addItem(tr("— 새 Scene ({sid}) —").format(sid=sid_next), None)
-        try:
-            for p in iter_scene_files(root):
-                try:
-                    md = read_scene_metadata(p)
-                except Exception as e:  # noqa: BLE001
-                    self.scene_combo.addItem(f"{p.name} (읽기 실패: {type(e).__name__})", None)
-                    continue
-                label = f"{md.scene_id} · 물체 {len(md.objects)}개"
-                if md.description:
-                    label += f" · {md.description[:28]}"
-                self.scene_combo.addItem(label, md.scene_id)
-        except Exception:  # noqa: BLE001
-            pass
-        self.scene_combo.blockSignals(False)
-        self._on_scene_selected()
 
-    def _on_scene_selected(self, *_args) -> None:
-        self._refresh_start_plan_combo()
-        sid = self.scene_combo.currentData()
-        self.scene_new_btn.setEnabled(sid is None)
-        if sid is None:
-            if self._pending_scene_meta is not None:
-                self.scene_info.setText(
-                    describe_scene(self._pending_scene_meta)
-                    + "\n" + tr("(연결하면 이 구성으로 새 scene 파일이 만들어집니다)"))
-            else:
-                self.scene_info.setText(
-                    tr("'새 Scene 구성...'으로 물체 배치를 정의하세요."))
-            return
-        root = Path(self.root_edit.text().strip() or ".")
-        try:
-            path = root / scene_filename(sid)
-            if self.session.active_file_path is not None and path == self.session.active_file_path:
-                # 세션이 파일을 쥐고 있다 -- 캐시 요약으로 대신한다
-                counts = self._session_slot_counts()
-                lines = [tr("{s} — 수집 세션 진행 중 (배치도는 오른쪽 패널에)")
-                         .format(s=sid)]
-                if counts:
-                    lines.append("slot: " + "  ".join(
-                        f"{iid} {c.get('usable', 0)}/{c.get('total', 0)}"
-                        for iid, c in sorted(counts.items())))
-                self.scene_info.setText("\n".join(lines))
-                return
-            md = read_scene_metadata(path)
-            counts = count_by_slot(path)
-            lines = [describe_scene(md)]
-            if counts:
-                lines.append("slot: " + "  ".join(
-                    f"{iid} {c['usable']}/{c['total']}" for iid, c in sorted(counts.items())))
-            plan = self._current_plan()
-            if plan is not None and plan.slots_for(sid):
-                lines.append(f"계획({plan.path.name}): " + "  ".join(
-                    f"{s.instruction_id} {counts.get(s.instruction_id, {}).get('usable', 0)}"
-                    f"/{s.target}" for s in plan.slots_for(sid)))
-            self.scene_info.setText("\n".join(lines))
-        except BlockingIOError:
-            self.scene_info.setText(tr(
-                "(다른 프로세스가 파일을 사용 중입니다 — 재압축/변환이 끝난 "
-                "뒤 새로고침하세요)"))
-        except Exception as e:  # noqa: BLE001
-            self.scene_info.setText(f"(scene 정보 읽기 실패: {type(e).__name__}: {e})")
 
-    def _on_new_scene(self) -> None:
-        root = Path(self.root_edit.text().strip() or ".")
-        try:
-            sid = next_scene_id(root)
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, tr("경로 오류"),
-                                tr("저장 경로를 확인하세요: {e}").format(e=e))
-            return
-        plan_data = self.plan_combo.currentData() if hasattr(self, "plan_combo") else None
-        plan_path = Path(plan_data) if plan_data else None
-        dlg = NewSceneDialog(self, sid, data_root=root, plan_path=plan_path,
-                             station_name=STATION.name)
-        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.metadata is not None:
-            self._pending_scene_meta = dlg.metadata
-            self._on_scene_selected()
 
-    def _scene_config_from_ui(self):
-        """Connect 시점의 scene 설정 검증. (meta, scene_id, resume, error) --
-        error 가 None 이 아니면 연결을 중단하고 그 메시지를 보여준다."""
-        lang = self.lang_edit.text().strip()
-        iid = self.scene_iid_edit.text().strip()
-        collector = self.collector_edit.text().strip()
-        if not lang:
-            return None, None, False, tr("시작 instruction 문장을 Language 칸에 입력하세요.")
-        if lang.startswith('"') and lang.endswith('"'):
-            return None, None, False, tr("instruction 은 따옴표 없는 순수 문장이어야 합니다.")
-        if not INSTRUCTION_ID_RE.match(iid):
-            return None, None, False, tr("시작 slot ID 형식이 틀렸습니다 (예: I000).")
-        if not collector:
-            return None, None, False, tr("수집자 식별자를 입력하세요 (에피소드 필수 attr).")
-        # 계획이 선택돼 있으면 시작 slot 은 계획의 (ID, 문장) 쌍이어야 한다 --
-        # 자유 입력이 계획 밖 slot 을 만들던 구멍의 마지막 잠금. 새 문장은
-        # ✎ 편집으로 계획에 추가하고, 자유 수집은 '(계획 없음)' 을 고른다.
-        plan = self._current_plan()
-        if plan is not None:
-            psid = self._configure_scene_id()
-            slots = plan.slots_for(psid) if psid else ()
-            if not slots:
-                return None, None, False, tr(
-                    "계획({p})에 scene {s} 가 없습니다. ✎ 편집으로 scene 을 "
-                    "추가하거나, 자유 수집이면 수집 계획을 '(계획 없음)' 으로 "
-                    "바꾸세요.").format(p=plan.path.name, s=psid)
-            if not any(s.instruction_id == iid and s.instruction == lang
-                       for s in slots):
-                return None, None, False, tr(
-                    "시작 문장은 '계획 문장' 드롭다운에서 선택하세요. "
-                    "({i}: {t!r} 는 계획에 없습니다 — 새 문장은 ✎ 편집으로 "
-                    "계획에 먼저 추가)").format(i=iid, t=lang[:40])
-        sid = self.scene_combo.currentData()
-        if sid is None:
-            if self._pending_scene_meta is None:
-                return None, None, False, tr(
-                    "'새 Scene 구성...'으로 배치를 먼저 정의하거나 기존 scene 을 고르세요.")
-            return self._pending_scene_meta, None, False, None
-        return None, sid, True, None
 
     # -------------------------------------------------- slot ID 자동 배정
-    def _known_slots(self, scene_id=None, scene_path=None, episodes=None) -> dict:
-        """**이 scene 의** instruction_id -> 문장 매핑.
 
-        ID 는 scene 마다 독립이다(각 scene 의 첫 instruction 이 I000, 새
-        문장마다 +1 -- 2026-08-13 결정). 그래서 참조 범위도 scene 하나:
-        계획에서 그 scene 의 slot + 그 scene 파일에 기록된 에피소드.
-        계획이 먼저다 -- 파일 쪽에 갈라짐 사고가 있어도 계획이 정본.
 
-        세션 중에는 episodes(GUI 가 saver 에게서 받은 캐시)를 넘겨야 한다 --
-        HDF5 파일 잠금 때문에 열려 있는 파일을 다시 읽을 수 없다.
-        """
-        m: dict = {}
-        plan = self._current_plan()
-        if plan is not None and scene_id is not None:
-            for s in plan.slots_for(scene_id):
-                m.setdefault(s.instruction_id, s.instruction)
-        for ep in (episodes or []):
-            if ep.get("instruction_id"):
-                m.setdefault(ep["instruction_id"], ep.get("instruction", ""))
-        if episodes is None and scene_path is not None and Path(scene_path).exists():
-            try:
-                from gello.scene.scene_format import list_scene_episodes
 
-                for ep in list_scene_episodes(scene_path):
-                    m.setdefault(ep["instruction_id"], ep["instruction"])
-            except Exception:  # noqa: BLE001 - 다른 프로세스가 잠갔을 수 있다
-                pass
-        return m
 
-    def _session_scene_id(self):
-        if self.worker is None:
-            return None
-        cfg = self.worker.cfg
-        if getattr(cfg, "scene_metadata", None) is not None:
-            return cfg.scene_metadata.scene_id
-        return getattr(cfg, "scene_id", None)
 
-    def _session_slot_counts(self) -> dict:
-        """세션 중 slot 카운트 -- 파일은 saver 가 h5py 로 잠그고 있으므로
-        다시 열지 않고, saver 가 보내준 에피소드 목록으로 계산한다
-        (count_by_slot 과 같은 정의: usable = quality_status success)."""
-        counts: dict = {}
-        for e in (self.session.active_episode_cache or []):
-            iid = e.get("instruction_id")
-            if not iid:
-                continue
-            c = counts.setdefault(iid, {"total": 0, "usable": 0})
-            c["total"] += 1
-            if e.get("quality_status") == "success":
-                c["usable"] += 1
-        return counts
 
-    @staticmethod
-    def _next_iid(known: dict) -> str:
-        used = [int(i[1:]) for i in known if INSTRUCTION_ID_RE.match(i)]
-        return f"I{(max(used) + 1) if used else 0:03d}"
 
-    def _auto_assign_iid(self, instr: str, iid_edit, scene_id=None,
-                         scene_path=None, episodes=None) -> None:
-        """문장이 바뀌면 slot ID 를 자동으로 맞춘다 (**scene 안에서**).
 
-        모든 scene 은 첫 instruction 이 I000 이고 새 문장마다 하나씩
-        올라간다. 이 scene 에서 아는 문장 -> 그 ID 재사용, 처음 보는 문장
-        -> 이 scene 의 다음 빈 ID. 다른 scene 의 ID 는 참조하지 않는다.
-        자동 배정 후에도 손으로 고칠 수 있다.
-        """
-        instr = instr.strip()
-        if not instr:
-            return
-        known = self._known_slots(scene_id, scene_path, episodes=episodes)
-        for iid, s in known.items():
-            if s == instr:
-                if iid_edit.text().strip() != iid:
-                    iid_edit.setText(iid)
-                    self.log(f"[SLOT] 아는 문장 -- {iid} 재사용")
-                return
-        cur = iid_edit.text().strip()
-        nxt = self._next_iid(known)
-        if cur in known and known[cur] != instr:
-            iid_edit.setText(nxt)
-            self.log(f"[SLOT] 새 문장 -- {nxt} 자동 배정 ({cur} 는 이 scene 에서 사용 중)")
-        elif not INSTRUCTION_ID_RE.match(cur) or cur not in known and cur != nxt:
-            # 빈/이상한 값이거나, 이 scene 기준으로 뜬금없는 번호(예: 다른
-            # scene 에서 넘어온 I003)면 이 scene 의 다음 번호로 정렬한다.
-            iid_edit.setText(nxt)
-            if cur and cur != nxt:
-                self.log(f"[SLOT] 새 문장 -- {nxt} 자동 배정")
 
-    def _configure_scene_id(self):
-        """Configure 가 가리키는 scene ID -- 기존 선택이면 그것, 새 scene 이면
-        구성해 둔 metadata 의 ID, 그것도 없으면 다음 발번 예정 ID."""
-        sid = self.scene_combo.currentData()
-        if sid is not None:
-            return sid
-        if self._pending_scene_meta is not None:
-            return self._pending_scene_meta.scene_id
-        try:
-            return next_scene_id(Path(self.root_edit.text().strip() or "."))
-        except Exception:  # noqa: BLE001
-            return None
 
-    def _selected_scene_path(self):
-        """Configure 의 Scene 콤보가 가리키는 기존 scene 파일 (새 scene 이면 None)."""
-        sid = self.scene_combo.currentData()
-        if sid is None:
-            return None
-        return Path(self.root_edit.text().strip() or ".") / scene_filename(sid)
-
-    def _on_start_sentence_edited(self) -> None:
-        self._auto_assign_iid(self.lang_edit.text(), self.scene_iid_edit,
-                              scene_id=self._configure_scene_id(),
-                              scene_path=self._selected_scene_path())
-
-    def _on_start_plan_pick(self, *_args) -> None:
-        d = self.start_plan_combo.currentData()
-        if d:
-            self.scene_iid_edit.setText(d[0])
-            self.lang_edit.setText(d[1])
-
-    def _refresh_start_plan_combo(self) -> None:
-        """Configure 의 계획 문장 드롭다운 = 계획 × 선택 scene.
-
-        카운트는 scene 파일에서 온다 (계획 파일에는 카운트가 없다 -- 두 개의
-        진실 금지). 세션이 파일을 쥐고 있으면 카운트만 생략된다.
-        """
-        if not hasattr(self, "start_plan_combo"):
-            return
-        combo = self.start_plan_combo
-        keep = combo.currentData()
-        combo.blockSignals(True)
-        combo.clear()
-        plan = self._current_plan()
-        # 계획이 있으면 문장은 계획에서만 고른다 -- 자유 입력이 계획 밖
-        # slot(문장-ID 갈라짐)을 실데이터에 만들었다. 새 문장은 ✎ 편집으로
-        # 계획에 먼저 추가한다. 계획이 없을 때만 직접 입력을 연다.
-        combo.addItem(tr("(계획에서 선택)") if plan is not None
-                      else tr("(직접 입력)"), None)
-        self.lang_edit.setReadOnly(plan is not None)
-        self.scene_iid_edit.setReadOnly(plan is not None)
-        for w in (self.lang_edit, self.scene_iid_edit):
-            w.setStyleSheet("color:#888;" if plan is not None else "")
-        sid = self._configure_scene_id()
-        if plan is not None and sid is not None:
-            counts: dict = {}
-            if self.session.scene_session and sid == self._session_scene_id():
-                # 세션이 파일을 쥐고 있다 -- saver 가 보내준 캐시로 센다
-                counts = self._session_slot_counts()
-            else:
-                p = self._selected_scene_path()
-                if p is not None and p.exists():
-                    try:
-                        counts = count_by_slot(p)
-                    except Exception:  # noqa: BLE001 -- HDF5 잠금 등
-                        counts = {}
-            for s in plan.slots_for(sid):
-                c = counts.get(s.instruction_id, {}).get("usable", 0)
-                combo.addItem(
-                    f"{s.instruction_id} · {c}/{s.target} · {s.instruction}",
-                    (s.instruction_id, s.instruction))
-            if keep:
-                for i in range(combo.count()):
-                    if combo.itemData(i) == keep:
-                        combo.setCurrentIndex(i)
-                        break
-        combo.blockSignals(False)
-
-    def _on_slot_sentence_edited(self) -> None:
-        # 세션 중에는 파일이 잠겨 있으므로 캐시로 (파일 인자 없이)
-        self._auto_assign_iid(self.slot_instr_edit.text(), self.slot_iid_edit,
-                              scene_id=self._session_scene_id(),
-                              episodes=self.session.active_episode_cache)
 
     # -------------------------------------------------- 수집 계획 (slot plan)
-    def _current_plan(self):
-        """선택된 계획 파일. 작아서 캐시 없이 매번 읽는다 -- 파일을 고치고
-        새로고침할 때 낡은 캐시가 남는 쪽이 더 나쁘다."""
-        data = getattr(self, "plan_combo", None) and self.plan_combo.currentData()
-        if not data:
-            return None
-        try:
-            return load_plan(Path(data))
-        except Exception as e:  # noqa: BLE001
-            self.log(f"[계획] {Path(data).name} 로드 실패: {type(e).__name__}: {e}")
-            return None
 
-    def _refresh_plan_combo(self, select: "str | None" = None) -> None:
-        """계획 파일 목록을 다시 읽는다. select 로 파일명을 주면 그걸 고른다."""
-        keep = select or self.plan_combo.currentText()
-        self.plan_combo.blockSignals(True)
-        self.plan_combo.clear()
-        self.plan_combo.addItem(tr("(계획 없음 — 자유 입력)"), None)
-        for p in list_plans():
-            self.plan_combo.addItem(p.name, str(p))
-        idx = self.plan_combo.findText(keep)
-        self.plan_combo.setCurrentIndex(max(0, idx))
-        self.plan_combo.blockSignals(False)
-        self._on_plan_selected()
 
-    def _on_new_plan(self) -> None:
-        name, ok = QInputDialog.getText(
-            self, tr("새 수집 계획"),
-            tr("계획 이름 (영문/숫자/-/_, 확장자 없이):"))
-        if not ok or not name.strip():
-            return
-        name = name.strip()
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-            QMessageBox.warning(self, tr("이름 오류"),
-                                tr("영문·숫자·-·_ 만 쓸 수 있습니다."))
-            return
-        path = PLANS_DIR / f"{name}.json"
-        if path.exists():
-            QMessageBox.warning(self, tr("이미 있음"),
-                                tr("{n} 이 이미 있습니다. 드롭다운에서 "
-                                   "선택하세요.").format(n=path.name))
-            return
-        PLANS_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"plan_version": 1, "scenes": []},
-                                   ensure_ascii=False, indent=2) + "\n",
-                        encoding="utf-8")
-        self.log(f"[계획] 새 계획 생성: {path.name}")
-        self._refresh_plan_combo(select=path.name)
-        self._on_edit_plan()    # 빈 계획은 쓸모없으니 바로 편집으로
 
-    def _on_delete_plan(self) -> None:
-        data = self.plan_combo.currentData()
-        if not data:
-            QMessageBox.information(self, tr("계획 없음"),
-                                    tr("삭제할 계획 파일을 먼저 선택하세요."))
-            return
-        p = Path(data)
-        ans = QMessageBox.question(
-            self, tr("계획 삭제"),
-            tr("{n} 을(를) 삭제할까요?\n수집 파일에는 영향이 없고, git 이력"
-               "에서 되살릴 수 있습니다.").format(n=p.name))
-        if ans != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            p.unlink()
-        except OSError as e:
-            QMessageBox.warning(self, tr("삭제 실패"), str(e))
-            return
-        self.log(f"[계획] 삭제: {p.name}")
-        self._refresh_plan_combo(select="")
 
-    def _on_edit_plan(self) -> None:
-        data = self.plan_combo.currentData()
-        if not data:
-            QMessageBox.information(self, tr("계획 없음"),
-                                    tr("편집할 계획 파일을 먼저 선택하세요."))
-            return
-        dlg = PlanEditDialog(self, Path(data))
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            for w in getattr(dlg, "warnings", []):
-                self.log(f"[계획 경고] {w}")
-            self.log(f"[계획] {Path(data).name} 저장됨")
-            # 갱신된 목표/slot 이 화면에 반영되게
-            self._on_plan_selected()
 
-    def _on_plan_selected(self, *_args) -> None:
-        plan = self._current_plan()
-        if plan is not None:
-            self._recents.add("plan_file", self.plan_combo.currentText())
-            for w in plan.warnings:
-                self.log(f"[계획 경고] {w}")
-        self._refresh_slot_panel()
-        self._on_scene_selected()
 
-    def _scene_session_file(self):
-        if not self.session.scene_session or self.session.active_file_path is None:
-            return None
-        return self.session.active_file_path
 
-    def _refresh_slot_panel(self) -> None:
-        """계획 slot 드롭다운 + 수집 카운트 + 계획-파일 불일치 경고 갱신.
 
-        카운트는 계획 파일이 아니라 scene 파일에서 계산한다(두 개의 진실
-        금지). 세션 중 에피소드가 저장될 때마다 다시 계산된다.
-        """
-        if not hasattr(self, "slot_plan_combo"):
-            return
-        combo = self.slot_plan_combo
-        combo.blockSignals(True)
-        combo.clear()
-        plan = self._current_plan()
-        # Configure 쪽과 같은 규칙: 계획이 있으면 드롭다운에서만 고른다.
-        combo.addItem(tr("(계획에서 선택)") if plan is not None
-                      else tr("(직접 입력)"), None)
-        if hasattr(self, "slot_iid_edit"):
-            self.slot_iid_edit.setReadOnly(plan is not None)
-            self.slot_instr_edit.setReadOnly(plan is not None)
-            for w in (self.slot_iid_edit, self.slot_instr_edit):
-                w.setStyleSheet("color:#888;" if plan is not None else "")
-        # 세션 중이므로 파일을 다시 열지 않는다(HDF5 잠금) -- scene ID 는
-        # 워커 설정에서, 에피소드·카운트는 saver 가 보내준 캐시에서.
-        sid = self._session_scene_id() if self.session.scene_session else None
-        counts = self._session_slot_counts()
-        episodes = list(self.session.active_episode_cache or [])
-        warn: list = []
-        if plan is not None and sid is not None:
-            slots = plan.slots_for(sid)
-            for s in slots:
-                c = counts.get(s.instruction_id, {}).get("usable", 0)
-                combo.addItem(
-                    f"{s.instruction_id} · {c}/{s.target} · {s.instruction}",
-                    (s.instruction_id, s.instruction))
-            if not slots:
-                warn.append(tr("계획에 scene {s} 가 없습니다").format(s=sid))
-            warn.extend(check_scene_against_plan(plan, sid, episodes))
-        combo.blockSignals(False)
-        self.slot_plan_warn.setText("\n".join(warn[:4]))
 
-    def _on_slot_plan_pick(self, *_args) -> None:
-        d = self.slot_plan_combo.currentData()
-        if d:
-            self.slot_iid_edit.setText(d[0])
-            self.slot_instr_edit.setText(d[1])
 
-    def _on_next_slot(self) -> None:
-        """계획에서 목표(target)를 못 채운 첫 slot 을 골라 채워준다 (§6:
-        채우지 못한 채 책상을 치우는 것이 재수집의 시작이다)."""
-        plan = self._current_plan()
-        sid = self._session_scene_id() if self.session.scene_session else None
-        if plan is None or sid is None:
-            self.log("[SLOT] 계획이 없거나 scene 세션이 아닙니다")
-            return
-        counts = self._session_slot_counts()
-        for s in plan.slots_for(sid):
-            c = counts.get(s.instruction_id, {}).get("usable", 0)
-            if c < s.target:
-                for i in range(self.slot_plan_combo.count()):
-                    if self.slot_plan_combo.itemData(i) == (s.instruction_id, s.instruction):
-                        self.slot_plan_combo.setCurrentIndex(i)
-                        break
-                self.slot_iid_edit.setText(s.instruction_id)
-                self.slot_instr_edit.setText(s.instruction)
-                self.log(f"[SLOT] 다음 미수집: {s.instruction_id} ({c}/{s.target}) {s.instruction}")
-                return
-        self.log("[SLOT] 이 scene 의 모든 slot 이 목표를 채웠습니다")
-
-    def _on_apply_slot(self) -> None:
-        """scene 세션 중 slot 전환 -- worker 의 cmd_set_slot 호출만 한다."""
-        if self.worker is None or not self.session.scene_session:
-            return
-        iid = self.slot_iid_edit.text().strip()
-        instr = self.slot_instr_edit.text().strip()
-        if not INSTRUCTION_ID_RE.match(iid):
-            QMessageBox.warning(self, tr("slot 오류"),
-                                tr("instruction ID 형식이 틀렸습니다 (예: I000)."))
-            return
-        if not instr or (instr.startswith('"') and instr.endswith('"')):
-            QMessageBox.warning(self, tr("slot 오류"),
-                                tr("따옴표 없는 순수 문장을 입력하세요."))
-            return
-        # 계획이 있으면 계획의 (ID, 문장) 쌍만 적용 가능 -- 자유 입력이
-        # 계획 밖 slot 을 만들던 구멍을 세션 중에도 막는다.
-        plan = self._current_plan()
-        sid = self._session_scene_id()
-        if plan is not None and sid is not None:
-            slots = plan.slots_for(sid)
-            if slots and not any(s.instruction_id == iid
-                                 and s.instruction == instr for s in slots):
-                QMessageBox.warning(self, tr("slot 오류"), tr(
-                    "계획에 없는 slot 입니다 ({i}). '계획 slot' 드롭다운에서 "
-                    "고르세요 — 새 문장은 계획을 먼저 수정하세요.").format(i=iid))
-                return
-        self.worker.cmd_set_slot(instr, iid)
-        self.slot_current_label.setText(f"{iid}: {instr}")
-        # cmd_set_slot 은 워커 큐로 가서 다음 드레인에 반영된다 -- 오른쪽
-        # 패널은 사용자가 누른 값으로 즉시 갱신한다 (워커 속성은 곧 같아진다).
-        self.right_fields["ds_task"].setText(f"{iid}: {instr}")
-        self.right_fields["ds_task"].setToolTip(f"{iid}: {instr}")
-        self._recents.add("instruction_id", iid)
-        self._recents.add("language", instr)
-        # 계획과 어긋난 수동 입력은 막지 않되 즉시 보이게 한다 (ID-문장
-        # 갈라짐이 실데이터에서 실제로 발생했다).
-        plan = self._current_plan()
-        sid = self._session_scene_id()
-        if plan is not None and sid is not None:
-            sentences = {s.instruction_id: s.instruction
-                         for s in plan.slots_for(sid)}
-            if iid in sentences and sentences[iid] != instr:
-                self.log(f"[SLOT 경고] {iid} 문장이 계획({sid})과 다릅니다 -- "
-                         f"계획: {sentences[iid]!r}")
-            elif sentences and iid not in sentences:
-                self.log(f"[SLOT 경고] 계획({sid})에 없는 slot {iid} 로 수집합니다")
 
     def _on_no_dataset_toggled(self, on: bool) -> None:
         """No file is written, so the task/path fields have nothing to name."""
@@ -1374,34 +867,6 @@ class WorkspaceWindow(QMainWindow):
     # _on_resume_selected / _show_resume_info)은 legacy 수집 UI 제거와 함께
     # 삭제됐다 (2026-08-13). scene 이어찍기는 Scene 콤보가 담당한다.
 
-    def _apply_session_config(self, cfg: dict) -> list:
-        """Puts a file's recorded session_config back into the widgets that
-        produced it (see libero_gui_worker.py's record_session_config).
-
-        Returns the labels of what was actually restored, so the hint can say
-        what changed rather than claim more than it did -- older files were
-        written before some of these keys existed.
-        """
-        done = []
-        for key, combo, label in (("reset_pose", self.reset_pose_combo, tr("Reset pose")),
-                                  ("grip", self.grip_combo, tr("Grip"))):
-            val = cfg.get(key)
-            if val is None:
-                continue
-            i = combo.findText(str(val))
-            if i >= 0:
-                combo.setCurrentIndex(i)
-                done.append(label)
-        for key, edit, label in (("max_episode_seconds", self.eplen_edit, tr("에피소드 길이")),
-                                 ("reset_wait_seconds", self.resetwait_edit, tr("리셋 대기"))):
-            val = cfg.get(key)
-            if val is not None:
-                edit.setText(str(int(val)))
-                done.append(label)
-        if cfg.get("enable_wall") is not None:
-            self.wall_check.setChecked(bool(cfg["enable_wall"]))
-            done.append(tr("관절 한계 벽"))
-        return done
 
     def _refresh_schema_label(self) -> None:
         n = sum(1 for k in ("save_agentview_rgb", "save_eye_in_hand_rgb",
@@ -1491,7 +956,7 @@ class WorkspaceWindow(QMainWindow):
         scene_sid = None
         scene_resume = False
         if scene_on:
-            scene_meta, scene_sid, scene_resume, err = self._scene_config_from_ui()
+            scene_meta, scene_sid, scene_resume, err = self.scene_ops.scene_config_from_ui()
             if err is not None:
                 QMessageBox.warning(self, tr("Scene 설정"), err)
                 return
@@ -1607,9 +1072,9 @@ class WorkspaceWindow(QMainWindow):
                         Path(cfg.data_root) / scene_filename(scene_sid))
                 except Exception:  # noqa: BLE001
                     md = None
-            self._set_right_scene(md, scene_sid)
+            self.scene_ops.set_right_scene(md, scene_sid)
         else:
-            self._set_right_scene(None)
+            self.scene_ops.set_right_scene(None)
 
         w = CollectionWorker(cfg)
         w.state_changed.connect(self._on_state)
@@ -1871,7 +1336,7 @@ class WorkspaceWindow(QMainWindow):
         if self.session.scene_session:
             # scene 파일이 실제로 만들어졌으니 보관해 둔 새 scene 구성은 소진.
             self._pending_scene_meta = None
-            self._refresh_slot_panel()
+            self.scene_ops.refresh_slot_panel()
         self._update_dataset_panel()
         self.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
         self._refresh_dataset_tree()
@@ -1882,17 +1347,6 @@ class WorkspaceWindow(QMainWindow):
         # 모든 종료 경로에서 오는 finished(_on_worker_finished)가 맡는다.
         self.log(f"[세션 요약] {summary}")
 
-    def _set_right_scene(self, md, sid=None) -> None:
-        """오른쪽 패널의 '수집 중 scene 배치도'를 갱신한다."""
-        if not hasattr(self, "right_scene_view"):
-            return
-        if md is not None:
-            self.right_scene_view.setText(describe_scene(md))
-        elif sid:
-            self.right_scene_view.setText(
-                tr("{s} — 배치 정보를 읽지 못했습니다").format(s=sid))
-        else:
-            self.right_scene_view.setText(tr("(scene 세션 없음)"))
 
     @pyqtSlot()
     def _on_worker_finished(self) -> None:
@@ -1911,12 +1365,12 @@ class WorkspaceWindow(QMainWindow):
         self.session.active_episode_cache = None
         was_scene = self.session.scene_session
         self.session.scene_session = False
-        self._set_right_scene(None)
+        self.scene_ops.set_right_scene(None)
         self._set_running(False)
         self._refresh_dataset_tree()
         if was_scene:
             # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
-            self._refresh_scene_combo()
+            self.scene_ops.refresh_scene_combo()
         self.camera_ops.restart_previews()
         if self.cameras.depth_consumer is not None:
             # 세션 동안 Depth/Point Cloud 탭에 머물러 있었다면 스트림을 다시
@@ -1955,7 +1409,7 @@ class WorkspaceWindow(QMainWindow):
         if tree is None:
             return
         tree.clear()
-        plan = self._current_plan()
+        plan = self.scene_ops.current_plan()
         if plan is None:
             self.plan_progress_label.setText(
                 tr("Configure 에서 수집 계획을 선택하세요."))
@@ -1967,8 +1421,8 @@ class WorkspaceWindow(QMainWindow):
             path = root / scene_filename(sp.scene_id)
             counts: dict = {}
             note = ""
-            if self.session.scene_session and sp.scene_id == self._session_scene_id():
-                counts = self._session_slot_counts()
+            if self.session.scene_session and sp.scene_id == self.scene_ops.session_scene_id():
+                counts = self.scene_ops.session_slot_counts()
                 note = tr(" (세션 중 — 캐시)")
             elif path.exists():
                 try:
@@ -2239,15 +1693,6 @@ class WorkspaceWindow(QMainWindow):
         self.stats_hint.setText(
             tr("{n}개 중 상위 {m}개 표시").format(n=len(self._filtered_stats()), m=len(rows)))
 
-    def _on_rank_selected(self) -> None:
-        """Selecting a row draws its curves -- the point of the panel is that a
-        number never decides on its own whether a take is bad."""
-        items = self.rank_tree.selectedItems()
-        if not items:
-            return
-        path, demo = items[0].data(0, Qt.ItemDataRole.UserRole)
-        self._show_analysis_for(path, demo)
-        self.playback_ops.show_trim_for(path, demo)
 
     def _show_analysis_for(self, path: str, demo: str) -> None:
         """Dataset 트리와 순위표가 공유하는 곡선 표시 경로."""
@@ -2372,7 +1817,7 @@ class WorkspaceWindow(QMainWindow):
         # 싶은 task 목록이 화면 밖으로 밀린다. 필요한 파일만 열면 된다.
         self.dataset_tree.collapseAll()
         if hasattr(self, "scene_combo"):
-            self._refresh_scene_combo()
+            self.scene_ops.refresh_scene_combo()
         if hasattr(self, "gallery_scene_combo"):
             self._refresh_gallery_scenes()
         self._update_dataset_panel(self._selected_file())

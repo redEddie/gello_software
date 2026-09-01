@@ -25,12 +25,12 @@ md = SceneMetadata(
             "placements": {"OBJ-cup-blue-01": {"zone": [0, 0]},
                            "OBJ-bowl-blue-01": {"zone": [1, 1]}}},
     description="테스트 배치")
-win._set_right_scene(md, "S000")
+win.scene_ops.set_right_scene(md, "S000")
 t = win.right_scene_view.text()
 assert "S000" in t and any(ch in t for ch in "┌┼│"), t[:120]
-win._set_right_scene(None, "S007")   # metadata 읽기 실패 케이스
+win.scene_ops.set_right_scene(None, "S007")   # metadata 읽기 실패 케이스
 assert "S007" in win.right_scene_view.text()
-win._set_right_scene(None)
+win.scene_ops.set_right_scene(None)
 assert "세션 없음" in win.right_scene_view.text()
 print("통과: 배치도 표시(3x3 격자 포함)/읽기실패/초기화")
 import os  # noqa: E402

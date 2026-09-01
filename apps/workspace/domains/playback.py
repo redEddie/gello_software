@@ -451,7 +451,7 @@ class PlaybackOps:
                 try:
                     # 파일은 saver 가 잠그고 있다 -- 다시 열지 않고 세션 설정에서
                     # scene_id 를 얻는다 (_session_scene_id).
-                    sid = self.win._session_scene_id()
+                    sid = self.win.scene_ops.session_scene_id()
                     n_thumbs = invalidate_scene_thumbs(sid) if sid else 0
                     if n_thumbs:
                         self.win.log(f"[썸네일] {sid}: {n_thumbs}개 캐시 무효화")
@@ -460,8 +460,8 @@ class PlaybackOps:
         self.win._refresh_dataset_tree()
         if self.win.session.scene_session:
             # 저장/재판정마다 saver 가 새 목록을 보내온다 -- slot 카운트 갱신
-            self.win._refresh_slot_panel()
-            self.win._refresh_start_plan_combo()   # Configure 쪽 카운트도 동기화
+            self.win.scene_ops.refresh_slot_panel()
+            self.win.scene_ops.refresh_start_plan_combo()   # Configure 쪽 카운트도 동기화
 
     # -------------------------------------------------------------- hdf5 view
     def on_show_structure(self) -> None:

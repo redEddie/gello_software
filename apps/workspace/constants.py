@@ -9,6 +9,8 @@ LOG_DIR = Path.home() / "libero_gui_logs"
 # back to collect_workspace.py.
 WT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONVERT_SCRIPT = str(WT_ROOT / "scripts" / "convert" / "convert_libero_to_lerobot.py")
+LAYOUT_ZIP = WT_ROOT / "assets" / "libero_init_layouts.zip"
+LAYOUT_DIR = WT_ROOT / "assets" / "libero_init_layouts"
 UPLOAD_SCRIPT = str(WT_ROOT / "scripts" / "convert" / "upload_to_hub.py")
 REPACK_SCRIPT = str(WT_ROOT / "scripts" / "convert" / "repack_hdf5.py")
 REPLAY_SCRIPT = str(WT_ROOT / "scripts" / "analyze" / "replay_episode.py")

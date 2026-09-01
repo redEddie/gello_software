@@ -10,10 +10,12 @@ sys.path.insert(0, WT)
 sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QInputDialog  # noqa: E402
 
 app = QApplication(sys.argv)
 import collect_workspace as cw  # noqa: E402
+from apps.dialogs.plan_edit_dialog import PlanEditDialog  # noqa: E402
+from gello.scene.collection_plan import PLANS_DIR  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="planform_"))
 plan_copy = TMP / "pilot.json"
@@ -23,7 +25,7 @@ cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 cw.QMessageBox.information = staticmethod(lambda *a, **k: None)
 
 # ---- 1. 폼 로드: scene 목록 + 행 내용 ----
-dlg = cw.PlanEditDialog(None, plan_copy)
+dlg = PlanEditDialog(None, plan_copy)
 assert [dlg.scene_combo.itemText(i) for i in range(dlg.scene_combo.count())] \
     == [s["scene_id"] for s in orig["scenes"]]
 assert dlg.tree.topLevelItemCount() == len(orig["scenes"][0]["slots"])
@@ -54,7 +56,7 @@ assert saved.get("plan_version") == orig.get("plan_version")
 print("2 통과: 목표 수정 + 새 행 자동 ID + 부가 필드 보존")
 
 # ---- 3. 행 삭제 후 남은 ID 유지 + 삭제 번호 재사용 금지 ----
-dlg2 = cw.PlanEditDialog(None, plan_copy)
+dlg2 = PlanEditDialog(None, plan_copy)
 it = dlg2.tree.topLevelItem(1)          # I001 삭제
 it.setSelected(True)
 dlg2._on_del_row()
@@ -73,7 +75,7 @@ print("3 통과: 행 삭제(번호 유지) + 지운 번호 재사용 금지")
 # ---- 4. scene 추가 + 검증 실패 시 파일 무변경 ----
 before = plan_copy.read_text()
 next_sid = f"S{max(int(s['scene_id'][1:]) for s in json.loads(before)['scenes']) + 1:03d}"
-dlg3 = cw.PlanEditDialog(None, plan_copy)
+dlg3 = PlanEditDialog(None, plan_copy)
 dlg3._on_add_scene()
 assert dlg3.scene_combo.currentText() == next_sid
 dlg3._add_row({"id": None, "instr": "", "target": 1})
@@ -99,11 +101,11 @@ i = win.plan_combo.findText("pilot.json")
 assert i >= 0
 win.plan_combo.setCurrentIndex(i)
 # scene 파일이 수집 세션에 잠겨 있어도 돌 수 있게 scene 선택을 주입한다
-win._configure_scene_id = lambda: "S000"
-win._selected_scene_path = lambda: None
-win._refresh_start_plan_combo()
+win.scene_ops.configure_scene_id = lambda: "S000"
+win.scene_ops.selected_scene_path = lambda: None
+win.scene_ops.refresh_start_plan_combo()
 combo = win.start_plan_combo
-plan = win._current_plan()
+plan = win.scene_ops.current_plan()
 n_slots = len(plan.slots_for("S000"))
 assert combo.count() == 1 + n_slots, (combo.count(), n_slots)
 combo.setCurrentIndex(1)                 # 첫 계획 문장 선택
@@ -117,27 +119,27 @@ assert win.lang_edit.isReadOnly() and win.scene_iid_edit.isReadOnly()
 win.collector_edit.setText("t")
 win.lang_edit.setText("open the top drawer")     # 계획에 없는 문장 (주입)
 win.scene_iid_edit.setText("I009")
-_, _, _, err = win._scene_config_from_ui()
+_, _, _, err = win.scene_ops.scene_config_from_ui()
 assert err and "계획" in err, err
 combo.setCurrentIndex(1)                          # 계획 문장으로 복귀
-win._on_start_plan_pick()   # 인덱스가 그대로면 시그널이 없어 직접 호출
-_, _, _, err2 = win._scene_config_from_ui()
+win.scene_ops.on_start_plan_pick()   # 인덱스가 그대로면 시그널이 없어 직접 호출
+_, _, _, err2 = win.scene_ops.scene_config_from_ui()
 assert err2 is None or "계획" not in err2, err2   # 남는 오류는 scene 선택뿐
 print("6 통과: 계획 선택 시 자유 입력 잠금 + 계획 밖 시작 문장 거부")
 
 # ---- 7. 계획 파일 새로 만들기 / 삭제 ----
-cw.QInputDialog.getText = staticmethod(lambda *a, **k: ("tmp-uitest", True))
+QInputDialog.getText = staticmethod(lambda *a, **k: ("tmp-uitest", True))
 cw.QMessageBox.question = staticmethod(
     lambda *a, **k: cw.QMessageBox.StandardButton.Yes)
-win._on_edit_plan = lambda: None        # 모달 편집 열림 방지
-new_path = cw.PLANS_DIR / "tmp-uitest.json"
+win.scene_ops.on_edit_plan = lambda: None        # 모달 편집 열림 방지
+new_path = PLANS_DIR / "tmp-uitest.json"
 new_path.unlink(missing_ok=True)
 try:
-    win._on_new_plan()
+    win.scene_ops.on_new_plan()
     assert new_path.exists()
     assert win.plan_combo.currentText() == "tmp-uitest.json"
     assert json.loads(new_path.read_text())["scenes"] == []
-    win._on_delete_plan()
+    win.scene_ops.on_delete_plan()
     assert not new_path.exists()
     assert win.plan_combo.findText("tmp-uitest.json") < 0
 finally:
@@ -150,7 +152,7 @@ print("7 통과: 계획 파일 생성(+선택) / 삭제(+목록 갱신)")
 warns = []
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: warns.append(a[2] if len(a) > 2 else ""))
 cw.QMessageBox.information = staticmethod(lambda *a, **k: None)
-dlg8 = cw.PlanEditDialog(None, plan_copy)
+dlg8 = PlanEditDialog(None, plan_copy)
 # 빈 scene 흉내: 존재 확인을 주입 (파일계 의존 제거)
 dlg8._scene_has_episodes = lambda sid: False
 dlg8._on_del_row()                       # no-op (선택 없음)

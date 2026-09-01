@@ -49,29 +49,29 @@ def build_configure(win) -> QWidget:
     srow.setContentsMargins(0, 0, 0, 0)
     win.scene_combo = QComboBox()
     shrinkable_combo(win.scene_combo)
-    win.scene_combo.currentIndexChanged.connect(win._on_scene_selected)
+    win.scene_combo.currentIndexChanged.connect(win.scene_ops.on_scene_selected)
     srow.addWidget(win.scene_combo, 1)
     win.scene_refresh_btn = QPushButton("↻")
     win.scene_refresh_btn.setToolTip(tr("scene 목록 새로고침"))
     win.scene_refresh_btn.setMaximumWidth(32)
-    win.scene_refresh_btn.clicked.connect(win._refresh_scene_combo)
+    win.scene_refresh_btn.clicked.connect(win.scene_ops.refresh_scene_combo)
     srow.addWidget(win.scene_refresh_btn)
     sc_form.addRow(tr("Scene"), scene_row)
     win.scene_new_btn = QPushButton(tr("새 Scene 구성..."))
-    win.scene_new_btn.clicked.connect(win._on_new_scene)
+    win.scene_new_btn.clicked.connect(win.scene_ops.on_new_scene)
     sc_form.addRow(win.scene_new_btn)
     # 계획이 있으면 시작 문장을 여기서 고른다 -- 고르면 아래 문장·slot ID
     # 가 함께 채워진다 (세션 중 slot 패널의 계획 콤보와 같은 장치).
     win.start_plan_combo = QComboBox()
     shrinkable_combo(win.start_plan_combo)
-    win.start_plan_combo.currentIndexChanged.connect(win._on_start_plan_pick)
+    win.start_plan_combo.currentIndexChanged.connect(win.scene_ops.on_start_plan_pick)
     sc_form.addRow(tr("계획 문장"), win.start_plan_combo)
     win.lang_edit = QLineEdit()
     win.lang_edit.setPlaceholderText(tr("예) pick up the blue cup and place it on the blue bowl"))
     win.lang_edit.setText(win._recents.most_recent("language", ""))
     # 문장을 바꾸면 slot ID 가 자동으로 따라온다 (아는 문장=재사용,
     # 새 문장=다음 빈 ID) -- ID-문장 갈라짐 방지.
-    win.lang_edit.editingFinished.connect(win._on_start_sentence_edited)
+    win.lang_edit.editingFinished.connect(win.scene_ops.on_start_sentence_edited)
     sc_form.addRow(tr("시작 문장"), win.lang_edit)
     # 수집 계획 (slot plan). 계획이 있으면 Collect 의 slot 패널이 계획
     # 기반 드롭다운 + 수집 카운트로 동작한다. 없어도 자유 입력은 그대로.
@@ -84,7 +84,7 @@ def build_configure(win) -> QWidget:
     idx = win.plan_combo.findText(last_plan)
     if idx > 0:
         win.plan_combo.setCurrentIndex(idx)
-    win.plan_combo.currentIndexChanged.connect(win._on_plan_selected)
+    win.plan_combo.currentIndexChanged.connect(win.scene_ops.on_plan_selected)
     plan_row = QWidget()
     prow = QHBoxLayout(plan_row)
     prow.setContentsMargins(0, 0, 0, 0)
@@ -92,18 +92,18 @@ def build_configure(win) -> QWidget:
     win.plan_edit_btn = QPushButton("✎")
     win.plan_edit_btn.setToolTip(tr("선택한 계획 파일 편집 (저장 시 규칙 검증)"))
     win.plan_edit_btn.setMaximumWidth(32)
-    win.plan_edit_btn.clicked.connect(win._on_edit_plan)
+    win.plan_edit_btn.clicked.connect(win.scene_ops.on_edit_plan)
     prow.addWidget(win.plan_edit_btn)
     plan_new_btn = QPushButton("+")
     plan_new_btn.setToolTip(tr("새 계획 파일 만들기 (이름을 정하면 빈 계획이 "
                                "생기고 바로 편집이 열립니다)"))
     plan_new_btn.setMaximumWidth(32)
-    plan_new_btn.clicked.connect(win._on_new_plan)
+    plan_new_btn.clicked.connect(win.scene_ops.on_new_plan)
     prow.addWidget(plan_new_btn)
     plan_del_btn = QPushButton("🗑")
     plan_del_btn.setToolTip(tr("선택한 계획 파일 삭제 (git 이력에는 남습니다)"))
     plan_del_btn.setMaximumWidth(32)
-    plan_del_btn.clicked.connect(win._on_delete_plan)
+    plan_del_btn.clicked.connect(win.scene_ops.on_delete_plan)
     prow.addWidget(plan_del_btn)
     sc_form.addRow(tr("수집 계획"), plan_row)
     win.scene_iid_edit = QLineEdit(win._recents.most_recent("instruction_id", "I000"))
@@ -118,7 +118,7 @@ def build_configure(win) -> QWidget:
     rl.setContentsMargins(0, 0, 0, 0)
     win.root_edit = QLineEdit(win._recents.most_recent(
         "data_root", str(Path.home() / "libero_datasets")))
-    win.root_edit.editingFinished.connect(win._refresh_scene_combo)
+    win.root_edit.editingFinished.connect(win.scene_ops.refresh_scene_combo)
     rl.addWidget(win.root_edit, 1)
     browse = QPushButton(tr("..."))
     browse.setMaximumWidth(36)
@@ -192,6 +192,6 @@ def build_configure(win) -> QWidget:
     sform.addRow(win.match_check)
     col.addWidget(sess)
     col.addStretch()
-    win._refresh_scene_combo()
+    win.scene_ops.refresh_scene_combo()
     return w
 

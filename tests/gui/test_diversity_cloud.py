@@ -54,6 +54,7 @@ app = QApplication(sys.argv)
 from tests.gui.helpers import _wait_recs  # noqa: E402
 
 import collect_workspace as cw  # noqa: E402
+from apps.dialogs.new_scene_dialog import NewSceneDialog  # noqa: E402
 from apps.dialogs.recommend_dialog import RecommendDialog  # noqa: E402
 
 cw.CameraOps.refresh_cameras = lambda self: None
@@ -88,7 +89,7 @@ rdlg._radios[1].setChecked(True)
 rdlg._accept()
 assert rdlg.picked is not None
 assert rdlg.picked.objects == rdlg._recs[1]["md"].objects
-nd = cw.NewSceneDialog(None, "S001")
+nd = NewSceneDialog(None, "S001")
 nd._apply_recommendation(rdlg.picked)
 assert set(nd._checked_ids()) == set(rdlg.picked.objects)
 want_zones = {o: s["zone"] for o, s in

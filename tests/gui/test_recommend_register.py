@@ -18,6 +18,7 @@ app = QApplication(sys.argv)
 from tests.gui.helpers import _wait_recs  # noqa: E402
 
 import collect_workspace as cw  # noqa: E402
+from apps.dialogs.new_scene_dialog import NewSceneDialog  # noqa: E402
 from apps.dialogs.recommend_dialog import RecommendDialog  # noqa: E402
 from gello.scene.props import props_by_id  # noqa: E402
 from gello.scene.scene_format import SceneMetadata  # noqa: E402
@@ -69,7 +70,7 @@ assert loaded.scene("S999") is not None
 print("3 통과: 등록된 계획 load_plan 검증 통과")
 
 # ---- 4. NewSceneDialog lint: 규칙 위반 시 경고 표시 ----
-nd = cw.NewSceneDialog(None, "S100")
+nd = NewSceneDialog(None, "S100")
 # 위반 배치: 흰 컵 2개 + drawer 중앙
 nd.prop_list.blockSignals(True)
 for i in range(nd.prop_list.count()):
@@ -90,7 +91,7 @@ assert "ban_zones" in lint_text, lint_text
 print("4 통과: NewSceneDialog 규칙 위반 경고")
 
 # ---- 5. NewSceneDialog lint: 규칙 통과 시 경고 없음 ----
-nd2 = cw.NewSceneDialog(None, "S101")
+nd2 = NewSceneDialog(None, "S101")
 nd2.prop_list.blockSignals(True)
 for i in range(nd2.prop_list.count()):
     it = nd2.prop_list.item(i)
@@ -106,7 +107,7 @@ nd2._placements = {"OBJ-CUP-WHT-01": [0, 0], "OBJ-CUP-BLU-01": [1, 0],
 nd2._refresh()
 assert nd2.lint_label.text() == "", nd2.lint_label.text()
 # 컵 1 + 그릇 1 이면 pair_if_present 경고가 떠야 한다 (shortcut 방지)
-nd3 = cw.NewSceneDialog(None, "S102")
+nd3 = NewSceneDialog(None, "S102")
 nd3.prop_list.blockSignals(True)
 for i in range(nd3.prop_list.count()):
     it = nd3.prop_list.item(i)

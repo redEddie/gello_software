@@ -137,7 +137,7 @@ def build_analysis_tab(win) -> QWidget:
             tr("language instruction"))):
         win.rank_tree.headerItem().setToolTip(c, tip)
     win.rank_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-    win.rank_tree.itemSelectionChanged.connect(win._on_rank_selected)
+    win.rank_tree.itemSelectionChanged.connect(win.scene_ops.on_rank_selected)
     win.rank_tree.setMinimumHeight(220)
     fcol.addWidget(win.rank_tree, 1)
     # 판정선만 한 줄로 남긴다. 나머지 정의는 헤더 툴팁 -- 조작자가 코드를
