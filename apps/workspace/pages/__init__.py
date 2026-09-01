@@ -7,14 +7,17 @@ method until that page is also extracted.
 """
 from .collect import build_collect
 from .configure import build_configure
+from .dataset import build_dataset
 
 PAGE_BUILDERS = {
     "configure": build_configure,
     "collect": build_collect,
+    "dataset": build_dataset,
 }
 
 __all__ = [
     "PAGE_BUILDERS",
     "build_collect",
     "build_configure",
+    "build_dataset",
 ]
