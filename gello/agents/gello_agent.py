@@ -179,7 +179,12 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
         # Pitch-only integrator: learns the gravity-holding current at the
         # target pose (model-free), so J2/J4 converge instead of sagging
         # just outside match_tol. Clamped well under their 1 A caps.
-        match_int_max=(0.0, 800.0, 0.0, 800.0, 0.0, 0.0, 0.0),
+        # 2026-09-01: 피치 외 관절에도 적분기를 준다. 스프링만으로는 마찰을
+        # 이기지 못해 목표 근처에서 오차가 남았다 -- "정렬이 완벽하지 않다" 는
+        # 관측이 이것이다. 적분기는 그 남은 오차를 시간에 걸쳐 없앤다.
+        # 200 mA 는 이 관절들의 캡(400)의 절반이라 스프링 몫이 남고, 도달하지
+        # 못한 채 감기면 wall 의 포화 감시(캡의 90% 4초)가 정렬을 포기시킨다.
+        match_int_max=(200.0, 800.0, 200.0, 800.0, 200.0, 200.0, 200.0),
         # J2/J4 keep their first 1 A of request when the supply budget
         # saturates -- 사용자 요구: pitch 는 최소 1 A 유지.
         budget_floor=(0.0, 1000.0, 0.0, 1000.0, 0.0, 0.0, 0.0),
