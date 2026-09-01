@@ -52,6 +52,7 @@ app = QApplication(sys.argv)
 from tests.gui.helpers import _wait_recs  # noqa: E402
 
 import collect_workspace as cw  # noqa: E402
+from apps.dialogs.recommend_dialog import RecommendDialog  # noqa: E402
 
 cw.WorkspaceWindow._refresh_cameras = lambda self: None
 cw.WorkspaceWindow._restart_previews = lambda self: None
@@ -78,7 +79,7 @@ win.worker = None
 print("3 통과: 탭 진입/이탈 가드 + 합성 클라우드 렌더 + 세션 차단")
 
 # ---- 4. GUI 추천 받기: 다이얼로그 + NewScene 자동 채움 ----
-rdlg = cw.RecommendDialog(None, [base], props, "S001")
+rdlg = RecommendDialog(None, [base], props, "S001")
 _wait_recs(rdlg)
 assert len(rdlg._radios) == 3 and rdlg._radios[0].isChecked()
 rdlg._radios[1].setChecked(True)
@@ -93,7 +94,7 @@ want_zones = {o: s["zone"] for o, s in
 assert nd._placements == want_zones
 assert nd.preview.text()                     # 격자 미리보기 갱신됨
 # seed 바꿔 다시 추천 -> 카드 재구성
-rdlg2 = cw.RecommendDialog(None, [base], props, "S001")
+rdlg2 = RecommendDialog(None, [base], props, "S001")
 _wait_recs(rdlg2)
 first = [r["md"].objects for r in rdlg2._recs]
 rdlg2.seed_spin.setValue(7)

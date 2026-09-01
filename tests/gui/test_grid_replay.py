@@ -44,6 +44,7 @@ assert load_grid_store(TMP / "none.json")["grids"] == {}
 print("1 통과: 격자 계산(원근 항등 검증)·그리기·저장 왕복")
 
 import collect_workspace as cw  # noqa: E402
+from gello.gui.grid_overlay import DEFAULT_CORNERS  # noqa: E402
 
 # ---- 2. 편집 다이얼로그: 정렬/변환/저장/불러오기 ----
 saved = {}
@@ -76,7 +77,7 @@ dlg._save()
 assert saved["active"] == "front_cam"
 assert saved["grids"]["front_cam"][0] == [0.2, 0.20]
 dlg.load_combo.setCurrentIndex(dlg.load_combo.findText("front_cam"))
-dlg.canvas.corners = [list(c) for c in cw.DEFAULT_CORNERS]
+dlg.canvas.corners = [list(c) for c in DEFAULT_CORNERS]
 dlg._load_selected()
 assert dlg.canvas.corners[0] == [0.2, 0.20]
 print("2 통과: 정렬(y 평균)·변환 플래그·저장(active 지정)·불러오기")
@@ -91,7 +92,7 @@ cw.QMessageBox.information = staticmethod(
     lambda *a, **k: infos.append(a[2] if len(a) > 2 else ""))
 win = cw.WorkspaceWindow(None)
 win._grid_store = {"active": "g", "live_on": True, "alpha": 60,
-                   "grids": {"g": cw.DEFAULT_CORNERS}}
+                   "grids": {"g": DEFAULT_CORNERS}}
 win.grid_live_check.setChecked(True)
 frame = np.full((480, 640, 3), 20, np.uint8)
 shown = win._with_grid("agent", frame)

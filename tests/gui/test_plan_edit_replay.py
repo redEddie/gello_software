@@ -14,13 +14,14 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 import collect_workspace as cw  # noqa: E402
+from apps.dialogs.plan_json_dialog import PlanJsonDialog  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="planedit_"))
 plan_copy = TMP / "pilot.json"
 shutil.copy(f"{WT}/configs/collection/plans/pilot.json", plan_copy)
 
 # 1. 편집 다이얼로그: 유효한 수정 -> 저장됨
-dlg = cw.PlanJsonDialog(None, plan_copy)
+dlg = PlanJsonDialog(None, plan_copy)
 data = json.loads(dlg.editor.toPlainText())
 data["scenes"][0]["slots"][0]["target"] = 12
 dlg.editor.setPlainText(json.dumps(data, ensure_ascii=False, indent=2))
@@ -31,7 +32,7 @@ assert dlg.result() == 1 or dlg.warnings == []  # accept 됨
 print("1 통과: 유효 수정 저장 (target 10->12)")
 
 # 2. 규칙 위반(같은 scene 중복 ID) -> 저장 거부 + 오류 표시, 파일 무변경
-dlg2 = cw.PlanJsonDialog(None, plan_copy)
+dlg2 = PlanJsonDialog(None, plan_copy)
 bad = json.loads(dlg2.editor.toPlainText())
 bad["scenes"][0]["slots"].append(
     {"instruction_id": "I000", "instruction": "open the top drawer", "target": 5})
@@ -43,7 +44,7 @@ assert len(json.loads(plan_copy.read_text())["scenes"][0]["slots"]) == len(data[
 print("2 통과: 규칙 위반 저장 거부 --", dlg2.error_label.text()[:50])
 
 # 3. 깨진 JSON -> 거부
-dlg3 = cw.PlanJsonDialog(None, plan_copy)
+dlg3 = PlanJsonDialog(None, plan_copy)
 dlg3.editor.setPlainText("{ not json")
 dlg3._save()
 assert dlg3.error_label.text()

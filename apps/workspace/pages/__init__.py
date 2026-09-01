@@ -1,9 +1,9 @@
 """Left-panel page builders for WorkspaceWindow.
 
-Each page is a module-level function ``build_<name>(win) -> QWidget``.
-The fallback dict lets pages move one at a time: once a page is exported here,
-build_left uses it; otherwise it falls back to the old ``win._page_<name>()``
-method until that page is also extracted.
+Each page is a module-level function ``build_<name>(win) -> QWidget``, keyed in
+PAGE_BUILDERS by the activity key. build_left walks ACTIVITIES and looks each
+key up here, so a key present in one and missing from the other is a KeyError
+at startup rather than a silently blank panel -- add to both or neither.
 """
 from .collect import build_collect
 from .configure import build_configure

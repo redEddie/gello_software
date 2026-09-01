@@ -50,7 +50,6 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 import json
 import shutil
 import sys
-import tempfile
 import traceback
 import time
 from pathlib import Path
@@ -58,45 +57,25 @@ from pathlib import Path
 import h5py
 import numpy as np
 from PyQt6.QtCore import (QEvent, QProcess, Qt, QThread, QTimer,
-                          pyqtSignal, pyqtSlot)
-from PyQt6.QtGui import QAction, QActionGroup, QFont, QIcon, QTextCursor
+                          pyqtSlot)
+from PyQt6.QtGui import QIcon, QTextCursor
 from PyQt6 import sip
 from PyQt6.QtWidgets import (
-    QAbstractItemView,
     QApplication,
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
-    QFormLayout,
-    QFrame,
-    QGridLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QHeaderView,
     QInputDialog,
     QLabel,
-    QLineEdit,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
-    QProgressBar,
     QPushButton,
-    QRadioButton,
-    QSlider,
-    QSpinBox,
-    QStackedWidget,
-    QTabWidget,
     QTextBrowser,
-    QToolBar,
-    QToolButton,
-    QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
-    QWidget,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -113,9 +92,8 @@ from gello.data.episode_stats import (  # noqa: E402
     scan_dataset,
     summarize,
 )
-from gello.data.episode_trim import plan_trim, suggest_trim, tail_speed, trim_tail  # noqa: E402
+from gello.data.episode_trim import plan_trim, suggest_trim, trim_tail  # noqa: E402
 from gello.gui.gui_widgets import (  # noqa: E402
-    TODO_MARK,
     repo_id_error,
     PLAYBACK_FPS,
     REPACK_SCRIPT,
@@ -123,7 +101,6 @@ from gello.gui.gui_widgets import (  # noqa: E402
     DatasetSchemaDialog,
     DepthCloudWorker,
     GalleryLoadWorker,
-    DeltaBar,
     EpisodeLoadWorker,
     HdfUploadDialog,
     HfAccountDialog,
@@ -134,9 +111,8 @@ from gello.gui.gui_widgets import (  # noqa: E402
     clean_stream_lines,
     hf_account,
     is_progress_line,
-    np_to_pixmap,
 )
-from apps.workspace.constants import LOG_DIR, ACTIVITIES  # noqa: E402
+from apps.workspace.constants import LOG_DIR  # noqa: E402
 from apps.workspace.builders import (  # noqa: E402
     build_bottom,
     build_center,
@@ -147,26 +123,16 @@ from apps.workspace.builders import (  # noqa: E402
     build_statusbar,
     build_toolbar,
 )
-from apps.workspace.builders.sizing import shrinkable_combo  # noqa: E402
 from apps.dialogs._image_utils import _depth_colormap  # noqa: E402
-from apps.dialogs._widgets import (  # noqa: E402
-    TODO_STYLE,
-    SceneInfoView,
-    mark_todo,
-)
 from apps.dialogs.grid_editor_dialog import GridEditorDialog  # noqa: E402
 from apps.dialogs.hdf5_tree_dialog import Hdf5TreeDialog  # noqa: E402
 from apps.dialogs.new_scene_dialog import NewSceneDialog  # noqa: E402
 from apps.dialogs.pipeline_dialog import PipelineDialog  # noqa: E402
 from apps.dialogs.plan_edit_dialog import PlanEditDialog  # noqa: E402
-from apps.dialogs.plan_json_dialog import PlanJsonDialog  # noqa: E402
-from apps.dialogs.recommend_dialog import RecommendDialog  # noqa: E402
 from gello.gui.grid_overlay import (  # noqa: E402
-    DEFAULT_CORNERS,
     draw_alignment_grid,
     active_corners,
     draw_grid,
-    grid_segments,
     load_grid_store,
     save_grid_store,
 )
@@ -175,7 +141,6 @@ from gello.data.libero_format import (  # noqa: E402
     default_crop_params,
     describe_episode,
     hdf5_repack_status,
-    load_crop_params,
     renumber_episodes,
     resize_rgb,
     save_crop_params,
@@ -188,19 +153,9 @@ from gello.scene.collection_plan import (  # noqa: E402
     load_plan,
 )
 from gello.gui.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
-from gello.scene.props import load_props, props_by_id  # noqa: E402
-from gello.scene.scene_diversity import AXES, recommend_detailed  # noqa: E402
-from gello.scene.skill_stats import (  # noqa: E402
-    collected_skill_counts,
-    format_skill_counts,
-    rank_instructions,
-)
 from gello.scene.scene_rules import check  # noqa: E402
-from gello.robots.franka_fr3 import FR3_RESET_POSES  # noqa: E402
 from gello.scene.scene_format import (  # noqa: E402
     INSTRUCTION_ID_RE,
-    SCENE_ID_RE,
-    SceneMetadata,
     count_by_slot,
     delete_scene_episodes,
     describe_scene,

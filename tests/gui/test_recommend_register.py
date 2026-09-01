@@ -18,6 +18,7 @@ app = QApplication(sys.argv)
 from tests.gui.helpers import _wait_recs  # noqa: E402
 
 import collect_workspace as cw  # noqa: E402
+from apps.dialogs.recommend_dialog import RecommendDialog  # noqa: E402
 from gello.scene.props import props_by_id  # noqa: E402
 from gello.scene.scene_format import SceneMetadata  # noqa: E402
 
@@ -40,7 +41,7 @@ shutil.copy(f"{WT}/configs/collection/plans/pilot.json", plan_copy)
 orig = json.loads(plan_copy.read_text())
 
 # ---- 1. RecommendDialog: 문장 체크리스트 표시 + 전체 기본 선택 ----
-rdlg = cw.RecommendDialog(None, [base], props, "S999", plan_path=plan_copy)
+rdlg = RecommendDialog(None, [base], props, "S999", plan_path=plan_copy)
 _wait_recs(rdlg)
 assert len(rdlg._radios) == 3
 idx = 0
