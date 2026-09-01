@@ -2,13 +2,15 @@
 
 ## 현재 상황
 
-- `apps/collect_workspace.py`는 6,700줄, `WorkspaceWindow` 클래스에 메서드 251개.
-- Plan 1단계(대화상자 추출) 완료: 7개 dialog + `_widgets.py` + `_image_utils.py`를 `apps/dialogs/`로 이동, `collect_workspace.py`는 -1,689줄.
-- Plan 1단계 후속 정리(Claude 검증 반영):
-  - `pipeline_dialog.py` / `new_scene_dialog.py`의 중복 정의(`StatusLight`, `SceneInfoView`, `PlanJsonDialog`, `_relax_min_widths`, `_shrinkable_combo`) 제거.
-  - `tests/gui/test_hub_upload_state.py`에 `scripts=` 인자 추가.
-  - `tests/gui/test_app_structure.py` 신규: `apps/` 전체의 클래스 중복 / 이름 해석 / 화살표 방향 / 순환 임포트 / `__all__` 계약 검증.
-  - `tests/gui/run_all.sh`에 `test_app_structure` 추가 (총 18개).
+- `apps/collect_workspace.py`는 4,955줄, `WorkspaceWindow` 클래스에 메서드 229개.
+- Plan 1단계(대화상자 추출) 완료: 7개 dialog + `_widgets.py` + `_image_utils.py`를 `apps/dialogs/`로 이동.
+- Plan 2단계(Builder 분리) 완료: 21개 `_build_*` / `_page_*` 메서드를 `apps/workspace/builders/`와 `apps/workspace/pages/`로 이동, `collect_workspace.py`는 -1,772줄.
+- Plan 2단계 후속 정리:
+  - 빌더/페이지 함수 이름을 공개형 `build_*`으로 통일, `builders/__init__.py`와 `pages/__init__.py`에 `__all__` 추가.
+  - 공유 상수(`LOG_DIR`, `ACTIVITIES`, `WIDE_FIELDS`, `PLAYBACK_SPEEDS`)를 `apps/workspace/constants.py`로 분리.
+  - UI sizing 헬퍼(`relax_min_widths`, `shrinkable_combo`, `grid_overlay`)를 `apps/workspace/builders/sizing.py`로 분리.
+  - `test_app_structure.py`가 `apps/` 전체의 클래스 중복 / 이름 해석 / 화살표 방향 / 순환 임포트 / `__all__` 계약을 검증.
+  - `tests/gui/run_all.sh`는 총 18개 테스트를 일괄 실행.
 
 ## 목표
 
@@ -28,7 +30,7 @@
 4. 상태는 가능한 한 순수 데이터 클래스/객체로 묶고, UI 메서드는 상태를 읽기만 한다.
 5. 하드웨어/프로세스 제어(로봇, 칩 인자 camera node, QProcess)는 WorkspaceWindow가 마지막으로 소유한다.
 
-## Phase 2 - Builder 분리
+## Phase 2 - Builder 분리 (완료)
 
 기준: 아무도 되부르지 않는 잎사귀부터 뺀다. `_build_*`와 `_page_*`는 외부에서 호출되는 진입점이 `__init__` 1개뿐이라 가장 먼저 분리한다.
 
@@ -37,49 +39,52 @@
 ```
 apps/workspace/
   __init__.py
+  constants.py    # LOG_DIR, ACTIVITIES, WIDE_FIELDS, PLAYBACK_SPEEDS
   builders/
-    __init__.py
-    toolbar.py      # _build_toolbar, _build_menu, _build_statusbar
-    layout.py       # _build_layout, _build_center, _build_left, _build_right, _build_bottom
-    gallery_tab.py  # _build_gallery_tab
-    trim_tab.py     # _build_trim_tab
-    layout_tab.py   # _build_layout_tab
-    cloud_tab.py    # _build_cloud_tab
-    depth_tab.py    # _build_depth_tab
-    analysis_tab.py # _build_analysis_tab
+    __init__.py   # __all__ + build_* 재수출
+    sizing.py     # relax_min_widths, shrinkable_combo, grid_overlay
+    toolbar.py    # build_toolbar, build_menu, build_statusbar
+    layout.py     # build_layout, build_center, build_left, build_right, build_bottom
+    gallery_tab.py  # build_gallery_tab
+    trim_tab.py     # build_trim_tab
+    layout_tab.py   # build_layout_tab
+    cloud_tab.py    # build_cloud_tab
+    depth_tab.py    # build_depth_tab
+    analysis_tab.py # build_analysis_tab
   pages/
-    __init__.py
-    configure.py    # _page_configure + scene combo / slot panel helpers
-    collect.py      # _page_collect + activity / view helpers
-    dataset.py      # _page_dataset + dataset tree helpers
-    upload.py       # _page_upload + repo edit helpers
-    stats.py        # _page_stats + progress / rank helpers
-    layout.py       # _page_layout + crop helpers
-    settings.py     # _page_settings + camera / schema helpers
+    __init__.py   # PAGE_BUILDERS dict, __all__
+    configure.py  # build_configure
+    collect.py    # build_collect
+    dataset.py    # build_dataset
+    upload.py     # build_upload
+    stats.py      # build_stats
+    layout.py     # build_layout_page (빌더 layout.py와 이름 충돌 방지)
+    settings.py   # build_settings
 ```
 
-총 21개 메서드:
+총 21개 함수:
 
-- `_build_gallery_tab`, `_build_center`, `_build_left`, `_build_right`, `_build_bottom`, `_build_layout`
-- `_build_toolbar`, `_build_menu`, `_build_statusbar`
-- `_build_trim_tab`, `_build_layout_tab`, `_build_cloud_tab`, `_build_depth_tab`, `_build_analysis_tab`
-- `_page_configure`, `_page_collect`, `_page_dataset`, `_page_upload`, `_page_stats`, `_page_layout`, `_page_settings`
+- `build_gallery_tab`, `build_center`, `build_left`, `build_right`, `build_bottom`, `build_layout`
+- `build_toolbar`, `build_menu`, `build_statusbar`
+- `build_trim_tab`, `build_layout_tab`, `build_cloud_tab`, `build_depth_tab`, `build_analysis_tab`
+- `build_configure`, `build_collect`, `build_dataset`, `build_upload`, `build_stats`, `build_layout_page`, `build_settings`
 
 방식:
 
 - 빌더 함수는 `WorkspaceWindow` 인스턴스(`win`)를 인자로 받아 위젯을 만들고 `win`에 할당한다. 예: `build_toolbar(win)`.
-- 페이지 클래스는 `QWidget`을 상속받고, 초기에는 `win._xxx` 직접 접근을 허용한다. 점진적으로 콜백/시그널로 교체한다.
-- 분리 즉시 `WorkspaceWindow`에서 원본 메서드를 삭제하고, `apps/workspace/builders/__init__.py`에서 편의 임포트를 제공한다.
+- 페이지도 동일하게 모듈 함수 `build_<name>(win) -> QWidget`로 분리한다. 페이지를 `QWidget` 서브클래스로 만들지 않는다 -- 그러면 창과 페이지가 서로를 참조하게 된다.
+- 분리 즉시 `WorkspaceWindow`에서 원본 메서드를 삭제하고, `apps/workspace/builders/__init__.py`와 `apps/workspace/pages/__init__.py`에서 편의 임포트를 제공한다.
+- `build_left`는 `pages.PAGE_BUILDERS[key](win)`만 사용하며, 페이지가 모두 분리된 뒤 `getattr(win, "_page_...")` fallback은 제거한다.
 
 검증:
 
-- `py_compile`
-- `PYTHONPATH="" python tests/gui/test_plan_form.py` (WorkspaceWindow 인스턴스 생성)
-- offscreen GUI smoke test
+- [x] `python -m py_compile apps/collect_workspace.py` 및 새 모듈 전체
+- [x] `bash tests/gui/run_all.sh /home/franka/lerobot-venv/bin/python` 18/18 통과
+- [x] 옮긴 이름의 잔여 참조 확인: `grep -cw <이름> apps/collect_workspace.py` 0
 
 ## Phase 3 - Data Model 분리
 
-기준: 빌더가 빠져야 진짜 상태가 보인다. `WorkspaceWindow`에 흩어진 상태 변수 257개를 순수 데이터 객체로 묶는다.
+기준: 빌더가 빠져야 진짜 상태가 보인다. `WorkspaceWindow`에 흩어진 상태 변수를 순수 데이터 객체로 묶는다.
 
 파일: `apps/workspace/models.py`
 
@@ -99,9 +104,9 @@ apps/workspace/
 
 검증:
 
-- `py_compile`
-- `tests/gui/test_plan_form.py`, `test_right_scene.py`
-- `tests/gui/run_all.sh` (test_app_structure 포함)
+- [ ] `py_compile`
+- [ ] `bash tests/gui/run_all.sh /home/franka/lerobot-venv/bin/python` 18/18 통과
+- [ ] 옮긴 이름의 잔여 참조 확인
 
 ## Phase 4 - Domain 분리
 
@@ -129,9 +134,9 @@ apps/workspace/
 
 검증:
 
-- `py_compile`
-- `tests/gui/run_all.sh` 전체 통과
-- 화면 검증: offscreen 또는 실제 GUI에서 전체 처리/새 씬 대화상자 열어보기
+- [ ] `py_compile`
+- [ ] `bash tests/gui/run_all.sh /home/franka/lerobot-venv/bin/python` 18/18 통과
+- [ ] 화면 검증: offscreen 또는 실제 GUI에서 전체 처리/새 씬 대화상자 열어보기
 
 ## 검증 체크리스트 (모든 phase 공통)
 
@@ -142,14 +147,10 @@ apps/workspace/
 
 ## 단기계획 (다음에 바로 시작할 것)
 
-**Phase 2 - Builder 분리**만 먼저 진행한다.
+**Phase 3 - Data Model 분리**를 진행한다.
 
-1. `apps/workspace/` 패키지 생성, `builders/`와 `pages/` 서브패키지 생성.
-2. `toolbar.py`/`layout.py`/`gallery_tab.py`/`trim_tab.py`/`layout_tab.py`/`cloud_tab.py`/`depth_tab.py`/`analysis_tab.py`로 `_build_*` 14개 이동.
-3. `pages/configure.py`/`collect.py`/`dataset.py`/`upload.py`/`stats.py`/`layout.py`/`settings.py`로 `_page_*` 7개 이동.
-4. `collect_workspace.py`에서 이동한 21개 메서드 삭제, `apps/workspace/builders/__init__.py`에서 편의 임포트.
-5. (완료) `test_app_structure.py` 가 `apps/` 전체를 검사한다.
-6. `py_compile` + `test_plan_form.py` + `test_grid_replay.py` + `test_scene_edit.py` + offscreen GUI smoke test.
-7. 커밋.
-
-Phase 3(Data Model)은 Phase 2 커밋 후 진행한다.
+1. `apps/workspace/models.py` 생성.
+2. `WorkspaceWindow.__init__`의 상태 변수를 그룹별로 `WorkspaceModel` 속성으로 이동.
+3. 상태를 읽기/쓰기하는 메서드를 `WorkspaceModel`로 옮기고, `WorkspaceWindow`에서는 `self._model.xxx()` 형태로 호출.
+4. `py_compile` + `bash tests/gui/run_all.sh /home/franka/lerobot-venv/bin/python` 18/18 통과.
+5. 커밋.
