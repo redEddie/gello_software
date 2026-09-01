@@ -1,0 +1,1 @@
+"""Workspace window decomposition package."""
