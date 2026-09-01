@@ -68,6 +68,10 @@ OBS_EE_POS = "ee_pos"
 OBS_EE_ORI = "ee_ori"
 OBS_JOINT_VELOCITIES = "joint_velocities"
 
+# HDF5 repack markers (used by libero_format.py, dataset_sync.py, repack_hdf5.py).
+REPACK_MARKER_ATTR = "repacked"
+REPACK_COUNT_ATTR = "repacked_episodes"
+
 #: 버전 문자열이 없던 시절의 표기 -> 현재 버전. 기존 파일(scene_000~014)은
 #: 전부 ``dataset_version="scene-v1"`` 이고 필드 구성이 knu-1.0.0 과 완전히
 #: 같아, 소급 기록 없이 별칭으로만 해석한다.

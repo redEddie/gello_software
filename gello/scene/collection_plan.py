@@ -26,7 +26,13 @@ from pathlib import Path
 from typing import Optional
 
 from gello.scene.instruction_grammar import lint as _grammar_lint
-from gello.scene.scene_format import INSTRUCTION_ID_RE, SCENE_ID_RE
+from gello.scene.scene_format import (
+    INSTRUCTION_ID_RE,
+    QUALITY_BAD_DATA,
+    QUALITY_DEPRECATED,
+    QUALITY_RETAKE,
+    SCENE_ID_RE,
+)
 
 PLANS_DIR = Path(__file__).resolve().parents[2] / "configs" / "collection" / "plans"
 
@@ -135,7 +141,7 @@ def check_scene_against_plan(plan: CollectionPlan, scene_id: str,
     for ep in episodes:
         # 큐레이션에서 뺀 에피소드(bad_data 등)는 계획 대조 대상이 아니다 --
         # 계획 밖 slot 을 폐기 처리하면 경고도 함께 사라져야 한다.
-        if ep.get("quality_status") in ("bad_data", "retake", "deprecated"):
+        if ep.get("quality_status") in (QUALITY_BAD_DATA, QUALITY_RETAKE, QUALITY_DEPRECATED):
             continue
         iid = ep.get("instruction_id", "")
         instr = ep.get("instruction", "")

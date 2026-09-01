@@ -19,6 +19,7 @@ sys.argv = ["t"]
 
 from gello.data.dataset_schema import OBS_AGENTVIEW_RGB  # noqa: E402
 from gello.scene.scene_format import (  # noqa: E402
+    QUALITY_SUCCESS,
     SceneWriter, delete_scene_episodes, list_scene_episodes, read_scene_metadata,
 )
 
@@ -243,7 +244,7 @@ assert "번호는 그대로" not in body, body
 assert "재사용 금지" not in body, body
 # 성공(success) 에피소드가 섞이면 warning + 기본 버튼 No 여야 한다 --
 # 함수 직접 호출이 아니라 슬롯 경로에서 검증 (기본 Yes 로 되돌아가는 회귀 방지).
-if cur[0].get("quality_status") == "success":
+if cur[0].get("quality_status") == QUALITY_SUCCESS:
     assert kind == "warning", kind
     default = wkw.get("defaultButton", wargs[-1] if wargs else None)
     assert default == cw.QMessageBox.StandardButton.No, (wargs, wkw)

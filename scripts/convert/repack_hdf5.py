@@ -38,6 +38,8 @@ from typing import Optional
 import h5py
 import numpy as np
 
+from gello.data.dataset_schema import REPACK_COUNT_ATTR, REPACK_MARKER_ATTR
+
 # Images are the only datasets big enough for compression to matter; the
 # rest are (T, <=8) float arrays where chunking overhead can exceed the win.
 _MIN_COMPRESS_BYTES = 1 << 16  # 64 KiB
@@ -210,7 +212,7 @@ def process(path: Path, compression: str, level: int, dry_run: bool,
             else:
                 anchor = f["metadata"]
                 n_eps = sum(1 for k in f.keys() if k.startswith("episode_"))
-            anchor.attrs["repacked"] = (
+            anchor.attrs[REPACK_MARKER_ATTR] = (
                 f"{time.strftime('%Y-%m-%d %H:%M')} {compression}"
                 + (f"-{level}" if compression == "gzip" else "")
             )
@@ -218,7 +220,7 @@ def process(path: Path, compression: str, level: int, dry_run: bool,
             # appends lzf episodes next to these gzip ones, and the count is
             # what lets a later run report "N added since" instead of just
             # trusting a marker that has gone stale.
-            anchor.attrs["repacked_episodes"] = n_eps
+            anchor.attrs[REPACK_COUNT_ATTR] = n_eps
     except Exception as e:  # noqa: BLE001
         print(f"  (경고) repacked 표시 기록 실패: {e}", flush=True)
     print("  교체 완료", flush=True)

@@ -111,6 +111,8 @@ from gello.data.dataset_schema import (
     OBS_GRIPPER_STATES,
     OBS_JOINT_STATES,
     OBS_JOINT_VELOCITIES,
+    REPACK_COUNT_ATTR,
+    REPACK_MARKER_ATTR,
     ROBOT_EE_POS_QUAT,
     ROBOT_GRIPPER_POSITION,
     ROBOT_JOINT_POSITIONS,
@@ -1282,12 +1284,6 @@ def _stored_bytes(group) -> int:
             else:
                 total += item.id.get_storage_size()
     return total
-
-
-REPACK_MARKER_ATTR = "repacked"
-# Episode count at the moment of repack, so a later run can say how many were
-# appended since rather than only that the file changed.
-REPACK_COUNT_ATTR = "repacked_episodes"
 
 
 def hdf5_repack_status(path) -> dict:

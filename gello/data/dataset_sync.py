@@ -37,12 +37,14 @@ from pathlib import Path
 
 import h5py
 
+from gello.data.dataset_schema import REPACK_COUNT_ATTR
+from gello.scene.scene_format import QUALITY_SUCCESS
+
 # Deleting an episode and recording another leaves the count unchanged, so the
 # comparison cannot tell that apart from "nothing happened". The .hdf5 records
 # how many episodes existed at the last repack, which is a second, independent
 # witness: if that count differs from today's while the Hub count matches, the
 # file was edited in a way counting alone would miss.
-REPACK_COUNT_ATTR = "repacked_episodes"
 
 # LeRobot 이 데이터셋을 읽을 때 사용하는 revision. lerobot 은
 # CODEBASE_VERSION("v3.0") 태그로 모든 메타데이터를 조회하므로, 이 모듈도
@@ -88,7 +90,7 @@ def local_tasks(data_root: str | Path) -> dict:
             from gello.scene.scene_format import list_scene_episodes
 
             for ep in list_scene_episodes(Path(p)):
-                if ep.get("quality_status") != "success":
+                if ep.get("quality_status") != QUALITY_SUCCESS:
                     continue
                 task = ep["instruction"]
                 e = out.get(task)
