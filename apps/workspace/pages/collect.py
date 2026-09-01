@@ -71,31 +71,31 @@ def build_collect(win) -> QWidget:
     ctl = QGroupBox(tr("제어"))
     ccol = QVBoxLayout(ctl)
     win.start_btn = QPushButton(tr("Start Teleop (기록 시작)"))
-    win.start_btn.clicked.connect(lambda: win._cmd("cmd_start_teleop"))
+    win.start_btn.clicked.connect(lambda: win.collection.cmd("cmd_start_teleop"))
     # 자동 정렬은 한 번 시간 초과되면 끝이었고, 다시 걸 방법이 없어 남은 길은
     # 손으로 맞추는 것뿐이었다. 워커는 재요청을 받을 수 있으므로 버튼과 Enter
     # 둘 다 연결한다. all_ok 전에는 잠근다 -- 리더 모터로 끌어당기는 동작이라
     # 크게 어긋난 상태에서 걸면 모터에 무리가 간다(워커도 같은 조건을 재검사).
     win.match_btn = QPushButton(tr("자동 정렬 다시 (Enter)"))
     win.match_btn.setEnabled(False)
-    win.match_btn.clicked.connect(lambda: win._cmd("cmd_auto_match_pose"))
+    win.match_btn.clicked.connect(lambda: win.collection.cmd("cmd_auto_match_pose"))
     win.skip_btn = QPushButton(tr("리셋 완료 — 계속 (Enter)"))
     win.skip_btn.setToolTip(tr(
         "물체를 제자리에 놓은 뒤 누르세요. 리셋 대기는 자동으로 끝나지 "
         "않습니다 -- 이 버튼(또는 Enter)을 눌러야 게이트로 넘어갑니다."))
-    win.skip_btn.clicked.connect(lambda: win._cmd("cmd_skip_reset_wait"))
+    win.skip_btn.clicked.connect(lambda: win.collection.cmd("cmd_skip_reset_wait"))
     win.save_ok_btn = QPushButton(tr("저장 (성공)"))
     win.save_ok_btn.setStyleSheet("background-color:#2ecc71; color:white; font-weight:bold;")
-    win.save_ok_btn.clicked.connect(lambda: win._save(True))
+    win.save_ok_btn.clicked.connect(lambda: win.collection.save(True))
     # 두 버튼 모두 에피소드를 끝낸다. 판정을 되돌리는 건 리셋 구간의
-    # Esc(_toggle_last_verdict)이고, 여기서는 끝내는 순간의 첫 판단만 한다.
+    # Esc(toggle_last_verdict)이고, 여기서는 끝내는 순간의 첫 판단만 한다.
     win.save_ng_btn = QPushButton(tr("실패로 끝내기 (Esc)"))
-    win.save_ng_btn.clicked.connect(lambda: win._save(False))
+    win.save_ng_btn.clicked.connect(lambda: win.collection.save(False))
     win.discard_btn = QPushButton(tr("버리기"))
     win.discard_btn.setStyleSheet("background-color:#e74c3c; color:white;")
-    win.discard_btn.clicked.connect(lambda: win._cmd("cmd_discard_episode"))
+    win.discard_btn.clicked.connect(lambda: win.collection.cmd("cmd_discard_episode"))
     win.home_btn = QPushButton(tr("홈으로"))
-    win.home_btn.clicked.connect(lambda: win._cmd("cmd_go_home"))
+    win.home_btn.clicked.connect(lambda: win.collection.cmd("cmd_go_home"))
     for b in (win.start_btn, win.match_btn, win.skip_btn, win.save_ok_btn,
               win.save_ng_btn, win.discard_btn, win.home_btn):
         ccol.addWidget(b)

@@ -26,19 +26,19 @@ def build_toolbar(win) -> None:
         win.tb_actions[key] = act
         return act
 
-    add("connect", tr("▶ Connect"), win._on_connect, tr("로봇에 연결하고 세션 시작"))
-    add("disconnect", tr("■ Disconnect"), win._on_disconnect, tr("세션 종료"))
+    add("connect", tr("▶ Connect"), win.collection.on_connect, tr("로봇에 연결하고 세션 시작"))
+    add("disconnect", tr("■ Disconnect"), win.collection.on_disconnect, tr("세션 종료"))
     tb.addSeparator()
-    add("record", tr("● Record"), lambda: win._cmd("cmd_start_teleop"), tr("기록 시작"))
-    # _save, not _cmd -- the success flag has to be recorded for the stats
+    add("record", tr("● Record"), lambda: win.collection.cmd("cmd_start_teleop"), tr("기록 시작"))
+    # save, not cmd -- the success flag has to be recorded for the stats
     # panel, and a toolbar button that counts differently from the side
     # panel button next to it is a bug waiting to be blamed on the stats.
-    add("save", tr("✔ Save"), lambda: win._save(True), tr("성공으로 끝내기"))
-    add("savefail", tr("✖ Save (fail)"), lambda: win._save(False),
+    add("save", tr("✔ Save"), lambda: win.collection.save(True), tr("성공으로 끝내기"))
+    add("savefail", tr("✖ Save (fail)"), lambda: win.collection.save(False),
         tr("실패로 끝내기 (Esc). 판정은 리셋 구간에서 Esc로 뒤집을 수 있습니다"))
-    add("discard", tr("🗑 Discard"), lambda: win._cmd("cmd_discard_episode"))
+    add("discard", tr("🗑 Discard"), lambda: win.collection.cmd("cmd_discard_episode"))
     tb.addSeparator()
-    add("home", tr("⌂ Home"), lambda: win._cmd("cmd_go_home"))
+    add("home", tr("⌂ Home"), lambda: win.collection.cmd("cmd_go_home"))
     add("refresh_cam", tr("⟳ Camera"), win.camera_ops.refresh_cameras)
     tb.addSeparator()
     add("upload", tr("☁ Upload"), lambda: win._set_activity("upload"))
@@ -74,9 +74,9 @@ def build_menu(win) -> None:
     m.addAction(tr("노드 시작"), win._on_start_node)
     m.addAction(tr("노드 종료"), win._on_stop_node)
     m.addSeparator()
-    m.addAction(tr("연결"), win._on_connect)
-    m.addAction(tr("세션 종료"), win._on_disconnect)
-    m.addAction(tr("홈으로"), lambda: win._cmd("cmd_go_home"))
+    m.addAction(tr("연결"), win.collection.on_connect)
+    m.addAction(tr("세션 종료"), win.collection.on_disconnect)
+    m.addAction(tr("홈으로"), lambda: win.collection.cmd("cmd_go_home"))
 
     m = mb.addMenu(tr("Camera"))
     m.addAction(tr("새로고침"), win.camera_ops.refresh_cameras)

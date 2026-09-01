@@ -88,7 +88,7 @@ from gello.gui.gui_widgets import (  # noqa: E402
     is_progress_line,
 )
 from apps.workspace.constants import LOG_DIR, LAYOUT_DIR, LAYOUT_ZIP  # noqa: E402
-from apps.workspace.domains import CameraOps, DatasetOps, DepthOps, PlaybackOps, SceneOps, StatsOps, UploadOps  # noqa: E402
+from apps.workspace.domains import CameraOps, CollectionOps, DatasetOps, DepthOps, PlaybackOps, SceneOps, StatsOps, UploadOps  # noqa: E402
 from apps.workspace.models import (  # noqa: E402
     CameraState,
     PlaybackState,
@@ -120,12 +120,11 @@ from gello.data.libero_format import (  # noqa: E402
     resize_rgb,
     save_crop_params,
 )
-from gello.gui.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
+from gello.gui.libero_gui_worker import CollectionWorker  # noqa: E402
 from gello.scene.scene_rules import check  # noqa: E402
 from gello.scene.scene_format import (  # noqa: E402
     count_by_slot,
     iter_scene_files,
-    read_scene_metadata,
     scene_filename,
 )
 from gello.core.station import load_station  # noqa: E402
@@ -235,6 +234,9 @@ class WorkspaceWindow(QMainWindow):
             self._log_file = open(log_path, "a", buffering=1)  # noqa: SIM115
 
         self.schema = load_schema_config()
+        # 상태 라벨 상수를 인스턴스로 노출 -- CollectionOps 가 self.win 으로 읽는다.
+        self.STATE_LABELS = STATE_LABELS
+        self.SHORTCUT_HINTS = SHORTCUT_HINTS
 
         self.upload = UploadOps(self)
         self.playback_ops = PlaybackOps(self)
@@ -243,6 +245,7 @@ class WorkspaceWindow(QMainWindow):
         self.depth_ops = DepthOps(self)
         self.dataset_ops = DatasetOps(self)
         self.stats_ops = StatsOps(self)
+        self.collection = CollectionOps(self)
 
         build_bottom(self)          # log view exists before anything logs
         # 저장된 설정의 depth 플래그가 무시됐다면 여기서(로그 뷰가 생긴 뒤)
@@ -272,7 +275,7 @@ class WorkspaceWindow(QMainWindow):
         QApplication.instance().installEventFilter(self)
 
         self._set_activity("configure")
-        self._set_running(False)
+        self.collection.set_running(False)
         self.camera_ops.refresh_cameras()
         self.dataset_ops.refresh_dataset_tree()
         if log_path is not None:
@@ -779,38 +782,6 @@ class WorkspaceWindow(QMainWindow):
             target.appendPlainText(msg)
             self._progress_line[view] = True
 
-    def _cmd(self, name: str, *args) -> None:
-        if self.worker is None:
-            self.log("[제어] 아직 연결되지 않았습니다.")
-            return
-        getattr(self.worker, name)(*args)
-
-    def _toggle_last_verdict(self) -> None:
-        """Flips the success flag of the episode that was just saved.
-
-        Pressing save *is* the judgement that the take is over; whether it
-        succeeded is a separate question, and one the operator can answer
-        better a few seconds later while the arm homes than in the instant
-        they let go. The re-label goes through the saver queue, so a toggle
-        sent while that episode is still being written lands after it.
-        """
-        if self.worker is None or self.session.no_dataset_session:
-            return
-        if self.session.last_saved_name is None:
-            # 저장이 아직 백그라운드에서 돌고 있어 이름을 모른다. 의사만 적어
-            # 두고 episode_saved가 오면 그때 반영한다.
-            self.session.pending_verdict_toggle = not self.session.pending_verdict_toggle
-            self.log("[판정] 저장이 끝나면 직전 에피소드 판정을 뒤집습니다."
-                     if self.session.pending_verdict_toggle else "[판정] 뒤집기를 취소했습니다.")
-            self._refresh_verdict_label()
-            return
-        self.session.last_saved_success = not self.session.last_saved_success
-        self.worker.cmd_set_episode_success(self.session.last_saved_name, self.session.last_saved_success)
-        self.stats_ops.bump("success", 1 if self.session.last_saved_success else -1)
-        self.stats_ops.bump("failed", -1 if self.session.last_saved_success else 1)
-        self._refresh_verdict_label()
-        self.stats_ops.refresh_stats()
-
     def _refresh_verdict_label(self) -> None:
         if self.session.last_saved_name is None:
             self.verdict_label.setText(
@@ -823,16 +794,6 @@ class WorkspaceWindow(QMainWindow):
                 n=self.session.last_saved_name, v=tr("성공") if ok else tr("실패")))
         self.verdict_label.setStyleSheet(
             "color:#2ecc71; font-weight:bold;" if ok else "color:#e74c3c; font-weight:bold;")
-
-    def _save(self, success: bool) -> None:
-        """episode_saved carries only (name, n_frames), so the success flag has
-        to be remembered here -- the worker never sends it back."""
-        if self.worker is None:
-            self.log("[제어] 아직 연결되지 않았습니다.")
-            return
-        self.session.pending_success = success
-        self.worker.cmd_save_episode(success)
-
 
     # legacy '기존 task 이어찍기' 드롭다운(_refresh_resume_combo /
     # _on_resume_selected / _show_resume_info)은 legacy 수집 UI 제거와 함께
@@ -913,152 +874,20 @@ class WorkspaceWindow(QMainWindow):
         self.cameras.grid_store = load_grid_store()    # 저장 결과를 다시 정본에서
         self.camera_ops.regrid_live()
 
-    def _on_connect(self) -> None:
-        if self.worker is not None:
-            self.log("[연결] 이미 세션이 실행 중입니다.")
-            return
-        no_dataset = self.no_dataset_check.isChecked()
-        scene_on = not no_dataset  # scene-v1 이 유일한 수집 방식 (legacy 제거)
-        lang = self.lang_edit.text().strip()
-        # scene 설정 검증은 _scene_config_from_ui 가, 파일 생성/이어찍기 판정은
-        # SceneWriter 가 한다 (파일명은 scene_id 에서 나오므로 이름 중복 검사
-        # 자체가 없다).
-        scene_meta = None
-        scene_sid = None
-        scene_resume = False
-        if scene_on:
-            scene_meta, scene_sid, scene_resume, err = self.scene_ops.scene_config_from_ui()
-            if err is not None:
-                QMessageBox.warning(self, tr("Scene 설정"), err)
-                return
-            task = scene_meta.scene_id if scene_meta is not None else scene_sid
-        else:
-            # 연습 모드: writer 에 닿지 않지만 WorkerConfig 라벨용 이름은 필요.
-            task = "practice"
-        resume = False  # legacy 이어찍기 제거 -- scene 은 scene_resume 이 담당
-        agent, wrist = self.camera_ops.combo_serial(self.agent_combo), self.camera_ops.combo_serial(self.wrist_combo)
-        if not agent or not wrist:
-            QMessageBox.warning(self, tr("카메라 선택 필요"),
-                                tr("Agent / Wrist 카메라를 모두 선택하세요."))
-            return
-        if agent == wrist:
-            QMessageBox.warning(self, tr("카메라 중복"),
-                                tr("Agent와 Wrist에 같은 카메라가 선택되었습니다."))
-            return
-        # 노드가 죽었거나 다른 구성으로 떠 있으면 여기서 맞춘다. worker 는
-        # 장치를 직접 열지 않으므로(노드 구독) 이게 유일한 카메라 준비 단계다.
-        if self.cameras.camera_node_user_stopped:
-            # 수동 종료 상태에서 몰래 되살리면 외부 프로그램(VLA)이 쥔
-            # 카메라를 노드가 빼앗으려 든다 -- 명시적 재시작을 요구한다.
-            QMessageBox.warning(self, tr("카메라 노드 종료 상태"),
-                                tr("카메라 노드가 수동으로 종료되어 있습니다 "
-                                   "(외부 프로그램용 카메라 해제).\n"
-                                   "Camera 메뉴 > 카메라 노드 재시작 후 다시 "
-                                   "연결하세요."))
-            return
-        self.camera_ops.ensure_camera_node()
-        try:
-            ep_len = float(self.eplen_edit.text())
-            reset_wait = float(self.resetwait_edit.text())
-        except ValueError:
-            QMessageBox.warning(self, tr("입력 오류"), tr("길이/대기는 숫자여야 합니다."))
-            return
-
-        # 미리보기는 이제 세션 내내 살려 둔다 (2026-09-01). 예전에는 여기서
-        # 껐다 -- worker 가 카메라 장치를 직접 열던 시절, RealSense 파이프라인을
-        # 두 번 열 수 없어서였다. 2026-08-25 3-프로세스 분리 이후로는 장치를
-        # 카메라 노드가 독점하고 미리보기도 worker 도 그냥 ZMQ 구독자다
-        # (PUB/SUB 는 팬아웃이라 경합이 없다). 끄면 오히려 게이트 중 화면이
-        # 노드 속도(30 fps)에서 수집 루프 속도로 떨어지고, 게이지가 그 프레임
-        # 뒤에 줄을 서서 같이 느려졌다.
-        #
-        # depth(포인트클라우드)는 사정이 다르다 -- 그건 여전히 장치를 직접
-        # 여는 경로라 여기서 놓아야 한다.
-        self.depth_ops.stop_cloud(restore_previews=False)
-        if self.camera_ops.previews_busy():
-            if self._connect_wait_since is None:
-                self._connect_wait_since = time.monotonic()
-                self.log("[카메라] 미리보기 정리를 기다리는 중 — 정리되면 자동으로 연결합니다.")
-            waited = time.monotonic() - self._connect_wait_since
-            if waited < 12.0:
-                self.tb_actions["connect"].setEnabled(False)
-                self.connect_progress(waited)
-                QTimer.singleShot(200, self._on_connect)
-                return
-            self._connect_wait_since = None
-            self.tb_actions["connect"].setEnabled(True)
-            self.statusBar().clearMessage()
-            self._alert(tr("카메라 해제 지연"),
-                        tr("미리보기가 카메라를 12초 넘게 붙잡고 있습니다.\n\n"
-                           "Camera 메뉴 > 미리보기 중지 후 다시 시도하세요. 계속되면 "
-                           "USB 케이블을 다시 꽂아야 합니다 -- 손목 D405는 USB 2 링크라 "
-                           "접촉이 나쁘면 이렇게 됩니다."))
-            return
-        self._connect_wait_since = None
-        self.statusBar().clearMessage()
-        cfg = WorkerConfig(
-            task_name=task,
-            language_instruction=lang or task.replace("_", " "),
-            data_root=self.root_edit.text().strip(),
-            grip=self.grip_combo.currentText(),
-            reset_pose=self.reset_pose_combo.currentText(),
-            max_episode_seconds=ep_len,
-            reset_wait_seconds=reset_wait,
-            enable_wall=self.wall_check.isChecked(),
-            auto_match_pose=self.match_check.isChecked(),
-            resume=resume,
-            no_dataset=no_dataset,
-            scene_metadata=scene_meta,
-            scene_id=scene_sid,
-            scene_resume=scene_resume,
-            instruction_id=(self.scene_iid_edit.text().strip() if scene_on else ""),
-            collector=(self.collector_edit.text().strip() if scene_on else ""),
-            agent_camera_serial=agent,
-            wrist_camera_serial=wrist,
-            schema=self.schema,
-            # 스냅샷(깊은 복사): 세션 중 슬라이더가 잠기긴 하지만, 기록될 값이
-            # GUI 상태와 얽혀 있지 않아야 한다.
-            crop_params={r: dict(v) for r, v in self.cameras.crop_params.items()},
-        )
-        for key, value in (("language", lang),
-                           ("data_root", cfg.data_root),
-                           ("agent_serial", agent), ("wrist_serial", wrist),
-                           ("collector", cfg.collector),
-                           ("instruction_id", cfg.instruction_id)):
-            if value:
-                self._recents.add(key, value)
-        # scene 세션 표시 + Collect 페이지 slot 패널 초기값
-        self.session.scene_session = scene_on
-        if scene_on:
-            self.slot_iid_edit.setText(cfg.instruction_id)
-            self.slot_instr_edit.setText(cfg.language_instruction)
-            self.slot_current_label.setText(
-                f"{cfg.instruction_id}: {cfg.language_instruction}")
-            # 오른쪽 배치도 -- 이어찍기는 metadata 가 파일에만 있으므로 워커가
-            # 파일을 쥐기 전인 지금 읽어 둔다.
-            md = scene_meta
-            if md is None and scene_sid:
-                try:
-                    md = read_scene_metadata(
-                        Path(cfg.data_root) / scene_filename(scene_sid))
-                except Exception:  # noqa: BLE001
-                    md = None
-            self.scene_ops.set_right_scene(md, scene_sid)
-        else:
-            self.scene_ops.set_right_scene(None)
-
-        w = CollectionWorker(cfg)
-        w.state_changed.connect(self._on_state)
+    def _connect_worker(self, w: CollectionWorker) -> None:
+        """Connect worker signals and start it. Stays on the window so the
+        worker lifecycle remains the window's responsibility."""
+        w.state_changed.connect(self.collection.on_state)
         w.frames_ready.connect(self.camera_ops.on_frames)
-        w.gate_status.connect(self._on_gate)
-        w.pose_match_status.connect(self._on_pose_match)
-        w.episode_progress.connect(self._on_progress)
-        w.episode_saved.connect(self._on_saved)
+        w.gate_status.connect(self.collection.on_gate)
+        w.pose_match_status.connect(self.collection.on_pose_match)
+        w.episode_progress.connect(self.collection.on_progress)
+        w.episode_saved.connect(self.collection.on_saved)
         w.episode_discarded.connect(self._on_discarded)
-        w.reset_countdown.connect(self._on_countdown)
+        w.reset_countdown.connect(self.collection.on_countdown)
         w.log_message.connect(self.log)
         w.node_status.connect(self._on_node_status)
-        w.fatal_error.connect(self._on_fatal)
+        w.fatal_error.connect(self.collection.on_fatal)
         w.connected.connect(self._on_connected)
         w.episode_list_changed.connect(self.playback_ops.on_episode_list)
         w.session_summary.connect(self.stats_ops.on_summary)
@@ -1073,210 +902,12 @@ class WorkspaceWindow(QMainWindow):
         # 연결해 두면 episode_saved/episode_list_changed가 영원히 오지 않아,
         # 에피소드 수·세션 통계·실패 표시 해제·탐색기 목록이 전부 멈춘 채로
         # 있는다 -- 실제로 10개를 저장한 세션 로그에 [저장] 줄이 한 줄도 없었다.
-        w.saver.episode_saved.connect(self._on_saved)
+        w.saver.episode_saved.connect(self.collection.on_saved)
         w.saver.episode_list_changed.connect(self.playback_ops.on_episode_list)
         w.saver.log_message.connect(self.log)
-        w.saver.save_status.connect(self._on_save_status)
+        w.saver.save_status.connect(self.collection.on_save_status)
         self.worker = w
-        self.session.no_dataset_session = no_dataset
-        # The right panel's serials were only filled by _restart_previews, so
-        # they blanked out for the whole session -- exactly when knowing which
-        # camera is which matters most.
-        self.right_fields["cam_agent"].setText(agent)
-        self.right_fields["cam_wrist"].setText(wrist)
-        self.lights["camera"].set("ok", tr("세션"))
-        self.ep_progress.setMaximum(max(1, int(ep_len * cfg.fps)))
-        self._set_running(True)
-        self._set_activity("collect")
-        if no_dataset:
-            self.log("[연결] 연습 모드 — 파일을 만들지 않습니다. 저장은 버려집니다.")
-        else:
-            self.log(f"[연결] 세션 시작: task={task!r}")
-        w.start()
 
-    def _on_disconnect(self) -> None:
-        if self.worker is None:
-            return
-        self.log("[연결] 세션 종료를 요청했습니다...")
-        self.worker.cmd_quit()
-
-    def _set_running(self, running: bool) -> None:
-        savable = running and not self.session.no_dataset_session
-        for key in ("discard", "home"):
-            self.tb_actions[key].setEnabled(running)
-        for key in ("save", "savefail"):
-            self.tb_actions[key].setEnabled(savable)
-        self.tb_actions["connect"].setEnabled(not running)
-        self.tb_actions["disconnect"].setEnabled(running)
-        for b in (self.skip_btn, self.discard_btn, self.home_btn,
-                  # 정렬 버튼은 세션 중이면 항상 열려 있다 -- 자세 오차가
-                  # 커도 사람이 직접 요청하면 걸 수 있어야 한다 (2026-09-01).
-                  self.match_btn):
-            b.setEnabled(running)
-        if not running:
-            self.session.gate_ok = None
-        # Start(기록 시작)는 게이트 자세 조건까지 본다 -- 아래 헬퍼가 전담.
-        self._update_start_controls(running)
-        for b in (self.save_ok_btn, self.save_ng_btn):
-            b.setEnabled(savable)
-        self.no_dataset_check.setEnabled(not running)
-        self.task_box.setEnabled(not running and not self.no_dataset_check.isChecked())
-        for w in (self.lang_edit, self.root_edit, self.agent_combo,
-                  self.wrist_combo, self.layout_agent_combo,
-                  self.layout_wrist_combo, self.reset_pose_combo,
-                  self.grip_combo, self.eplen_edit, self.resetwait_edit,
-                  self.wall_check, self.match_check):
-            w.setEnabled(not running)
-        # 크롭 정렬은 에피소드 attrs 에 Connect 시점 스냅샷으로 찍히므로,
-        # 세션 중에 움직이면 가이드와 기록이 어긋난다. 잠근다.
-        for w in self._crop_widgets:
-            w.setEnabled(not running)
-        self.camera_ops.update_preview_btn()
-        # scene 세션에서만 slot 전환 패널 노출
-        self.slot_box.setVisible(running and self.session.scene_session)
-        self.lights["robot"].set("ok" if running else "off",
-                                 tr("연결됨") if running else tr("끊김"))
-        self.right_fields["robot"].setText(tr("연결됨") if running else tr("끊김"))
-
-    def _update_start_controls(self, running: "bool | None" = None) -> None:
-        """Start Teleop 버튼/툴바는 게이트 상태에선 자세가 맞아야만 열린다.
-
-        자동 정렬이 켜져 있어도 같다 -- 정렬은 리더가 범위(GATE_RAD) 안에
-        들어와야 발동하므로, 그 전에 시작을 눌러도 워커가 거부만 한다.
-        버튼을 잠가서 '왜 안 되는지'를 누르기 전에 보이게 한다.
-        """
-        if running is None:
-            running = self.worker is not None
-        # _gate_ok 는 게이트 진입 직후 None("아직 모름") 일 수 있다 -- setEnabled 는
-        # bool 만 받으므로 여기서 확정한다.
-        ok = bool(running and (self.session.current_state != "gate" or self.session.gate_ok))
-        self.start_btn.setEnabled(ok)
-        act = getattr(self, "tb_actions", {}).get("record")
-        if act is not None:
-            act.setEnabled(ok)
-
-    # ------------------------------------------------------ worker slots
-    @pyqtSlot(str)
-    def _on_state(self, state: str) -> None:
-        if state == "recording" and self.session.current_state != "recording":
-            # 표시는 에피소드 단위다. 새 기록이 시작되면 항상 성공에서 출발한다.
-            # 직전 에피소드 판정은 이 시점부터 더 이상 뒤집을 수 없다 -- 리셋
-            # 구간이 끝났고, 이제 '직전'이 무엇인지 헷갈릴 수 있다.
-            self.session.last_saved_name = None
-            self.session.pending_verdict_toggle = False
-            self.verdict_label.setText("")
-        if state == "gate" and self.session.current_state != "gate":
-            # 새 게이트: 첫 gate_status 가 올 때까지 시작을 잠근다. None 은
-            # '아직 모름' -- _on_gate 가 변화가 있을 때만 그리므로, 여기서
-            # False 로 두면 첫 상태가 False 일 때 라벨이 안 갱신된다.
-            self.session.gate_ok = None
-        self.session.current_state = state
-        self._update_start_controls()
-        self.state_label.setText(STATE_LABELS.get(state, state))
-        self.shortcut_hint.setText(SHORTCUT_HINTS.get(state, ""))
-        self.right_fields["state"].setText(state)
-        recording = "기록" in state or "record" in state.lower()
-        self.lights["recording"].set("bad" if recording else "off",
-                                     tr("기록 중") if recording else tr("대기"))
-        self.right_fields["recording"].setText(tr("기록 중") if recording else tr("대기"))
-
-    @pyqtSlot(object, object)
-    @pyqtSlot(object, object, bool)
-    def _on_gate(self, leader, follower, all_ok) -> None:
-        if leader is None or follower is None:
-            return
-        d = np.asarray(leader, dtype=float) - np.asarray(follower, dtype=float)
-        for i, bar in enumerate(self.delta_bars):
-            if i < len(d):
-                bar.update_delta(float(d[i]), GATE_RAD)
-        # 아래는 전부 all_ok 가 '바뀔 때만' 의미가 있는 일이다. 게이트는
-        # 초당 45번 오는데, 매번 라벨 텍스트·스타일시트를 다시 쓰고 버튼
-        # 활성 상태를 재계산하면 -- setStyleSheet 은 Qt 가 스타일을 통째로
-        # 다시 파싱하게 만드는 호출이다 -- GUI 스레드가 그 뒤에 밀려 바가
-        # 손을 늦게 따라온다. 워커는 45 Hz 로 멀쩡히 보내고 있었다 (실측
-        # 0.7~2.6 ms/틱), 병목은 이쪽이었다 (2026-09-01).
-        if all_ok != self.session.gate_ok:
-            self.session.gate_ok = all_ok
-            self.gate_label.setText(tr("자세 일치 — 시작 가능") if all_ok
-                                    else tr("리더를 팔로워 자세에 맞추세요"))
-            self.gate_label.setStyleSheet(
-                "color:#2ecc71;" if all_ok else "color:#e67e22;")
-            # 정렬 버튼은 자세와 무관하게 열려 있다 (2026-09-01) -- 아래
-            # _set_running 이 세션 단위로 켜고 끈다. 잠기는 것은 '텔레옵
-            # 시작' 쪽뿐이다.
-            self._update_start_controls()
-            if self.session.current_state == "gate":
-                self.shortcut_hint.setText(
-                    "Space: 텔레옵 시작   Enter: 자동 정렬 다시" if all_ok
-                    else "Space: 텔레옵 시작   Enter: 자동 정렬 (오차 커도 가능)")
-
-    @pyqtSlot(float, bool)
-    def _on_pose_match(self, err, done) -> None:
-        self.gate_label.setText(
-            tr("자동 정렬 완료") if done else tr("자동 정렬 중... 오차 {e:.3f} rad").format(e=err))
-
-    @pyqtSlot(int, float)
-    def _on_progress(self, n_frames, seconds) -> None:
-        self.ep_progress.setValue(n_frames)
-        self.right_fields["frames"].setText(f"{n_frames} ({seconds:.1f}s)")
-
-    @pyqtSlot(str, int)
-    def _on_saved(self, name, n_frames) -> None:
-        self.stats_ops.bump("saved")
-        self.stats_ops.bump("frames", n_frames)
-        if self.session.pending_success is not None:
-            self.stats_ops.bump("success" if self.session.pending_success else "failed")
-            self.session.pending_success = None
-        self.session.last_saved_name = name
-        if self.session.pending_success is not None:
-            self.session.last_saved_success = self.session.pending_success
-        if self.session.pending_verdict_toggle:
-            # 저장 전에 눌러 둔 뒤집기를 이제 반영한다.
-            self.session.pending_verdict_toggle = False
-            self.session.last_saved_success = not self.session.last_saved_success
-            self.worker.cmd_set_episode_success(name, self.session.last_saved_success)
-        self._refresh_verdict_label()
-        self.log(f"[저장] {name} ({n_frames} frames)")
-        self.right_fields["episode"].setText(name)
-        self._update_dataset_panel()
-        self.stats_ops.refresh_stats()
-
-    @pyqtSlot(str)
-    def _on_save_status(self, text: str) -> None:
-        """Background-save progress. Empty string means idle."""
-        self.save_status_label.setText(text)
-        self.save_status_label.setStyleSheet(
-            "color:#f39c12;" if text else "color:#888;")
-
-    @pyqtSlot(int)
-    def _on_discarded(self, n_frames) -> None:
-        self.stats_ops.bump("discarded")
-        self.log(f"[버림] {n_frames} frames")
-        self.stats_ops.refresh_stats()
-
-    @pyqtSlot(float)
-    def _on_countdown(self, seconds) -> None:
-        # 자동 진행이 없어졌으므로 카운트다운이 아니라 경과 시간이다.
-        self.state_label.setText(
-            tr("리셋 중 {s:.0f}s 경과 — 배치 후 Enter").format(s=seconds))
-
-    @pyqtSlot(bool)
-    def _on_node_status(self, ok) -> None:
-        self.lights["node"].set("ok" if ok else "bad", tr("정상") if ok else tr("응답 없음"))
-        self.right_fields["node"].setText(tr("정상") if ok else tr("응답 없음"))
-
-    @pyqtSlot(str)
-    def _on_fatal(self, msg) -> None:
-        self.log(f"[치명적 오류] {msg}")
-        # 서보 과토크 보호(overload 0x20 등 hardware error)로 죽은 세션은
-        # GUI 재시작이 아니라 서보 Reboot 으로만 복구된다 -- 그 툴이 있는
-        # 위치를 오류 대화상자에서 바로 알려준다 (#37B).
-        if "hardware error" in msg:
-            msg += tr("\n\n서보 보호모드가 걸렸습니다. 세션 종료 후 "
-                      "Tools > 리더암 서보 보호 해제 (재부팅) 으로 복구하세요.")
-        self._alert(tr("오류"), msg, QMessageBox.Icon.Critical)
-
-    @pyqtSlot(int, str)
     def _on_connected(self, n_episodes, path) -> None:
         # 세션이 붙었다 = 노드가 살아 응답했다 (연결 검증이 노드 경유).
         self.lights["node"].set("ok", tr("정상"))
@@ -1330,7 +961,7 @@ class WorkspaceWindow(QMainWindow):
         was_scene = self.session.scene_session
         self.session.scene_session = False
         self.scene_ops.set_right_scene(None)
-        self._set_running(False)
+        self.collection.set_running(False)
         self.dataset_ops.refresh_dataset_tree()
         if was_scene:
             # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
@@ -1823,13 +1454,13 @@ class WorkspaceWindow(QMainWindow):
                     # 버튼과 같은 조건: 자세가 맞아야 시작 (워커도 거부하지만
                     # 이유를 먼저 보여준다).
                     if self.session.gate_ok:
-                        self._cmd("cmd_start_teleop")
+                        self.collection.cmd("cmd_start_teleop")
                     else:
                         self.log("[GATE] 아직 자세가 맞지 않아 시작할 수 없습니다 "
                                  "-- 리더를 팔로워 자세에 맞추세요.")
                     return True
                 if state == "recording" and not self.session.no_dataset_session:
-                    self._save(True)
+                    self.collection.save(True)
                     return True
             elif key == Qt.Key.Key_Escape:
                 # 기록 중이면 '실패로 끝내기', 리셋 대기 중이면 방금 것의 판정
@@ -1837,23 +1468,23 @@ class WorkspaceWindow(QMainWindow):
                 # 판단이므로, 두 키 모두 에피소드를 끝낸다. 성공이었는지는
                 # 팔이 홈으로 가는 동안 다시 보고 정하는 게 자연스럽다.
                 if state == "recording" and not self.session.no_dataset_session:
-                    self._save(False)
+                    self.collection.save(False)
                     return True
                 if state in ("reset_wait", "homing") and not self.session.no_dataset_session:
-                    self._toggle_last_verdict()
+                    self.collection.toggle_last_verdict()
                     return True
             elif key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 if state == "recording":
-                    self._cmd("cmd_discard_episode")
+                    self.collection.cmd("cmd_discard_episode")
                     return True
             elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 if state == "reset_wait":
-                    self._cmd("cmd_skip_reset_wait")
+                    self.collection.cmd("cmd_skip_reset_wait")
                     return True
                 if state == "gate":
                     # 자동 정렬 재시도. 오차 조건은 없다 -- wall 이 관절별로
                     # 보호한다 (2026-09-01).
-                    self._cmd("cmd_auto_match_pose")
+                    self.collection.cmd("cmd_auto_match_pose")
                     return True
         return super().eventFilter(obj, event)
 

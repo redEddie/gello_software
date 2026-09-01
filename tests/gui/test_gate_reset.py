@@ -170,20 +170,20 @@ cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
 assert not win.start_btn.isEnabled() and not win.tb_actions["record"].isEnabled()
 win.worker = object()          # 세션 흉내
-win._set_running(True)
-win._on_state("gate")
+win.collection.set_running(True)
+win.collection.on_state("gate")
 assert not win.start_btn.isEnabled(), "게이트 진입 직후 열려 있음"
 eight = np.zeros(8)
-win._on_gate(eight + 1.0, eight, False)
+win.collection.on_gate(eight + 1.0, eight, False)
 assert not win.start_btn.isEnabled()
-win._on_gate(eight, eight, True)
+win.collection.on_gate(eight, eight, True)
 assert win.start_btn.isEnabled() and win.tb_actions["record"].isEnabled()
-win._on_gate(eight + 1.0, eight, False)   # 다시 어긋나면 잠김
+win.collection.on_gate(eight + 1.0, eight, False)   # 다시 어긋나면 잠김
 assert not win.start_btn.isEnabled()
-win._on_state("recording")
+win.collection.on_state("recording")
 assert win.start_btn.isEnabled()
 win.worker = None
-win._set_running(False)
+win.collection.set_running(False)
 assert not win.start_btn.isEnabled()
 print("5 통과: Start 버튼/툴바 -- 게이트 자세 조건 연동")
 
