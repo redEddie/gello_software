@@ -91,7 +91,7 @@ cw.QMessageBox.warning = staticmethod(
 cw.QMessageBox.information = staticmethod(
     lambda *a, **k: infos.append(a[2] if len(a) > 2 else ""))
 win = cw.WorkspaceWindow(None)
-win._grid_store = {"active": "g", "live_on": True, "alpha": 60,
+win.cameras.grid_store = {"active": "g", "live_on": True, "alpha": 60,
                    "grids": {"g": DEFAULT_CORNERS}}
 win.grid_live_check.setChecked(True)
 frame = np.full((480, 640, 3), 20, np.uint8)
@@ -103,8 +103,8 @@ assert win._with_grid("agent", frame) is frame
 print("3 통과: agent 라이브만 오버레이, 체크 해제 시 원본")
 
 # ---- 3b. 카메라 최대화: 좌우 배치 유지, 스플리터 비율만 (겹침 없음) ----
-win._last_cam_frame["agent"] = np.full((480, 640, 3), 40, np.uint8)
-win._last_cam_frame["wrist"] = np.full((480, 640, 3), 90, np.uint8)
+win.cameras.last_cam_frame["agent"] = np.full((480, 640, 3), 40, np.uint8)
+win.cameras.last_cam_frame["wrist"] = np.full((480, 640, 3), 90, np.uint8)
 win._set_live_maximized("wrist")
 sizes = win.live_split.sizes()
 assert sizes[1] > sizes[0] * 4, sizes                   # wrist 크게, agent 아주 작게

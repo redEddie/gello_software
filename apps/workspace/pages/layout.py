@@ -116,7 +116,7 @@ def build_layout_page(win) -> QWidget:
     # 같은 값을 쓰고, 에피소드마다 attrs["crop_params"] 로 저장된다.
     crop = QGroupBox(tr("크롭 정렬"))
     crform = QFormLayout(crop)
-    p = win._crop_params
+    p = win.cameras.crop_params
 
     def _slider(lo: int, hi: int, val: int) -> QSlider:
         s = QSlider(Qt.Orientation.Horizontal)

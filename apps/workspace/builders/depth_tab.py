@@ -30,7 +30,7 @@ def build_depth_tab(win) -> QWidget:
     # 마우스가 가리키는 지점의 실거리 표시 (eventFilter 에서 처리)
     win.depth_view.setMouseTracking(True)
     win.depth_view.installEventFilter(win)
-    win._depth_cursor = None
+    win.cameras.depth_cursor = None
     col.addWidget(win.depth_view, 1)
     row = QHBoxLayout()
     row.addWidget(QLabel(tr("카메라")))

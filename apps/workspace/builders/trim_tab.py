@@ -69,7 +69,7 @@ def build_trim_tab(win) -> QWidget:
         box = QVBoxLayout()
         v = VideoView()
         v.clear_frame(tr("에피소드를 선택하세요"))
-        v.set_crop_guide(**win._crop_params[role])
+        v.set_crop_guide(**win.cameras.crop_params[role])
         win.trim_views[role] = v
         box.addWidget(v, 1)
         lab = QLabel(cap)

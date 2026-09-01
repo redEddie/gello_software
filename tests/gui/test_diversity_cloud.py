@@ -60,7 +60,7 @@ cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
 # 탭 진입: 카메라 미선택 -> 안내만, 워커 없음
 win._on_center_tab_changed(win._cloud_tab_index)
-assert win._cloud_worker is None
+assert win.cameras.cloud_worker is None
 # 합성 클라우드 렌더
 rng = np.random.default_rng(0)
 pts = rng.standard_normal((2000, 3)).astype(np.float32)
@@ -68,13 +68,13 @@ rgb = rng.integers(0, 255, (2000, 3), dtype=np.uint8)
 win._on_cloud(pts, rgb)
 assert win.cloud_view.pixmap() is not None
 assert "2,000" in win.cloud_status.text() or "2000" in win.cloud_status.text()
-win.cloud_yaw.setValue(60)      # 시점 변경 -> 재렌더 경로
+win.cameras.cloud_yaw.setValue(60)      # 시점 변경 -> 재렌더 경로
 win._on_center_tab_changed(0)   # 탭 이탈 -> 워커 없음이면 no-op
-assert win._cloud_worker is None
+assert win.cameras.cloud_worker is None
 # 세션 중 진입 차단
 win.worker = object()
 win._on_center_tab_changed(win._cloud_tab_index)
-assert win._cloud_worker is None
+assert win.cameras.cloud_worker is None
 win.worker = None
 print("3 통과: 탭 진입/이탈 가드 + 합성 클라우드 렌더 + 세션 차단")
 
@@ -107,12 +107,12 @@ print("4 통과: 추천 다이얼로그(선택/재추천) + NewScene 자동 채�
 assert win.cloud_cam_combo.currentData() == "agent"
 win.cloud_cam_combo.setCurrentIndex(1)       # 워커 없음 -> 전환은 다음 진입 때
 assert win.cloud_cam_combo.currentData() == "wrist"
-assert win._cloud_worker is None
+assert win.cameras.cloud_worker is None
 print("5 통과: 클라우드 카메라 콤보 (닫힌 탭에서는 지연 반영)")
 
 # ---- 6. Depth 탭: 소비자 전환 + 컬러맵 렌더 ----
 win._on_center_tab_changed(win._depth_tab_index)
-assert win._depth_consumer == "depth" and win._cloud_worker is None
+assert win.cameras.depth_consumer == "depth" and win.cameras.cloud_worker is None
 z = np.full((48, 64), 0.6, np.float32)
 z[:10] = 0.0            # 무측정
 z[20:30] = 5.0          # 최대 거리 밖
@@ -123,7 +123,7 @@ win.depth_range_slider.setValue(50)          # 0.5m -> 0.6m 픽셀도 무효
 win._render_depth()
 assert "0.5 m" in win.depth_range_label.text()
 win._on_center_tab_changed(0)
-assert win._depth_consumer is None
+assert win.cameras.depth_consumer is None
 print("6 통과: Depth 탭 -- 진입/이탈, 컬러맵 렌더, 범위 슬라이더")
 
 # ---- 7. 척도 바: 큰 프레임엔 그려지고 작은 프레임엔 생략 ----
@@ -136,7 +136,7 @@ assert small.shape == (48, 64, 3)              # 작은 입력은 바 생략, �
 print("7 통과: depth 척도 바 (대형 프레임 표시 / 소형 생략)")
 
 # ---- 8. 커서 거리 표시 + 워커 모드 게이팅 ----
-win._depth_img = np.full((48, 64), 0.6, np.float32)
+win.cameras.depth_img = np.full((48, 64), 0.6, np.float32)
 
 
 class _P:                                      # QPointF 흉내
@@ -153,19 +153,19 @@ class _P:                                      # QPointF 흉내
 uv = win._depth_uv(_P(5.0, 30.0))              # 라벨 안쪽 -> 픽셀 좌표
 assert uv is not None and 0 <= uv[0] < 64 and 0 <= uv[1] < 48
 assert win._depth_uv(_P(-30.0, -30.0)) is None  # 프레임 밖
-win._depth_cursor = (10, 20)
+win.cameras.depth_cursor = (10, 20)
 win._render_depth()
 assert "커서 (10,20)" in win.depth_status.text()
 assert "0.600 m" in win.depth_status.text()
-win._depth_cursor = None
+win.cameras.depth_cursor = None
 from gello.gui.gui_widgets import DepthCloudWorker  # noqa: E402
 
 assert DepthCloudWorker("x", mode="depth").mode == "depth"
 assert DepthCloudWorker("x").mode == "cloud"
 # 프레임 크기 변경 등으로 범위 밖에 남은 커서는 조용히 지운다
-win._depth_cursor = (999, 999)
+win.cameras.depth_cursor = (999, 999)
 win._render_depth()
-assert win._depth_cursor is None
+assert win.cameras.depth_cursor is None
 assert "커서" not in win.depth_status.text()
 assert not win.cloud_view._square_guide and not win.depth_view._square_guide
 print("8 통과: 커서 실거리 + 경계 가드 + 워커 모드 + 크롭 가이드 미적용")

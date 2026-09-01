@@ -113,7 +113,7 @@ from gello.gui.gui_widgets import (  # noqa: E402
     is_progress_line,
 )
 from apps.workspace.constants import LOG_DIR  # noqa: E402
-from apps.workspace.models import PlaybackState, ProcessRegistry  # noqa: E402
+from apps.workspace.models import CameraState, PlaybackState, ProcessRegistry  # noqa: E402
 from apps.workspace.builders import (  # noqa: E402
     build_bottom,
     build_center,
@@ -264,45 +264,27 @@ class WorkspaceWindow(QMainWindow):
         self.worker: CollectionWorker | None = None
         self.procs = ProcessRegistry()
         self.playback = PlaybackState()
-        # 카메라 노드 (2026-08-25 3-프로세스 분리): RealSense 를 독점 소유하는
-        # 별도 프로세스. GUI 미리보기·포인트클라우드·수집 worker 는 전부 이
-        # 노드의 구독자다 -- GIL 기아·device busy·wedge 를 없앤 구조.
-        self._camera_node_spec = ""
-        self._camera_node_crashes: list = []   # 비정상 종료 시각 (loop 방지)
-        # 수동 종료 래치 (2026-08-26): VLA 배포 등 다른 프로그램이 카메라를
-        # 직접 열어야 할 때 노드를 내려 두는 상태. 래치가 켜져 있으면
-        # 새로고침/콤보 변경이 노드를 몰래 되살리지 않는다 -- 재시작 메뉴나
-        # 세션 연결 안내를 통해서만 풀린다.
-        self._camera_node_user_stopped = False
-        self._grid_store = load_grid_store()
+        self.cameras = CameraState()
+        self.cameras.grid_store = load_grid_store()
         self._stats: list = []
         self._summary: dict = {}
-        self._stream_states: dict = {}
         self._progress_line: dict = {}
 
         self.active_file_path: Path | None = None
         self.active_episode_cache: list | None = None
         self.agent_preview: CameraPreviewWorker | None = None
         self.wrist_preview: CameraPreviewWorker | None = None
-        # Point Cloud 탭 전용 depth 워커 -- 탭이 보일 때만 산다 (안정성).
-        self._cloud_worker: DepthCloudWorker | None = None
-        self._cloud_pts = None
-        self._cloud_rgb = None
         self._cloud_previews_were_on = False
-        self._cloud_serial = ""            # 지금 depth 워커가 연 카메라
-        self._depth_consumer = None        # "cloud" | "depth" | None
-        self._depth_img = None
 
         # 두 벌을 든다. _session 은 Connect 마다 0 으로 돌아가므로 "지금 찍고 있는
         # task 를 몇 개 모았나"이고, _cumulative 는 GUI 를 켠 뒤 전체다. 예전에는
         # _session 하나뿐이었고 그것이 Connect 때 리셋되지 않아서, task 를 바꿔
         # 연결하면 이전 task 의 개수가 그대로 따라왔다 -- 게다가 상태바가
-        # max(목록 길이, 연결시점 + saved) 를 쓰는 탓에 정확한 목록이 도착해도
+        # max(목록 길이, 연결시점 + saved) 를 쓰는 탓에 정확한 목록이 도착핵도
         # 부풀려진 값이 이겨서, 빈 task 가 "에피소드 10개"로 보였다.
         self._session = _new_stats()
         self._cumulative = _new_stats()
-        self._fps_count = 0
-        self._fps_value = 0.0
+        self._pending_success: bool | None = None
         self._pending_success: bool | None = None
         self._no_dataset_session = False
         self._current_state = "idle"
@@ -342,9 +324,9 @@ class WorkspaceWindow(QMainWindow):
         build_menu(self)
         build_statusbar(self)
 
-        self._fps_timer = QTimer(self)
-        self._fps_timer.timeout.connect(self._tick_fps)
-        self._fps_timer.start(1000)
+        self.cameras.fps_timer = QTimer(self)
+        self.cameras.fps_timer.timeout.connect(self._tick_fps)
+        self.cameras.fps_timer.start(1000)
 
         self.playback.play_timer = QTimer(self)
         self.playback.play_timer.setInterval(int(1000 / PLAYBACK_FPS))
@@ -1332,7 +1314,7 @@ class WorkspaceWindow(QMainWindow):
         i = self.layout_suite_combo.findText(cur)
         self.layout_suite_combo.setCurrentIndex(max(0, i))
         self.layout_suite_combo.blockSignals(False)
-        self._layout_refilter()
+        self.cameras.layout_refilter()
 
     def _layout_refilter(self) -> None:
         suite = self.layout_suite_combo.currentData()
@@ -1379,10 +1361,10 @@ class WorkspaceWindow(QMainWindow):
         for role, path in (("agent", ap), ("wrist", wp)):
             bgr = cv2.imread(path)
             if bgr is None:
-                self._layout_ref.pop(role, None)
+                self.cameras.layout_ref.pop(role, None)
                 continue
-            self._layout_ref[role] = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            self.layout_strip_views[f"{role}_ref"].set_frame(self._layout_ref[role])
+            self.cameras.layout_ref[role] = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            self.layout_strip_views[f"{role}_ref"].set_frame(self.cameras.layout_ref[role])
             self._layout_update_role(role)
 
     def _layout_alpha_changed(self, val: int) -> None:
@@ -1414,16 +1396,16 @@ class WorkspaceWindow(QMainWindow):
         카메라 프레임이 없으면 참조를 단독으로 보여주는 대신 그렇다고 말한다 --
         참조 단독은 "겹침이 안 되고 있다"는 사실을 숨긴다.
         """
-        ref = self._layout_ref.get(role)
+        ref = self.cameras.layout_ref.get(role)
         if ref is None:
             return
-        frame = self._last_cam_frame.get(role)
+        frame = self.cameras.last_cam_frame.get(role)
         if frame is None:
             self.layout_overlay_views[role].clear_frame(
                 tr("카메라 없음 — Configure 에서 미리보기를 켜세요"))
             self.layout_strip_views[f"{role}_live"].clear_frame(tr("카메라 없음"))
             return
-        p = self._crop_params[role]
+        p = self.cameras.crop_params[role]
         live = resize_rgb(frame, ref.shape[0], zoom=p["zoom"],
                           x_shift=p["x"], y_shift=p["y"])
         self.layout_strip_views[f"{role}_live"].set_frame(live)
@@ -1440,7 +1422,7 @@ class WorkspaceWindow(QMainWindow):
 
     # -------------------------------------------------------- point cloud
     def _depth_role_combo(self) -> QComboBox:
-        return (self.depth_cam_combo if self._depth_consumer == "depth"
+        return (self.depth_cam_combo if self.cameras.depth_consumer == "depth"
                 else self.cloud_cam_combo)
 
     def _depth_views(self) -> list:
@@ -1460,8 +1442,8 @@ class WorkspaceWindow(QMainWindow):
                 v.clear_frame(
                     tr("Configure 에서 {r} 카메라를 선택하세요").format(r=role))
             return
-        if self._cloud_worker is not None:
-            if serial == self._cloud_serial and self._cloud_worker.isRunning():
+        if self.cameras.cloud_worker is not None:
+            if serial == self.cameras.cloud_serial and self.cameras.cloud_worker.isRunning():
                 return                      # 같은 카메라 -- 탭만 바뀐 것
             # 다른 카메라거나, 오류로 죽은 워커가 남아 있는 경우(죽은 워커를
             # '살아있다'고 믿으면 탭을 다시 들어와도 스트림이 영영 안 선다)
@@ -1477,13 +1459,13 @@ class WorkspaceWindow(QMainWindow):
         self.cloud_status.setText(msg)
         self.depth_status.setText(msg)
         self._ensure_camera_node()
-        w = DepthCloudWorker(role, serial, mode=self._depth_consumer or "cloud")
+        w = DepthCloudWorker(role, serial, mode=self.cameras.depth_consumer or "cloud")
         w.cloud_ready.connect(self._on_cloud)
         w.depth_ready.connect(self._on_depth_img)
         w.error.connect(self._on_depth_error)
         w.start()
-        self._cloud_worker = w
-        self._cloud_serial = serial
+        self.cameras.cloud_worker = w
+        self.cameras.cloud_serial = serial
 
     def _on_depth_error(self, m: str) -> None:
         text = tr("depth 오류: {m}").format(m=m)
@@ -1491,7 +1473,7 @@ class WorkspaceWindow(QMainWindow):
         self.depth_status.setText(text)
 
     def _on_cloud_cam_changed(self, *_args) -> None:
-        if self._cloud_worker is None:      # 탭이 닫혀 있으면 다음 진입 때 반영
+        if self.cameras.cloud_worker is None:      # 탭이 닫혀 있으면 다음 진입 때 반영
             return
         self._stop_cloud(restore_previews=False)  # 복원 약속(플래그)은 유지된다
         for v in self._depth_views():
@@ -1499,11 +1481,11 @@ class WorkspaceWindow(QMainWindow):
         self._start_cloud()
 
     def _stop_cloud(self, restore_previews: bool = True) -> None:
-        w = self._cloud_worker
+        w = self.cameras.cloud_worker
         if w is None:
             return
-        self._cloud_worker = None
-        self._cloud_serial = ""
+        self.cameras.cloud_worker = None
+        self.cameras.cloud_serial = ""
         w.stop()
         w.wait(3000)
         self.cloud_status.setText(tr("depth 스트림 종료"))
@@ -1514,20 +1496,20 @@ class WorkspaceWindow(QMainWindow):
             # 파이프라인이 놓이는 데 잠깐 걸린다 -- 바로 열면 busy.
             QTimer.singleShot(700, lambda: (
                 self._restart_previews() if self.worker is None
-                and self._cloud_worker is None else None))
+                and self.cameras.cloud_worker is None else None))
 
     @pyqtSlot(object, object)
     def _on_cloud(self, pts, rgb) -> None:
-        self._cloud_pts, self._cloud_rgb = pts, rgb
-        if self._depth_consumer == "cloud":     # 보이는 탭만 렌더
+        self.cameras.cloud_pts, self.cameras.cloud_rgb = pts, rgb
+        if self.cameras.depth_consumer == "cloud":     # 보이는 탭만 렌더
             self._render_cloud()
             self.cloud_status.setText(
                 tr("점 {n:,}개 · 회전/기울임 슬라이더로 시점 변경").format(n=len(pts)))
 
     @pyqtSlot(object)
     def _on_depth_img(self, z) -> None:
-        self._depth_img = z
-        if self._depth_consumer == "depth":
+        self.cameras.depth_img = z
+        if self.cameras.depth_consumer == "depth":
             self._render_depth()
 
     def _depth_uv(self, pos) -> "tuple | None":
@@ -1536,7 +1518,7 @@ class WorkspaceWindow(QMainWindow):
         VideoView 는 KeepAspectRatio + 중앙 정렬이라 스케일과 여백을
         되짚어야 한다.
         """
-        z = self._depth_img
+        z = self.cameras.depth_img
         if z is None:
             return None
         h, w = z.shape[:2]
@@ -1551,7 +1533,7 @@ class WorkspaceWindow(QMainWindow):
 
     def _render_depth(self) -> None:
         """depth(m) → JET 컬러맵 + 척도 바 + 커서 지점 실거리."""
-        z = self._depth_img
+        z = self.cameras.depth_img
         if z is None:
             return
         import cv2
@@ -1560,12 +1542,12 @@ class WorkspaceWindow(QMainWindow):
         self.depth_range_label.setText(f"{zmax:.1f} m")
         frame = _depth_colormap(z, zmax)
         cursor_txt = ""
-        if self._depth_cursor is not None:
-            u, v = self._depth_cursor
+        if self.cameras.depth_cursor is not None:
+            u, v = self.cameras.depth_cursor
             if not (0 <= u < z.shape[1] and 0 <= v < z.shape[0]):
-                self._depth_cursor = None   # 프레임 크기가 바뀐 뒤 남은 커서
-        if self._depth_cursor is not None:
-            u, v = self._depth_cursor
+                self.cameras.depth_cursor = None   # 프레임 크기가 바뀐 뒤 남은 커서
+        if self.cameras.depth_cursor is not None:
+            u, v = self.cameras.depth_cursor
             zval = float(z[v, u])
             label = f"{zval:.3f} m" if zval > 0.001 else tr("무측정")
             cursor_txt = tr(" · 커서 ({u},{v}) = {d}").format(u=u, v=v, d=label)
@@ -1585,11 +1567,11 @@ class WorkspaceWindow(QMainWindow):
 
     def _render_cloud(self) -> None:
         """포인트클라우드 → 고정 시점 직교 투영 이미지 (numpy 래스터라이즈)."""
-        pts, rgb = self._cloud_pts, self._cloud_rgb
+        pts, rgb = self.cameras.cloud_pts, self.cameras.cloud_rgb
         if pts is None or len(pts) == 0:
             return
-        yaw = np.deg2rad(self.cloud_yaw.value())
-        pitch = np.deg2rad(self.cloud_pitch.value())
+        yaw = np.deg2rad(self.cameras.cloud_yaw.value())
+        pitch = np.deg2rad(self.cameras.cloud_pitch.value())
         cy, sy = np.cos(yaw), np.sin(yaw)
         cp, sp = np.cos(pitch), np.sin(pitch)
         ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
@@ -1616,18 +1598,18 @@ class WorkspaceWindow(QMainWindow):
     def _on_center_tab_changed(self, idx: int) -> None:
         """레이아웃 탭이 보이는 동안만 하단 로그를 접고 슬라이드쇼를 돌린다."""
         if idx == getattr(self, "_cloud_tab_index", -1):
-            self._depth_consumer = "cloud"
+            self.cameras.depth_consumer = "cloud"
         elif idx == getattr(self, "_depth_tab_index", -1):
-            self._depth_consumer = "depth"
+            self.cameras.depth_consumer = "depth"
         else:
-            self._depth_consumer = None
-        if self._depth_consumer is not None:
+            self.cameras.depth_consumer = None
+        if self.cameras.depth_consumer is not None:
             self._start_cloud()     # 이미 같은 카메라로 돌고 있으면 유지
-            if self._cloud_worker is not None:
+            if self.cameras.cloud_worker is not None:
                 # 보이는 탭 것만 계산하도록 워커 모드 전환 (사용자 요구:
                 # depth 계산도 그 탭에 들어갔을 때만)
-                self._cloud_worker.mode = self._depth_consumer
-        elif self._cloud_worker is not None:
+                self.cameras.cloud_worker.mode = self.cameras.depth_consumer
+        elif self.cameras.cloud_worker is not None:
             self._stop_cloud()
         on = idx == self._layout_tab_index
         self.bottom_tabs.setVisible(not on)
@@ -1647,7 +1629,7 @@ class WorkspaceWindow(QMainWindow):
             self._layout_blink_timer.stop()
 
     def _refresh_crop_labels(self) -> None:
-        p = self._crop_params
+        p = self.cameras.crop_params
         self.crop_agent_zoom_label.setText(
             tr("Agent 줌 {z:.2f}x").format(z=p["agent"]["zoom"]))
         self.crop_agent_x_label.setText(
@@ -1658,7 +1640,7 @@ class WorkspaceWindow(QMainWindow):
             tr("Wrist x {v:+d}px").format(v=p["wrist"]["x"]))
 
     def _crop_changed(self) -> None:
-        p = self._crop_params
+        p = self.cameras.crop_params
         p["agent"]["zoom"] = self.crop_agent_zoom.value() / 100.0
         p["agent"]["x"] = self.crop_agent_x.value()
         p["agent"]["y"] = self.crop_agent_y.value()
@@ -2071,13 +2053,13 @@ class WorkspaceWindow(QMainWindow):
         self.lights["camera"].set("busy" if self._previews_busy() else "off",
                                   tr("정리 중") if self._previews_busy() else "-")
         self._update_preview_btn()
-        # 멈춘 카메라의 마지막 프레임을 "현재"로 계속 겹쳐 보이지 않게 한다.
-        if self._last_cam_frame:
-            self._last_cam_frame.clear()
+        # 멈춘 치메라의 마지막 프레임을 "현재"로 계속 겹쳐 보이지 않게 한다.
+        cams = self.cameras
+        if cams.last_cam_frame:
+            cams.last_cam_frame.clear()
             if self.center_tabs.currentIndex() == self._layout_tab_index:
                 for role in ("agent", "wrist"):
                     self._layout_update_role(role)
-
     def _stop_previews_blocking(self, timeout_ms: int = 4000) -> None:
         """Only for shutdown: wait so the cameras are released before exit.
 
@@ -2091,28 +2073,31 @@ class WorkspaceWindow(QMainWindow):
         self._dying_previews = []
 
     def _on_preview_frame(self, role: str, frame) -> None:
-        # 기록 중에는 worker 가 보내는 프레임이 이긴다 -- 화면에 보이는 것이
+        # 기록 중에는 worker 가 별내는 프레임이 이긴다 -- 화면에 보이는 것이
         # 실제로 파일에 쓰이는 그림이어야 하기 때문이다. 그 외 단계(게이트·
-        # 리셋 대기)에서는 worker 가 카메라를 아예 안 읽으므로 여기가 유일한
+        # 리셋 대기)에서는 worker 가 치메라를 아예 안 읽으므로 여기가 유일한
         # 공급원이고, 노드 속도 그대로 나온다.
         if self._current_state == "recording":
             return
-        self._update_live_view(role, frame)
+        cams = self.cameras
+        self._update_live_view(role, frame, cams=cams)
         if self.center_tabs.currentIndex() == self._layout_tab_index:
             self._layout_update_role(role)
-        self._fps_count += 1
+        cams.fps_count += 1
 
-    def _update_live_view(self, role: str, frame) -> None:
+    def _update_live_view(self, role: str, frame, cams=None) -> None:
         """라이브 프레임 공용 경로 -- 원본 캐시 + 표시 (겹침 없음)."""
-        self._last_cam_frame[role] = frame      # 격자 없는 원본을 저장
+        if cams is None:
+            cams = self.cameras
+        cams.last_cam_frame[role] = frame      # 격자 없는 원본을 저장
         self.live_views[role].set_frame(self._with_grid(role, frame))
 
     def _set_live_maximized(self, role: "str | None") -> None:
         """좌우 배치는 유지하고 스플리터 비율만 바꾼다 -- 최대화한 쪽이
         ~88%, 반대쪽은 아주 작게. 겹침(PiP) 없음. 경계는 드래그로도 조절."""
-        if role == self._live_maximized:
+        if role == self.cameras.live_maximized:
             return
-        self._live_maximized = role
+        self.cameras.live_maximized = role
         total = max(self.live_split.width(), 800)
         if role is None:
             self.live_split.setSizes([total // 2, total // 2])
@@ -2130,15 +2115,15 @@ class WorkspaceWindow(QMainWindow):
         """agent 라이브 화면에만 워크스페이스 3×3 격자를 덧그린다 (사본)."""
         if role != "agent" or not self.grid_live_check.isChecked():
             return frame
-        corners = active_corners(self._grid_store)
+        corners = active_corners(self.cameras.grid_store)
         if not corners:
             return frame
         return draw_grid(frame, corners, self.grid_alpha_slider.value())
 
     def _on_grid_live_toggled(self, on: bool) -> None:
-        self._grid_store["live_on"] = bool(on)
-        save_grid_store(self._grid_store)
-        if on and active_corners(self._grid_store) is None:
+        self.cameras.grid_store["live_on"] = bool(on)
+        save_grid_store(self.cameras.grid_store)
+        if on and active_corners(self.cameras.grid_store) is None:
             self.log(tr("[격자] 저장된 격자가 없습니다 — '격자 편집...'에서 "
                         "만들어 저장하세요."))
         self._regrid_live()
@@ -2146,32 +2131,32 @@ class WorkspaceWindow(QMainWindow):
     def _on_grid_alpha(self, val: int) -> None:
         # 드래그 중에는 화면만 갱신하고, 저장은 놓을 때 한 번(_on_grid_alpha_done).
         self.grid_alpha_label.setText(tr("{v}%").format(v=val))
-        self._grid_store["alpha"] = int(val)
+        self.cameras.grid_store["alpha"] = int(val)
         self._regrid_live()
 
     def _on_grid_alpha_done(self) -> None:
-        save_grid_store(self._grid_store)
+        save_grid_store(self.cameras.grid_store)
 
     def _regrid_live(self) -> None:
         """마지막 프레임으로 agent 뷰를 다시 그린다 -- 멈춘 화면에서도
         체크박스/슬라이더가 즉시 반영되게."""
-        frame = self._last_cam_frame.get("agent")
+        frame = self.cameras.last_cam_frame.get("agent")
         if frame is not None:
             self.live_views["agent"].set_frame(self._with_grid("agent", frame))
 
     def _on_edit_grid(self) -> None:
-        bg = self._last_cam_frame.get("agent")
+        bg = self.cameras.last_cam_frame.get("agent")
         if bg is None:
-            bg = self._layout_ref.get("agent")
+            bg = self.cameras.layout_ref.get("agent")
         if bg is None:
             bg = np.full((480, 640, 3), 60, np.uint8)
             self.log(tr("[격자] 카메라 프레임이 없어 회색 배경에서 편집합니다 — "
                         "미리보기를 켜면 실제 화면 위에서 맞출 수 있습니다."))
-        dlg = GridEditorDialog(self, bg, self._grid_store,
-                               crop_params=dict(self._crop_params["agent"]),
+        dlg = GridEditorDialog(self, bg, self.cameras.grid_store,
+                               crop_params=dict(self.cameras.crop_params["agent"]),
                                save_callback=save_grid_store)
         dlg.exec()
-        self._grid_store = load_grid_store()    # 저장 결과를 다시 정본에서
+        self.cameras.grid_store = load_grid_store()    # 저장 결과를 다시 정본에서
         self._regrid_live()
 
     def _on_preview_error(self, role: str, msg: str) -> None:
@@ -2214,7 +2199,7 @@ class WorkspaceWindow(QMainWindow):
             return
         # 노드가 죽었거나 다른 구성으로 떠 있으면 여기서 맞춘다. worker 는
         # 장치를 직접 열지 않으므로(노드 구독) 이게 유일한 카메라 준비 단계다.
-        if self._camera_node_user_stopped:
+        if self.cameras.camera_node_user_stopped:
             # 수동 종료 상태에서 몰래 되살리면 외부 프로그램(VLA)이 쥔
             # 카메라를 노드가 빼앗으려 든다 -- 명시적 재시작을 요구한다.
             QMessageBox.warning(self, tr("카메라 노드 종료 상태"),
@@ -2285,7 +2270,7 @@ class WorkspaceWindow(QMainWindow):
             schema=self.schema,
             # 스냅샷(깊은 복사): 세션 중 슬라이더가 잠기긴 하지만, 기록될 값이
             # GUI 상태와 얽혀 있지 않아야 한다.
-            crop_params={r: dict(v) for r, v in self._crop_params.items()},
+            crop_params={r: dict(v) for r, v in self.cameras.crop_params.items()},
         )
         for key, value in (("language", lang),
                            ("data_root", cfg.data_root),
@@ -2450,14 +2435,14 @@ class WorkspaceWindow(QMainWindow):
     @pyqtSlot(object, object)
     def _on_frames(self, agent_rgb, wrist_rgb) -> None:
         layout_on = self.center_tabs.currentIndex() == self._layout_tab_index
+        cams = self.cameras
         for role, rgb in (("agent", agent_rgb), ("wrist", wrist_rgb)):
             if rgb is None:
                 continue
-            self._update_live_view(role, rgb)
+            self._update_live_view(role, rgb, cams=cams)
             if layout_on:
                 self._layout_update_role(role)
-        self._fps_count += 1
-
+        cams.fps_count += 1
     @pyqtSlot(object, object, bool)
     def _on_gate(self, leader, follower, all_ok) -> None:
         if leader is None or follower is None:
@@ -2657,12 +2642,12 @@ class WorkspaceWindow(QMainWindow):
             # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
             self._refresh_scene_combo()
         self._restart_previews()
-        if self._depth_consumer is not None:
+        if self.cameras.depth_consumer is not None:
             # 세션 동안 Depth/Point Cloud 탭에 머물러 있었다면 스트림을 다시
             # 올린다 (세션 중엔 안내만 보였다). 미리보기가 뜨는 시간을 준다.
             QTimer.singleShot(600, lambda: (
                 self._start_cloud() if self.worker is None
-                and self._depth_consumer is not None else None))
+                and self.cameras.depth_consumer is not None else None))
 
     # -------------------------------------------------------------- stats
     def _bump(self, key: str, n: int = 1) -> None:
@@ -2689,9 +2674,10 @@ class WorkspaceWindow(QMainWindow):
         return name
 
     def _tick_fps(self) -> None:
-        self._fps_value = self._fps_count
-        self._fps_count = 0
-        self.right_fields["fps"].setText(f"{self._fps_value:.0f}")
+        cams = self.cameras
+        cams.fps_value = cams.fps_count
+        cams.fps_count = 0
+        self.right_fields["fps"].setText(f"{cams.fps_value:.0f}")
         if self.worker is not None and not self._no_dataset_session:
             # max(): 저장이 백그라운드라 episode_list_changed 가 몇 초 늦게 온다.
             # 그 사이를 연결시점 + 이번 task 저장수로 메운다. _session 이 Connect
@@ -2703,8 +2689,7 @@ class WorkspaceWindow(QMainWindow):
         else:
             count = tr("저장 {s}").format(s=self._cumulative["saved"])
         self.sb_right.setText(
-            f"{self._fps_value:.0f} fps   |   {count}   |   {self.root_edit.text()}")
-
+            f"{cams.fps_value:.0f} fps   |   {count}   |   {self.root_edit.text()}")
     def _refresh_plan_progress(self) -> None:
         """Statistics 의 계획 진행률 표 -- 계획 × 실제 scene 파일 대조."""
         tree = getattr(self, "plan_progress_tree", None)
@@ -4476,7 +4461,7 @@ class WorkspaceWindow(QMainWindow):
         return specs
 
     def _on_restart_camera_node(self) -> None:
-        self._camera_node_user_stopped = False
+        self.cameras.camera_node_user_stopped = False
         self._ensure_camera_node(restart=True)
 
     def _on_stop_camera_node_manual(self) -> None:
@@ -4488,7 +4473,7 @@ class WorkspaceWindow(QMainWindow):
                                 tr("수집 세션이 카메라를 쓰고 있습니다. "
                                    "세션 종료 후 노드를 내리세요."))
             return
-        self._camera_node_user_stopped = True
+        self.cameras.camera_node_user_stopped = True
         self._stop_cloud(restore_previews=False)
         self._stop_previews_async()
         self._stop_camera_node()
@@ -4508,14 +4493,14 @@ class WorkspaceWindow(QMainWindow):
         래치가 켜져 있으면 건드리지 않는다 (외부 프로그램이 카메라를 쓰는
         중일 수 있다 -- restart=True 도 래치를 풀지 않는다, 그건
         _on_restart_camera_node 만 한다)."""
-        if self._camera_node_user_stopped:
+        if self.cameras.camera_node_user_stopped:
             return
-        specs = self._camera_node_specs()
+        specs = self.cameras.camera_node_specs()
         key = ",".join(specs)
         running = (self.procs.camera_node_process is not None and
                    self.procs.camera_node_process.state()
                    != QProcess.ProcessState.NotRunning)
-        if running and not restart and key == self._camera_node_spec:
+        if running and not restart and key == self.cameras.camera_node_spec:
             return
         if running:
             self._stop_camera_node()
@@ -4530,7 +4515,7 @@ class WorkspaceWindow(QMainWindow):
         proc.readyReadStandardOutput.connect(self._on_camera_node_output)
         proc.finished.connect(self._on_camera_node_finished)
         self.procs.camera_node_process = proc
-        self._camera_node_spec = key
+        self.cameras.camera_node_spec = key
         self.log(f"[카메라노드] 시작: {key}")
         proc.start()
 
@@ -4552,13 +4537,13 @@ class WorkspaceWindow(QMainWindow):
         # 뜨자마자 죽는 상태)이면 로그만 가득 채우므로 60초 내 3회를 넘으면
         # 멈추고 수동(카메라 메뉴)으로 넘긴다.
         self.procs.camera_node_process = None
-        self._camera_node_spec = ""
+        self.cameras.camera_node_spec = ""
         now = time.monotonic()
-        self._camera_node_crashes = [
-            t for t in self._camera_node_crashes if now - t < 60.0] + [now]
-        if len(self._camera_node_crashes) > 3:
+        self.cameras.camera_node_crashes = [
+            t for t in self.cameras.camera_node_crashes if now - t < 60.0] + [now]
+        if len(self.cameras.camera_node_crashes) > 3:
             self.log(f"[카메라노드] 비정상 종료 (exit={code}) — 60초 내 "
-                     f"{len(self._camera_node_crashes)}회째, 자동 재시작을 "
+                     f"{len(self.cameras.camera_node_crashes)}회째, 자동 재시작을 "
                      "멈춥니다. Camera 메뉴 > 카메라 노드 재시작으로 수동 "
                      "시작하세요.")
             return
@@ -4568,7 +4553,7 @@ class WorkspaceWindow(QMainWindow):
     def _stop_camera_node(self) -> None:
         proc = self.procs.camera_node_process
         self.procs.camera_node_process = None
-        self._camera_node_spec = ""
+        self.cameras.camera_node_spec = ""
         if proc is None or proc.state() == QProcess.ProcessState.NotRunning:
             return
         proc.terminate()
@@ -4691,7 +4676,8 @@ class WorkspaceWindow(QMainWindow):
 
     def _pipe(self, proc: QProcess, prefix: str, view: str) -> None:
         data = self._proc_text(proc)
-        state = self._stream_states.setdefault(prefix, {})
+        cams = self.cameras
+        state = cams.stream_states.setdefault(prefix, {})
         # 진행률은 1초마다 받아 한 줄을 덮어쓴다. 3초로 줄여도 1.3GB 업로드가
         # 몇 분이면 수십 줄이 쌓여, 그 사이 지나간 다른 로그를 밀어낸다.
         for line in clean_stream_lines(data, state, every_s=1.0):
@@ -4699,7 +4685,6 @@ class WorkspaceWindow(QMainWindow):
                 self._log_progress(f"{prefix} {line}", view)
             else:
                 self.log(f"{prefix} {line}", view)
-
     def _on_lerobot(self) -> None:
         dlg = LerobotConvertDialog(self, self.root_edit.text().strip())
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -4763,7 +4748,7 @@ class WorkspaceWindow(QMainWindow):
             for r, v in getattr(self, "live_views", {}).items():
                 if obj is v:
                     self._set_live_maximized(
-                        None if self._live_maximized == r else r)
+                        None if self.cameras.live_maximized == r else r)
                     return True
         if obj is getattr(self, "depth_view", None):
             # Depth 뷰 위에서 마우스가 가리키는 지점의 실거리 표시.
@@ -4771,13 +4756,13 @@ class WorkspaceWindow(QMainWindow):
             # 처리로 흘려보낸다 -- 무조건 return 하면 이 뷰에 포커스가 있는
             # 동안 Space/Esc 단축키가 죽는다.
             if (event.type() == QEvent.Type.MouseMove
-                    and self._depth_img is not None):
-                self._depth_cursor = self._depth_uv(event.position())
+                    and self.cameras.depth_img is not None):
+                self.cameras.depth_cursor = self._depth_uv(event.position())
                 self._render_depth()
                 return False
             if event.type() == QEvent.Type.Leave \
-                    and self._depth_cursor is not None:
-                self._depth_cursor = None
+                    and self.cameras.depth_cursor is not None:
+                self.cameras.depth_cursor = None
                 self._render_depth()
                 return False
         if (

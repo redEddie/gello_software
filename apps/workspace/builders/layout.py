@@ -46,7 +46,7 @@ def build_center(win) -> None:
     # 카메라별 크롭 정렬 -- 뷰 가이드·레이아웃 겹침·수집·변환이 전부 이
     # 값을 쓴다. 파일(~/libero_gui_logs/crop_params.json)에서 복원하고,
     # Layout 페이지 슬라이더가 바꾸면 저장한다.
-    win._crop_params = load_crop_params()
+    win.cameras.crop_params = load_crop_params()
     """Camera views. This widget is created once and never replaced --
     every other panel changes around it."""
     win.center_tabs = QTabWidget()
@@ -58,14 +58,14 @@ def build_center(win) -> None:
     win.live_split = QSplitter(Qt.Orientation.Horizontal)
     win.live_views = {}
     win.live_boxes = {}
-    win._live_maximized: "str | None" = None
+    win.cameras.live_maximized = None
     for key, title in (("agent", "Agent (정면)"), ("wrist", "Wrist (손목)")):
         box = QGroupBox(tr(title))
         inner = QVBoxLayout(box)
         inner.setContentsMargins(4, 4, 4, 4)
         view = VideoView()
         view.setText(tr("카메라를 선택하세요"))
-        view.set_crop_guide(**win._crop_params[key])
+        view.set_crop_guide(**win.cameras.crop_params[key])
         view.setToolTip(tr("더블클릭: 이 카메라 최대화 / 복원"))
         view.setMinimumSize(60, 45)   # 최대화 시 반대쪽이 아주 작아질 수 있게
         view.installEventFilter(win)
@@ -96,7 +96,7 @@ def build_center(win) -> None:
     grow.addSpacing(16)
     # 3×3 워크스페이스 격자 -- 편집은 격자 편집 다이얼로그, 여기는 표시만.
     win.grid_live_check = QCheckBox(tr("3×3 격자"))
-    win.grid_live_check.setChecked(bool(win._grid_store.get("live_on")))
+    win.grid_live_check.setChecked(bool(win.cameras.grid_store.get("live_on")))
     win.grid_live_check.setToolTip(tr(
         "저장된 워크스페이스 격자를 agent 라이브 화면에 겹쳐 보입니다.\n"
         "물체를 어느 칸(A1..C3)에 놓을지 확인하는 용도입니다."))
@@ -104,7 +104,7 @@ def build_center(win) -> None:
     grow.addWidget(win.grid_live_check)
     win.grid_alpha_slider = QSlider(Qt.Orientation.Horizontal)
     win.grid_alpha_slider.setRange(10, 100)
-    win.grid_alpha_slider.setValue(int(win._grid_store.get("alpha", 60)))
+    win.grid_alpha_slider.setValue(int(win.cameras.grid_store.get("alpha", 60)))
     win.grid_alpha_slider.setMaximumWidth(140)
     win.grid_alpha_slider.valueChanged.connect(win._on_grid_alpha)
     win.grid_alpha_slider.sliderReleased.connect(win._on_grid_alpha_done)
@@ -131,7 +131,7 @@ def build_center(win) -> None:
         inner.setContentsMargins(4, 4, 4, 4)
         view = VideoView()
         view.setText(tr("에피소드를 선택하세요"))
-        view.set_crop_guide(**win._crop_params[key])
+        view.set_crop_guide(**win.cameras.crop_params[key])
         inner.addWidget(view)
         win.play_views[key] = view
         win.play_split.addWidget(box)
