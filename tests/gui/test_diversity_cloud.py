@@ -161,7 +161,7 @@ win.depth_ops.render_depth()
 assert "커서 (10,20)" in win.depth_status.text()
 assert "0.600 m" in win.depth_status.text()
 win.cameras.depth_cursor = None
-from gello.gui.gui_widgets import DepthCloudWorker  # noqa: E402
+from gello.gui.workers import DepthCloudWorker  # noqa: E402
 
 assert DepthCloudWorker("x", mode="depth").mode == "depth"
 assert DepthCloudWorker("x").mode == "cloud"

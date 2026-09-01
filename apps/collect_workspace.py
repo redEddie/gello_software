@@ -77,16 +77,13 @@ from gello.data.dataset_schema import (  # noqa: E402
     save_schema_config,
 )
 from gello.gui.gui_widgets import (  # noqa: E402
-    repo_id_error,
     PLAYBACK_FPS,
-    CameraPreviewWorker,
     DatasetSchemaDialog,
-    GalleryLoadWorker,
     Recents,
-    clean_stream_lines,
     hf_account,
-    is_progress_line,
 )
+from gello.gui.workers import CameraPreviewWorker, GalleryLoadWorker  # noqa: E402
+from gello.gui.text_utils import clean_stream_lines, is_progress_line, repo_id_error  # noqa: E402
 from apps.workspace.constants import LOG_DIR, LAYOUT_DIR, LAYOUT_ZIP  # noqa: E402
 from apps.workspace.domains import CameraOps, CollectionOps, DatasetOps, DepthOps, PlaybackOps, SceneOps, StatsOps, UploadOps  # noqa: E402
 from apps.workspace.models import (  # noqa: E402

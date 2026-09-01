@@ -24,8 +24,8 @@ from gello.gui.gui_widgets import (
     LerobotConvertDialog,
     RepackDialog,
     hf_account,
-    repo_id_error,
 )
+from gello.gui.text_utils import repo_id_error
 from gello.gui.i18n import tr
 
 from apps.workspace.constants import CONVERT_SCRIPT, REPACK_SCRIPT, UPLOAD_SCRIPT

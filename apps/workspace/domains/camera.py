@@ -10,7 +10,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QProcess, QTimer
 from PyQt6.QtWidgets import QComboBox, QMessageBox
 
-from gello.gui.gui_widgets import CameraPreviewWorker
+from gello.gui.workers import CameraPreviewWorker
 from gello.gui.grid_overlay import active_corners, draw_grid, save_grid_store
 from gello.gui.i18n import tr
 

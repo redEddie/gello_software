@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QComboBox
 import numpy as np
 
 from apps.dialogs._image_utils import _depth_colormap
-from gello.gui.gui_widgets import DepthCloudWorker
+from gello.gui.workers import DepthCloudWorker
 from gello.gui.i18n import tr
 
 

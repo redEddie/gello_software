@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QFileDialog, QMessageBox, QTreeWidgetItem
 
 from gello.data.episode_stats import TASK_DEV_LIMIT
 from gello.data.libero_format import hdf5_repack_status, renumber_episodes
-from gello.gui.gui_widgets import repo_id_error
+from gello.gui.text_utils import repo_id_error
 from gello.gui.i18n import tr
 from gello.gui.scene_gallery import invalidate_scene_thumbs
 from gello.scene.scene_format import (
