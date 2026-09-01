@@ -310,7 +310,9 @@ class JointLimitWall:
         match_kd: float = 20.0,
         match_max_current=350.0,  # scalar or per-arm-joint sequence (mA)
         idle_hold_current: float = 0.0,  # 0 = 정렬 모드에서도 캡을 낮추지 않음
-        match_tol: float = 0.05,
+        # 2026-09-01: 0.05 rad(2.9도)에서 '완료' 로 보던 것을 0.02(1.1도)로.
+        # 조작자가 "정렬이 완벽하지 않다" 고 본 것이 이 여유였다.
+        match_tol: float = 0.02,
         match_vel_tol: float = 0.15,
         match_hold_s: float = 0.3,
         match_rate: float = 0.6,
@@ -688,15 +690,18 @@ class JointLimitWall:
                     # 끌린다 -- 위 참조). 히스테리시스는 관절마다 따로.
                     # 정렬 중이냐 텔레옵 중이냐로 이 규칙을 바꾸지 않는다 --
                     # "어디에 놓아두든 안 당긴다" 는 모드와 무관한 약속이다.
+                    # 목표가 설정돼 있는 동안은 모든 관절에 토크를 건다.
+                    # 가까운 관절은 우물대로 세게, arm 반경 밖의 먼 관절은
+                    # 최소 전류로만 당긴다 (2026-09-01 사용자 결정) -- 예전에는
+                    # 먼 관절의 토크를 아예 끊어서, 리셋 자세에서 멀면 정렬이
+                    # 영영 다가오지 못했다. 최소 전류는 사람이 손으로 쉽게
+                    # 이기는 크기라 팔을 옮기는 데도 방해가 되지 않는다.
+                    # 목표가 없을 때(else 절)는 예전 그대로 전부 토크 오프다.
                     if self._match_state == WallMatchState.BLOCKED:
                         self._match_arm_mask = np.zeros(self._n_arm, dtype=bool)
                     else:
-                        thr = np.where(
-                            self._match_arm_mask,
-                            self._match_arm_rad + self._match_gate_release,
-                            self._match_arm_rad,
-                        )
-                        self._match_arm_mask = abs_err <= thr
+                        self._match_arm_mask = np.ones(self._n_arm, dtype=bool)
+                    far = abs_err > self._match_arm_rad
                 else:
                     self._match_arm_mask = np.zeros(self._n_arm, dtype=bool)
                 self._match_engaged = bool(self._match_arm_mask.any())
@@ -836,6 +841,11 @@ class JointLimitWall:
                         kp * terr - self._match_kd * dq + self._match_int,
                         -match_cap, match_cap,
                     )  # per-joint caps; np.clip broadcasts elementwise
+                    # arm 반경 밖: 우물이 거의 0 이라 그대로 두면 다가오지
+                    # 못한다. 목표 쪽으로 최소 전류만 흘린다 (캡이 그보다
+                    # 낮으면 캡을 따른다).
+                    floor = np.minimum(IDLE_MIN_CURRENT, match_cap)
+                    cur_match = np.where(far, np.sign(goal_err) * floor, cur_match)
                     cur = cur + cur_match
                     # 포화 감시: 어느 조인트든 캡 근처를 stall_s 초 이상
                     # 연속으로 요구하면 정렬을 포기한다. 정상 정렬은

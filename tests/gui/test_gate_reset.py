@@ -54,7 +54,10 @@ def make_worker():
     return w
 
 
-# ---- 1. 리더가 범위 밖이면: 자동정렬 발동 금지 + 시작 거부 ----
+# ---- 1. 리더가 범위 밖이어도: 자동정렬은 걸리고, 텔레옵 시작은 거부 ----
+# 2026-09-01: 정렬(자동·수동 모두)은 오차와 무관하게 시작한다. 모터 보호는
+# wall 이 관절별로, 케이블 보호는 roll 관절 이탈 판정이 맡는다. 반면
+# '텔레옵 시작' 은 자세가 맞아야 한다는 게이트를 그대로 유지한다.
 w = make_worker()
 logs = []
 w.log_message.connect(logs.append)
@@ -63,19 +66,18 @@ t = threading.Thread(target=lambda: result.update(r=w._pose_gate(timeout=30)))
 t.start()
 time.sleep(0.4)
 app.processEvents()      # 크로스 스레드 시그널(큐잉) 전달
-assert w._teleop.match_started == 0, "범위 밖인데 자동정렬이 당김"
-assert any("범위 밖" in m for m in logs), logs
+assert w._teleop.match_started == 1, "오차가 커도 자동정렬은 걸려야 한다"
 w.cmd_start_teleop()
 time.sleep(0.3)
 app.processEvents()
 assert t.is_alive(), "자세 불일치인데 start 가 통과됨"
 assert any("자세가 맞지 않습니다" in m for m in logs)
-print("1 통과: 범위 밖 -- 자동정렬 미발동 + start 거부")
+print("1 통과: 오차가 커도 자동정렬 발동 + 텔레옵 start 는 거부")
 
 # ---- 2. 범위 안으로 들어오면: 자동정렬 1회 발동, start 통과 ----
 w._teleop.leader_q = np.full(7, GATE_RAD * 0.5)
 time.sleep(0.4)
-assert w._teleop.match_started == 1, "범위 진입 후 자동정렬이 안 걸림"
+assert w._teleop.match_started == 1, "자동정렬이 중복 발동했다"
 w.cmd_start_teleop()
 t.join(3)
 assert not t.is_alive() and result["r"] == "ok"
@@ -97,12 +99,13 @@ wb._teleop.leader_q = np.full(7, 1.5)               # 정렬 중 범위 밖으�
 time.sleep(0.3)
 app.processEvents()
 assert tb.is_alive(), "이탈 중단 후 게이트로 못 돌아옴"
-assert any("범위 밖으로 벗어나 정렬을 중단" in m for m in logs_b), logs_b
+assert any("범위 밖이라 정렬을 중단" in m for m in logs_b), logs_b
 assert wb._teleop.cancelled >= 1                    # 홀드 해제됨
 wb._teleop.match_done = True
 wb._teleop.leader_q = np.full(7, GATE_RAD * 0.5)    # 다시 범위 안으로
 time.sleep(0.3)
-assert wb._teleop.match_started == 2, "복귀 후 자동 재시도 안 됨"
+# 이탈 중단 뒤에는 자동 재시도하지 않는다 -- 사람이 버튼으로 다시 요청한다.
+assert wb._teleop.match_started == 1, "이탈 후 자동 재시도가 일어났다"
 wb.cmd_start_teleop()
 tb.join(3)
 assert rb["r"] == "ok"

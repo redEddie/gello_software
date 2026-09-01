@@ -5858,7 +5858,10 @@ class WorkspaceWindow(QMainWindow):
             self.tb_actions[key].setEnabled(savable)
         self.tb_actions["connect"].setEnabled(not running)
         self.tb_actions["disconnect"].setEnabled(running)
-        for b in (self.skip_btn, self.discard_btn, self.home_btn):
+        for b in (self.skip_btn, self.discard_btn, self.home_btn,
+                  # 정렬 버튼은 세션 중이면 항상 열려 있다 -- 자세 오차가
+                  # 커도 사람이 직접 요청하면 걸 수 있어야 한다 (2026-09-01).
+                  self.match_btn):
             b.setEnabled(running)
         if not running:
             self._gate_ok = None
@@ -5958,14 +5961,14 @@ class WorkspaceWindow(QMainWindow):
                                     else tr("리더를 팔로워 자세에 맞추세요"))
             self.gate_label.setStyleSheet(
                 "color:#2ecc71;" if all_ok else "color:#e67e22;")
-            # Enter/버튼은 워커와 같은 조건에서만 열린다. 잠겨 있는 이유가
-            # 보이도록 게이트 상태의 힌트도 all_ok 에 따라 바꾼다.
-            self.match_btn.setEnabled(all_ok)
+            # 정렬 버튼은 자세와 무관하게 열려 있다 (2026-09-01) -- 아래
+            # _set_running 이 세션 단위로 켜고 끈다. 잠기는 것은 '텔레옵
+            # 시작' 쪽뿐이다.
             self._update_start_controls()
             if self._current_state == "gate":
                 self.shortcut_hint.setText(
                     "Space: 텔레옵 시작   Enter: 자동 정렬 다시" if all_ok
-                    else "Space: 텔레옵 시작   (Enter: 자세를 더 맞춰야 자동 정렬 가능)")
+                    else "Space: 텔레옵 시작   Enter: 자동 정렬 (오차 커도 가능)")
 
     @pyqtSlot(float, bool)
     def _on_pose_match(self, err, done) -> None:
@@ -8286,13 +8289,9 @@ class WorkspaceWindow(QMainWindow):
                     self._cmd("cmd_skip_reset_wait")
                     return True
                 if state == "gate":
-                    # 자동 정렬 재시도. 시간 초과로 꺼진 뒤 손으로 대충 맞춰놓고
-                    # 나머지를 다시 기계에 맡기는 흐름이 자연스럽다.
-                    if self._gate_ok:
-                        self._cmd("cmd_auto_match_pose")
-                    else:
-                        self.log("[자동정렬] 먼저 리더를 대략 맞춰주세요 "
-                                 "(자동 정렬은 큰 오차에서 걸면 모터에 무리).")
+                    # 자동 정렬 재시도. 오차 조건은 없다 -- wall 이 관절별로
+                    # 보호한다 (2026-09-01).
+                    self._cmd("cmd_auto_match_pose")
                     return True
         return super().eventFilter(obj, event)
 

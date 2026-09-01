@@ -20,6 +20,7 @@ sys.path.insert(0, WT)
 
 from gello.hw.dynamixel.driver import FakeDynamixelDriver  # noqa: E402
 from gello.robots.joint_limit_wall import (  # noqa: E402
+    IDLE_MIN_CURRENT,
     MATCH_GATE_RAD,
     JointLimitWall,
 )
@@ -67,11 +68,13 @@ try:
 
     w.set_match_target(TARGET)
     st = _settle(w)
-    assert st["match_engaged"] is False, "정렬 반경 밖인데 토크를 켰다"
-    assert st["armed"] is False
-    assert np.allclose(drv._currents[:N_ARM], 0.0), \
-        f"정렬 반경 밖인데 전류가 흘렀다: {drv._currents[:N_ARM]}"
-    print("1 통과: 멀리 놓아 두면 전류·토크 0 (팔은 자유)")
+    # 2026-09-01 계약: 목표가 있으면 먼 관절도 '최소 전류' 로는 당긴다.
+    # 예전처럼 토크를 끊으면 리셋 자세에서 멀 때 영영 다가오지 못했다.
+    assert st["match_engaged"] is True, "목표가 있는데 아무 관절도 안 걸렸다"
+    far_cur = np.abs(drv._currents[:N_ARM])
+    assert np.allclose(far_cur, IDLE_MIN_CURRENT, atol=1.0), \
+        f"먼 관절이 최소 전류로 당기지 않는다: {far_cur}"
+    print(f"1 통과: 멀리 있어도 최소 전류({IDLE_MIN_CURRENT:.0f} mA)로만 당긴다")
 
     # 손으로 우물 안까지 가져다 놓는다 -- 스스로 걸리고 전류가 붙는다
     _put_leader_at(drv, np.full(N_ARM, WELL))
@@ -97,22 +100,21 @@ try:
 
     # 케이블 풀기: 한 관절만 크게 돌려도 그 관절만 힘이 빠지고
     # 나머지는 계속 버틴다 (조인트별 우물)
+    # 한 관절만 크게 돌린 상태: 그 관절은 최소 전류로만, 가까운 나머지는
+    # 우물대로 세게 당긴다. 케이블 보호는 한 단계 위(roll 관절 이탈 판정)가
+    # 맡는다 -- 실제 운용에서는 목표가 취소돼 전 관절 토크 오프가 된다.
     q = np.full(N_ARM, 0.05)
     q[0] = np.pi                      # J1 을 반 바퀴 돌린 상태
     _put_leader_at(drv, q)
     st = _settle(w)
     cur = np.abs(np.asarray(st["cur"]))
-    assert st["armed"] is True, "다른 관절이 가까운데 토크가 꺼졌다"
-    assert cur[0] < 0.05 * cur[1:].max(), \
-        f"돌린 관절이 아직 세게 당긴다: J1={cur[0]:.1f} 나머지={cur[1:].max():.1f}"
-    # 힘만 0 이 아니라 토크 자체가 꺼져 있어야 정말 자유롭다
-    # (전류제어 0 도 토크 오프보다 끌린다).
-    mask = np.asarray(st["armed_mask"])
-    assert mask[0] == False and mask[1:].all(), f"armed_mask={mask}"
-    assert drv._ids[0] not in drv._torque_ids, "돌린 관절의 토크가 아직 켜져 있다"
-    assert drv._ids[1] in drv._torque_ids, "나머지 관절의 토크가 꺼졌다"
-    print(f"4 통과: 한 관절만 돌리면 그 관절만 토크 오프 "
-          f"(J1 {cur[0]:.1f} mA·토크 off vs 나머지 {cur[1:].max():.0f} mA)")
+    assert st["armed"] is True
+    assert abs(cur[0] - IDLE_MIN_CURRENT) < 1.0, \
+        f"돌린 관절이 최소 전류가 아니다: {cur[0]:.1f}"
+    assert cur[1:].min() > cur[0], \
+        f"가까운 관절이 더 약하게 당긴다: J1={cur[0]:.1f} 나머지={cur[1:].min():.1f}"
+    print(f"4 통과: 돌린 관절은 최소 전류({cur[0]:.0f} mA), "
+          f"가까운 관절은 우물대로({cur[1:].max():.0f} mA)")
 finally:
     w.stop()
 

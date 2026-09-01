@@ -37,7 +37,8 @@ from gello.agents.lerobot_plugin import (
     GelloFR3TeleopConfig,
 )
 from gello.data.libero_format import LiberoTaskWriter, NullTaskWriter
-from gello.robots.franka_fr3 import FR3_RESET_POSES
+from gello.config.constants import ROLL_ABORT_RAD
+from gello.robots.franka_fr3 import FR3_RESET_POSES, FR3_ROLL_JOINTS
 from gello.config.constants import MATCH_GATE_RAD
 from gello.scene.scene_format import QUALITY_FAILED, QUALITY_SUCCESS, SceneMetadata, SceneWriter
 from gello.core.station import load_station
@@ -839,7 +840,6 @@ class CollectionWorker(QThread):
         # 보호 전제. 예전에는 게이트 진입 즉시 당겼는데, 리더가 멀리 놓여
         # 있으면 전 구간을 모터로 끌고 오는 셈이었다.
         auto_pending = self.cfg.auto_match_pose
-        auto_warned = False
         try:
             while True:
                 cmd = self._poll_cmd()
@@ -857,32 +857,20 @@ class CollectionWorker(QThread):
                     self.log_message.emit(
                         f"[GATE] 아직 자세가 맞지 않습니다 (최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
                     )
+                # 자동·수동 모두 자세 오차와 무관하게 시작한다 (2026-09-01
+                # 사용자 결정). 모터 보호는 wall 이 관절별로 맡는다: 정렬
+                # 반경 밖 관절은 최소 전류로만 당기고, 힘도 목표에서 멀수록
+                # 약한 우물 모양이다. 케이블 보호는 아래 _auto_match_pose 의
+                # roll 관절 이탈 판정이 맡는다.
                 run_auto = False
                 if auto_pending:
-                    if all_ok:
-                        # 켜 둔 자동 정렬은 범위에 들어온 첫 순간 한 번만 발동.
-                        auto_pending = False
-                        run_auto = True
-                    elif not auto_warned:
-                        auto_warned = True
-                        self.log_message.emit(
-                            f"[자동정렬] 리더가 아직 범위 밖입니다 "
-                            f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad) "
-                            f"-- 가까이 가져오면 자동 정렬합니다"
-                        )
+                    # 켜 둔 자동 정렬은 게이트에 들어온 뒤 한 번만 발동한다.
+                    # 이탈로 중단돼도 다시 걸지 않는다 -- 시작/중단을 반복하며
+                    # 로그를 채우는 대신, 사람이 버튼으로 다시 요청한다.
+                    auto_pending = False
+                    run_auto = True
                 if cmd and cmd[0] == "auto_match_pose":
-                    # Motor-protection precondition: only ever pull via the
-                    # leader's own motors once the loose manual gate already
-                    # passed, same all_ok this state already computes every
-                    # tick -- the GUI also gates the button on this, but re-check
-                    # here too in case a click and a pose drift raced.
-                    if not all_ok:
-                        self.log_message.emit(
-                            f"[자동정렬] 먼저 대략적으로 자세를 맞춰주세요 "
-                            f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
-                        )
-                    else:
-                        run_auto = True
+                    run_auto = True
                 if run_auto:
                     outcome = self._auto_match_pose()
                     if outcome in ("quit", "go_home"):
@@ -892,10 +880,6 @@ class CollectionWorker(QThread):
                         # is already released (see _auto_match_pose), so
                         # just honor it like a normal Start Teleop click.
                         return "ok"
-                    if outcome == "out_of_range" and self.cfg.auto_match_pose:
-                        # 이탈로 중단됐다 -- 범위에 다시 들어오면 자동 재시도.
-                        auto_pending = True
-                        auto_warned = False
                     # outcome == "ok": converged, and per _auto_match_pose's
                     # contract the leader is left TORQUE-HELD at the target
                     # (not released) -- the loop just keeps looping, still
@@ -961,14 +945,21 @@ class CollectionWorker(QThread):
                     self.log_message.emit("[자동정렬] 텔레옵 시작으로 중단")
                 return interrupt
             delta, all_ok = self._emit_gate_status()  # delta bars live during the pull
-            if not all_ok:
-                # 조작자가 정렬 중에 리더를 도로 범위 밖으로 끌었다 -- 모터가
-                # 사람 손과 싸우게 두지 않는다. 홀드를 풀고 게이트로 돌아간다
-                # (범위에 다시 들어오면 호출자가 재시도한다).
+            # 이탈 판정은 roll 관절(J1/J3/J5/J7)만 본다 (2026-09-01 사용자
+            # 결정). 그쪽은 제한 없이 돌 수 있어 크게 어긋난 채로 당기면
+            # 케이블을 감는 방향으로 갈 수 있으니 멈추는 것이 맞지만,
+            # 굽힘 관절(J2/J4/J6)이 멀리 있는 것은 그냥 자세가 다른 것이라
+            # 멈출 이유가 없다 -- 예전에는 그것 때문에 리셋 자세에서 조금만
+            # 멀어도 정렬이 시작하자마자 중단됐다.
+            roll_err = delta[list(FR3_ROLL_JOINTS)]
+            if roll_err.max() > ROLL_ABORT_RAD:
                 self._teleop.cancel_pose_match()
+                worst = int(np.argmax(roll_err))
                 self.log_message.emit(
-                    f"[자동정렬] 리더가 범위 밖으로 벗어나 정렬을 중단합니다 "
-                    f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
+                    f"[자동정렬] roll 관절 J{FR3_ROLL_JOINTS[worst] + 1} 이(가) "
+                    f"범위 밖이라 정렬을 중단합니다 "
+                    f"(차이 {roll_err.max():.2f} rad > {ROLL_ABORT_RAD} rad) -- "
+                    "케이블이 감기지 않게 손으로 대략 맞춘 뒤 다시 시도하세요"
                 )
                 self.pose_match_status.emit(float(delta.max()), True)
                 return "out_of_range"
