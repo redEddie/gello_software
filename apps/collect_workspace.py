@@ -3572,6 +3572,19 @@ class WorkspaceWindow(QMainWindow):
             e.setStyleSheet("" if not err else "border:1px solid #e67e22;")
         self.repo_warn.setText("\n".join(msgs))
 
+    def _warn_ignored_legacy(self, plan: dict) -> None:
+        """legacy(*_demo.hdf5)는 업로드 대상이 아니다 -- 남아 있으면 알린다.
+
+        조용히 빼면 "왜 이 파일은 안 올라갔지" 를 나중에 데이터로 추적해야
+        한다. 계획에서 빠졌다는 사실은 계획을 세우는 그 자리에서 말한다
+        (issue #15).
+        """
+        names = plan.get("ignored_legacy") or []
+        if names:
+            self.log(f"[동기화] legacy 파일 {len(names)}개는 업로드 대상이 "
+                     f"아닙니다 (scene 포맷만 배포): {', '.join(names[:5])}"
+                     + (" ..." if len(names) > 5 else ""))
+
     def _check_repo(self, key: str, what: str) -> "str | None":
         """Returns the id, or None after telling the operator what is wrong."""
         repo = self.repo_id_for(key)
@@ -7559,6 +7572,7 @@ class WorkspaceWindow(QMainWindow):
         if repo is None:
             return
         plan = plan_sync(data_root, repo)  # 네트워크 -- Hub 개수 대조
+        self._warn_ignored_legacy(plan)
         if plan["action"] == "blocked":
             QMessageBox.warning(self, tr("이어붙이기 불가"),
                                 tr("Hub 상태를 읽지 못했습니다: {e}\n확실하지 않은 "

@@ -37,7 +37,6 @@ from pathlib import Path
 
 import h5py
 
-from gello.data.dataset_schema import REPACK_COUNT_ATTR
 from gello.scene.scene_format import QUALITY_SUCCESS
 
 # Deleting an episode and recording another leaves the count unchanged, so the
@@ -61,25 +60,17 @@ def local_tasks(data_root: str | Path) -> dict:
     append 하는 순서와 같다(convert_libero_to_lerobot.py 의 demo 정렬과 동일).
     attrs 만 읽으므로 이미지 데이터는 건드리지 않는다.
     """
+    # legacy(``<task>_demo.hdf5``)는 더 이상 업로드 대상이 아니다
+    # (2026-09-01 사용자 결정, issue #15). 지금 배포하는 것은 scene 포맷뿐이고,
+    # legacy 분은 이미 Hub 에 올라가 있거나 old_data/ 로 물러났다.
+    #
+    # 지원을 '고치는' 대신 '빼는' 이유: legacy 집계는 지시문을 key 로 dict 에
+    # 덮어써서, 같은 문장을 가진 파일이 둘이면 하나가 조용히 사라졌다. 그
+    # 파일은 변환에도 백업 업로드에도 안 들어가는데 동기화 화면은 '일치'로
+    # 보였다 -- 에러가 없어 가장 위험한 종류의 유실이다. 쓰지 않을 경로를
+    # 고쳐 두느니, 대상이 아님을 코드로 못박고 발견되면 알리는 편이 낫다.
+    # 그런 파일이 남아 있으면 legacy_files() 로 세어 호출자가 알린다.
     out = {}
-    for p in sorted(glob.glob(str(Path(data_root) / "*_demo.hdf5"))):
-        try:
-            with h5py.File(p, "r") as f:
-                data = f["data"]
-                info = data.attrs.get("problem_info")
-                task = json.loads(json.loads(info)["language_instruction"]) if info else Path(p).stem
-                at = data.attrs.get(REPACK_COUNT_ATTR)
-                names = sorted(data.keys(), key=lambda n: int(n.split("_")[1]))
-                lengths = []
-                for n in names:
-                    ns = data[n].attrs.get("num_samples")
-                    lengths.append(int(ns) if ns is not None else -1)
-                out[task] = {"episodes": len(names), "path": Path(p),
-                             "paths": [Path(p)],
-                             "at_repack": int(at) if at is not None else None,
-                             "lengths": lengths}
-        except Exception:  # noqa: BLE001
-            continue
     # ---- scene-v1 파일의 기여. task = 에피소드별 instruction 이고, 변환이
     # success 만 내보내므로 개수도 success 기준이다. 같은 문장이 legacy
     # task 나 다른 scene 과 겹치면 합산한다. scene 기여가 섞인 task 는 길이
@@ -293,10 +284,19 @@ def plan_sync(data_root: str | Path, repo_id: str) -> dict:
             "ambiguous": ambiguous,
             "local_total": sum(v["episodes"] for v in local.values()),
             "hub_total": sum(hub.values()),
-            # 변환기에 넘길 파일 목록: legacy 정렬 + scene 정렬, 중복 제거.
-            # (legacy 를 앞에 -- Hub 의 기존 순서가 legacy 선행이라 길이
-            # 지문의 접두 비교가 성립한다)
-            "paths": _ordered_paths(local)}
+            # 변환기에 넘길 파일 목록 (scene 포맷만 -- local_tasks 참고).
+            "paths": _ordered_paths(local),
+            # 업로드 대상이 아닌 legacy 파일이 루트에 남아 있으면 알린다.
+            "ignored_legacy": [p.name for p in legacy_files(data_root)]}
+
+
+def legacy_files(data_root: str | Path) -> list:
+    """데이터 루트에 남아 있는 legacy ``*_demo.hdf5`` 목록.
+
+    업로드 대상이 아니라는 사실을 조용히 넘기지 않기 위한 것이다 -- 계획에서
+    빠진 파일이 있으면 사람이 알아야 한다 (issue #15).
+    """
+    return sorted(Path(p) for p in glob.glob(str(Path(data_root) / "*_demo.hdf5")))
 
 
 def _ordered_paths(local: dict) -> list:
