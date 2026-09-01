@@ -27,8 +27,8 @@
 1. 한 클래스는 한 모듈에만 정의한다. `test_app_structure.py` 의 AST 중복 검사가 `apps/` 전체를 본다.
 2. `apps/` -> `gello/` 의존은 허용, `gello/` -> `apps/` 의존은 금지.
 3. 순환 임포트 금지. `test_app_structure.py` 가 `apps/` 전체의 순환과 화살표 역류를 검사한다.
-4. 상태는 가능한 한 순수 데이터 클래스/객체로 묶고, UI 메서드는 상태를 읽기만 한다.
-5. 하드웨어/프로세스 제어(로봇, 칩 인자 camera node, QProcess)는 WorkspaceWindow가 마지막으로 소유한다.
+4. 상태는 가능한 한 순수 데이터 클래스/객체로 묶고, 상태 변경은 모델의 메서드를 통해서만 한다. UI 코드가 모델의 필드에 직접 대입하지 않는다.
+5. 하드웨어/프로세스 제어(로봇, 카메라 노드, QProcess)는 WorkspaceWindow가 마지막으로 소유한다.
 
 ## Phase 2 - Builder 분리 (완료)
 
@@ -91,16 +91,16 @@ apps/workspace/
 대상 상태:
 
 - 세션 식별: `_session_id`, `_session_scene_id`, `_session_slot_counts`, `_next_iid`, `_auto_assign_iid`
-- 설정/인벤토리: `_known_slots`, `_current_plan`, `_scene_session_file`, `_apply_session_config`
-- 저장소: `_recents_valid_repo`, `repo_id_for`, `_check_repo`
+- 설정/인벤토리: `_known_slots`, `_current_plan`, `_scene_session_file`
+- 저장소: `_recents_valid_repo`
 - UI 상태: `_current_page`, `_current_task`, `_last_*`, `_activity_*`
-- 칩 인서 camera / 노드 상태: `_camera_*`, `_node_*`, `_depth_*`
+- 카메라 / 노드 상태: `_camera_*`, `_node_*`, `_depth_*`
 
 방식:
 
 - `WorkspaceModel` 또는 `SessionState` dataclass를 만들고, `WorkspaceWindow.__init__`에서 인스턴스를 생성한다.
 - 메서드는 처음에는 `WorkspaceWindow`에서 `self._model.xxx()` 형태로 호출하도록 옮기고, 나중에 콜백/시그널로 완전 분리한다.
-- UI 메서드가 `self._model`을 직접 읽는 것은 허용하되, UI 메서드가 상태를 쓰지는 않는다.
+- 상태 변경은 모델의 메서드를 통해서만 한다. UI 코드가 모델의 필드에 직접 대입하지 않는다.
 
 검증:
 
@@ -122,8 +122,8 @@ apps/workspace/
     trim.py        # 재생/트림, HDF5 tree
     upload.py      # 업로드 파이프라인 실행
     replay.py      # 에피소드 재생
-    teleop.py      # teleop wall, 자세 정렬, 180도 자동 해제
-    camera.py      # 프리뷰, 칩 인에 camera node, 포인트클우드
+    teleop.py      # teleop wall, 자세 정렬 (#44 케이블 풀기는 아직 없음)
+    camera.py      # 프리뷰, 카메라 노드, 포인트 클라우드
     gallery.py     # 갤러리 탭
 ```
 
@@ -153,4 +153,4 @@ apps/workspace/
 2. `WorkspaceWindow.__init__`의 상태 변수를 그룹별로 `WorkspaceModel` 속성으로 이동.
 3. 상태를 읽기/쓰기하는 메서드를 `WorkspaceModel`로 옮기고, `WorkspaceWindow`에서는 `self._model.xxx()` 형태로 호출.
 4. `py_compile` + `bash tests/gui/run_all.sh /home/franka/lerobot-venv/bin/python` 18/18 통과.
-5. 커밋.
+5. 상태 그룹 하나당 커밋 하나로 나눈다: 세션 / 저장소 / 카메라·노드 / UI 상태. 한 커밋에 229개 메서드를 다 손대면 무엇이 무엇을 깨뜨렸는지 추적할 수 없다.
