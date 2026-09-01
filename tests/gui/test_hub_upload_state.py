@@ -100,8 +100,13 @@ import apps.collect_workspace as cw
 app = QApplication.instance() or QApplication([])
 plan = {"action": "up_to_date", "rows": [], "ambiguous": [],
         "local_total": 0, "hub_total": 0, "paths": [str(a2), str(b2)]}
+# scripts 는 GUI 가 넘겨주는 실제 상수를 그대로 쓴다 -- 여기에 사본을 적어
+# 두면 GUI 쪽 경로가 바뀌어도 테스트는 통과해 버린다.
 dlg = cw.PipelineDialog(None, str(tmp2), plan, "org/lr", repo2,
-                        str(tmp2 / "lr"))
+                        str(tmp2 / "lr"),
+                        scripts={"repack": cw.REPACK_SCRIPT,
+                                 "convert": cw.CONVERT_SCRIPT,
+                                 "upload": cw.UPLOAD_SCRIPT})
 dlg.repack_check.setChecked(False)   # 가짜 파일은 전부 '미압축' 판정이라 끔
 dlg.hdf5_check.setChecked(True)
 
