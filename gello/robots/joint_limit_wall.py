@@ -60,13 +60,9 @@ One place the wall deliberately stops being a wall: half a turn from a
 joint's range centre, ``wrap_into_limits`` flips which turn it reports, so the
 same physical pose reads as "past the upper limit" one tick and "past the
 lower limit" the next, and the limit spring reverses at full strength --
-violent chatter, and it drags the joint back the short way round, re-twisting
-a cable the operator was trying to unwind. Inside ``WRAP_ABORT_RAD`` of that
-point (and only outside the follower's own limits, so a legal pose can never
-qualify) the joint is handed over instead: its match assist and its limit
-spring both go to zero and its torque is cut, alignment is cancelled with a
-reason the caller can read (``match_aborted_wrap``), and the other joints keep
-holding the arm up. See ``_wrap_zone``.
+violent chatter. The previous automatic wrap-zone hand-over (which cut torque
+near the flip point to let the operator unwind a cable) has been disabled;
+the wall now keeps every joint under control at all times.
 
 Gains/tolerances below are untuned defaults (no access to the real leader
 while writing this) -- expect to retune
@@ -132,15 +128,6 @@ ADDR_TEMPERATURE = 146    # Present Temperature (1 B, deg C)
 #: 숫자로 성립해야 하기 때문이다 (GitHub issue #37A).
 MATCH_GATE_RAD = 0.5
 
-#: 뒤집힘 지점(가동범위 중심의 반대편)으로부터 이 각도 안에 들어오면 그
-#: 관절을 "케이블 푸는 중" 으로 보고 손에 완전히 넘긴다 -- 정렬을 취소하고
-#: 그 관절의 토크를 끊는다. 자세한 이유는 _wrap_zone 참고.
-WRAP_ABORT_RAD = 0.2
-
-#: 뒤집힘 구역에서 빠져나온 것으로 볼 여유분 (히스테리시스). 경계에서
-#: 토크가 켜졌다 꺼졌다 하는 것 자체가 또 다른 지터라 반드시 필요하다.
-WRAP_RELEASE_RAD = 0.15
-
 #: 정렬 전류 상한이 어떤 이유로도 이 아래로 내려가지 않게 하는 하한 (mA).
 #: 한때 정렬 모드의 상한을 200 mA 로 낮춘 적이 있는데, J2 는 자세를
 #: *유지* 하는 데만 ~430 mA 가 필요해서(아래 적분기 주석) 피치가 처지고
@@ -160,61 +147,6 @@ def _engage_gate(engaged: bool, err: float, gate: float, release: float) -> bool
     차라리 팔을 완전히 자유롭게 두자" 는 결정이다.
     """
     return err <= (gate + release) if engaged else err <= gate
-
-
-def _wrap_latch(prev: np.ndarray, entered: np.ndarray,
-                inside: np.ndarray) -> np.ndarray:
-    """관절을 손에 넘긴 상태를 '한계 안으로 돌아올 때까지' 유지한다.
-
-    진입 판정만으로 그때그때 끄고 켜면 해제 구간이 뒤집힘 지점 주변
-    ±margin 밖에 안 된다. 예컨대 FR3 J1 은 한계가 157°, 뒤집힘이 180° 라
-    그 사이 11° 를 최대 강도의 벽에 눌린 채 통과해야 하고, 해제 창(23°)을
-    지나면 반대편에서 또 11° 를 눌린다 -- 한 바퀴 돌리는 사람에게는 힘이
-    켜졌다 꺼졌다 뒤집히는 것으로 느껴진다. 실제로 사용자가 "벽이 안
-    사라지고 강한 힘으로 지터한다" 고 보고한 것이 이 구간이다.
-
-    그래서 한 번 넘긴 관절은 **한계 안으로 되돌아올 때까지** 계속 넘긴
-    상태로 둔다. 벽을 밀고 뒤집힘 지점까지 가는 것은 사람이 작정하고 하는
-    행동이고, 거기까지 갔다면 한 바퀴를 끝까지 자유롭게 돌 수 있어야 한다.
-    되돌아오면 자동으로 다시 벽이 선다 -- 따로 풀 필요가 없다.
-    """
-    return (np.asarray(prev, dtype=bool) | np.asarray(entered, dtype=bool)) \
-        & ~np.asarray(inside, dtype=bool)
-
-
-def _wrap_zone(q, center, lower, upper, margin: float,
-               was_in: "np.ndarray | None" = None,
-               release: float = WRAP_RELEASE_RAD) -> np.ndarray:
-    """조인트별 "여기서는 벽이 어느 쪽으로 밀어야 할지 모른다" 구역.
-
-    ``wrap_into_limits`` 는 관절을 가동범위 중심에 가장 가까운 한 바퀴로
-    정규화한다. 그 선택이 뒤집히는 곳이 **중심의 정반대**, 즉
-    ``|q - center| = π`` 다. 그 점을 지나는 순간 읽는 각도가 2π 점프해서
-    한계벽이 "상한 초과"에서 "하한 초과"로 바뀌고, 미는 방향이 반대가
-    된다 -- 센서 노이즈가 그 점을 왔다갔다 하면 매 틱 방향이 뒤집히며
-    최대 강도로 떤다. 사용자가 본 "180도 경계 지터" 가 이것이다.
-
-    그래서 판정은 0 이 아니라 **중심** 기준이다. 중심이 0 이 아닌 관절
-    (FR3 의 J4=-1.60, J6=+2.53)에서는 ``|q| ~ π`` 로 재면 엉뚱한 곳에서
-    발동한다 -- 실제로 J4 의 -3.0 이나 J6 의 3.0 은 지극히 정상적인
-    자세인데도 걸린다.
-
-    두 번째 조건(가동범위 밖)이 안전장치다. FR3 는 일곱 관절 모두
-    뒤집힘 지점이 팔로워 가동범위 바깥에 있으므로, 이 조건을 걸면
-    **합법 자세에서는 구조적으로 발동할 수 없다**. 리더는 팔로워와 달리
-    물리적으로 한 바퀴 돌 수 있어서 그 구역에 실제로 들어갈 수 있고,
-    그때가 바로 사람이 케이블 꼬임을 푸는 순간이다.
-
-    ``was_in`` 을 주면 히스테리시스가 붙는다: 이미 구역 안이던 관절은
-    ``margin + release`` 만큼 벗어나야 빠져나온 것으로 본다.
-    """
-    q = np.asarray(q, dtype=float)
-    d = np.abs(_wrap_pi(q - np.asarray(center, dtype=float)))
-    m = np.full_like(d, float(margin))
-    if was_in is not None:
-        m = np.where(np.asarray(was_in, dtype=bool), float(margin) + release, m)
-    outside = (q < np.asarray(lower)) | (q > np.asarray(upper))
-    return (d > (np.pi - m)) & outside
 
 
 def _well_assist(abs_err: np.ndarray, well: float) -> np.ndarray:
@@ -475,9 +407,9 @@ class JointLimitWall:
         ).copy()
         self._idle_hold_current = float(idle_hold_current)
         self._in_teleop = False  # issue #37A: teleop vs. alignment
-        # 뒤집힘 구역 상태 (issue #37A 후속). 구역에 든 관절은 정렬도 벽도
-        # 전부 꺼서 손에 넘긴다 -- 케이블을 풀려면 그 관절이 자유로워야 한다.
-        self._wrap_center = (self._lower + self._upper) / 2.0
+        # _wrap_mask / _match_aborted_wrap are retained for API compatibility.
+        # The automatic wrap-zone hand-over is disabled (2aba6b5); the wall
+        # keeps every joint under control at all times.
         self._wrap_mask = np.zeros(self._n_arm, dtype=bool)
         self._match_aborted_wrap = False
         self._match_tol = match_tol
@@ -610,13 +542,11 @@ class JointLimitWall:
         """Tell the wall whether the operator is actively teleoperating.
 
         The engage rule itself does not depend on this -- "put the leader down
-        anywhere and nothing pulls" holds in every mode. What it decides is
-        whether the wrap zone (see ``_wrap_zone``) may hand a joint over to the
-        operator: only outside teleop. During teleop the follower is tracking
-        the leader, so dropping the limit wall would let unreachable commands
-        through, and reaching that zone at all would mean forcing the leader
-        far past the wall first. Untwisting a cable is something you do while
-        aligning, not mid-episode (issue #37A).
+        anywhere and nothing pulls" holds in every mode. The previous wrap-zone
+        hand-over (which could drop the limit wall outside teleop to let the
+        operator unwind a cable) is disabled; the wall keeps every joint under
+        control at all times. During teleop the follower is tracking the leader,
+        so dropping the limit wall would let unreachable commands through.
         """
         self._in_teleop = bool(in_teleop)
         # Cap change can turn a previously-valid integrator into stale bias.
@@ -733,31 +663,12 @@ class JointLimitWall:
                 # 힘 우물 + 원거리 해제 (issue #37A). goal_err 은 여기서 한 번만
                 # 구해 아래 match 절이 그대로 쓴다 -- 우물 세기와 arming 판단이
                 # 같은 오차를 봐야 하기 때문이다.
-                # 뒤집힘 구역 판정 (관절별, 히스테리시스). 텔레옵 중에는
-                # 보지 않는다: 그때는 팔로워가 리더를 따라가는 중이라
-                # 한계벽을 끄면 도달 불가능한 명령이 그대로 나가고, 애초에
-                # 여기까지 오려면 벽을 밀고 한참 나가야 한다. 케이블을 푸는
-                # 것은 정렬/대기 중에 하는 일이다.
-                # 자동 해제는 껐다 (2026-09-01). 벽을 놓아 주면 관절이
-                # 뒤집힘 지점을 지나 머물 수 있는데, 그 자리에서
-                # wrap_into_limits 는 반대쪽 바퀴를 답으로 고른다 -- 인코더
-                # 기준 원점이 한 바퀴 어긋난 것으로 보이고, 리더가 꼬인 채로
-                # 읽힌다. 지터를 없애려다 그보다 중요한 기능을 깨뜨렸다.
-                #
-                # 판정 함수(_wrap_zone/_wrap_latch)와 그 검사는 남겨 둔다:
-                # 다음 시도는 (1) wrap_into_limits 의 바퀴 선택 자체에
-                # 히스테리시스를 걸어 경계에서 답이 튀지 않게 하고(그러면
-                # 벽을 끄지 않고도 지터가 사라진다), (2) 케이블 정리는
-                # 자동이 아니라 사람이 명시적으로 요청하는 동작으로 두는
-                # 방향이다 -- 그래야 원점이 언제 흔들릴 수 있는지 사람이 안다.
+                # 뒤집힘 구역 자동 해제는 꺼둔 상태다 (2aba6b5). 뒤집힘 지점
+                # 근처에서 wrap_into_limits의 바퀴 선택이 튀면 벽이 반대로
+                # 밀리지만, 케이블 풀기를 위해 토크를 끄는 기능은 현재
+                # 비활성화되어 있다.
+                # 케이블 풀기를 위해 토크를 끄는 기능은 현재 비활성화되어 있다.
                 self._wrap_mask = np.zeros(self._n_arm, dtype=bool)
-                if np.any(self._wrap_mask) and match_target is not None:
-                    # 사람이 케이블을 푸는 중이다 -- 정렬은 취소하고 왜
-                    # 취소했는지를 남긴다. 조용히 지우면 호출자는 이유를
-                    # 모른 채 타임아웃까지 기다린다.
-                    self.set_match_target(None)
-                    self._match_aborted_wrap = True
-                    match_target = None
 
                 goal_err = match_assist = None
                 match_err = None
@@ -782,8 +693,6 @@ class JointLimitWall:
                         self._match_arm_mask = abs_err <= thr
                 else:
                     self._match_arm_mask = np.zeros(self._n_arm, dtype=bool)
-                # 구역 안 관절은 어떤 경우에도 정렬하지 않는다.
-                self._match_arm_mask &= ~self._wrap_mask
                 self._match_engaged = bool(self._match_arm_mask.any())
                 match_active = match_target is not None and self._match_engaged
 
@@ -809,12 +718,6 @@ class JointLimitWall:
                     want_mask = np.ones(self._n_arm, dtype=bool)
                 else:
                     want_mask = self._match_arm_mask.copy()
-                # 뒤집힘 구역의 관절은 한계벽까지 끈다. 그 점에서는 벽이
-                # 어느 쪽으로 밀어야 할지 자체가 모호해서(읽는 각도가 2π
-                # 점프하며 상한 초과 <-> 하한 초과가 뒤집힌다) 미는 것이
-                # 보호가 아니라 지터다. 끄는 것이 곧 지터 해결이고, 동시에
-                # 그 관절이 손에 완전히 넘어가 케이블을 풀 수 있게 된다.
-                want_mask &= ~self._wrap_mask
                 if not np.array_equal(want_mask, self._armed_mask):
                     ids = list(self._driver._ids[: self._n_arm])
                     off = [i for i, w, a in zip(ids, want_mask, self._armed_mask)
@@ -837,11 +740,6 @@ class JointLimitWall:
                 cur = (-self._kp * (q - self._hi) - self._kd * dq) * over_hi
                 cur += (-self._kp * (q - self._lo) - self._kd * dq) * over_lo
                 cur = np.clip(cur, -self._max_current, self._max_current)
-                # 뒤집힘 구역에서는 벽 힘을 0 으로. 위 arming 에서 토크도
-                # 끊기지만, status 의 cur 과 실제 지령이 어긋나지 않게 여기서
-                # 값 자체를 없앤다 (그 관절은 사람 손에 넘어간 상태다).
-                cur = np.where(self._wrap_mask, 0.0, cur)
-
                 # Pose-match assist: two-sided spring-damper toward
                 # match_target, summed with the (normally-zero-here, since a
                 # match target sits well inside the limits) limit spring
@@ -1172,55 +1070,7 @@ def selftest() -> None:
     per = _well_assist(np.array([0.02, np.pi, 0.02]), well)
     assert per[0] > 0.98 and per[2] > 0.98 and per[1] < 0.01
 
-    # 8. 뒤집힘 구역 (issue #37A 후속). 실제 FR3 한계로 검사한다 -- 이
-    #    판정의 값어치는 "합법 자세에서는 절대 발동하지 않는다" 이므로,
-    #    합성 숫자가 아니라 진짜 가동범위로 확인해야 의미가 있다.
-    from gello.robots.franka_fr3 import (
-        FR3_Q_LOWER, FR3_Q_UPPER, FR3_RESET_POSES,
-    )
-    lo7, hi7 = np.asarray(FR3_Q_LOWER, dtype=float), np.asarray(FR3_Q_UPPER, dtype=float)
-    ctr = (lo7 + hi7) / 2.0
-
-    def zone(qq, was=None):
-        return _wrap_zone(qq, ctr, lo7, hi7, WRAP_ABORT_RAD, was_in=was)
-
-    # (a) 가동범위 전체를 훑어 단 한 곳도 발동하지 않는다 (오발동 0)
-    for j in range(7):
-        for v in np.linspace(lo7[j], hi7[j], 400):
-            qq = ctr.copy()
-            qq[j] = v
-            assert not zone(qq).any(), f"J{j+1} 합법 범위 {v:.2f} 에서 오발동"
-    # (b) 실제 리셋 포즈들도 전부 무발동 -- robosuite 포즈(J6=2.94)가
-    #     0 기준 판정에서는 걸렸던 자리다
-    for _name, rq in FR3_RESET_POSES.items():
-        assert not zone(np.asarray(rq, dtype=float)[:7]).any(), _name
-    # (c) 중심의 정반대(= wrap_into_limits 가 뒤집히는 지점)에서는 발동한다.
-    #     중심이 0 이 아닌 관절(J4, J6)도 자기 중심 기준으로 잡혀야 한다.
-    for j in (0, 2, 3, 5, 6):
-        q_flip = ctr.copy()
-        q_flip[j] = ctr[j] + np.pi
-        assert zone(q_flip)[j], f"J{j+1} 뒤집힘 지점에서 미발동"
-        assert zone(q_flip).sum() == 1, "한 관절만 걸려야 한다"
-    # (d) 래치: 한 번 넘긴 관절은 한계 안으로 돌아올 때까지 계속 넘긴다.
-    #     이게 없으면 해제 창이 뒤집힘 지점 ±margin 뿐이라, 한계(J1 157도)와
-    #     뒤집힘(180도) 사이를 최대 강도의 벽에 눌린 채 지나야 한다.
-    def inside_limits(qq):
-        return ((np.asarray(qq) >= lo7 + WRAP_RELEASE_RAD)
-                & (np.asarray(qq) <= hi7 - WRAP_RELEASE_RAD))
-    prev = np.zeros(7, dtype=bool)
-    q_flip = ctr.copy(); q_flip[0] = ctr[0] + np.pi
-    prev = _wrap_latch(prev, zone(q_flip), inside_limits(q_flip))
-    assert prev[0], "뒤집힘 지점에서 안 넘어갔다"
-    # 한계 밖이지만 뒤집힘 지점에서는 멀어진 위치 -- 여전히 넘긴 상태여야 한다
-    q_mid = ctr.copy(); q_mid[0] = hi7[0] + 0.05
-    assert not zone(q_mid)[0]                      # 진입 판정으로는 아님
-    prev = _wrap_latch(prev, zone(q_mid), inside_limits(q_mid))
-    assert prev[0], "한계 밖인데 벽이 다시 섰다 (한 바퀴 도는 중 지터)"
-    # 한계 안으로 돌아오면 자동 복귀
-    prev = _wrap_latch(prev, zone(ctr), inside_limits(ctr))
-    assert not prev[0], "한계 안으로 돌아왔는데 벽이 안 선다"
-
-    # 9. 정렬 전류 상한은 하한(IDLE_MIN_CURRENT) 아래로 내려가지 않는다
+    # 8. 정렬 전류 상한은 하한(IDLE_MIN_CURRENT) 아래로 내려가지 않는다
     caps = np.maximum(np.array([400.0, 1000.0, 400.0]), IDLE_MIN_CURRENT)
     assert caps.min() >= IDLE_MIN_CURRENT and caps[1] == 1000.0
     print("joint_limit_wall selftest 통과")
