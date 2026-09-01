@@ -54,7 +54,10 @@ def make_worker():
     return w
 
 
-# ---- 1. 리더가 범위 밖이면: 자동정렬 발동 금지 + 시작 거부 ----
+# ---- 1. 리더가 범위 밖이어도: 자동정렬은 걸리고, 시작은 여전히 거부 ----
+# 2026-09-01 사용자 결정: 정렬은 오차와 무관하게 시작할 수 있다 (모터 보호는
+# wall 이 관절별로 맡는다 -- 정렬 반경 밖 관절은 토크 자체가 꺼져 있다).
+# 반면 '텔레옵 시작' 은 자세가 맞아야 한다는 기존 게이트를 그대로 유지한다.
 w = make_worker()
 logs = []
 w.log_message.connect(logs.append)
@@ -63,19 +66,18 @@ t = threading.Thread(target=lambda: result.update(r=w._pose_gate(timeout=30)))
 t.start()
 time.sleep(0.4)
 app.processEvents()      # 크로스 스레드 시그널(큐잉) 전달
-assert w._teleop.match_started == 0, "범위 밖인데 자동정렬이 당김"
-assert any("범위 밖" in m for m in logs), logs
+assert w._teleop.match_started == 1, "오차가 커도 자동정렬은 걸려야 한다"
 w.cmd_start_teleop()
 time.sleep(0.3)
 app.processEvents()
 assert t.is_alive(), "자세 불일치인데 start 가 통과됨"
 assert any("자세가 맞지 않습니다" in m for m in logs)
-print("1 통과: 범위 밖 -- 자동정렬 미발동 + start 거부")
+print("1 통과: 오차가 커도 자동정렬 발동 + start 는 거부")
 
-# ---- 2. 범위 안으로 들어오면: 자동정렬 1회 발동, start 통과 ----
+# ---- 2. 범위 안으로 들어오면 start 통과 (정렬은 이미 1회 발동했다) ----
 w._teleop.leader_q = np.full(7, GATE_RAD * 0.5)
 time.sleep(0.4)
-assert w._teleop.match_started == 1, "범위 진입 후 자동정렬이 안 걸림"
+assert w._teleop.match_started == 1, "정렬이 중복 발동했다"
 w.cmd_start_teleop()
 t.join(3)
 assert not t.is_alive() and result["r"] == "ok"
@@ -93,20 +95,22 @@ tb = threading.Thread(target=lambda: rb.update(r=wb._pose_gate(timeout=30)))
 tb.start()
 time.sleep(0.3)
 assert wb._teleop.match_started == 1                # 정렬 발동
+# 2026-09-01: 정렬 중 리더를 끌어도 중단하지 않는다. wall 이 그 관절을
+# 관절별로 놓아 주고(우물이 약해지고 정렬 반경 밖은 토크 오프), 손을 놓으면
+# 이어서 당긴다 -- 모터가 사람 손과 싸우는 상황이 구조적으로 없어졌다.
 wb._teleop.leader_q = np.full(7, 1.5)               # 정렬 중 범위 밖으로 끌기
 time.sleep(0.3)
 app.processEvents()
-assert tb.is_alive(), "이탈 중단 후 게이트로 못 돌아옴"
-assert any("범위 밖으로 벗어나 정렬을 중단" in m for m in logs_b), logs_b
-assert wb._teleop.cancelled >= 1                    # 홀드 해제됨
+assert tb.is_alive(), "정렬 루프가 죽었다"
+assert not any("중단" in m for m in logs_b), logs_b
+assert wb._teleop.match_started == 1, "정렬이 중복 발동했다"
 wb._teleop.match_done = True
 wb._teleop.leader_q = np.full(7, GATE_RAD * 0.5)    # 다시 범위 안으로
 time.sleep(0.3)
-assert wb._teleop.match_started == 2, "복귀 후 자동 재시도 안 됨"
 wb.cmd_start_teleop()
 tb.join(3)
 assert rb["r"] == "ok"
-print("2b 통과: 정렬 중 이탈 -> 중단(홀드 해제) -> 복귀 시 자동 재시도")
+print("2b 통과: 정렬 중 이탈해도 중단 없이 이어짐 (wall 이 관절별로 처리)")
 
 # ---- 3. 자동정렬 꺼짐: 발동 없음, 수동 게이트만 ----
 import dataclasses  # noqa: E402

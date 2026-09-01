@@ -141,10 +141,16 @@ WRAP_ABORT_RAD = 0.2
 #: 토크가 켜졌다 꺼졌다 하는 것 자체가 또 다른 지터라 반드시 필요하다.
 WRAP_RELEASE_RAD = 0.15
 
-#: 정렬 전류 상한이 어떤 이유로도 이 아래로 내려가지 않게 하는 하한 (mA).
-#: 한때 정렬 모드의 상한을 200 mA 로 낮춘 적이 있는데, J2 는 자세를
+#: 정렬 중 걸린 관절이 최소한 이만큼은 당긴다 (mA). 상한이 아니라 하한이다
+#: -- 한때 정렬 모드의 '상한' 을 200 mA 로 낮춘 적이 있는데, J2 는 자세를
 #: *유지* 하는 데만 ~430 mA 가 필요해서(아래 적분기 주석) 피치가 처지고
-#: 정렬이 수렴하지 못했다. 200 은 상한이 아니라 하한이다.
+#: 수렴하지 못했다.
+#:
+#: 우물(_well_assist)은 목표에서 멀수록 힘을 빼는데, 그것만 두면 오차가 큰
+#: 상태에서 시작한 정렬이 영영 다가오지 못한다. 그래서 **걸린 관절에 한해**
+#: 바닥을 깔아 준다: 정렬 반경 밖 관절은 여전히 토크 자체가 꺼져 있어
+#: (손으로 옮기는 데 걸리적거리지 않는다) 이 하한과 무관하다.
+#: 200 mA 는 2026-09-01 사용자 결정.
 IDLE_MIN_CURRENT = 200.0
 
 
@@ -217,7 +223,15 @@ def _wrap_zone(q, center, lower, upper, margin: float,
     return (d > (np.pi - m)) & outside
 
 
-def _well_assist(abs_err: np.ndarray, well: float) -> np.ndarray:
+#: 우물 세기의 게인. 순수 유리 함수는 봉우리(x=well)에서 1/2 이라, 가장
+#: 세게 당겨야 할 지점에서 쓸 수 있는 힘의 절반을 버리고 있었다. 게인을
+#: 곱하고 1.0 에서 자르면 봉우리 부근이 '가진 힘 전부' 가 되고, 바깥의
+#: 1/x 꼬리(손으로 끌면 놓아주는 성질)는 그대로다 (2026-09-01 사용자 결정).
+WELL_GAIN = 2.0
+
+
+def _well_assist(abs_err: np.ndarray, well: float,
+                 gain: float = WELL_GAIN) -> np.ndarray:
     """조인트별 정렬 세기 0..1 -- 오차가 커질수록 힘이 부드럽게 풀린다.
 
         a(x) = 1 / (1 + (x/well)^2)
@@ -233,7 +247,8 @@ def _well_assist(abs_err: np.ndarray, well: float) -> np.ndarray:
     한 바퀴 돌릴 때, 그 관절은 힘이 빠지고 나머지는 계속 자세를 지켜야
     팔이 주저앉지 않는다.
     """
-    return 1.0 / (1.0 + (np.asarray(abs_err, dtype=float) / well) ** 2)
+    a = gain / (1.0 + (np.asarray(abs_err, dtype=float) / well) ** 2)
+    return np.minimum(1.0, a)
 
 
 def _wrap_pi(d: np.ndarray) -> np.ndarray:
@@ -890,13 +905,10 @@ class JointLimitWall:
                     # 속도에도 곱한다 -- 힘이 풀려 있는 먼 거리에서 적분기만
                     # 가득 차 있다가, 사람이 팔을 되돌려 놓는 순간 그 값이
                     # 통째로 튀어나오는 것을 막는다.
-                    # 정렬 전류 상한 (issue #37A). 한때 정렬 모드에서 이걸
-                    # 200 mA 로 *낮췄는데*, J2 는 자세 유지에만 ~430 mA 가
-                    # 필요해서(아래 적분기 주석) 피치가 처지고 정렬이 수렴하지
-                    # 못했다. 200 은 상한이 아니라 하한이다: 기본값은 아예
-                    # 낮추지 않고(idle_hold_current=0), 낮추더라도
-                    # IDLE_MIN_CURRENT 아래로는 못 내려간다. 설정으로 준
-                    # match_max_current 자체는 그대로 존중한다.
+                    # 정렬 전류 상한 (issue #37A). 설정으로 준
+                    # match_max_current 를 그대로 쓰고, 낮추고 싶으면
+                    # idle_hold_current 로 낮추되 IDLE_MIN_CURRENT 아래로는
+                    # 못 내려간다 (상한이 아니라 하한).
                     if self._in_teleop or self._idle_hold_current <= 0.0:
                         match_cap = self._match_max_current
                     else:
@@ -916,6 +928,18 @@ class JointLimitWall:
                         kp * terr - self._match_kd * dq + self._match_int,
                         -match_cap, match_cap,
                     )  # per-joint caps; np.clip broadcasts elementwise
+                    # 최소 당김 (2026-09-01): 걸린 관절은 우물이 약해져도
+                    # IDLE_MIN_CURRENT 만큼은 당긴다. 오차가 큰 상태에서
+                    # 시작해도 정렬이 실제로 다가오게 하려는 것이다. 이미
+                    # 도착한 관절(오차가 tol 이내)은 제외한다 -- 다 온 관절을
+                    # 계속 밀 이유가 없다. 텔레옵 중에는 적용하지 않는다.
+                    if not self._in_teleop:
+                        floor = np.minimum(IDLE_MIN_CURRENT, match_cap)
+                        pulling = (self._match_arm_mask
+                                   & (np.abs(goal_err) > self._match_tol)
+                                   & (np.abs(cur_match) < floor))
+                        cur_match = np.where(
+                            pulling, np.sign(goal_err) * floor, cur_match)
                     cur = cur + cur_match
                     # 포화 감시: 어느 조인트든 캡 근처를 stall_s 초 이상
                     # 연속으로 요구하면 정렬을 포기한다. 정상 정렬은
@@ -1157,19 +1181,21 @@ def selftest() -> None:
     #    단조 감소한다 -- "가까이선 잡아주고 크게 끌면 놓아준다".
     well = MATCH_GATE_RAD / 2
     xs = np.linspace(0.0, 4.0, 4001)
-    force = xs * _well_assist(xs, well)          # kp 는 상수배라 형태에 무관
-    assert abs(xs[int(np.argmax(force))] - well) < 1e-2, xs[int(np.argmax(force))]
-    tail = force[xs >= well]
-    assert np.all(np.diff(tail) <= 1e-12), "우물 바깥에서 힘이 다시 커진다"
+    a_all = _well_assist(xs, well)
+    assert np.all(np.diff(a_all) <= 1e-12), "세기가 바깥에서 다시 커진다"
     a = _well_assist(np.array([0.0, well, MATCH_GATE_RAD, 2 * MATCH_GATE_RAD,
                                np.pi]), well)
-    assert a[0] == 1.0                                   # 목표 위: 전력 100%
-    assert abs(a[1] - 0.5) < 1e-9                        # well: 절반
-    assert a[2] < 0.21                                   # 게이지 초록 경계: 20%
-    assert a[4] < 0.01                                   # 반 바퀴 돌리면 1% 미만
+    assert a[0] == 1.0                     # 목표 위: 전력 100%
+    assert a[1] == 1.0                     # 봉우리도 100% (게인 전에는 50%)
+    assert 0.35 < a[2] < 0.45              # 게이지 초록 경계에서 비로소 빠지기 시작
+    assert a[3] < 0.12                     # 그 두 배: 10% 남짓
+    assert a[4] < 0.02                     # 반 바퀴 돌리면 2% 미만 -- 손으로 이긴다
+    # 게인은 봉우리만 올리고 꼬리 모양은 그대로다 (1/x 로 잦아든다)
+    assert _well_assist(np.array([np.pi]), well)[0] \
+        == 2.0 * (1.0 / (1.0 + (np.pi / well) ** 2))
     # 조인트별로 따로 계산된다 (한 관절만 돌려도 나머지는 계속 버틴다)
     per = _well_assist(np.array([0.02, np.pi, 0.02]), well)
-    assert per[0] > 0.98 and per[2] > 0.98 and per[1] < 0.01
+    assert per[0] > 0.98 and per[2] > 0.98 and per[1] < 0.02
 
     # 8. 뒤집힘 구역 (issue #37A 후속). 실제 FR3 한계로 검사한다 -- 이
     #    판정의 값어치는 "합법 자세에서는 절대 발동하지 않는다" 이므로,
@@ -1219,9 +1245,16 @@ def selftest() -> None:
     prev = _wrap_latch(prev, zone(ctr), inside_limits(ctr))
     assert not prev[0], "한계 안으로 돌아왔는데 벽이 안 선다"
 
-    # 9. 정렬 전류 상한은 하한(IDLE_MIN_CURRENT) 아래로 내려가지 않는다
-    caps = np.maximum(np.array([400.0, 1000.0, 400.0]), IDLE_MIN_CURRENT)
-    assert caps.min() >= IDLE_MIN_CURRENT and caps[1] == 1000.0
+    # 9. 최소 당김: 걸린 관절은 우물이 약해져도 IDLE_MIN_CURRENT 만큼 당기고,
+    #    도착한 관절과 캡이 더 낮은 관절은 예외다.
+    cap9 = np.array([400.0, 1000.0, 100.0])
+    floor9 = np.minimum(IDLE_MIN_CURRENT, cap9)
+    assert floor9[0] == IDLE_MIN_CURRENT and floor9[2] == 100.0  # 캡이 하한을 이긴다
+    armed9 = np.array([True, True, False])
+    err9 = np.array([0.4, 0.01, 0.4])        # J2 는 이미 도착 (tol 0.05)
+    weak = np.array([50.0, 20.0, 10.0])
+    pulling9 = armed9 & (np.abs(err9) > 0.05) & (np.abs(weak) < floor9)
+    assert list(pulling9) == [True, False, False]
     print("joint_limit_wall selftest 통과")
 
 

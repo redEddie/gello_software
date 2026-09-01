@@ -829,12 +829,13 @@ class CollectionWorker(QThread):
         """
         self.state_changed.emit("gate")
         deadline = time.monotonic() + timeout
-        # 자동 정렬이 켜져 있어도 무조건 당기지 않는다: 리더가 느슨한 게이트
-        # (GATE_RAD) 안으로 들어온 뒤에만 정렬한다 -- 버튼 경로와 같은 모터
-        # 보호 전제. 예전에는 게이트 진입 즉시 당겼는데, 리더가 멀리 놓여
-        # 있으면 전 구간을 모터로 끌고 오는 셈이었다.
+        # 자동 정렬은 자세 오차와 무관하게 시작할 수 있다 (2026-09-01
+        # 사용자 결정). 예전에는 게이트(GATE_RAD) 안으로 들어와야만 당겼는데,
+        # 그건 리더를 멀리 놓아두면 전 구간을 모터로 끌고 오던 시절의 보호
+        # 장치였다. 지금은 wall 이 관절별로 알아서 한다 -- 정렬 반경 밖
+        # 관절은 토크 자체가 꺼져 있다가 사람이 가까이 가져오면 스스로
+        # 걸리고, 힘도 우물 모양이라 멀수록 약하다 (issue #37A).
         auto_pending = self.cfg.auto_match_pose
-        auto_warned = False
         try:
             while True:
                 cmd = self._poll_cmd()
@@ -854,30 +855,14 @@ class CollectionWorker(QThread):
                     )
                 run_auto = False
                 if auto_pending:
-                    if all_ok:
-                        # 켜 둔 자동 정렬은 범위에 들어온 첫 순간 한 번만 발동.
-                        auto_pending = False
-                        run_auto = True
-                    elif not auto_warned:
-                        auto_warned = True
-                        self.log_message.emit(
-                            f"[자동정렬] 리더가 아직 범위 밖입니다 "
-                            f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad) "
-                            f"-- 가까이 가져오면 자동 정렬합니다"
-                        )
+                    # 켜 둔 자동 정렬은 게이트에 들어온 즉시 한 번 발동한다.
+                    auto_pending = False
+                    run_auto = True
                 if cmd and cmd[0] == "auto_match_pose":
-                    # Motor-protection precondition: only ever pull via the
-                    # leader's own motors once the loose manual gate already
-                    # passed, same all_ok this state already computes every
-                    # tick -- the GUI also gates the button on this, but re-check
-                    # here too in case a click and a pose drift raced.
-                    if not all_ok:
-                        self.log_message.emit(
-                            f"[자동정렬] 먼저 대략적으로 자세를 맞춰주세요 "
-                            f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
-                        )
-                    else:
-                        run_auto = True
+                    # 오차가 커도 그냥 시작한다 -- 모터 보호는 wall 이 관절별로
+                    # 맡는다 (위 주석 참고). 멀리 있는 관절은 손으로 가져오는
+                    # 동안 토크가 꺼져 있다가 범위에 들면 이어서 당긴다.
+                    run_auto = True
                 if run_auto:
                     outcome = self._auto_match_pose()
                     if outcome in ("quit", "go_home"):
@@ -887,10 +872,6 @@ class CollectionWorker(QThread):
                         # is already released (see _auto_match_pose), so
                         # just honor it like a normal Start Teleop click.
                         return "ok"
-                    if outcome == "out_of_range" and self.cfg.auto_match_pose:
-                        # 이탈로 중단됐다 -- 범위에 다시 들어오면 자동 재시도.
-                        auto_pending = True
-                        auto_warned = False
                     # outcome == "ok": converged, and per _auto_match_pose's
                     # contract the leader is left TORQUE-HELD at the target
                     # (not released) -- the loop just keeps looping, still
@@ -935,11 +916,12 @@ class CollectionWorker(QThread):
 
         Returns "ok" (converged-and-held, timed-out-and-released, or the
         assist isn't available so there's nothing to do -- all three just
-        resume the caller's gate loop), "out_of_range" (the operator pulled
-        the leader back outside GATE_RAD mid-align -- released, caller may
-        re-arm), "start_teleop" (aborted-and-released, caller should proceed
-        to start teleop), "quit", or "go_home" (both release before
-        returning, since either leaves the gate state for good).
+        resume the caller's gate loop), "start_teleop" (aborted-and-released,
+        caller should proceed to start teleop), "quit", or "go_home" (both
+        release before returning, since either leaves the gate state for
+        good). It no longer gives up when the operator pulls the leader away
+        mid-align (2026-09-01): the wall releases that joint by itself and
+        picks the pull back up when it returns.
         """
         try:
             self._teleop.start_pose_match(self._reset_q)
@@ -956,17 +938,10 @@ class CollectionWorker(QThread):
                     self.log_message.emit("[자동정렬] 텔레옵 시작으로 중단")
                 return interrupt
             delta, all_ok = self._emit_gate_status()  # delta bars live during the pull
-            if not all_ok:
-                # 조작자가 정렬 중에 리더를 도로 범위 밖으로 끌었다 -- 모터가
-                # 사람 손과 싸우게 두지 않는다. 홀드를 풀고 게이트로 돌아간다
-                # (범위에 다시 들어오면 호출자가 재시도한다).
-                self._teleop.cancel_pose_match()
-                self.log_message.emit(
-                    f"[자동정렬] 리더가 범위 밖으로 벗어나 정렬을 중단합니다 "
-                    f"(최대 차이 {delta.max():.2f} rad > {GATE_RAD} rad)"
-                )
-                self.pose_match_status.emit(float(delta.max()), True)
-                return "out_of_range"
+            # 범위 밖으로 나갔다고 중단하지 않는다 (2026-09-01): 사람이 리더를
+            # 끌면 그 관절은 wall 이 알아서 놓아 주고(우물이 약해지고 정렬
+            # 반경 밖에서는 토크가 꺼진다), 손을 놓으면 다시 이어서 당긴다.
+            # 모터가 사람 손과 싸우는 상황 자체가 이제 구조적으로 없다.
             status = self._teleop.pose_match_status()
             err = status["error"]
             done = bool(status["done"])

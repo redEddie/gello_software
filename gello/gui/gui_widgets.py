@@ -452,6 +452,7 @@ class DeltaBar(QWidget):
         layout.setContentsMargins(2, 0, 2, 0)
         self.name_label = QLabel(name)
         self.name_label.setFixedWidth(32)
+        self._color: str | None = None   # 마지막으로 적용한 chunk 색 (아래 참고)
         self.bar = QProgressBar()
         self.bar.setRange(0, 100)
         self.bar.setTextVisible(True)
@@ -464,9 +465,15 @@ class DeltaBar(QWidget):
         self.bar.setValue(pct)
         self.bar.setFormat(f"{delta:+.3f} rad")
         color = "#2ecc71" if abs(delta) <= threshold else "#e74c3c"
-        self.bar.setStyleSheet(
-            f"QProgressBar::chunk {{ background-color: {color}; }}"
-        )
+        # 색이 실제로 바뀔 때만 스타일시트를 건드린다. setStyleSheet 은 Qt 가
+        # 위젯 스타일을 통째로 다시 파싱·재적용하게 만드는 호출이라, 매 갱신마다
+        # 부르면 바 7개 x 50 Hz = 초당 350 회가 된다 -- 게이지를 빠르게 만들어도
+        # GUI 스레드가 그걸 못 따라오던 이유였다 (2026-09-01).
+        if color != self._color:
+            self._color = color
+            self.bar.setStyleSheet(
+                f"QProgressBar::chunk {{ background-color: {color}; }}"
+            )
 
 
 class EpisodeLoadWorker(QThread):
