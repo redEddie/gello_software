@@ -76,11 +76,10 @@ from gello.data.dataset_schema import (  # noqa: E402
     load_schema_config,
     save_schema_config,
 )
+from gello.gui.dialogs import DatasetSchemaDialog, hf_account  # noqa: E402
 from gello.gui.gui_widgets import (  # noqa: E402
     PLAYBACK_FPS,
-    DatasetSchemaDialog,
     Recents,
-    hf_account,
 )
 from gello.gui.workers import CameraPreviewWorker, GalleryLoadWorker  # noqa: E402
 from gello.gui.text_utils import clean_stream_lines, is_progress_line, repo_id_error  # noqa: E402

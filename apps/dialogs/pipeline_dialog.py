@@ -25,7 +25,8 @@ from PyQt6.QtWidgets import (
 
 from gello.data.hub_upload_state import changed_files
 from gello.data.libero_format import hdf5_repack_status
-from gello.gui.gui_widgets import HfAccountDialog, Recents, hf_account
+from gello.gui.dialogs import HfAccountDialog, hf_account
+from gello.gui.gui_widgets import Recents
 from gello.gui.i18n import tr
 
 

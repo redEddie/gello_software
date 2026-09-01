@@ -18,7 +18,7 @@ from gello.data.dataset_sync import plan_sync
 from gello.data.episode_stats import hdf5_files
 from gello.data.hub_upload_state import changed_files
 from gello.data.libero_format import hdf5_repack_status
-from gello.gui.gui_widgets import (
+from gello.gui.dialogs import (
     HdfUploadDialog,
     HfAccountDialog,
     LerobotConvertDialog,

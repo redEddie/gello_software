@@ -2,7 +2,7 @@
 ``actions`` from, and which observation fields actually get written.
 
 Persisted as JSON so a custom configuration chosen in the GUI (see
-gello/gui_widgets.py's DatasetSchemaDialog) survives across restarts.
+gello.gui.dialogs.DatasetSchemaDialog) survives across restarts.
 """
 
 from __future__ import annotations
