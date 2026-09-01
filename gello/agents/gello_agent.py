@@ -347,7 +347,7 @@ class GelloAgent(Agent):
         self._wall.set_match_target(np.asarray(target_q, dtype=float))
 
     def pose_match_status(self) -> Dict[str, Any]:
-        """``{"error": max abs rad or None, "done", "engaged", "blocked"}``.
+        """``{"error": max abs rad or None, "done", "engaged", "blocked", "state"}``.
 
         ``done`` is always True (nothing to wait for) when there is no wall
         or no match is in progress. ``engaged`` says whether the pull is
@@ -358,18 +358,21 @@ class GelloAgent(Agent):
         the next ``start_pose_match``. ``aborted_wrap`` means it gave up for
         the opposite reason -- a joint reached the point where the wall cannot
         tell which way to push, so that joint was handed to the operator
-        (typically to untwist a cable).
+        (typically to untwist a cable). ``state`` is the explicit enum value
+        from the wall (idle/armed/pulling/blocked/done); new code should
+        prefer this over the boolean fields.
         """
         if self._wall is None:
             return {"error": None, "done": True,
                     "engaged": False, "blocked": False,
-                    "aborted_wrap": False}
+                    "aborted_wrap": False, "state": "idle"}
         s = self._wall.status()
         return {"error": s.get("match_error"), "done": bool(s.get("match_done")),
                 "engaged": bool(s.get("match_engaged")),
                 "blocked": bool(s.get("match_blocked")),
                 # 케이블을 푸는 중으로 보고 wall 이 스스로 취소했는가
-                "aborted_wrap": bool(s.get("match_aborted_wrap"))}
+                "aborted_wrap": bool(s.get("match_aborted_wrap")),
+                "state": s.get("match_state", "idle")}
 
     def cancel_pose_match(self) -> None:
         """Release the match target early (abort/interrupt). No-op if there

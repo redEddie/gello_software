@@ -104,6 +104,7 @@ Dynamixel overload protection is the backstop.  ``stop()`` is the *clean* exit
 path (normal shutdown) and does zero the current and drop torque.
 """
 
+import enum
 import threading
 import time
 from typing import Dict, Optional, Tuple
@@ -123,6 +124,15 @@ ADDR_HW_ERROR = 70        # Hardware Error Status (1 B, bitfield)
 ADDR_INPUT_VOLTAGE = 144  # Present Input Voltage (2 B, units of 0.1 V)
 ADDR_TEMPERATURE = 146    # Present Temperature (1 B, deg C)
 
+
+class WallMatchState(enum.Enum):
+    """Explicit states for the pose-match assist."""
+
+    IDLE = "idle"       # no match target
+    ARMED = "armed"     # target set but outside gate, torque off
+    PULLING = "pulling" # inside gate, pulling toward target
+    BLOCKED = "blocked" # stalled, gave up to protect servos
+    DONE = "done"       # held within tolerance
 
 
 def _engage_gate(engaged: bool, err: float, gate: float, release: float) -> bool:
@@ -448,7 +458,11 @@ class JointLimitWall:
         # "the target as of the start of this tick" -- a target arriving
         # mid-tick just takes effect one tick later.
         self._match_target: Optional[np.ndarray] = None
+        self._match_state = WallMatchState.IDLE
+        # Deprecated boolean snapshots: kept in status() for API compatibility.
+        # New code should read "match_state" instead.
         self._match_done = False
+        self._match_blocked = False
         self._match_hold_start: Optional[float] = None
 
         # 힘 우물 (2026-08-31, issue #37A). 정렬 힘은 켜짐/꺼짐이 아니라
@@ -482,7 +496,6 @@ class JointLimitWall:
         self._match_stall_frac = float(match_stall_frac)
         self._match_stall_s = float(match_stall_s)
         self._match_stall_since: Optional[float] = None
-        self._match_blocked = False
 
         # Set/read like _match_target -- plain attribute swaps, no lock.
         self._gravity_gains = (
@@ -553,7 +566,12 @@ class JointLimitWall:
         rather than carrying over stale progress.
         """
         self._match_target = None if target is None else np.array(target, dtype=float)
+        self._match_state = (
+            WallMatchState.IDLE if target is None else WallMatchState.ARMED
+        )
+        # Deprecated boolean snapshots, kept in status() for compatibility.
         self._match_done = False
+        self._match_blocked = False
         self._match_hold_start = None
         # 새 목표는 게이트도 처음부터 -- 이전 목표에서 걸려 있었다고 해서
         # 새 목표(다른 자세, 다시 멀 수 있다)를 곧바로 당기면 안 된다.
@@ -561,7 +579,6 @@ class JointLimitWall:
         # 것이 재시도의 유일한 신호다.
         self._match_engaged = False
         self._match_stall_since = None
-        self._match_blocked = False
         # 취소 사유도 새 요청에서만 지운다. 단, 루프가 스스로 취소하며
         # 세우는 플래그는 그 뒤에 세워지므로 여기서 지워도 덮이지 않는다
         # (호출자가 다시 걸 때만 초기화되는 것이 맞다).
@@ -657,7 +674,6 @@ class JointLimitWall:
                 # 근처에서 wrap_into_limits의 바퀴 선택이 튀면 벽이 반대로
                 # 밀리지만, 케이블 풀기를 위해 토크를 끄는 기능은 현재
                 # 비활성화되어 있다.
-                # 케이블 풀기를 위해 토크를 끄는 기능은 현재 비활성화되어 있다.
                 self._wrap_mask = np.zeros(self._n_arm, dtype=bool)
 
                 goal_err = match_assist = None
@@ -672,7 +688,7 @@ class JointLimitWall:
                     # 끌린다 -- 위 참조). 히스테리시스는 관절마다 따로.
                     # 정렬 중이냐 텔레옵 중이냐로 이 규칙을 바꾸지 않는다 --
                     # "어디에 놓아두든 안 당긴다" 는 모드와 무관한 약속이다.
-                    if self._match_blocked:
+                    if self._match_state == WallMatchState.BLOCKED:
                         self._match_arm_mask = np.zeros(self._n_arm, dtype=bool)
                     else:
                         thr = np.where(
@@ -684,6 +700,21 @@ class JointLimitWall:
                 else:
                     self._match_arm_mask = np.zeros(self._n_arm, dtype=bool)
                 self._match_engaged = bool(self._match_arm_mask.any())
+
+                # Update explicit match state. BLOCKED/DONE are latched until
+                # set_match_target is called again.
+                if match_target is None:
+                    self._match_state = WallMatchState.IDLE
+                elif self._match_state not in (
+                    WallMatchState.BLOCKED,
+                    WallMatchState.DONE,
+                ):
+                    self._match_state = (
+                        WallMatchState.PULLING
+                        if self._match_engaged
+                        else WallMatchState.ARMED
+                    )
+
                 match_active = match_target is not None and self._match_engaged
 
                 # Arm torque only near a limit: current-control-at-zero drags
@@ -822,14 +853,21 @@ class JointLimitWall:
                             self._match_stall_since = t0
                         elif t0 - self._match_stall_since >= self._match_stall_s:
                             # 래치: set_match_target 재호출까지 다시 안 건다.
-                            self._match_blocked = True
+                            self._match_state = WallMatchState.BLOCKED
+                            self._match_blocked = True  # compatibility
+                            self._match_done = False  # blocked overrides done
+                            self._match_hold_start = None
                             self._match_engaged = False
                             self._match_stall_since = None
                     if match_err < self._match_tol and float(np.abs(dq).max()) < self._match_vel_tol:
                         if self._match_hold_start is None:
                             self._match_hold_start = t0
-                        elif t0 - self._match_hold_start >= self._match_hold_s:
-                            self._match_done = True
+                        elif (
+                            t0 - self._match_hold_start >= self._match_hold_s
+                            and self._match_state != WallMatchState.BLOCKED
+                        ):
+                            self._match_state = WallMatchState.DONE
+                            self._match_done = True  # compatibility
                     else:
                         self._match_hold_start = None
                 else:
@@ -837,6 +875,8 @@ class JointLimitWall:
                     # 0 이고, setpoint·적분기는 비워 둔다. 그래야 나중에
                     # engage 되는 순간 "지금 있는 자리"에서 다시 시작한다
                     # (묵은 setpoint 로 튀지 않는다).
+                    if self._match_state == WallMatchState.DONE:
+                        self._match_state = WallMatchState.ARMED
                     self._match_done = False
                     self._match_hold_start = None
                     self._match_setpoint = None
@@ -935,6 +975,7 @@ class JointLimitWall:
                     "health": health,
                     "trigger": {"g": g, "cur": i_trig} if self._trigger else None,
                     "match_error": match_err,
+                    "match_state": self._match_state.value,
                     "match_done": self._match_done,
                     # issue #37A: 토크가 켜져 있는가(engaged), 과부하 보호로
                     # 포기했는가(blocked), 조인트별 정렬 세기 0..1(assist).
