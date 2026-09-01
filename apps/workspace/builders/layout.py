@@ -185,10 +185,7 @@ def build_left(win) -> None:
     win.left_stack = QStackedWidget()
     win.left_pages = {}
     for key, _icon, title, _tip in ACTIVITIES:
-        if key in PAGE_BUILDERS:
-            page = PAGE_BUILDERS[key](win)
-        else:
-            page = getattr(win, f"_page_{key}")()
+        page = PAGE_BUILDERS[key](win)
         wrapper = QWidget()
         col = QVBoxLayout(wrapper)
         col.setContentsMargins(6, 6, 6, 6)
