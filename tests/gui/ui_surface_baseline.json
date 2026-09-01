@@ -81,12 +81,13 @@
   ],
   "scripts": {
     "LAUNCH_NODES_SCRIPT": "scripts/launch/launch_nodes.py",
-    "CONVERT_SCRIPT": "scripts/convert/convert_libero_to_lerobot.py",
-    "UPLOAD_SCRIPT": "scripts/convert/upload_to_hub.py",
     "REPLAY_SCRIPT": "scripts/analyze/replay_episode.py",
     "RUNME_SCRIPT": "scripts/runme.sh",
     "CHECK_CAMERAS": "scripts/check/check_cameras.py",
-    "RESET_PROTECTION": "scripts/check/gello_reset_protection.py"
+    "RESET_PROTECTION": "scripts/check/gello_reset_protection.py",
+    "CONVERT_SCRIPT": "scripts/convert/convert_libero_to_lerobot.py",
+    "UPLOAD_SCRIPT": "scripts/convert/upload_to_hub.py",
+    "REPACK_SCRIPT": "scripts/convert/repack_hdf5.py"
   },
   "activities": [
     "configure",

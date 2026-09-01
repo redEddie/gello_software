@@ -4,6 +4,14 @@ from pathlib import Path
 
 LOG_DIR = Path.home() / "libero_gui_logs"
 
+# Child-process scripts used by both WorkspaceWindow and its domain modules.
+# Kept here so domains can import them without creating a circular dependency
+# back to collect_workspace.py.
+WT_ROOT = Path(__file__).resolve().parent.parent.parent
+CONVERT_SCRIPT = str(WT_ROOT / "scripts" / "convert" / "convert_libero_to_lerobot.py")
+UPLOAD_SCRIPT = str(WT_ROOT / "scripts" / "convert" / "upload_to_hub.py")
+REPACK_SCRIPT = str(WT_ROOT / "scripts" / "convert" / "repack_hdf5.py")
+
 # Activity bar entries: (key, icon, title, tooltip). Icons are emoji rather
 # than a theme lookup -- an icon theme that is missing on this machine would
 # leave the strip blank, and the strip is the only navigation there is.

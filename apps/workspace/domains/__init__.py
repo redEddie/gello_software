@@ -10,3 +10,7 @@ substitution only shows up when someone clicks the button -- which is why
 tests/gui/test_domain_attrs.py checks every ``self.win.<name>`` against a real
 window instance.
 """
+
+from apps.workspace.domains.upload import UploadOps
+
+__all__ = ["UploadOps"]

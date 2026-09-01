@@ -71,3 +71,6 @@ assert not missing, (
 
 n = sum(1 for _ in mods)
 print(f"도메인 {n}개, 창에서 읽는 이름 전부 실재 OK")
+win.close()
+win.deleteLater()
+app.processEvents()

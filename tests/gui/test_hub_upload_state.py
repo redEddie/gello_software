@@ -95,18 +95,23 @@ import gello.gui.gui_widgets as gw
 # PipelineDialog.steps() 는 Recents 에 repo/경로를 기록한다 -- 실제 GUI
 # 기억 파일을 오염시키지 않게 임시 파일로 돌린다 (2026-08-26 사고 재발 방지).
 gw.RECENTS_PATH = tmp2_recents = Path(tempfile.mkdtemp()) / "recents.json"
-import apps.collect_workspace as cw
+from apps.dialogs.pipeline_dialog import PipelineDialog  # noqa: E402
+from apps.workspace.constants import (  # noqa: E402
+    CONVERT_SCRIPT,
+    REPACK_SCRIPT,
+    UPLOAD_SCRIPT,
+)
 
 app = QApplication.instance() or QApplication([])
 plan = {"action": "up_to_date", "rows": [], "ambiguous": [],
         "local_total": 0, "hub_total": 0, "paths": [str(a2), str(b2)]}
 # scripts 는 GUI 가 넘겨주는 실제 상수를 그대로 쓴다 -- 여기에 사본을 적어
 # 두면 GUI 쪽 경로가 바뀌어도 테스트는 통과해 버린다.
-dlg = cw.PipelineDialog(None, str(tmp2), plan, "org/lr", repo2,
-                        str(tmp2 / "lr"),
-                        scripts={"repack": cw.REPACK_SCRIPT,
-                                 "convert": cw.CONVERT_SCRIPT,
-                                 "upload": cw.UPLOAD_SCRIPT})
+dlg = PipelineDialog(None, str(tmp2), plan, "org/lr", repo2,
+                     str(tmp2 / "lr"),
+                     scripts={"repack": REPACK_SCRIPT,
+                              "convert": CONVERT_SCRIPT,
+                              "upload": UPLOAD_SCRIPT})
 dlg.repack_check.setChecked(False)   # 가짜 파일은 전부 '미압축' 판정이라 끔
 dlg.hdf5_check.setChecked(True)
 

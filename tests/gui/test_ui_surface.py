@@ -35,8 +35,17 @@ from apps.workspace.constants import ACTIVITIES  # noqa: E402
 from apps.workspace.pages import PAGE_BUILDERS  # noqa: E402
 
 
+class _NoOp:
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
 class _Stub(QMainWindow):
     """빌더가 창에 요구하는 것 중 슬롯은 전부 no-op 로 받아준다."""
+
+    def __init__(self):
+        super().__init__()
+        self.upload = _NoOp()
 
     def __getattr__(self, name):
         if name.startswith("_"):
@@ -55,23 +64,25 @@ def surface() -> dict:
         sub = act.menu()
         menus[act.text()] = [x.text() for x in sub.actions() if x.text()] if sub else []
 
-    src = (WT / "apps" / "collect_workspace.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
     scripts = {}
-    for n in tree.body:
-        if not isinstance(n, ast.Assign):
-            continue
-        name = getattr(n.targets[0], "id", "")
-        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
-            continue
-        # ast.walk 는 소스 순서가 아니라 폭 우선이다 -- 경로 조각을 이어붙이려면
-        # 위치로 다시 정렬해야 한다.
-        seg = sorted((c for c in ast.walk(n.value)
-                      if isinstance(c, ast.Constant) and isinstance(c.value, str)),
-                     key=lambda c: (c.lineno, c.col_offset))
-        parts = [c.value for c in seg]
-        if parts and parts[-1].endswith((".py", ".sh")):
-            scripts[name] = "/".join(parts)
+    for script_path in (WT / "apps" / "collect_workspace.py",
+                        WT / "apps" / "workspace" / "constants.py"):
+        src = script_path.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for n in tree.body:
+            if not isinstance(n, ast.Assign):
+                continue
+            name = getattr(n.targets[0], "id", "")
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+                continue
+            # ast.walk 는 소스 순서가 아니라 폭 우선이다 -- 경로 조각을 이어붙이려면
+            # 위치로 다시 정렬해야 한다.
+            seg = sorted((c for c in ast.walk(n.value)
+                          if isinstance(c, ast.Constant) and isinstance(c.value, str)),
+                         key=lambda c: (c.lineno, c.col_offset))
+            parts = [c.value for c in seg]
+            if parts and parts[-1].endswith((".py", ".sh")):
+                scripts[name] = "/".join(parts)
 
     keys = set()
     for p in sorted((WT / "apps").rglob("*.py")):

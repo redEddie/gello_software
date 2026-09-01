@@ -168,7 +168,7 @@ import gello.data.dataset_sync as _sync  # noqa: E402
 cur = list_scene_episodes(scene)
 targets = {scene: [e["name"] for e in cur][:2]}
 uid0 = cur[0]["episode_uid"]
-have_repo = bool(win.repo_id_for("repo_id"))
+have_repo = bool(win.upload.repo_id_for("repo_id"))
 # (a) 사이드카에 이 uid 가 있음 -> "올라가 있음 + 재빌드"
 _sync.hub_episode_uids = lambda repo: ({uid0}, "")
 _sync.hub_meta = lambda repo: ({cur[0]["instruction"]: 99}, {}, "")

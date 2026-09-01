@@ -68,7 +68,7 @@ def build_dataset(win) -> QWidget:
                    "선택한 파일의 전체 내부 구조(그룹/데이터셋/attrs)를\n"
                    "트리로 탐색합니다. 데이터셋을 클릭하면 shape·dtype·압축과\n"
                    "이미지 미리보기/값 미리보기가 나옵니다 (myHDF5 스타일)."),
-                  ("myHDF5 (웹)", win._on_myhdf5,
+                  ("myHDF5 (웹)", win.upload.on_myhdf5,
                    "브라우저에서 myhdf5.hdfgroup.org 를 엽니다.\n"
                    "파일을 창에 끌어다 놓으면 같은 구조를 웹에서 봅니다.")),
                  (("실패만 선택", win._on_select_failed,

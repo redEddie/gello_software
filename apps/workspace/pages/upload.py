@@ -29,7 +29,7 @@ def build_upload(win) -> QWidget:
     acct_btn = QPushButton(tr("계정 확인 / 전환..."))
     acct_btn.setToolTip(tr("이 PC는 공용입니다. 지금 어떤 토큰으로 올라가는지 "
                            "확인하고, 다른 사람 계정으로 바꿉니다."))
-    acct_btn.clicked.connect(win._on_hf_accounts)
+    acct_btn.clicked.connect(win.upload.on_hf_accounts)
     col.addWidget(acct_btn)
 
     # Repo ID 를 패널 밖으로 꺼내둔다. 다이얼로그 안에만 있을 때는 오타가
@@ -67,7 +67,7 @@ def build_upload(win) -> QWidget:
         tr("Hub과 로컬을 대조해 필요한 것만 순서대로 실행합니다.\n"
            "재압축 → LeRobot 변환 → LeRobot 업로드까지 한 번에.\n"
            "확인 창에서 시작을 누르면 끝까지 무인으로 진행합니다."),
-        win._on_pipeline, primary=True, color="#2ecc71")
+        win.upload.on_pipeline, primary=True, color="#2ecc71")
 
     col.addSpacing(14)
     hdf5_box = QGroupBox(tr("HDF5 원본"))
@@ -77,17 +77,17 @@ def build_upload(win) -> QWidget:
         hcol, tr("재압축 + 업로드 (자동)"),
         tr("아래 두 단계를 순서대로 실행합니다.\n"
            "재압축이 필요한 파일만 골라 줄인 뒤, 원본 .hdf5 를 Hub에 올립니다."),
-        win._on_hdf5_auto, primary=True, color="#9b59b6")
+        win.upload.on_hdf5_auto, primary=True, color="#9b59b6")
     win._upload_button(
         hcol, tr("용량 최적화 (재압축)"),
         tr("lzf 압축으로 .hdf5 크기를 줄입니다. 내용은 그대로입니다.\n"
            "이미 재압축된 파일은 건너뜁니다."),
-        win._on_repack)
+        win.upload.on_repack)
     win._upload_button(
         hcol, tr("원본 업로드..."),
         tr("큐레이션이 끝난 .hdf5 를 그대로 Hub에 올립니다.\n"
            "변환본(LeRobot)과는 별개의 저장소입니다."),
-        win._on_hdf5_upload)
+        win.upload.on_hdf5_upload)
     col.addWidget(hdf5_box)
 
     col.addSpacing(14)
@@ -99,25 +99,25 @@ def build_upload(win) -> QWidget:
         tr("전체를 처음부터 다시 만들어 Hub을 통째로 교체합니다.\n"
            "이어붙이기(resume)를 쓰지 않으므로, 큐레이션에서 지운 에피소드가 "
            "Hub에서도 사라집니다.\n실행 전에 항상 확인 창을 띄웁니다."),
-        win._on_lerobot_auto, primary=True, color="#3498db")
+        win.upload.on_lerobot_auto, primary=True, color="#3498db")
     win._upload_button(
         lcol, tr("이어붙이기 (새 에피소드만)"),
         tr("Hub과 대조해 새로 추가된 에피소드만 변환해 이어붙입니다.\n"
            "5~10개씩 추가 수집한 날은 전체 재빌드 대신 이걸로 몇 분이면 "
            "끝납니다.\n에피소드를 삭제·편집한 흔적이 있으면 안전하게 거부하고 "
            "전체 재빌드를 안내합니다."),
-        win._on_lerobot_resume, primary=True, color="#1abc9c")
+        win.upload.on_lerobot_resume, primary=True, color="#1abc9c")
     win._upload_button(
         lcol, tr("HDF5 골라서 변환만..."),
         tr("올리지 않고 로컬에만 변환합니다.\n"
            "결과를 눈으로 확인한 뒤 아래 버튼으로 올리세요."),
-        win._on_lerobot)
+        win.upload.on_lerobot)
     win._upload_button(
         lcol, tr("전체 task 다시 업로드..."),
         tr("이미 변환해둔 로컬 결과를 Hub에 통째로 교체 업로드합니다 "
            "(재변환 없음).\n로컬에 없는 원격 파일도 함께 지우므로, 큐레이션으로 "
            "삭제한 에피소드가 Hub에 남지 않습니다."),
-        win._on_lerobot_reupload)
+        win.upload.on_lerobot_reupload)
     col.addWidget(lerobot_box)
 
     col.addSpacing(10)
