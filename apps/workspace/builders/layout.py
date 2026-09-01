@@ -29,6 +29,7 @@ from gello.gui.i18n import tr
 from apps.dialogs._widgets import SceneInfoView, TODO_STYLE, mark_todo
 from apps.workspace.builders.sizing import relax_min_widths
 from apps.workspace.constants import ACTIVITIES, PLAYBACK_SPEEDS, WIDE_FIELDS
+from apps.workspace.pages import PAGE_BUILDERS
 
 # Tab builders are imported here rather than through the package __init__ to
 # avoid a circular import (this module is re-exported by __init__, and the tabs
@@ -184,7 +185,10 @@ def build_left(win) -> None:
     win.left_stack = QStackedWidget()
     win.left_pages = {}
     for key, _icon, title, _tip in ACTIVITIES:
-        page = getattr(win, f"_page_{key}")()
+        if key in PAGE_BUILDERS:
+            page = PAGE_BUILDERS[key](win)
+        else:
+            page = getattr(win, f"_page_{key}")()
         wrapper = QWidget()
         col = QVBoxLayout(wrapper)
         col.setContentsMargins(6, 6, 6, 6)
