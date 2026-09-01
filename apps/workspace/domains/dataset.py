@@ -143,9 +143,9 @@ class DatasetOps:
         # 파일 행을 골라도 오른쪽 Dataset 칸은 갱신된다 -- 재생은 에피소드 행에서만.
         self.win._update_dataset_panel(self.selected_file())
         if self.win.session.stats:
-            self.win._refresh_rank_list()
+            self.win.stats_ops.refresh_rank_list()
             if item is not None and item.parent() is not None:
-                self.win._show_analysis_for(
+                self.win.stats_ops.show_analysis_for(
                     item.parent().data(0, Qt.ItemDataRole.UserRole),
                     item.data(0, Qt.ItemDataRole.UserRole))
         if item is None or item.parent() is None:
@@ -169,7 +169,7 @@ class DatasetOps:
         operator deletes from, so they can play the takes first.
         """
         if not self.win.session.stats:
-            self.win._refresh_analysis()
+            self.win.stats_ops.refresh_analysis()
         if not self.win.session.stats:
             return
         flagged = {(e.path, e.demo) for e in self.win.session.stats if e.flagged}

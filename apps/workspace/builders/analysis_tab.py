@@ -87,7 +87,7 @@ def build_analysis_tab(win) -> QWidget:
                        ("길이 짧은 순", "short"),
                        ("길이 긴 순", "long")):
         win.rank_combo.addItem(tr(label), key)
-    win.rank_combo.currentIndexChanged.connect(win._refresh_rank_list)
+    win.rank_combo.currentIndexChanged.connect(win.stats_ops.refresh_rank_list)
     row.addWidget(win.rank_combo, 1)
     fcol.addLayout(row)
 
@@ -99,7 +99,7 @@ def build_analysis_tab(win) -> QWidget:
     win.group_combo = QComboBox()
     shrinkable_combo(win.group_combo)
     win.group_combo.addItem(tr("(전체)"), None)
-    win.group_combo.currentIndexChanged.connect(win._refresh_rank_list)
+    win.group_combo.currentIndexChanged.connect(win.stats_ops.refresh_rank_list)
     grow.addWidget(win.group_combo, 1)
     fcol.addLayout(grow)
 
@@ -109,7 +109,7 @@ def build_analysis_tab(win) -> QWidget:
     win.len_max_spin = QSlider(Qt.Orientation.Horizontal)
     for s in (win.len_min_spin, win.len_max_spin):
         s.setRange(0, 300)
-        s.valueChanged.connect(win._refresh_rank_list)
+        s.valueChanged.connect(win.stats_ops.refresh_rank_list)
     win.len_min_spin.setValue(0)
     win.len_max_spin.setValue(300)
     len_row.addWidget(win.len_min_spin, 1)
@@ -151,13 +151,13 @@ def build_analysis_tab(win) -> QWidget:
     helpb = QPushButton("?")
     helpb.setFixedWidth(24)
     helpb.setToolTip(tr("칼럼 정의와 판정 기준 (docs/curation-metrics.md)"))
-    helpb.clicked.connect(win._on_metric_help)
+    helpb.clicked.connect(win.stats_ops.on_metric_help)
     cols_row.addWidget(helpb)
     fcol.addLayout(cols_row)
 
     btns = QHBoxLayout()
     for text, slot in ((tr("재생해서 확인"), win.playback_ops.on_rank_play),
-                       (tr("선택 삭제"), win._on_rank_delete)):
+                       (tr("선택 삭제"), win.stats_ops.on_rank_delete)):
         b = QPushButton(text)
         b.clicked.connect(slot)
         btns.addWidget(b)

@@ -78,7 +78,7 @@ cw.WorkspaceWindow._startup_tuning = lambda self: None   # pkexec 비밀번호 �
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
 win.session.stats = stats
-win._refresh_group_combo()
+win.stats_ops.refresh_group_combo()
 assert win.group_combo.count() == 1 + len(by_group)
 i = next(k for k in range(win.group_combo.count())
          if win.group_combo.itemData(k) == ("S001", sentence))

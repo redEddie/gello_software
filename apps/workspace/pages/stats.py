@@ -91,7 +91,7 @@ def build_stats(win) -> QWidget:
     win.stats_hint.setWordWrap(True)
     mcol.addWidget(win.stats_hint)
     rescan = QPushButton(tr("다시 분석"))
-    rescan.clicked.connect(lambda: win._refresh_analysis(force=True))
+    rescan.clicked.connect(lambda: win.stats_ops.refresh_analysis(force=True))
     mcol.addWidget(rescan)
     col.addWidget(motion)
     col.addStretch()

@@ -558,7 +558,7 @@ class SceneOps:
         if not items:
             return
         path, demo = items[0].data(0, Qt.ItemDataRole.UserRole)
-        self.win._show_analysis_for(path, demo)
+        self.win.stats_ops.show_analysis_for(path, demo)
         self.win.playback_ops.show_trim_for(path, demo)
 
     def apply_session_config(self, cfg: dict) -> list:

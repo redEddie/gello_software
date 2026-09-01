@@ -67,9 +67,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QTextBrowser,
     QTreeWidgetItem,
-    QVBoxLayout,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -77,13 +75,6 @@ from gello.data.dataset_schema import (  # noqa: E402
     OBS_AGENTVIEW_RGB,
     load_schema_config,
     save_schema_config,
-)
-from gello.data.episode_stats import (  # noqa: E402
-    TASK_DEV_LIMIT,
-    hdf5_files,
-    load_series,
-    scan_dataset,
-    summarize,
 )
 from gello.gui.gui_widgets import (  # noqa: E402
     repo_id_error,
@@ -97,7 +88,7 @@ from gello.gui.gui_widgets import (  # noqa: E402
     is_progress_line,
 )
 from apps.workspace.constants import LOG_DIR, LAYOUT_DIR, LAYOUT_ZIP  # noqa: E402
-from apps.workspace.domains import CameraOps, DatasetOps, DepthOps, PlaybackOps, SceneOps, UploadOps  # noqa: E402
+from apps.workspace.domains import CameraOps, DatasetOps, DepthOps, PlaybackOps, SceneOps, StatsOps, UploadOps  # noqa: E402
 from apps.workspace.models import (  # noqa: E402
     CameraState,
     PlaybackState,
@@ -251,6 +242,7 @@ class WorkspaceWindow(QMainWindow):
         self.camera_ops = CameraOps(self)
         self.depth_ops = DepthOps(self)
         self.dataset_ops = DatasetOps(self)
+        self.stats_ops = StatsOps(self)
 
         build_bottom(self)          # log view exists before anything logs
         # 저장된 설정의 depth 플래그가 무시됐다면 여기서(로그 뷰가 생긴 뒤)
@@ -732,10 +724,10 @@ class WorkspaceWindow(QMainWindow):
         if act is not None and not act.isChecked():
             act.setChecked(True)
         if key == "stats":
-            self._refresh_stats()
+            self.stats_ops.refresh_stats()
             self._refresh_plan_progress()
             if not self.session.stats:
-                self._refresh_analysis()
+                self.stats_ops.refresh_analysis()
         elif key == "dataset":
             self.dataset_ops.refresh_dataset_tree()
         elif key == "upload":
@@ -814,10 +806,10 @@ class WorkspaceWindow(QMainWindow):
             return
         self.session.last_saved_success = not self.session.last_saved_success
         self.worker.cmd_set_episode_success(self.session.last_saved_name, self.session.last_saved_success)
-        self._bump("success", 1 if self.session.last_saved_success else -1)
-        self._bump("failed", -1 if self.session.last_saved_success else 1)
+        self.stats_ops.bump("success", 1 if self.session.last_saved_success else -1)
+        self.stats_ops.bump("failed", -1 if self.session.last_saved_success else 1)
         self._refresh_verdict_label()
-        self._refresh_stats()
+        self.stats_ops.refresh_stats()
 
     def _refresh_verdict_label(self) -> None:
         if self.session.last_saved_name is None:
@@ -1069,7 +1061,7 @@ class WorkspaceWindow(QMainWindow):
         w.fatal_error.connect(self._on_fatal)
         w.connected.connect(self._on_connected)
         w.episode_list_changed.connect(self.playback_ops.on_episode_list)
-        w.session_summary.connect(self._on_summary)
+        w.session_summary.connect(self.stats_ops.on_summary)
         # 세션 해제(버튼 복구, worker=None)는 session_summary가 아니라 finished에
         # 걸어야 한다. summary는 run()의 finally에서만 나오는데, 연결 실패는 그
         # 전에 조기 return이라 summary가 영영 오지 않는다 -- 그 상태에서는 GUI가
@@ -1230,10 +1222,10 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(str, int)
     def _on_saved(self, name, n_frames) -> None:
-        self._bump("saved")
-        self._bump("frames", n_frames)
+        self.stats_ops.bump("saved")
+        self.stats_ops.bump("frames", n_frames)
         if self.session.pending_success is not None:
-            self._bump("success" if self.session.pending_success else "failed")
+            self.stats_ops.bump("success" if self.session.pending_success else "failed")
             self.session.pending_success = None
         self.session.last_saved_name = name
         if self.session.pending_success is not None:
@@ -1247,7 +1239,7 @@ class WorkspaceWindow(QMainWindow):
         self.log(f"[저장] {name} ({n_frames} frames)")
         self.right_fields["episode"].setText(name)
         self._update_dataset_panel()
-        self._refresh_stats()
+        self.stats_ops.refresh_stats()
 
     @pyqtSlot(str)
     def _on_save_status(self, text: str) -> None:
@@ -1258,9 +1250,9 @@ class WorkspaceWindow(QMainWindow):
 
     @pyqtSlot(int)
     def _on_discarded(self, n_frames) -> None:
-        self._bump("discarded")
+        self.stats_ops.bump("discarded")
         self.log(f"[버림] {n_frames} frames")
-        self._refresh_stats()
+        self.stats_ops.refresh_stats()
 
     @pyqtSlot(float)
     def _on_countdown(self, seconds) -> None:
@@ -1320,13 +1312,6 @@ class WorkspaceWindow(QMainWindow):
         self.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
         self.dataset_ops.refresh_dataset_tree()
 
-    @pyqtSlot(list)
-    def _on_summary(self, summary) -> None:
-        # 해제는 여기서 하지 않는다 -- 정상 종료에만 오는 신호다. 실제 해제는
-        # 모든 종료 경로에서 오는 finished(_on_worker_finished)가 맡는다.
-        self.log(f"[세션 요약] {summary}")
-
-
     @pyqtSlot()
     def _on_worker_finished(self) -> None:
         """워커 run()이 어떤 경로로든 끝나면 세션을 해제한다.
@@ -1357,16 +1342,6 @@ class WorkspaceWindow(QMainWindow):
             QTimer.singleShot(600, lambda: (
                 self.depth_ops.start_cloud() if self.worker is None
                 and self.cameras.depth_consumer is not None else None))
-
-    # -------------------------------------------------------------- stats
-    def _bump(self, key: str, n: int = 1) -> None:
-        """카운터 하나를 이번 task 와 누적 양쪽에 올린다.
-
-        두 dict 를 따로 건드리면 반드시 한쪽만 올리는 자리가 생긴다 -- 판정
-        뒤집기처럼 -1 도 있는 경로가 섞여 있어서 더 그렇다.
-        """
-        self.session.counters[key] += n
-        self.session.cumulative[key] += n
 
     def _current_task_label(self, limit: int = 0) -> str:
         """수집 중인 task 이름. 연결 전이거나 연습 모드면 빈 문자열.
@@ -1440,27 +1415,6 @@ class WorkspaceWindow(QMainWindow):
             text += tr("  ·  파일 없는 scene {n}개 표시 안 함 ({s})").format(
                 n=len(skipped), s=", ".join(skipped[:4]))
         self.plan_progress_label.setText(text)
-
-    def _refresh_stats(self) -> None:
-        for stats, labels in ((self.session.counters, self.stats_labels),
-                              (self.session.cumulative, self.stats_total_labels)):
-            elapsed = time.monotonic() - stats["t0"]
-            for key in ("saved", "success", "failed", "discarded", "frames"):
-                labels[key].setText(str(stats[key]))
-            labels["elapsed"].setText(f"{elapsed / 60:.1f} min")
-            # 30초 미만에서는 분당 환산이 의미 없는 큰 수로 튄다.
-            rate = stats["saved"] / (elapsed / 60) if elapsed > 30 else 0.0
-            labels["rate"].setText(f"{rate:.2f}")
-        # 어느 task 의 숫자인지 헤더에 박아 둔다. task 를 여러 개 도는 동안
-        # 왼쪽 열이 무엇을 세고 있는지가 패널만 보고 답이 되어야 한다.
-        task = self._current_task_label(limit=20)
-        self.stats_task_header.setText(task or tr("이번 task"))
-        self.stats_task_header.setToolTip(self._current_task_label())
-        try:
-            usage = shutil.disk_usage(self.root_edit.text().strip() or str(Path.home()))
-            self.disk_label.setText(f"{usage.free / 1e9:.1f} GB / {usage.total / 1e9:.0f} GB")
-        except OSError:
-            self.disk_label.setText("-")
 
     def _update_dataset_panel(self, path: "Path | None" = None) -> None:
         """Fills the right panel's Dataset box.
@@ -1556,162 +1510,6 @@ class WorkspaceWindow(QMainWindow):
         f["ds_image"].setText(image)
         f["ds_fps"].setText("-")
 
-    # --------------------------------------------------------------- 분석
-    def _refresh_analysis(self, force: bool = False) -> None:
-        """Rescans every .hdf5's actions. Only a few KB per episode, so this is
-        rebuilt from disk rather than cached -- a cache would go stale the
-        moment a session records another take."""
-        # Dataset 페이지의 폴더 선택을 따른다 (수집 경로 하드코딩 제거) --
-        # scene 파일도 함께 스캔한다.
-        root = self.dataset_ops.dataset_root()
-        files = hdf5_files(root) + [str(p) for p in iter_scene_files(root)]
-        if not files:
-            self.analysis_summary.setText(
-                tr("{r} 에 *_demo.hdf5 / scene_*.hdf5 가 없습니다.").format(r=root))
-            return
-        t0 = time.monotonic()
-        self.session.stats = scan_dataset(files)
-        self._summary = summarize(self.session.stats)
-        dt = time.monotonic() - t0
-        s = self._summary
-        self.analysis_summary.setText(
-            tr("에피소드 {n}개 · {f:,}프레임 · 그룹(scene·문장) {t}개 · 길이 {a}~{b}프레임\n{v}").format(
-                n=s["n"], f=s["frames"], t=s["tasks"],
-                a=s["len_min"], b=s["len_max"], v=s["verdict"]))
-        self.log(f"[분석] {len(files)}개 파일 / {s['n']}개 에피소드 ({dt:.2f}s) — {s['verdict']}")
-
-        self.dim_bars.set_rows(
-            [(f"joint{i + 1}", float(s["per_dim_sigma"][i]), "") for i in range(7)])
-        means = [e.mean_da for e in self.session.stats]
-        self.da_hist.set_values(means, [(s["p50"], tr("중앙값")), (s["p99"], "p99")])
-
-        lens = [e.seconds for e in self.session.stats]
-        self.len_min_spin.blockSignals(True)
-        self.len_max_spin.blockSignals(True)
-        self.len_min_spin.setRange(0, int(max(lens) * 10) + 5)
-        self.len_max_spin.setRange(0, int(max(lens) * 10) + 5)
-        self.len_min_spin.setValue(0)
-        self.len_max_spin.setValue(int(max(lens) * 10) + 5)
-        self.len_min_spin.blockSignals(False)
-        self.len_max_spin.blockSignals(False)
-        self._refresh_group_combo()
-        self._refresh_rank_list()
-
-    def _filtered_stats(self) -> list:
-        lo = self.len_min_spin.value() / 10.0
-        hi = self.len_max_spin.value() / 10.0
-        if lo > hi:
-            lo, hi = hi, lo
-        self.len_label.setText(f"{lo:.1f}~{hi:.1f}s")
-        # 선택 출처는 Dataset 트리 하나뿐이다. 파일 행을 고르면 그 파일만,
-        # 에피소드 행을 고르면 그 부모 파일만 남긴다.
-        path = None
-        sel = self.dataset_tree.selectedItems() if hasattr(self, "dataset_tree") else []
-        if sel:
-            node = sel[0] if sel[0].parent() is None else sel[0].parent()
-            v = node.data(0, Qt.ItemDataRole.UserRole)
-            path = v if isinstance(v, str) and v.endswith(".hdf5") else None
-        out = [e for e in self.session.stats if lo <= e.seconds <= hi]
-        out = [e for e in out if path is None or e.path == path]
-        grp = self.group_combo.currentData() if hasattr(self, "group_combo") else None
-        if grp is not None:
-            out = [e for e in out if e.group == grp]
-        return out
-
-    def _refresh_group_combo(self) -> None:
-        """Analysis 스캔 결과의 (scene·문장) 그룹으로 콤보를 채운다 -- 선택은
-        가능하면 유지한다 (새로고침마다 (전체) 로 튀지 않게)."""
-        if not hasattr(self, "group_combo"):
-            return
-        keep = self.group_combo.currentData()
-        groups = sorted({e.group for e in self.session.stats})
-        self.group_combo.blockSignals(True)
-        self.group_combo.clear()
-        self.group_combo.addItem(tr("(전체)"), None)
-        for g in groups:
-            n = sum(1 for e in self.session.stats if e.group == g)
-            label = (f"{g[0]} · {g[1]}" if g[0] else g[1])
-            self.group_combo.addItem(f"{label}  ({n})", g)
-        idx = 0
-        for i in range(self.group_combo.count()):
-            if self.group_combo.itemData(i) == keep:
-                idx = i
-                break
-        self.group_combo.setCurrentIndex(idx)
-        self.group_combo.blockSignals(False)
-
-    def _refresh_rank_list(self) -> None:
-        if not self.session.stats:
-            return
-        key = self.rank_combo.currentData()
-        rows = self._filtered_stats()
-        score = {
-            "fast": lambda e: -e.task_dev,
-            "slow": lambda e: e.task_dev,
-            "still": lambda e: -e.still_frac,
-            "short": lambda e: e.n_frames,
-            "long": lambda e: -e.n_frames,
-        }[key]
-        rows = sorted(rows, key=score)[:60]
-        self.rank_tree.clear()
-        for e in rows:
-            item = QTreeWidgetItem([
-                f"{Path(e.path).stem[:22]} · {e.demo}",
-                f"{e.task_dev:+.4f}", f"{100 * e.still_frac:.0f}%",
-                f"{e.seconds:.1f}s", e.group_label[:40]])
-            item.setData(0, Qt.ItemDataRole.UserRole, (e.path, e.demo))
-            # 밴드 밖은 차이 칸만 물들인다 -- 행 전체를 칠하면 실패(빨강)와
-            # 겹쳐서 둘 다 안 읽힌다.
-            if e.task_dev > TASK_DEV_LIMIT:
-                item.setForeground(1, Qt.GlobalColor.red)
-            elif e.task_dev < -TASK_DEV_LIMIT:
-                item.setForeground(1, Qt.GlobalColor.blue)
-            if e.success is False:
-                item.setForeground(0, Qt.GlobalColor.red)
-            self.rank_tree.addTopLevelItem(item)
-        self.stats_hint.setText(
-            tr("{n}개 중 상위 {m}개 표시").format(n=len(self._filtered_stats()), m=len(rows)))
-
-
-    def _show_analysis_for(self, path: str, demo: str) -> None:
-        """Dataset 트리와 순위표가 공유하는 곡선 표시 경로."""
-        if not path or not demo:
-            return
-        try:
-            series = load_series(path, demo)
-        except Exception as e:  # noqa: BLE001
-            self.log(f"[분석] 시계열 로드 실패: {type(e).__name__}: {e}")
-            return
-        for plot, dims in self.series_plots.values():
-            plot.set_data(series, dims)
-            plot.set_cursor(None)
-        stat = next((e for e in self.session.stats if e.key == (path, demo)), None)
-        if stat is not None:
-            self.analysis_summary.setText(
-                tr("{d} · {n}프레임 ({s:.1f}s) · 평균 |Δa| {m:.5f} · 같은 (scene·문장) 그룹 평균과 "
-                   "{v:+.4f}{mark} · 멈춤 {p:.0f}%\n{t}").format(
-                       d=demo, n=stat.n_frames, s=stat.seconds, m=stat.mean_da,
-                       v=stat.task_dev,
-                       mark=" (급함)" if stat.task_dev > TASK_DEV_LIMIT else (
-                           " (느림)" if stat.task_dev < -TASK_DEV_LIMIT else ""),
-                       p=100 * stat.still_frac, t=stat.group_label))
-            self.da_hist.set_values(
-                [e.mean_da for e in self.session.stats],
-                [(self._summary["p50"], tr("중앙값")), (stat.mean_da, tr("이 에피소드"))])
-
-    def _on_rank_delete(self) -> None:
-        """Hands the selection to the same delete path the Dataset panel uses --
-        including its session-ownership and busy checks."""
-        picks = [i.data(0, Qt.ItemDataRole.UserRole) for i in self.rank_tree.selectedItems()]
-        if not picks:
-            QMessageBox.information(self, tr("선택 필요"),
-                                    tr("삭제할 에피소드를 선택하세요 (Ctrl/Shift로 여러 개)."))
-            return
-        by_file: dict = {}
-        for path, demo in picks:
-            by_file.setdefault(Path(path), []).append(demo)
-        if self.dataset_ops.delete_episodes(by_file):
-            self._refresh_analysis()
 
 
 
@@ -1726,45 +1524,6 @@ class WorkspaceWindow(QMainWindow):
                 "수집 세션이 이 파일을 쥐고 있습니다 — 세션 종료 후 여세요."))
             return
         Hdf5TreeDialog(self, path).exec()
-
-
-
-    def _on_metric_help(self) -> None:
-        """Shows docs/curation-metrics.md rather than a copy of it.
-
-        The thresholds in that file are the ones episode_stats.py actually
-        uses; a second prose copy inside the GUI would be the version that
-        goes stale first, and the operator would have no way to tell which of
-        the two was lying.
-        """
-        doc = Path(__file__).resolve().parent.parent / "docs" / "curation-metrics.md"
-        try:
-            body = doc.read_text(encoding="utf-8")
-        except OSError as e:
-            QMessageBox.warning(self, tr("지표 설명"),
-                                tr("{p} 를 읽을 수 없습니다: {e}").format(p=doc, e=e))
-            return
-        dlg = QDialog(self)
-        dlg.setWindowTitle(tr("지표 정의 — curation-metrics.md"))
-        dlg.resize(900, 680)
-        lay = QVBoxLayout(dlg)
-        view = QTextBrowser()
-        view.setMarkdown(body)
-        view.setOpenExternalLinks(True)
-        lay.addWidget(view)
-        path_lbl = QLabel(str(doc))
-        path_lbl.setStyleSheet("color:#888;")
-        path_lbl.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse)
-        lay.addWidget(path_lbl)
-        btn = QPushButton(tr("닫기"))
-        btn.clicked.connect(dlg.accept)
-        lay.addWidget(btn)
-        dlg.exec()
-
-
-
-
 
     @staticmethod
     def check_tuning() -> list:

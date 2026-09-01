@@ -213,7 +213,7 @@ class PlaybackOps:
         self.win.log(f"[트림] {Path(path).name} {demo}: {self.win.playback.trim_n} → {new_n}프레임 "
                  f"(−{n_trim})")
         self.win.dataset_ops.refresh_dataset_tree()
-        self.win._refresh_analysis(force=True)
+        self.win.stats_ops.refresh_analysis(force=True)
         self.show_trim_for(path, demo)
 
     # -------------------------------------------------------------- playback
