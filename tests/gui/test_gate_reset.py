@@ -50,7 +50,7 @@ def make_worker():
     obs = {k: 0.0 for k in JOINT_KEYS}
     obs["agent"] = np.zeros((4, 4, 3), np.uint8)
     obs["wrist"] = np.zeros((4, 4, 3), np.uint8)
-    w._get_obs = lambda: dict(obs)
+    w._get_obs = lambda with_cameras=True: dict(obs)
     return w
 
 
@@ -127,8 +127,11 @@ print("3 통과: 자동정렬 꺼짐 -- 발동 없이 수동 게이트")
 
 # ---- 4. 리셋 대기: 자동 종료 없음, 버튼으로만 끝, 프레임은 흐른다 ----
 w3 = make_worker()
+# 2026-09-01: 기록 외 단계에서 이 루프는 카메라를 읽지 않는다 (게이지를
+# 빠르게 유지하려고). 리셋 중 살아 있어야 하는 것은 오차 게이지이고,
+# 라이브 뷰는 미리보기 스레드가 노드 속도로 직접 그린다.
 frames = []
-w3.frames_ready.connect(lambda a, b: frames.append(1))
+w3.gate_status.connect(lambda a, b, c: frames.append(1))
 r4 = {}
 t4 = threading.Thread(target=lambda: r4.update(r=w3._reset_wait()))
 t4.start()
@@ -138,7 +141,7 @@ w3.cmd_skip_reset_wait()
 t4.join(3)
 assert r4["r"] == "ok"
 app.processEvents()
-assert len(frames) >= 2, f"리셋 중 프레임 {len(frames)}회"
+assert len(frames) >= 2, f"리셋 중 게이지 갱신 {len(frames)}회"
 # _get_obs 가 죽어도 루프는 계속되고 버튼으로 끝난다
 w3b = make_worker()
 def boom():

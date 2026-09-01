@@ -5437,8 +5437,8 @@ class WorkspaceWindow(QMainWindow):
         self._restart_previews()
 
     def _on_toggle_previews(self) -> None:
-        if self.worker is not None:
-            return  # the session owns the cameras; previews must stay off
+        # 세션 중에도 켜고 끌 수 있다: 카메라 노드가 장치를 갖고 있고 이쪽은
+        # 구독자일 뿐이라 worker 와 경합하지 않는다 (2026-09-01).
         if self.agent_preview or self.wrist_preview:
             self._stop_previews_async()
             for role in ("agent", "wrist"):
@@ -5571,6 +5571,12 @@ class WorkspaceWindow(QMainWindow):
         self._dying_previews = []
 
     def _on_preview_frame(self, role: str, frame) -> None:
+        # 기록 중에는 worker 가 보내는 프레임이 이긴다 -- 화면에 보이는 것이
+        # 실제로 파일에 쓰이는 그림이어야 하기 때문이다. 그 외 단계(게이트·
+        # 리셋 대기)에서는 worker 가 카메라를 아예 안 읽으므로 여기가 유일한
+        # 공급원이고, 노드 속도 그대로 나온다.
+        if self._current_state == "recording":
+            return
         self._update_live_view(role, frame)
         if self.center_tabs.currentIndex() == self._layout_tab_index:
             self._layout_update_role(role)
@@ -5704,13 +5710,17 @@ class WorkspaceWindow(QMainWindow):
             QMessageBox.warning(self, tr("입력 오류"), tr("길이/대기는 숫자여야 합니다."))
             return
 
-        # The worker opens both cameras itself and a RealSense pipeline cannot
-        # be opened twice, so the previews have to let go first. That release
-        # can take a second or two on a flaky link -- waited for inline it just
-        # looked like the app had died. Ask them to stop, then keep the UI
-        # alive and retry on a timer until they are actually gone.
-        self._stop_cloud(restore_previews=False)   # depth 도 카메라를 놓아야 한다
-        self._stop_previews_async()
+        # 미리보기는 이제 세션 내내 살려 둔다 (2026-09-01). 예전에는 여기서
+        # 껐다 -- worker 가 카메라 장치를 직접 열던 시절, RealSense 파이프라인을
+        # 두 번 열 수 없어서였다. 2026-08-25 3-프로세스 분리 이후로는 장치를
+        # 카메라 노드가 독점하고 미리보기도 worker 도 그냥 ZMQ 구독자다
+        # (PUB/SUB 는 팬아웃이라 경합이 없다). 끄면 오히려 게이트 중 화면이
+        # 노드 속도(30 fps)에서 수집 루프 속도로 떨어지고, 게이지가 그 프레임
+        # 뒤에 줄을 서서 같이 느려졌다.
+        #
+        # depth(포인트클라우드)는 사정이 다르다 -- 그건 여전히 장치를 직접
+        # 여는 경로라 여기서 놓아야 한다.
+        self._stop_cloud(restore_previews=False)
         if self._previews_busy():
             if self._connect_wait_since is None:
                 self._connect_wait_since = time.monotonic()
@@ -6016,6 +6026,11 @@ class WorkspaceWindow(QMainWindow):
         # 이유는, 연결이 미리보기 정리를 기다리거나 실패할 수 있기 때문이다 --
         # 그때 Live 로 옮겨두면 아무것도 안 나오는 탭을 보게 된다.
         self.center_tabs.setCurrentIndex(self._live_tab_index)
+        # 기록 외 단계에서는 worker 가 카메라를 읽지 않으므로(게이지를 빠르게
+        # 유지하기 위해 -- _emit_gate_status 참고) 미리보기가 그 구간의 유일한
+        # 영상 공급원이다. 꺼져 있으면 자세를 맞추는 동안 화면이 빈다.
+        if not (self.agent_preview or self.wrist_preview):
+            self._restart_previews()
         # 이번 task 카운터는 여기서 0 으로 돌아간다(누적은 그대로). 연습 모드도
         # 마찬가지다 -- NullTaskWriter 도 저장을 받아 넘기므로 카운터는 움직인다.
         self._session = _new_stats()

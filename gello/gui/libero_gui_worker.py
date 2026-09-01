@@ -441,9 +441,14 @@ class CollectionWorker(QThread):
     def _joint_vec(self, d: dict) -> np.ndarray:
         return np.array([d[k] for k in JOINT_KEYS], dtype=float)
 
-    def _get_obs(self) -> dict:
+    def _get_obs(self, with_cameras: bool = True) -> dict:
         """Like ``FR3ZMQRobot.get_observation()`` but also carries ``ee_pos_quat``
         and ``joint_velocities``.
+
+        ``with_cameras=False`` returns the robot half only -- one ZMQ
+        round-trip, no image payload and no staleness bookkeeping. That is
+        what the alignment gauge wants (see ``_emit_gate_status``); recording
+        always takes the full observation.
 
         The lerobot-facing ``get_observation()`` only forwards the
         ``JOINT_KEYS``-shaped dict (it feeds LeRobot's ``observation_features``
@@ -468,6 +473,8 @@ class CollectionWorker(QThread):
             v = raw.get(src)
             if v is not None:
                 out[dst] = np.asarray(v, dtype=float)
+        if not with_cameras:
+            return out
         for cam_key, cam in self._robot.cameras.items():
             # max_age_ms=500 (2026-08-26 원복): 한때 2000 으로 늘렸던 것은
             # 리더 스레드가 GUI 와 GIL 을 공유하던 시절의 완화책이다 (그때
@@ -789,14 +796,25 @@ class CollectionWorker(QThread):
 
     # ------------------------------------------------------------------ gate
     def _emit_gate_status(self) -> tuple[np.ndarray, bool]:
-        """Reads leader+follower, emits frames + gate_status (drives the
-        GUI's live per-joint delta bars), and returns (delta, all_ok) for the
-        caller's own branching. Shared by _pose_gate's main loop and
-        _auto_match_pose's loop -- the delta bars keep updating live during
-        auto-align too, not just manual matching (issue #8 follow-up)."""
+        """Reads leader+follower and emits gate_status (the GUI's live
+        per-joint delta bars); returns (delta, all_ok) for the caller's own
+        branching. Shared by _pose_gate's main loop and _auto_match_pose's
+        loop -- the delta bars keep updating live during auto-align too, not
+        just manual matching (issue #8 follow-up).
+
+        Deliberately does NOT touch the cameras (2026-09-01). It used to read
+        both of them and push a full-resolution frame pair to the GUI on every
+        tick, which put the gauge -- seven cheap numbers -- behind ~1.8 MB of
+        image conversion in the same queued-signal path, and capped it at the
+        loop's own rate. Alignment needs the joint deltas to be responsive and
+        does not need video from this loop at all: the camera node publishes
+        at 30 fps and the preview threads subscribe to it directly, so the
+        live view is *faster* without this. Recording is untouched -- there
+        obs and action must come from the same tick, and the frames the
+        operator sees have to be the frames being written.
+        """
         act = self._teleop.get_action()
-        obs = self._get_obs()
-        self._emit_frames(obs)
+        obs = self._get_obs(with_cameras=False)
         q_led = np.array([act[k] for k in JOINT_KEYS[:7]])
         q_rob = np.array([obs[k] for k in JOINT_KEYS[:7]])
         delta = np.abs(q_led - q_rob)
@@ -883,7 +901,9 @@ class CollectionWorker(QThread):
                 if time.monotonic() > deadline:
                     self.log_message.emit(f"[GATE] {timeout:.0f}s 시간 초과")
                     return "quit"
-                time.sleep(0.05)
+                # 게이지 전용 루프라 틱이 싸다 (카메라 없음) -- 50 Hz 로
+                # 돌려 손으로 자세를 맞추는 동안 바가 즉각 따라오게 한다.
+                time.sleep(0.02)
         finally:
             # Single release point for every way out of the gate state:
             # Start Teleop was clicked (leader must be free again for actual
@@ -1354,9 +1374,10 @@ class CollectionWorker(QThread):
                     return "go_home"
             self.reset_countdown.emit(time.monotonic() - t0)
             try:
-                # 리셋 중에도 라이브 뷰와 오차 게이지는 살아 있어야 한다 --
-                # 물체를 되돌리는 그 시간이 화면을 가장 많이 보는 시간이다.
-                # _emit_gate_status()가 _emit_frames()도 함께 호출한다.
+                # 리셋 중에도 오차 게이지는 살아 있어야 한다 -- 물체를
+                # 되돌리는 그 시간이 화면을 가장 많이 보는 시간이다. 라이브
+                # 뷰는 미리보기 스레드가 노드 속도로 직접 그린다 (기록 외
+                # 단계에서는 이 루프가 카메라를 읽지 않는다, 2026-09-01).
                 self._emit_gate_status()
             except Exception:  # noqa: BLE001 -- 일시적 카메라/노드 오류로
                 pass           # 카운트다운을 멈추지 않는다
