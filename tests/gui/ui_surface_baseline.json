@@ -1,0 +1,109 @@
+{
+  "menus": {
+    "File": [
+      "데이터 저장 경로 열기...",
+      "로그 폴더 열기",
+      "종료"
+    ],
+    "Dataset": [
+      "새로고침",
+      "실패만 선택",
+      "튀는 것만 선택 (scene·문장 그룹 평균과 ±0.004 밖)",
+      "에피소드 삭제",
+      "파일 삭제",
+      "구조 확인...",
+      "용량 최적화 (재압축)...",
+      "LeRobot 변환/업로드...",
+      "전체 처리 (재압축 → 변환 → 업로드)...",
+      "HDF5 업로드..."
+    ],
+    "Robot": [
+      "노드 시작",
+      "노드 종료",
+      "연결",
+      "세션 종료",
+      "홈으로"
+    ],
+    "Camera": [
+      "새로고침",
+      "미리보기 중지",
+      "카메라 노드 재시작",
+      "카메라 노드 종료 (카메라 해제)"
+    ],
+    "View": [
+      "Configure",
+      "Collect",
+      "Dataset",
+      "Upload",
+      "Statistics",
+      "Layout",
+      "Settings",
+      "하단 패널",
+      "오른쪽 패널"
+    ],
+    "Tools": [
+      "시스템 튜닝 실행 (runme.sh)",
+      "카메라 점검 (USB 속도·프레임)",
+      "리더암 서보 보호 해제 (재부팅)",
+      "Hugging Face 계정...",
+      "데이터셋 구조 사용자 설정...",
+      "언어 전환 (미개발)"
+    ],
+    "Help": [
+      "단축키...",
+      "정보"
+    ]
+  },
+  "toolbar": [
+    "connect",
+    "discard",
+    "disconnect",
+    "home",
+    "record",
+    "refresh_cam",
+    "save",
+    "savefail",
+    "upload"
+  ],
+  "status_lights": [
+    "camera",
+    "node",
+    "recording",
+    "robot"
+  ],
+  "shortcuts": [
+    "Backspace",
+    "Delete",
+    "Enter",
+    "Escape",
+    "Return",
+    "Space"
+  ],
+  "scripts": {
+    "LAUNCH_NODES_SCRIPT": "scripts/launch/launch_nodes.py",
+    "CONVERT_SCRIPT": "scripts/convert/convert_libero_to_lerobot.py",
+    "UPLOAD_SCRIPT": "scripts/convert/upload_to_hub.py",
+    "REPLAY_SCRIPT": "scripts/analyze/replay_episode.py",
+    "RUNME_SCRIPT": "scripts/runme.sh",
+    "CHECK_CAMERAS": "scripts/check/check_cameras.py",
+    "RESET_PROTECTION": "scripts/check/gello_reset_protection.py"
+  },
+  "activities": [
+    "configure",
+    "collect",
+    "dataset",
+    "upload",
+    "stats",
+    "layout",
+    "settings"
+  ],
+  "page_builders": [
+    "collect",
+    "configure",
+    "dataset",
+    "layout",
+    "settings",
+    "stats",
+    "upload"
+  ]
+}

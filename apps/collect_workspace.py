@@ -4446,6 +4446,15 @@ class WorkspaceWindow(QMainWindow):
         proc.start()
 
     def _run_runme(self) -> None:
+        # runme.sh 는 pkexec 로 관리자 비밀번호 창을 띄운다. 사람이 없는
+        # 자리(인수 테스트, 밤샘 리팩토링 러너)에서 그 창이 뜨면 답할 사람이
+        # 없어 그대로 멈춘다 -- 실제로 2026-09-01 에 테스트 실행 중 창이 떴다.
+        # 시작 시 자동 실행이라 눌러야만 뜨는 것도 아니고, 튜닝이 어긋나
+        # 있을 때만이라 기계 상태에 따라 떴다 안 떴다 한다.
+        if os.environ.get("GELLO_NO_PRIVILEGED"):
+            self.log("[튜닝] GELLO_NO_PRIVILEGED -- 관리자 권한 작업을 건너뜁니다. "
+                     "필요하면 사람이 scripts/runme.sh 를 직접 실행하세요.")
+            return
         if self.runme_process is not None and \
                 self.runme_process.state() != QProcess.ProcessState.NotRunning:
             self.log("[튜닝] 이미 실행 중입니다.")

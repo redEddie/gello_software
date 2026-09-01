@@ -139,4 +139,42 @@ for mod in (D, B):
         assert hasattr(mod, name), f"{mod.__name__}.__all__ 의 {name} 을 임포트할 수 없다"
     print(f"5. {mod.__name__}.__all__ {len(names)}개 임포트 OK")
 
+# ------------------------------------------------------------------ 6
+# 옮긴 이름의 임포트가 원본에 고아로 남는 일이 분해 매 단계에 있었다 (마지막에
+# 49개까지 쌓였다). 고아 자체는 죽지 않지만, 임포트 목록이 실제 의존과
+# 어긋나면 "파일만 봐도 의존이 보인다"가 성립하지 않는다.
+ALLOWED_UNUSED = {
+    # (파일, 이름): 이유
+    ("apps/fr3_policy_client.py", "fk"): "mamba real_deploy 사본과 줄을 맞춘 재수출",
+}
+stale = {}
+for p, t in trees.items():
+    imported = {}
+    for n in ast.walk(t):
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            for a in n.names:
+                imported.setdefault(a.asname or a.name.split(".")[0], n.lineno)
+    if p.name == "__init__.py":
+        continue                      # 재수출이 일이다
+    src = p.read_text(encoding="utf-8")
+    used = set()
+    for n in ast.walk(t):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
+            used.add(n.id)
+        elif isinstance(n, ast.Attribute):
+            v = n.value
+            while isinstance(v, ast.Attribute):
+                v = v.value
+            if isinstance(v, ast.Name):
+                used.add(v.id)
+        elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+            used |= set(n.value.replace("|", " ").replace(".", " ").split())
+    bad = [k for k in imported
+           if k not in used and k != "annotations"
+           and (_rel(p), k) not in ALLOWED_UNUSED]
+    if bad:
+        stale[_rel(p)] = sorted(bad)
+assert not stale, f"쓰지 않는 임포트가 남아 있다(옮기고 안 지운 자국?): {stale}"
+print(f"6. apps/ 고아 임포트 없음 OK (허용 목록 {len(ALLOWED_UNUSED)}개 제외)")
+
 print("\napps/ 구조 계약 통과")

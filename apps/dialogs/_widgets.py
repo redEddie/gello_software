@@ -1,6 +1,5 @@
 """Small reusable widgets and helpers originally defined in collect_workspace.py."""
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from gello.gui.gui_widgets import TODO_MARK

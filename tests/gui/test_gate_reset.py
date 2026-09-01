@@ -165,6 +165,7 @@ import collect_workspace as cw  # noqa: E402
 
 cw.WorkspaceWindow._refresh_cameras = lambda self: None
 cw.WorkspaceWindow._restart_previews = lambda self: None
+cw.WorkspaceWindow._startup_tuning = lambda self: None   # pkexec 비밀번호 창 차단
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
 assert not win.start_btn.isEnabled() and not win.tb_actions["record"].isEnabled()
