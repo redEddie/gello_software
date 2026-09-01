@@ -8,11 +8,13 @@ method until that page is also extracted.
 from .collect import build_collect
 from .configure import build_configure
 from .dataset import build_dataset
+from .upload import build_upload
 
 PAGE_BUILDERS = {
     "configure": build_configure,
     "collect": build_collect,
     "dataset": build_dataset,
+    "upload": build_upload,
 }
 
 __all__ = [
@@ -20,4 +22,5 @@ __all__ = [
     "build_collect",
     "build_configure",
     "build_dataset",
+    "build_upload",
 ]
