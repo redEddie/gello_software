@@ -162,6 +162,26 @@ def _engage_gate(engaged: bool, err: float, gate: float, release: float) -> bool
     return err <= (gate + release) if engaged else err <= gate
 
 
+def _wrap_latch(prev: np.ndarray, entered: np.ndarray,
+                inside: np.ndarray) -> np.ndarray:
+    """관절을 손에 넘긴 상태를 '한계 안으로 돌아올 때까지' 유지한다.
+
+    진입 판정만으로 그때그때 끄고 켜면 해제 구간이 뒤집힘 지점 주변
+    ±margin 밖에 안 된다. 예컨대 FR3 J1 은 한계가 157°, 뒤집힘이 180° 라
+    그 사이 11° 를 최대 강도의 벽에 눌린 채 통과해야 하고, 해제 창(23°)을
+    지나면 반대편에서 또 11° 를 눌린다 -- 한 바퀴 돌리는 사람에게는 힘이
+    켜졌다 꺼졌다 뒤집히는 것으로 느껴진다. 실제로 사용자가 "벽이 안
+    사라지고 강한 힘으로 지터한다" 고 보고한 것이 이 구간이다.
+
+    그래서 한 번 넘긴 관절은 **한계 안으로 되돌아올 때까지** 계속 넘긴
+    상태로 둔다. 벽을 밀고 뒤집힘 지점까지 가는 것은 사람이 작정하고 하는
+    행동이고, 거기까지 갔다면 한 바퀴를 끝까지 자유롭게 돌 수 있어야 한다.
+    되돌아오면 자동으로 다시 벽이 선다 -- 따로 풀 필요가 없다.
+    """
+    return (np.asarray(prev, dtype=bool) | np.asarray(entered, dtype=bool)) \
+        & ~np.asarray(inside, dtype=bool)
+
+
 def _wrap_zone(q, center, lower, upper, margin: float,
                was_in: "np.ndarray | None" = None,
                release: float = WRAP_RELEASE_RAD) -> np.ndarray:
@@ -721,10 +741,15 @@ class JointLimitWall:
                 if self._in_teleop:
                     self._wrap_mask = np.zeros(self._n_arm, dtype=bool)
                 else:
-                    self._wrap_mask = _wrap_zone(
+                    entered = _wrap_zone(
                         q, self._wrap_center, self._lower, self._upper,
-                        WRAP_ABORT_RAD, was_in=self._wrap_mask,
+                        WRAP_ABORT_RAD,
                     )
+                    # 한계 안으로 (여유분만큼) 돌아오면 자동으로 벽이 다시
+                    # 선다. 그 전까지는 계속 사람 손에 있다 -- _wrap_latch 참고.
+                    inside = ((q >= self._lower + WRAP_RELEASE_RAD)
+                              & (q <= self._upper - WRAP_RELEASE_RAD))
+                    self._wrap_mask = _wrap_latch(self._wrap_mask, entered, inside)
                 if np.any(self._wrap_mask) and match_target is not None:
                     # 사람이 케이블을 푸는 중이다 -- 정렬은 취소하고 왜
                     # 취소했는지를 남긴다. 조용히 지우면 호출자는 이유를
@@ -1175,15 +1200,24 @@ def selftest() -> None:
         q_flip[j] = ctr[j] + np.pi
         assert zone(q_flip)[j], f"J{j+1} 뒤집힘 지점에서 미발동"
         assert zone(q_flip).sum() == 1, "한 관절만 걸려야 한다"
-    # (d) 히스테리시스: 한 번 들어가면 release 만큼 더 나가야 빠져나온다
-    q_edge = ctr.copy()
-    q_edge[0] = ctr[0] + np.pi - (WRAP_ABORT_RAD + 0.05)   # 구역 밖 살짝
-    assert not zone(q_edge)[0]
-    was = np.zeros(7, dtype=bool); was[0] = True
-    assert zone(q_edge, was=was)[0], "히스테리시스가 유지하지 않는다"
-    q_out = ctr.copy()
-    q_out[0] = ctr[0] + np.pi - (WRAP_ABORT_RAD + WRAP_RELEASE_RAD + 0.05)
-    assert not zone(q_out, was=was)[0], "히스테리시스가 안 풀린다"
+    # (d) 래치: 한 번 넘긴 관절은 한계 안으로 돌아올 때까지 계속 넘긴다.
+    #     이게 없으면 해제 창이 뒤집힘 지점 ±margin 뿐이라, 한계(J1 157도)와
+    #     뒤집힘(180도) 사이를 최대 강도의 벽에 눌린 채 지나야 한다.
+    def inside_limits(qq):
+        return ((np.asarray(qq) >= lo7 + WRAP_RELEASE_RAD)
+                & (np.asarray(qq) <= hi7 - WRAP_RELEASE_RAD))
+    prev = np.zeros(7, dtype=bool)
+    q_flip = ctr.copy(); q_flip[0] = ctr[0] + np.pi
+    prev = _wrap_latch(prev, zone(q_flip), inside_limits(q_flip))
+    assert prev[0], "뒤집힘 지점에서 안 넘어갔다"
+    # 한계 밖이지만 뒤집힘 지점에서는 멀어진 위치 -- 여전히 넘긴 상태여야 한다
+    q_mid = ctr.copy(); q_mid[0] = hi7[0] + 0.05
+    assert not zone(q_mid)[0]                      # 진입 판정으로는 아님
+    prev = _wrap_latch(prev, zone(q_mid), inside_limits(q_mid))
+    assert prev[0], "한계 밖인데 벽이 다시 섰다 (한 바퀴 도는 중 지터)"
+    # 한계 안으로 돌아오면 자동 복귀
+    prev = _wrap_latch(prev, zone(ctr), inside_limits(ctr))
+    assert not prev[0], "한계 안으로 돌아왔는데 벽이 안 선다"
 
     # 9. 정렬 전류 상한은 하한(IDLE_MIN_CURRENT) 아래로 내려가지 않는다
     caps = np.maximum(np.array([400.0, 1000.0, 400.0]), IDLE_MIN_CURRENT)

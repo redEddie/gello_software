@@ -196,7 +196,26 @@ for j, label in ((0, "J1"), (2, "J3")):     # 둘 다 자유롭게 도는 롤 �
             f"{label}: 벽 힘이 남아 있다 -- 지터의 원인"
         # 한계벽도 꺼졌는가: 그 관절은 한계 밖인데도 전류가 0 이어야 한다
         assert q_spun[j] > HI7[j] or q_spun[j] < LO7[j]
-        print(f"8-{label} 통과: 한 바퀴 돌린 관절만 토크 off + 정렬 취소(사유 기록)")
+
+        # 래치: 계속 돌려 한계와 뒤집힘 지점 사이(벽이 최대 강도로 서 있던
+        # 구간)로 와도 여전히 손에 있어야 한다. 여기서 벽이 다시 서면
+        # 한 바퀴 도는 내내 힘이 켜졌다 꺼졌다 한다.
+        q_between = CTR.copy()
+        q_between[j] = HI7[j] + 0.05          # 한계 바로 밖 (뒤집힘 지점에서 멂)
+        _put_leader_at(drv3, q_between)
+        st = _settle(w3)
+        assert np.asarray(st["wrap_mask"])[j], \
+            f"{label}: 한계 밖인데 벽이 다시 섰다 (한 바퀴 도는 중 지터)"
+        assert drv3._ids[j] not in drv3._torque_ids, f"{label}: 토크가 다시 켜졌다"
+        assert np.abs(np.asarray(st["cur"]))[j] == 0.0, f"{label}: 벽 힘이 되살아났다"
+
+        # 한계 안으로 돌아오면 자동으로 벽 복귀 (따로 풀 필요 없음)
+        _put_leader_at(drv3, CTR)
+        st = _settle(w3)
+        assert not np.asarray(st["wrap_mask"])[j], \
+            f"{label}: 한계 안으로 돌아왔는데 벽이 안 선다"
+        print(f"8-{label} 통과: 한 바퀴 도는 내내 그 관절만 토크 off "
+              f"(한계 밖 전 구간 유지), 한계 복귀 시 자동 원복")
     finally:
         w3.stop()
 
