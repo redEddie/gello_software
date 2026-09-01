@@ -23,7 +23,12 @@ import numpy as np
 import zmq
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from gello.data.dataset_schema import DatasetSchemaConfig
+from gello.data.dataset_schema import (
+    ROBOT_EE_POS_QUAT,
+    ROBOT_JOINT_POSITIONS,
+    ROBOT_JOINT_VELOCITIES,
+    DatasetSchemaConfig,
+)
 from gello.agents.lerobot_plugin import (
     JOINT_KEYS,
     FR3ZMQRobot,
@@ -460,10 +465,10 @@ class CollectionWorker(QThread):
         if the active DatasetSchemaConfig asks for it.
         """
         raw = self._robot._client.get_observations()
-        pos = np.asarray(raw["joint_positions"], dtype=float)
+        pos = np.asarray(raw[ROBOT_JOINT_POSITIONS], dtype=float)
         out: dict = dict(zip(JOINT_KEYS, pos.tolist()))
-        out["_ee_pos_quat"] = np.asarray(raw["ee_pos_quat"], dtype=float)
-        out["_joint_velocities"] = np.asarray(raw["joint_velocities"], dtype=float)
+        out["_ee_pos_quat"] = np.asarray(raw[ROBOT_EE_POS_QUAT], dtype=float)
+        out["_joint_velocities"] = np.asarray(raw[ROBOT_JOINT_VELOCITIES], dtype=float)
         # 포스·토크 (hdf5 원본 전용 기록): 노드가 필드를 제공할 때만 키가 있다.
         # 없으면 add_frame 에 None 이 넘어가 그 에피소드는 해당 데이터셋을
         # 만들지 않는다 -- 0 으로 채워 "무접촉 측정"처럼 보이게 하지 않는다.

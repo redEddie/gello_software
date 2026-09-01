@@ -4,6 +4,12 @@ from typing import Dict
 import numpy as np
 
 from gello.core.robot import Robot
+from gello.data.dataset_schema import (
+    ROBOT_EE_POS_QUAT,
+    ROBOT_GRIPPER_POSITION,
+    ROBOT_JOINT_POSITIONS,
+    ROBOT_JOINT_VELOCITIES,
+)
 
 MAX_OPEN = 0.09
 
@@ -60,10 +66,10 @@ class PandaRobot(Robot):
         pos_quat = np.zeros(7)
         gripper_pos = np.array([joints[-1]])
         return {
-            "joint_positions": joints,
-            "joint_velocities": joints,
-            "ee_pos_quat": pos_quat,
-            "gripper_position": gripper_pos,
+            ROBOT_JOINT_POSITIONS: joints,
+            ROBOT_JOINT_VELOCITIES: joints,
+            ROBOT_EE_POS_QUAT: pos_quat,
+            ROBOT_GRIPPER_POSITION: gripper_pos,
         }
 
 

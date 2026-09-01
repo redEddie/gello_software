@@ -5,6 +5,13 @@ import numpy as np
 import torch
 import transforms3d._gohlketransforms as ttf
 
+from gello.data.dataset_schema import (
+    ROBOT_EE_POS_QUAT,
+    ROBOT_GRIPPER_POSITION,
+    ROBOT_JOINT_POSITIONS,
+    ROBOT_JOINT_VELOCITIES,
+)
+
 
 def to_torch(array, device="cpu"):
     if isinstance(array, torch.Tensor):
@@ -78,10 +85,10 @@ def preproc_obs(
 
     # state
     qpos, qvel, ee_pos_quat, gripper_pos = (
-        demo.get("joint_positions"),  # type: ignore
-        demo.get("joint_velocities"),  # type: ignore
-        demo.get("ee_pos_quat"),  # type: ignore
-        demo.get("gripper_position"),  # type: ignore
+        demo.get(ROBOT_JOINT_POSITIONS),  # type: ignore
+        demo.get(ROBOT_JOINT_VELOCITIES),  # type: ignore
+        demo.get(ROBOT_EE_POS_QUAT),  # type: ignore
+        demo.get(ROBOT_GRIPPER_POSITION),  # type: ignore
     )
 
     if joint_only:

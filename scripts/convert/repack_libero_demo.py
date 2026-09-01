@@ -18,6 +18,13 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from gello.data.dataset_schema import (
+    OBS_AGENTVIEW_RGB,
+    OBS_EE_POS,
+    OBS_EYE_IN_HAND_RGB,
+    OBS_JOINT_STATES,
+)
+
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -42,7 +49,7 @@ def main() -> None:
         new_demos = sorted(f_new["data"].keys())
         assert old_demos == new_demos, (old_demos, new_demos)
         for name in old_demos:
-            for key in ("agentview_rgb", "eye_in_hand_rgb", "joint_states", "ee_pos"):
+            for key in (OBS_AGENTVIEW_RGB, OBS_EYE_IN_HAND_RGB, OBS_JOINT_STATES, OBS_EE_POS):
                 a = f_old["data"][name]["obs"][key][:]
                 b = f_new["data"][name]["obs"][key][:]
                 assert np.array_equal(a, b), (name, key, "MISMATCH")

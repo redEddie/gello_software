@@ -72,6 +72,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from gello.data.dataset_schema import (  # noqa: E402
     ACTION_SPACES,
     ACTION_SPACE_LABELS,
+    OBS_AGENTVIEW_RGB,
+    OBS_EYE_IN_HAND_RGB,
     DatasetSchemaConfig,
     load_schema_config,
     save_schema_config,
@@ -503,8 +505,8 @@ class EpisodeLoadWorker(QThread):
                 # 에피소드 안쪽 페이로드는 동일해서 그룹만 찾으면 같은 코드다.
                 grp = f[self.demo] if self.demo in f else f["data"][self.demo]
                 obs = grp["obs"]
-                agent = obs["agentview_rgb"][:] if "agentview_rgb" in obs else None
-                wrist = obs["eye_in_hand_rgb"][:] if "eye_in_hand_rgb" in obs else None
+                agent = obs[OBS_AGENTVIEW_RGB][:] if OBS_AGENTVIEW_RGB in obs else None
+                wrist = obs[OBS_EYE_IN_HAND_RGB][:] if OBS_EYE_IN_HAND_RGB in obs else None
         except Exception as e:  # noqa: BLE001
             self.failed.emit(f"{type(e).__name__}: {e}")
             return

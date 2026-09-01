@@ -3,6 +3,12 @@ from typing import Dict
 import numpy as np
 
 from gello.core.robot import Robot
+from gello.data.dataset_schema import (
+    ROBOT_EE_POS_QUAT,
+    ROBOT_GRIPPER_POSITION,
+    ROBOT_JOINT_POSITIONS,
+    ROBOT_JOINT_VELOCITIES,
+)
 
 
 class YAMRobot(Robot):
@@ -58,10 +64,10 @@ class YAMRobot(Robot):
     def get_observations(self) -> Dict[str, np.ndarray]:
         ee_pos_quat = np.zeros(7)  # Placeholder for FK
         return {
-            "joint_positions": self._joint_state,
-            "joint_velocities": self._joint_velocities,
-            "ee_pos_quat": ee_pos_quat,
-            "gripper_position": np.array([self._gripper_state]),
+            ROBOT_JOINT_POSITIONS: self._joint_state,
+            ROBOT_JOINT_VELOCITIES: self._joint_velocities,
+            ROBOT_EE_POS_QUAT: ee_pos_quat,
+            ROBOT_GRIPPER_POSITION: np.array([self._gripper_state]),
         }
 
     def get_joint_pos(self):

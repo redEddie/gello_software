@@ -39,6 +39,13 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from gello.data.dataset_schema import (
+    OBS_COMMANDED_GRIPPER_STATES,
+    OBS_COMMANDED_JOINT_STATES,
+    OBS_GRIPPER_STATES,
+    OBS_JOINT_STATES,
+)
+
 # scene-v1 파일의 에피소드 그룹 이름 (scene_format.EPISODE_GROUP_RE 와 동일
 # 패턴 -- 무거운 모듈을 끌어오지 않으려고 여기서 다시 정의한다)
 _EPISODE_RE = re.compile(r"^episode_(\d{3,})$")
@@ -245,13 +252,13 @@ def load_series(path: str, demo: str) -> dict:
         obs = grp["obs"]
         action = grp["actions"][:]
         state = np.concatenate(
-            [obs["joint_states"][:], obs["gripper_states"][:]], axis=1)
+            [obs[OBS_JOINT_STATES][:], obs[OBS_GRIPPER_STATES][:]], axis=1)
         commanded = None
-        if "commanded_joint_states" in obs:
-            cg = (obs["commanded_gripper_states"][:]
-                  if "commanded_gripper_states" in obs
+        if OBS_COMMANDED_JOINT_STATES in obs:
+            cg = (obs[OBS_COMMANDED_GRIPPER_STATES][:]
+                  if OBS_COMMANDED_GRIPPER_STATES in obs
                   else np.zeros((len(state), 1), dtype=np.float32))
-            commanded = np.concatenate([obs["commanded_joint_states"][:], cg], axis=1)
+            commanded = np.concatenate([obs[OBS_COMMANDED_JOINT_STATES][:], cg], axis=1)
     return {"state": state, "commanded": commanded, "action": action,
             "n": int(len(action))}
 

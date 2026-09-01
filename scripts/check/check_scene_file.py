@@ -29,6 +29,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gello.data.dataset_schema import (  # noqa: E402
+    OBS_AGENTVIEW_RGB,
+    OBS_EE_POS_QUAT,
+    OBS_EYE_IN_HAND_RGB,
+    OBS_GRIPPER_STATES,
+    OBS_JOINT_STATES,
     SCHEMA_FIELDS,
     SCHEMA_VERSION,
     normalize_schema_version,
@@ -361,8 +366,8 @@ def selftest(keep: Path | None) -> None:
     with h5py.File(path, "r") as f:
         g = f["episode_000"]
         assert g["actions"].shape == (5, 8)
-        assert g["obs/joint_states"].shape == (5, 7)
-        assert g["obs/agentview_rgb"].shape == (5, 48, 64, 3)
+        assert g[f"obs/{OBS_JOINT_STATES}"].shape == (5, 7)
+        assert g[f"obs/{OBS_AGENTVIEW_RGB}"].shape == (5, 48, 64, 3)
         # 포스·토크: 호출자가 주면 스키마 토글 없이 기록된다 (2026-08-23)
         assert g["obs/joint_torques"].shape == (5, 7)
         assert g["obs/joint_torques"].dtype == np.float32
@@ -411,7 +416,7 @@ def selftest(keep: Path | None) -> None:
     lw.close()
     with h5py.File(root / "selftest_task_demo.hdf5", "r") as f:
         d = f["data/demo_0"]
-        assert d["actions"].shape == (5, 8) and d["obs/joint_states"].shape == (5, 7)
+        assert d["actions"].shape == (5, 8) and d[f"obs/{OBS_JOINT_STATES}"].shape == (5, 7)
         assert "problem_info" in f["data"].attrs  # legacy 는 스텁 유지
         assert int(f["data"].attrs["next_demo_idx"]) == 1
     print("  ✓ legacy writer 회귀: demo_0 페이로드·스텁 동일")

@@ -17,6 +17,7 @@ sys.path.insert(0, WT + "/apps")
 sys.path.insert(0, WT + "/scripts/check")
 sys.argv = ["t"]
 
+from gello.data.dataset_schema import OBS_AGENTVIEW_RGB  # noqa: E402
 from gello.scene.scene_format import (  # noqa: E402
     SceneWriter, delete_scene_episodes, list_scene_episodes, read_scene_metadata,
 )
@@ -113,7 +114,7 @@ assert plan.scene and not plan.blocked, plan.blocked
 keep = trim_tail(str(scene), long_name, 5)
 with h5py.File(scene) as f:
     g = f[long_name]
-    assert g["obs/agentview_rgb"].shape[0] == keep == 35
+    assert g[f"obs/{OBS_AGENTVIEW_RGB}"].shape[0] == keep == 35
     assert g["actions"].shape[0] == 35
     assert int(g.attrs["num_samples"]) == 35 and g.attrs.get("trimmed")
     assert g.attrs["episode_uid"]                        # uid 등 attrs 보존

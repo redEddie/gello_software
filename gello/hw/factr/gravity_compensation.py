@@ -22,6 +22,7 @@ import pinocchio as pin
 import yaml
 
 from gello.hw.dynamixel.driver import DynamixelDriver
+from gello.data.dataset_schema import ROBOT_JOINT_POSITIONS
 
 import threading
 from importlib import import_module
@@ -470,7 +471,7 @@ class FACTRGravityCompensation:
         if auto_align:
             try:
                 obs = self.teleop_env.get_obs()
-                follower_curr = obs["joint_positions"]
+                follower_curr = obs[ROBOT_JOINT_POSITIONS]
                 leader_arm_pos, _, _, _ = self.get_leader_joint_states()
                 leader_mapped = map_signs_local * leader_arm_pos[map_index_local]
                 follower_slice = follower_curr[: int(len(map_index_local))]
@@ -496,7 +497,7 @@ class FACTRGravityCompensation:
             leader_mapped_dbg = (
                 map_signs_local * leader_arm_pos[map_index_local] + map_offsets_local
             )
-            follower_dbg = self.teleop_env.get_obs()["joint_positions"][
+            follower_dbg = self.teleop_env.get_obs()[ROBOT_JOINT_POSITIONS][
                 : int(len(map_index_local))
             ]
 
@@ -515,7 +516,7 @@ class FACTRGravityCompensation:
     def _move_follower_to_start(self, target_joints: np.ndarray) -> None:
         assert self.teleop_env is not None
         obs = self.teleop_env.get_obs()
-        curr = obs["joint_positions"]
+        curr = obs[ROBOT_JOINT_POSITIONS]
         if curr.shape != target_joints.shape:
             print("Warning: follower start joints shape mismatch; skipping")
             return

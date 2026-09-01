@@ -11,6 +11,7 @@ sys.argv = ["t"]
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
+from gello.data.dataset_schema import OBS_AGENTVIEW_RGB  # noqa: E402
 import collect_workspace as cw  # noqa: E402
 
 d = tempfile.mkdtemp(prefix="h5view_")
@@ -47,7 +48,7 @@ sid_item = next(meta.child(i) for i in range(meta.childCount())
 dlg.tree.setCurrentItem(sid_item)
 assert "S000" in dlg.detail.toPlainText()
 ep = find(root, "episode_000")
-img = find(find(ep, "obs"), "agentview_rgb")
+img = find(find(ep, "obs"), OBS_AGENTVIEW_RGB)
 dlg.tree.setCurrentItem(img)
 t = dlg.detail.toPlainText()
 assert "shape" in t and "미리보기" in t

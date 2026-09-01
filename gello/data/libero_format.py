@@ -100,6 +100,21 @@ from gello.data.dataset_schema import (
     ACTION_SPACE_JOINT_ABSOLUTE,
     ACTION_SPACE_JOINT_DELTA,
     ACTION_SPACE_LABELS,
+    OBS_AGENTVIEW_RGB,
+    OBS_COMMANDED_GRIPPER_STATES,
+    OBS_COMMANDED_JOINT_STATES,
+    OBS_EE_ORI,
+    OBS_EE_POS,
+    OBS_EE_POS_QUAT,
+    OBS_EE_STATES,
+    OBS_EYE_IN_HAND_RGB,
+    OBS_GRIPPER_STATES,
+    OBS_JOINT_STATES,
+    OBS_JOINT_VELOCITIES,
+    ROBOT_EE_POS_QUAT,
+    ROBOT_GRIPPER_POSITION,
+    ROBOT_JOINT_POSITIONS,
+    ROBOT_JOINT_VELOCITIES,
     DatasetSchemaConfig,
 )
 from gello.core.station import load_station
@@ -329,21 +344,21 @@ def describe_schema(cfg: DatasetSchemaConfig) -> str:
     else:
         img_dims, img_note = "H, W", "  -- 원본 해상도, 리사이즈 없음"
     if schema.save_agentview_rgb:
-        obs_rows.append(("agentview_rgb", f"(T, {img_dims}, 3) uint8{img_note}"))
+        obs_rows.append((OBS_AGENTVIEW_RGB, f"(T, {img_dims}, 3) uint8{img_note}"))
     if schema.save_eye_in_hand_rgb:
-        obs_rows.append(("eye_in_hand_rgb", f"(T, {img_dims}, 3) uint8{img_note}"))
+        obs_rows.append((OBS_EYE_IN_HAND_RGB, f"(T, {img_dims}, 3) uint8{img_note}"))
     if schema.save_joint_states:
-        obs_rows.append(("joint_states", "(T, 7) float32"))
+        obs_rows.append((OBS_JOINT_STATES, "(T, 7) float32"))
     if schema.save_gripper_states:
-        obs_rows.append(("gripper_states", "(T, 1) float32  -- continuous, 0=open..1=closed"))
+        obs_rows.append((OBS_GRIPPER_STATES, "(T, 1) float32  -- continuous, 0=open..1=closed"))
     if schema.save_ee_states:
-        obs_rows.append(("ee_states", "(T, 6) float32  -- pos(3) + axis-angle(3)"))
+        obs_rows.append((OBS_EE_STATES, "(T, 6) float32  -- pos(3) + axis-angle(3)"))
     if schema.save_ee_pos:
-        obs_rows.append(("ee_pos", "(T, 3) float32"))
+        obs_rows.append((OBS_EE_POS, "(T, 3) float32"))
     if schema.save_ee_ori:
-        obs_rows.append(("ee_ori", "(T, 3) float32  -- axis-angle"))
+        obs_rows.append((OBS_EE_ORI, "(T, 3) float32  -- axis-angle"))
     if schema.save_joint_velocities:
-        obs_rows.append(("joint_velocities", "(T, 7) float32"))
+        obs_rows.append((OBS_JOINT_VELOCITIES, "(T, 7) float32"))
     if schema.save_agentview_depth:
         obs_rows.append(("agentview_depth", "(T, H, W) uint16 mm · 원본 해상도 · lzf"))
     if schema.save_eye_in_hand_depth:
@@ -353,8 +368,8 @@ def describe_schema(cfg: DatasetSchemaConfig) -> str:
 
     # Not schema-gated: the GUI worker always supplies the teleop command
     # stream, so every episode it records carries these (see save_episode).
-    obs_rows.append(("commanded_joint_states", "(T, 7) float32  -- GELLO leader command (rad)"))
-    obs_rows.append(("commanded_gripper_states", "(T, 1) float32  -- commanded, 0=open..1=closed"))
+    obs_rows.append((OBS_COMMANDED_JOINT_STATES, "(T, 7) float32  -- GELLO leader command (rad)"))
+    obs_rows.append((OBS_COMMANDED_GRIPPER_STATES, "(T, 1) float32  -- commanded, 0=open..1=closed"))
 
     if not obs_rows:
         lines.append("  (선택된 obs 필드 없음)")
@@ -370,12 +385,12 @@ def describe_schema(cfg: DatasetSchemaConfig) -> str:
 
 
 _OBS_KEY_NOTES = {
-    "gripper_states": "  -- continuous, 0=open..1=closed",
-    "ee_states": "  -- pos(3) + axis-angle(3)",
-    "ee_ori": "  -- axis-angle",
+    OBS_GRIPPER_STATES: "  -- continuous, 0=open..1=closed",
+    OBS_EE_STATES: "  -- pos(3) + axis-angle(3)",
+    OBS_EE_ORI: "  -- axis-angle",
     "timestamp": "  -- wall-clock seconds",
-    "commanded_joint_states": "  -- GELLO leader command (rad)",
-    "commanded_gripper_states": "  -- commanded, 0=open..1=closed",
+    OBS_COMMANDED_JOINT_STATES: "  -- GELLO leader command (rad)",
+    OBS_COMMANDED_GRIPPER_STATES: "  -- commanded, 0=open..1=closed",
 }
 
 
@@ -468,7 +483,7 @@ def schema_from_episode(grp: Any) -> DatasetSchemaConfig:
     gripper_convention = grp.attrs.get("gripper_action_convention", "pm1")
 
     image_size = None
-    for key in ("agentview_rgb", "eye_in_hand_rgb"):
+    for key in (OBS_AGENTVIEW_RGB, OBS_EYE_IN_HAND_RGB):
         if key in obs:
             h, w = obs[key].shape[1:3]
             image_size = int(h) if h == w else None
@@ -486,14 +501,14 @@ def schema_from_episode(grp: Any) -> DatasetSchemaConfig:
         action_include_gripper=has_gripper,
         gripper_action_match_obs=(gripper_convention == "01"),
         image_size=image_size,
-        save_agentview_rgb="agentview_rgb" in obs_keys,
-        save_eye_in_hand_rgb="eye_in_hand_rgb" in obs_keys,
-        save_joint_states="joint_states" in obs_keys,
-        save_gripper_states="gripper_states" in obs_keys,
-        save_ee_states="ee_states" in obs_keys,
-        save_ee_pos="ee_pos" in obs_keys,
-        save_ee_ori="ee_ori" in obs_keys,
-        save_joint_velocities="joint_velocities" in obs_keys,
+        save_agentview_rgb=OBS_AGENTVIEW_RGB in obs_keys,
+        save_eye_in_hand_rgb=OBS_EYE_IN_HAND_RGB in obs_keys,
+        save_joint_states=OBS_JOINT_STATES in obs_keys,
+        save_gripper_states=OBS_GRIPPER_STATES in obs_keys,
+        save_ee_states=OBS_EE_STATES in obs_keys,
+        save_ee_pos=OBS_EE_POS in obs_keys,
+        save_ee_ori=OBS_EE_ORI in obs_keys,
+        save_joint_velocities=OBS_JOINT_VELOCITIES in obs_keys,
         save_timestamp="timestamp" in obs_keys,
         save_agentview_depth="agentview_depth" in obs_keys,
         save_eye_in_hand_depth="eye_in_hand_depth" in obs_keys,
@@ -904,21 +919,21 @@ def write_episode_payload(
     obs = grp.create_group("obs")
     if schema.save_agentview_rgb:
         obs.create_dataset(
-            "agentview_rgb",
+            OBS_AGENTVIEW_RGB,
             data=np.stack(buf.agentview_rgb),
             compression="lzf",
         )
     if schema.save_eye_in_hand_rgb:
         obs.create_dataset(
-            "eye_in_hand_rgb",
+            OBS_EYE_IN_HAND_RGB,
             data=np.stack(buf.eye_in_hand_rgb),
             compression="lzf",
         )
     if schema.save_joint_states:
-        obs.create_dataset("joint_states", data=np.stack(buf.joint_states))
+        obs.create_dataset(OBS_JOINT_STATES, data=np.stack(buf.joint_states))
     if schema.save_gripper_states:
         obs.create_dataset(
-            "gripper_states", data=np.stack(buf.gripper_states)
+            OBS_GRIPPER_STATES, data=np.stack(buf.gripper_states)
         )
     if schema.save_ee_states or schema.save_ee_pos or schema.save_ee_ori:
         ee = np.stack(buf.ee_pos_quat)  # (n, 7)
@@ -926,14 +941,14 @@ def write_episode_payload(
         ee_pos = ee[:, :3].astype(np.float32)
         if schema.save_ee_states:
             ee_states = np.concatenate([ee_pos, ee_ori], axis=1).astype(np.float32)
-            obs.create_dataset("ee_states", data=ee_states)
+            obs.create_dataset(OBS_EE_STATES, data=ee_states)
         if schema.save_ee_pos:
-            obs.create_dataset("ee_pos", data=ee_pos)
+            obs.create_dataset(OBS_EE_POS, data=ee_pos)
         if schema.save_ee_ori:
-            obs.create_dataset("ee_ori", data=ee_ori)
+            obs.create_dataset(OBS_EE_ORI, data=ee_ori)
     if schema.save_joint_velocities and buf.joint_velocities:
         obs.create_dataset(
-            "joint_velocities", data=np.stack(buf.joint_velocities)
+            OBS_JOINT_VELOCITIES, data=np.stack(buf.joint_velocities)
         )
     if schema.save_timestamp and buf.timestamps:
         obs.create_dataset(
@@ -956,12 +971,12 @@ def write_episode_payload(
     # worth a schema toggle. See scripts/derive_commanded_ee_actions.py.
     if len(buf.commanded_joint_positions) == n:
         obs.create_dataset(
-            "commanded_joint_states",
+            OBS_COMMANDED_JOINT_STATES,
             data=np.stack(buf.commanded_joint_positions),
         )
     if len(buf.commanded_gripper) == n:
         obs.create_dataset(
-            "commanded_gripper_states",
+            OBS_COMMANDED_GRIPPER_STATES,
             data=np.array(buf.commanded_gripper, dtype=np.float32).reshape(-1, 1),
         )
     # 포스·토크 (2026-08-23): franka 가 매 스텝 추정해 주는 값의 20Hz 스냅숏.
@@ -1338,7 +1353,7 @@ def hdf5_repack_status(path) -> dict:
                 obs = container[name].get("obs")
                 if obs is None:
                     continue
-                for key in ("agentview_rgb", "eye_in_hand_rgb"):
+                for key in (OBS_AGENTVIEW_RGB, OBS_EYE_IN_HAND_RGB):
                     ds = obs.get(key)
                     if ds is not None:
                         comps.add(ds.compression)

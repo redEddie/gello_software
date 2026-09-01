@@ -3,6 +3,13 @@ from typing import Dict, Protocol
 
 import numpy as np
 
+from gello.data.dataset_schema import (
+    ROBOT_EE_POS_QUAT,
+    ROBOT_GRIPPER_POSITION,
+    ROBOT_JOINT_POSITIONS,
+    ROBOT_JOINT_VELOCITIES,
+)
+
 
 class Robot(Protocol):
     """Robot protocol.
@@ -78,10 +85,10 @@ class PrintRobot(Robot):
         joint_state = self.get_joint_state()
         pos_quat = np.zeros(7)
         return {
-            "joint_positions": joint_state,
-            "joint_velocities": joint_state,
-            "ee_pos_quat": pos_quat,
-            "gripper_position": np.array(0),
+            ROBOT_JOINT_POSITIONS: joint_state,
+            ROBOT_JOINT_VELOCITIES: joint_state,
+            ROBOT_EE_POS_QUAT: pos_quat,
+            ROBOT_GRIPPER_POSITION: np.array(0),
         }
 
 

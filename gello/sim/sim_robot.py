@@ -10,6 +10,12 @@ import zmq
 from dm_control import mjcf
 
 from gello.core.robot import Robot
+from gello.data.dataset_schema import (
+    ROBOT_EE_POS_QUAT,
+    ROBOT_GRIPPER_POSITION,
+    ROBOT_JOINT_POSITIONS,
+    ROBOT_JOINT_VELOCITIES,
+)
 from gello.sim.utils import attach_hand_to_arm
 
 assert mujoco.viewer is mujoco.viewer
@@ -185,10 +191,10 @@ class MujocoRobotServer:
             ee_quat[0] = 1
         gripper_pos = self._data.qpos.copy()[self._num_joints - 1]
         return {
-            "joint_positions": joint_positions,
-            "joint_velocities": joint_velocities,
-            "ee_pos_quat": np.concatenate([ee_pos, ee_quat]),
-            "gripper_position": gripper_pos,
+            ROBOT_JOINT_POSITIONS: joint_positions,
+            ROBOT_JOINT_VELOCITIES: joint_velocities,
+            ROBOT_EE_POS_QUAT: np.concatenate([ee_pos, ee_quat]),
+            ROBOT_GRIPPER_POSITION: gripper_pos,
         }
 
     def serve(self) -> None:

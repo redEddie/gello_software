@@ -13,6 +13,7 @@ sys.path.insert(0, WT)
 sys.path.insert(0, WT + "/scripts")
 sys.argv = ["t"]
 
+from gello.data.dataset_schema import OBS_AGENTVIEW_RGB  # noqa: E402
 from gello.data.dataset_sync import (  # noqa: E402
     LEROBOT_TAG,
     hub_episode_uids,
@@ -130,7 +131,7 @@ def test_mixed_at_repack_cleared():
             grp.attrs["num_samples"] = 7
             grp.create_dataset("actions", data=np.zeros((7, 8), dtype=np.float32))
             obs = grp.create_group("obs")
-            obs.create_dataset("agentview_rgb", data=np.zeros((7, 48, 64, 3), dtype=np.uint8))
+            obs.create_dataset(OBS_AGENTVIEW_RGB, data=np.zeros((7, 48, 64, 3), dtype=np.uint8))
 
     tasks = local_tasks(root)
     info = tasks.get(task)
@@ -151,7 +152,7 @@ def test_mixed_at_repack_cleared():
             grp.attrs["num_samples"] = 6
             grp.create_dataset("actions", data=np.zeros((6, 8), dtype=np.float32))
             obs = grp.create_group("obs")
-            obs.create_dataset("agentview_rgb", data=np.zeros((6, 48, 64, 3), dtype=np.uint8))
+            obs.create_dataset(OBS_AGENTVIEW_RGB, data=np.zeros((6, 48, 64, 3), dtype=np.uint8))
     pure = local_tasks(leg_root)
     assert pure["pure legacy task"]["at_repack"] == 5, pure
 

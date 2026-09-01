@@ -21,7 +21,13 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 
-from gello.data.dataset_schema import DatasetSchemaConfig  # noqa: E402
+from gello.data.dataset_schema import (  # noqa: E402
+    OBS_AGENTVIEW_RGB,
+    ROBOT_EE_POS_QUAT,
+    ROBOT_JOINT_POSITIONS,
+    ROBOT_JOINT_VELOCITIES,
+    DatasetSchemaConfig,
+)
 from gello.gui.gui_widgets import DatasetSchemaDialog  # noqa: E402
 from gello.data.libero_format import LiberoTaskWriter, schema_from_episode  # noqa: E402
 from gello.gui.libero_gui_worker import CollectionWorker, WorkerConfig  # noqa: E402
@@ -61,7 +67,7 @@ with h5py.File(TMP / "d_on_demo.hdf5") as f:
         d = obs[key]
         assert d.dtype == np.uint16 and d.compression == "lzf"
         assert d.shape == (5, 48, 64), d.shape      # depth 는 원본 해상도
-    assert obs["agentview_rgb"].shape == (5, 32, 32, 3)  # RGB 만 리사이즈
+    assert obs[OBS_AGENTVIEW_RGB].shape == (5, 32, 32, 3)  # RGB 만 리사이즈
     sc = schema_from_episode(f["data/demo_0"])
     assert sc.save_agentview_depth and sc.save_eye_in_hand_depth
 print("1 통과: uint16+lzf 저장, depth 원본 해상도(RGB 리사이즈 비적용), 스키마 왕복")
@@ -131,9 +137,9 @@ print("6. _get_obs 가 read_latest_depth 없는 카메라에서도 예외 없이
 class FakeClient:
     def get_observations(self):
         return {
-            "joint_positions": [0.0] * 7,
-            "ee_pos_quat": [0.0] * 7,
-            "joint_velocities": [0.0] * 7,
+            ROBOT_JOINT_POSITIONS: [0.0] * 7,
+            ROBOT_EE_POS_QUAT: [0.0] * 7,
+            ROBOT_JOINT_VELOCITIES: [0.0] * 7,
         }
 
 

@@ -76,6 +76,12 @@ from typing import Dict, Optional
 import numpy as np
 
 from gello.core.robot import Robot
+from gello.data.dataset_schema import (
+    ROBOT_EE_POS_QUAT,
+    ROBOT_GRIPPER_POSITION,
+    ROBOT_JOINT_POSITIONS,
+    ROBOT_JOINT_VELOCITIES,
+)
 
 # FR3 gripper stroke (m).  Franka Hand opens to ~0.08 m.
 MAX_GRIPPER_WIDTH = 0.08
@@ -133,6 +139,13 @@ FR3_Q_UPPER = np.array([2.7437, 1.7837, 2.9007, -0.1518, 2.8065, 4.5169, 3.0159]
 # ``home.presets``.  dsfranka still spells these ``franka_ready`` / ``dsfranka``;
 # the names here are the ones both repos are converging on.  All four are inside
 # the FR3's joint limits.
+#: 링크 축을 중심으로 도는 관절 (0-based). 팔꿈치처럼 굽히는 관절(J2/J4/J6)과
+#: 달리 이쪽은 제한 없이 돌 수 있어서, 크게 어긋나 있으면 정렬이 케이블을
+#: 감는 방향으로 갈 수 있다. 그래서 "정렬 중 범위 이탈" 판정은 이 관절들만
+#: 본다 (2026-09-01 사용자 결정) -- 굽힘 관절이 멀리 있는 것은 그냥 자세가
+#: 다른 것이라 정렬을 멈출 이유가 없다.
+FR3_ROLL_JOINTS = (0, 2, 4, 6)   # J1, J3, J5, J7
+
 FR3_RESET_POSES = {
     # Franka's built-in "ready" pose -- what the arm boots to, and where Desk's
     # "move to start" parks it.  q4 = -3pi/4.
@@ -366,10 +379,10 @@ class FrankaFR3Robot(Robot):
         else:
             pos, vel = q, dq
         out = {
-            "joint_positions": pos,
-            "joint_velocities": vel,
-            "ee_pos_quat": self._pose_to_pos_quat(pose),
-            "gripper_position": np.array(gripper_norm),
+            ROBOT_JOINT_POSITIONS: pos,
+            ROBOT_JOINT_VELOCITIES: vel,
+            ROBOT_EE_POS_QUAT: self._pose_to_pos_quat(pose),
+            ROBOT_GRIPPER_POSITION: np.array(gripper_norm),
         }
         # 포스·토크: 필드를 노출하는 pylibfranka 빌드에서만 키가 존재한다.
         # 소비자(libero_gui_worker._get_obs)는 .get() 으로 읽으므로 키 부재는

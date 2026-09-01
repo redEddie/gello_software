@@ -54,6 +54,13 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from gello.data.dataset_schema import (
+    OBS_COMMANDED_GRIPPER_STATES,
+    OBS_COMMANDED_JOINT_STATES,
+    OBS_EE_STATES,
+    OBS_JOINT_STATES,
+)
+
 # OSC_POSE normalization, same constants as gello/libero_format.py.
 ACTION_POS_MAX = 0.05  # m
 ACTION_ROT_MAX = 0.5  # rad
@@ -186,9 +193,9 @@ def pose_from_pos_quat(pos_quat: np.ndarray) -> np.ndarray:
 def _episode_pose_pairs(grp) -> tuple[np.ndarray, np.ndarray]:
     """(measured EE poses (T,4,4), measured joints (T,7)) for calibration."""
     obs = grp["obs"]
-    q = obs["joint_states"][:].astype(np.float64)
-    if "ee_states" in obs:
-        ee = obs["ee_states"][:].astype(np.float64)  # pos + axis-angle
+    q = obs[OBS_JOINT_STATES][:].astype(np.float64)
+    if OBS_EE_STATES in obs:
+        ee = obs[OBS_EE_STATES][:].astype(np.float64)  # pos + axis-angle
         T = np.broadcast_to(np.eye(4), (ee.shape[0], 4, 4)).copy()
         T[:, :3, 3] = ee[:, :3]
         T[:, :3, :3] = _axis_angle_to_mat_batch(ee[:, 3:6])
@@ -220,7 +227,7 @@ def process_file(path: Path, overwrite: bool, dry_run: bool,
         usable = []
         for name in demos:
             obs = data[name]["obs"]
-            if "commanded_joint_states" not in obs:
+            if OBS_COMMANDED_JOINT_STATES not in obs:
                 print(f"  [skip] {name}: no commanded_joint_states (old recording)")
                 continue
             if not overwrite and "actions_ee" in data[name]:
@@ -260,7 +267,7 @@ def process_file(path: Path, overwrite: bool, dry_run: bool,
         for name in usable:
             grp = data[name]
             obs = grp["obs"]
-            q_cmd = obs["commanded_joint_states"][:].astype(np.float64)
+            q_cmd = obs[OBS_COMMANDED_JOINT_STATES][:].astype(np.float64)
             T_meas, _q = _episode_pose_pairs(grp)
             n = q_cmd.shape[0]
 
@@ -274,8 +281,8 @@ def process_file(path: Path, overwrite: bool, dry_run: bool,
 
             # gripper column: keep the file's existing convention
             grip_conv = grp.attrs.get("gripper_action_convention", "pm1")
-            if "commanded_gripper_states" in obs:
-                g_closed = obs["commanded_gripper_states"][:, 0] > 0.5
+            if OBS_COMMANDED_GRIPPER_STATES in obs:
+                g_closed = obs[OBS_COMMANDED_GRIPPER_STATES][:, 0] > 0.5
             else:
                 g_closed = grp["actions"][:, -1] > (0.5 if grip_conv == "01" else 0.0)
             grip = np.where(g_closed, 1.0, -1.0)

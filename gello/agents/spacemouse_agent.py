@@ -8,6 +8,7 @@ from dm_control import mjcf
 from dm_control.utils.inverse_kinematics import qpos_from_site_pose
 
 from gello.core.agent import Agent
+from gello.data.dataset_schema import ROBOT_JOINT_POSITIONS
 from gello.sim.dm_control.arms.ur5e import UR5e
 
 # mujoco has a slightly different coordinate system than UR control box
@@ -94,8 +95,8 @@ class SpacemouseAgent(Agent):
         num_dof = 6
         if self._verbose:
             print("act invoked")
-        current_qpos = obs["joint_positions"][:num_dof]  # last one dim is the gripper
-        current_gripper_angle = obs["joint_positions"][-1]
+        current_qpos = obs[ROBOT_JOINT_POSITIONS][:num_dof]  # last one dim is the gripper
+        current_gripper_angle = obs[ROBOT_JOINT_POSITIONS][-1]
         self.physics.data.qpos[:num_dof] = current_qpos
 
         self.physics.step()

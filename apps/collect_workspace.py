@@ -104,7 +104,11 @@ from PyQt6.QtWidgets import (
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from gello.data.dataset_schema import load_schema_config, save_schema_config  # noqa: E402
+from gello.data.dataset_schema import (  # noqa: E402
+    OBS_AGENTVIEW_RGB,
+    load_schema_config,
+    save_schema_config,
+)
 from gello.data.dataset_sync import plan_sync  # noqa: E402
 from gello.data.episode_stats import (  # noqa: E402
     STILL_VEL,
@@ -6343,7 +6347,7 @@ class WorkspaceWindow(QMainWindow):
                     action = str(g.attrs.get("action_space", "-"))
                     conv = str(g.attrs.get("gripper_action_convention", ""))
                     gripper = {"01": "0/1 (obs와 동일)", "pm1": "-1/+1"}.get(conv, conv or "-")
-                    rgb = g.get("obs", {}).get("agentview_rgb")
+                    rgb = g.get("obs", {}).get(OBS_AGENTVIEW_RGB)
                     if rgb is not None and rgb.ndim == 4:
                         image = f"{rgb.shape[1]}×{rgb.shape[2]}"
         except Exception as e:  # noqa: BLE001

@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gello.data.gripper_synth import synth_gripper_states  # noqa: E402
 from gello.data.libero_format import renumber_episodes  # noqa: E402
+from gello.data.dataset_schema import OBS_GRIPPER_STATES  # noqa: E402
 
 ARM_DIMS = 7
 GRIPPER_STEP = 0.05
@@ -159,7 +160,7 @@ def main() -> int:
         with h5py.File(p, "a") as f:
             for name in sorted(f["data"], key=lambda s: int(s.split("_")[1])):
                 grp = f["data"][name]
-                ds = grp["obs"]["gripper_states"]
+                ds = grp["obs"][OBS_GRIPPER_STATES]
                 new = synth_gripper_states(grp["actions"][:], ds[:, 0])
                 ds[:, 0] = new          # 모양·dtype 그대로라 제자리 쓰기로 충분
                 n_syn += 1

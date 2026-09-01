@@ -34,6 +34,7 @@ from lerobot.teleoperators import Teleoperator, TeleoperatorConfig
 
 from gello.robots.franka_fr3 import GRIPPER_CLOSE_AT
 from gello.core.station import load_station
+from gello.data.dataset_schema import ROBOT_JOINT_POSITIONS
 
 JOINT_KEYS = [f"joint{i}.pos" for i in range(1, 8)] + ["gripper.pos"]
 
@@ -158,7 +159,7 @@ class FR3ZMQRobot(Robot):
 
     def get_observation(self) -> dict[str, Any]:
         obs = self._client.get_observations()
-        pos = np.asarray(obs["joint_positions"], dtype=float)  # 7 rad + gripper 0..1
+        pos = np.asarray(obs[ROBOT_JOINT_POSITIONS], dtype=float)  # 7 rad + gripper 0..1
         out: dict[str, Any] = dict(zip(JOINT_KEYS, pos.tolist()))
         for cam_key, cam in self.cameras.items():
             out[cam_key] = cam.read_latest()

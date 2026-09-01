@@ -16,10 +16,12 @@ import cv2
 import h5py
 import numpy as np
 
+from gello.data.dataset_schema import OBS_AGENTVIEW_RGB, OBS_EYE_IN_HAND_RGB
+
 
 def export_episode(grp: h5py.Group, out_path: Path, fps: int) -> None:
-    agent = grp["obs"]["agentview_rgb"]
-    wrist = grp["obs"]["eye_in_hand_rgb"]
+    agent = grp["obs"][OBS_AGENTVIEW_RGB]
+    wrist = grp["obs"][OBS_EYE_IN_HAND_RGB]
     n, h, w, _ = agent.shape
     writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w * 2, h))
     try:

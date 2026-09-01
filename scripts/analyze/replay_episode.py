@@ -32,6 +32,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from gello.core.station import load_station  # noqa: E402
+from gello.data.dataset_schema import (  # noqa: E402
+    OBS_COMMANDED_GRIPPER_STATES,
+    OBS_COMMANDED_JOINT_STATES,
+    OBS_GRIPPER_STATES,
+    OBS_JOINT_STATES,
+)
 
 STATION = load_station()
 RAMP_STEP = 0.05      # rad/tick 램프 (수집기·정책 클라이언트와 동일 상수)
@@ -66,17 +72,17 @@ def load_trajectory(path: Path, episode: str) -> dict:
                 f"  있는 에피소드({len(names)}개): {shown}")
         grp = f[episode] if episode in f else f["data"][episode]
         obs = grp["obs"]
-        if "commanded_joint_states" in obs:
-            q = obs["commanded_joint_states"][:]
+        if OBS_COMMANDED_JOINT_STATES in obs:
+            q = obs[OBS_COMMANDED_JOINT_STATES][:]
             src = "commanded_joint_states"
         else:
             # 아주 옛 파일 폴백 -- 측정치 재생은 명령 재생보다 부드럽지 않다
-            q = obs["joint_states"][:]
+            q = obs[OBS_JOINT_STATES][:]
             src = "joint_states (폴백)"
-        if "commanded_gripper_states" in obs:
-            g = obs["commanded_gripper_states"][:, 0]
+        if OBS_COMMANDED_GRIPPER_STATES in obs:
+            g = obs[OBS_COMMANDED_GRIPPER_STATES][:, 0]
         else:
-            g = obs["gripper_states"][:, 0]
+            g = obs[OBS_GRIPPER_STATES][:, 0]
         instr = grp.attrs.get("instruction")
         if instr is None:
             info = f["data"].attrs.get("problem_info") if "data" in f else None

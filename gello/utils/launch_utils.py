@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 import numpy as np
 from omegaconf import OmegaConf
 
+from gello.data.dataset_schema import ROBOT_JOINT_POSITIONS
+
 
 class SimpleLaunchManager:
     """Simplified launch manager for robot systems."""
@@ -101,7 +103,7 @@ class SimpleLaunchManager:
 
     def move_to_joints(self, joints: np.ndarray):
         """Move robot to specified joints."""
-        for jnt in np.linspace(self.env.get_obs()["joint_positions"], joints, 100):
+        for jnt in np.linspace(self.env.get_obs()[ROBOT_JOINT_POSITIONS], joints, 100):
             self.env.step(jnt)
             time.sleep(0.001)
 
@@ -109,7 +111,7 @@ class SimpleLaunchManager:
         """Validate that agent output matches environment dimensions."""
         start_pos = self.agent.act(self.env.get_obs())
         obs = self.env.get_obs()
-        joints = obs["joint_positions"]
+        joints = obs[ROBOT_JOINT_POSITIONS]
 
         print(f"Start pos: {len(start_pos)}", f"Joints: {len(joints)}")
         assert len(start_pos) == len(
@@ -130,7 +132,7 @@ class SimpleLaunchManager:
         # Initial positioning
         start_pos = self.validate_agent_output()
         obs = self.env.get_obs()
-        joints = obs["joint_positions"]
+        joints = obs[ROBOT_JOINT_POSITIONS]
 
         abs_deltas = np.abs(start_pos - joints)
         id_max_joint_delta = np.argmax(abs_deltas)
@@ -156,7 +158,7 @@ class SimpleLaunchManager:
         for _ in range(25):
             obs = self.env.get_obs()
             command_joints = self.agent.act(obs)
-            current_joints = obs["joint_positions"]
+            current_joints = obs[ROBOT_JOINT_POSITIONS]
             delta = command_joints - current_joints
             max_joint_delta = np.abs(delta).max()
             if max_joint_delta > max_delta:
@@ -217,7 +219,7 @@ def move_to_start_position(
             return
         reset_joints = np.array(left_cfg["agent"]["start_joints"])
 
-    curr_joints = env.get_obs()["joint_positions"]
+    curr_joints = env.get_obs()[ROBOT_JOINT_POSITIONS]
     if reset_joints.shape != curr_joints.shape:
         print("Warning: Mismatch in joint shapes, skipping move_to_start_position.")
         return

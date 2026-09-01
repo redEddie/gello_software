@@ -14,6 +14,7 @@ from gello.agents.gello_agent import GelloAgent
 from gello.agents.spacemouse_agent import SpacemouseAgent
 from gello.core.env import RobotEnv
 from gello.comm.zmq_core.robot_node import ZMQClientRobot, ZMQServerRobot
+from gello.data.dataset_schema import ROBOT_JOINT_POSITIONS
 
 
 @dataclass
@@ -108,7 +109,7 @@ def main(args: Args):
         agent = GelloAgent(port=gello_port)
 
         reset_joints = np.array([0, 0, 0, -np.pi, 0, np.pi, 0, 0])
-        curr_joints = env.get_obs()["joint_positions"]
+        curr_joints = env.get_obs()[ROBOT_JOINT_POSITIONS]
         if reset_joints.shape == curr_joints.shape:
             max_delta = (np.abs(curr_joints - reset_joints)).max()
             steps = min(int(max_delta / 0.01), 100)
@@ -132,7 +133,7 @@ def main(args: Args):
     print("Going to start position")
     start_pos = agent.act(env.get_obs())
     obs = env.get_obs()
-    joints = obs["joint_positions"]
+    joints = obs[ROBOT_JOINT_POSITIONS]
 
     abs_deltas = np.abs(start_pos - joints)
     id_max_joint_delta = np.argmax(abs_deltas)
@@ -162,7 +163,7 @@ def main(args: Args):
     for _ in range(25):
         obs = env.get_obs()
         command_joints = agent.act(obs)
-        current_joints = obs["joint_positions"]
+        current_joints = obs[ROBOT_JOINT_POSITIONS]
         delta = command_joints - current_joints
         max_joint_delta = np.abs(delta).max()
         if max_joint_delta > max_delta:
@@ -170,7 +171,7 @@ def main(args: Args):
         env.step(current_joints + delta)
 
     obs = env.get_obs()
-    joints = obs["joint_positions"]
+    joints = obs[ROBOT_JOINT_POSITIONS]
     action = agent.act(obs)
     if (action - joints > 0.5).any():
         print("Action is too big")

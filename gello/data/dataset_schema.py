@@ -48,6 +48,26 @@ DEFAULT_CONFIG_PATH = Path.home() / "libero_gui_logs" / "dataset_schema.json"
 # 정본이다 (문서와 어긋나면 검증기가 잡는다).
 SCHEMA_VERSION = "knu-1.0.0"
 
+# --------------------------------------------------------- observation/dataset keys
+# Robot observation keys (returned by Robot.get_observations / RobotEnv.get_obs).
+ROBOT_JOINT_POSITIONS = "joint_positions"
+ROBOT_JOINT_VELOCITIES = "joint_velocities"
+ROBOT_EE_POS_QUAT = "ee_pos_quat"
+ROBOT_GRIPPER_POSITION = "gripper_position"
+
+# Dataset observation keys (stored under episode/obs in HDF5).
+OBS_AGENTVIEW_RGB = "agentview_rgb"
+OBS_EYE_IN_HAND_RGB = "eye_in_hand_rgb"
+OBS_JOINT_STATES = "joint_states"
+OBS_COMMANDED_JOINT_STATES = "commanded_joint_states"
+OBS_GRIPPER_STATES = "gripper_states"
+OBS_COMMANDED_GRIPPER_STATES = "commanded_gripper_states"
+OBS_EE_POS_QUAT = "ee_pos_quat"
+OBS_EE_STATES = "ee_states"
+OBS_EE_POS = "ee_pos"
+OBS_EE_ORI = "ee_ori"
+OBS_JOINT_VELOCITIES = "joint_velocities"
+
 #: 버전 문자열이 없던 시절의 표기 -> 현재 버전. 기존 파일(scene_000~014)은
 #: 전부 ``dataset_version="scene-v1"`` 이고 필드 구성이 knu-1.0.0 과 완전히
 #: 같아, 소급 기록 없이 별칭으로만 해석한다.
@@ -70,10 +90,10 @@ SCHEMA_FIELDS = {
         # depth 읽기를 지원하지 않아 수집 자체가 꺼져 있다(_FIXED 참조).
         # 되살아나면 필드 '추가'이므로 knu-1.1.0 이다.
         "obs_datasets": (
-            "agentview_rgb", "eye_in_hand_rgb",
-            "joint_states", "commanded_joint_states",
-            "gripper_states", "commanded_gripper_states",
-            "ee_states", "ee_pos", "ee_ori",
+            OBS_AGENTVIEW_RGB, OBS_EYE_IN_HAND_RGB,
+            OBS_JOINT_STATES, OBS_COMMANDED_JOINT_STATES,
+            OBS_GRIPPER_STATES, OBS_COMMANDED_GRIPPER_STATES,
+            OBS_EE_STATES, OBS_EE_POS, OBS_EE_ORI,
         ),
         # episode 그룹 attrs
         "episode_attrs": (

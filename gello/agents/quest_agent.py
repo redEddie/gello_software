@@ -8,6 +8,7 @@ from oculus_reader.reader import OculusReader
 
 from gello.core.agent import Agent
 from gello.agents.spacemouse_agent import apply_transfer, mj2ur, ur2mj
+from gello.data.dataset_schema import ROBOT_JOINT_POSITIONS
 from gello.sim.dm_control.arms.ur5e import UR5e
 
 # cartensian space control, controller <> robot relative pose matters. This extrinsics is based on
@@ -45,8 +46,8 @@ class SingleArmQuestAgent(Agent):
     def act(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
         if self.robot_type == "ur5":
             num_dof = 6
-        current_qpos = obs["joint_positions"][:num_dof]  # last one dim is the gripper
-        current_gripper_angle = obs["joint_positions"][-1]
+        current_qpos = obs[ROBOT_JOINT_POSITIONS][:num_dof]  # last one dim is the gripper
+        current_gripper_angle = obs[ROBOT_JOINT_POSITIONS][-1]
         # run the fk
         self.physics.data.qpos[:num_dof] = current_qpos
         self.physics.step()

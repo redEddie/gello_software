@@ -20,6 +20,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from gello.data.dataset_schema import OBS_AGENTVIEW_RGB
 from gello.scene.scene_format import EPISODE_GROUP_RE, list_scene_episodes
 
 THUMBS_DIR = Path.home() / "libero_gui_logs" / "thumbs"
@@ -78,7 +79,7 @@ def build_gallery(scene_path: Path, thumbs_dir: Path = THUMBS_DIR) -> list[dict]
                 grp = f.get(ep["name"])
                 if grp is None or not EPISODE_GROUP_RE.match(ep["name"]):
                     continue
-                rgb = grp.get("obs", {}).get("agentview_rgb")
+                rgb = grp.get("obs", {}).get(OBS_AGENTVIEW_RGB)
                 if rgb is None or rgb.shape[0] == 0:
                     continue
                 _write_thumb(rgb[0], thumb_path(ep["episode_uid"], thumbs_dir))

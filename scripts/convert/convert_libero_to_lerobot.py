@@ -140,6 +140,15 @@ from lerobot.datasets.utils import DatasetInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from gello.data.dataset_schema import (  # noqa: E402
     ACTION_SPACE_EE_DELTA,
+    OBS_AGENTVIEW_RGB,
+    OBS_COMMANDED_GRIPPER_STATES,
+    OBS_COMMANDED_JOINT_STATES,
+    OBS_EE_ORI,
+    OBS_EE_POS,
+    OBS_EE_STATES,
+    OBS_EYE_IN_HAND_RGB,
+    OBS_GRIPPER_STATES,
+    OBS_JOINT_STATES,
     SCHEMA_VERSION,
     normalize_schema_version,
 )
@@ -490,8 +499,8 @@ def _is_success(grp) -> bool:
 # 있는 에피소드와 없는 에피소드를 한 데이터셋으로 변환할 수 있다 --
 # frozenset 전체 비교는 "부가 필드 추가 = 기존 데이터와 변환 불가"를 만든다.
 _CONSUMED_OBS_KEYS = frozenset({
-    "agentview_rgb", "eye_in_hand_rgb", "joint_states", "gripper_states",
-    "commanded_joint_states", "commanded_gripper_states",
+    OBS_AGENTVIEW_RGB, OBS_EYE_IN_HAND_RGB, OBS_JOINT_STATES, OBS_GRIPPER_STATES,
+    OBS_COMMANDED_JOINT_STATES, OBS_COMMANDED_GRIPPER_STATES,
 })
 
 
@@ -607,22 +616,22 @@ def _build_features(schema: dict, image_size: int) -> tuple[dict, list[str]]:
 
     state_parts = []
     state_names = []
-    if "joint_states" in obs_keys:
-        state_parts.append("joint_states")
+    if OBS_JOINT_STATES in obs_keys:
+        state_parts.append(OBS_JOINT_STATES)
         state_names += [f"joint{i}.pos" for i in range(1, 8)]
-    if "gripper_states" in obs_keys:
-        state_parts.append("gripper_states")
+    if OBS_GRIPPER_STATES in obs_keys:
+        state_parts.append(OBS_GRIPPER_STATES)
         state_names += ["gripper.pos"]
     if state_parts:
         features["observation.state"] = {
             "dtype": "float32", "shape": (len(state_names),), "names": state_names,
         }
 
-    if "agentview_rgb" in obs_keys:
+    if OBS_AGENTVIEW_RGB in obs_keys:
         features["observation.images.agent"] = {
             "dtype": "video", "shape": (image_size, image_size, 3), "names": ["height", "width", "channel"],
         }
-    if "eye_in_hand_rgb" in obs_keys:
+    if OBS_EYE_IN_HAND_RGB in obs_keys:
         features["observation.images.wrist"] = {
             "dtype": "video", "shape": (image_size, image_size, 3), "names": ["height", "width", "channel"],
         }
@@ -632,11 +641,11 @@ def _build_features(schema: dict, image_size: int) -> tuple[dict, list[str]]:
     # 같은 이름으로 나란히 비교되게 한다.
     cmd_parts = []
     cmd_names = []
-    if "commanded_joint_states" in obs_keys:
-        cmd_parts.append("commanded_joint_states")
+    if OBS_COMMANDED_JOINT_STATES in obs_keys:
+        cmd_parts.append(OBS_COMMANDED_JOINT_STATES)
         cmd_names += [f"joint{i}.pos" for i in range(1, 8)]
-    if "commanded_gripper_states" in obs_keys:
-        cmd_parts.append("commanded_gripper_states")
+    if OBS_COMMANDED_GRIPPER_STATES in obs_keys:
+        cmd_parts.append(OBS_COMMANDED_GRIPPER_STATES)
         cmd_names += ["gripper.pos"]
     if cmd_parts:
         features["observation.commanded_state"] = {
@@ -942,9 +951,9 @@ def main() -> None:
         사이드카로 복원)."""
         obs = grp["obs"]
         if has_agent:
-            _check_image_shape(path, name, obs, "agentview_rgb", image_size)
+            _check_image_shape(path, name, obs, OBS_AGENTVIEW_RGB, image_size)
         if has_wrist:
-            _check_image_shape(path, name, obs, "eye_in_hand_rgb", image_size)
+            _check_image_shape(path, name, obs, OBS_EYE_IN_HAND_RGB, image_size)
         # 이 에피소드가 수집될 때의 크롭 정렬. 조작자가 GUI 에서 맞춘
         # 프레이밍을 그대로 재현한다. 없는 옛 파일은 기본값 (wrist 는
         # 측정된 D405 좌측 이미저 오프셋).
@@ -961,8 +970,8 @@ def main() -> None:
                           y_shift=wp.get("y", 0))
         state_arrays = [obs[part][:] for part in state_parts]
         cmd_arrays = [obs[part][:] for part in cmd_parts]
-        agent_rgb = obs["agentview_rgb"][:] if has_agent else None
-        wrist_rgb = obs["eye_in_hand_rgb"][:] if has_wrist else None
+        agent_rgb = obs[OBS_AGENTVIEW_RGB][:] if has_agent else None
+        wrist_rgb = obs[OBS_EYE_IN_HAND_RGB][:] if has_wrist else None
         actions = grp["actions"][:]
         actions_ee = grp["actions_ee"][:] if schema["has_actions_ee"] else None
         n = actions.shape[0]

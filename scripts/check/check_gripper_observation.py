@@ -48,6 +48,7 @@ def main() -> int:
         return 1
 
     from gello.robots.franka_fr3 import MAX_GRIPPER_WIDTH, FrankaFR3Robot
+    from gello.data.dataset_schema import ROBOT_GRIPPER_POSITION
 
     print(f"\n{args.ip} 연결 (read_only -- 팔은 절대 움직이지 않습니다)...")
     robot = FrankaFR3Robot(robot_ip=args.ip, use_gripper=True, read_only=True,
@@ -63,7 +64,7 @@ def main() -> int:
         while not stop.is_set():
             t0 = time.monotonic()
             obs = robot.get_observations()
-            samples.append((t0, float(obs["gripper_position"])))
+            samples.append((t0, float(obs[ROBOT_GRIPPER_POSITION])))
             time.sleep(max(0.0, period - (time.monotonic() - t0)))
 
     th = threading.Thread(target=sampler, daemon=True)

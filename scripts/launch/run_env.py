@@ -21,6 +21,7 @@ from gello.core.robot import PrintRobot  # noqa: E402
 from gello.core.station import load_station  # noqa: E402
 from gello.utils.launch_utils import instantiate_from_dict  # noqa: E402
 from gello.comm.zmq_core.robot_node import ZMQClientRobot  # noqa: E402
+from gello.data.dataset_schema import ROBOT_JOINT_POSITIONS  # noqa: E402
 
 _STATION = load_station()
 
@@ -141,7 +142,7 @@ def main(args):
         reset_joints_left = np.deg2rad([0, -90, -90, -90, 90, 0, 0])
         reset_joints_right = np.deg2rad([0, -90, 90, -90, -90, 0, 0])
         reset_joints = np.concatenate([reset_joints_left, reset_joints_right])
-        curr_joints = env.get_obs()["joint_positions"]
+        curr_joints = env.get_obs()[ROBOT_JOINT_POSITIONS]
         max_delta = (np.abs(curr_joints - reset_joints)).max()
         steps = min(int(max_delta / 0.01), 100)
 
@@ -191,7 +192,7 @@ def main(args):
             else:
                 reset_joints = np.array(args.start_joints)
 
-            curr_joints = env.get_obs()["joint_positions"]
+            curr_joints = env.get_obs()[ROBOT_JOINT_POSITIONS]
             # The robot's obs carries a gripper dof the arm pose does not.  The
             # old guard was plain shape equality, so homing was silently skipped
             # for every robot with a gripper -- pad instead, holding the gripper
@@ -212,7 +213,7 @@ def main(args):
                 # measured pose, so hold the target until it converges.
                 for _ in range(int(5.0 * args.hz)):
                     if (
-                        np.abs(env.get_obs()["joint_positions"] - reset_joints).max()
+                        np.abs(env.get_obs()[ROBOT_JOINT_POSITIONS] - reset_joints).max()
                         < 0.02
                     ):
                         break
@@ -244,7 +245,7 @@ def main(args):
     print("Going to start position")
     start_pos = agent.act(env.get_obs())
     obs = env.get_obs()
-    joints = obs["joint_positions"]
+    joints = obs[ROBOT_JOINT_POSITIONS]
 
     abs_deltas = np.abs(start_pos - joints)
     id_max_joint_delta = np.argmax(abs_deltas)
@@ -277,7 +278,7 @@ def main(args):
     for _ in range(25):
         obs = env.get_obs()
         command_joints = agent.act(obs)
-        current_joints = obs["joint_positions"]
+        current_joints = obs[ROBOT_JOINT_POSITIONS]
         delta = command_joints - current_joints
         max_joint_delta = np.abs(delta).max()
         if max_joint_delta > max_delta:
@@ -285,7 +286,7 @@ def main(args):
         env.step(current_joints + delta)
 
     obs = env.get_obs()
-    joints = obs["joint_positions"]
+    joints = obs[ROBOT_JOINT_POSITIONS]
     action = agent.act(obs)
     if (action - joints > 0.5).any():
         print("Action is too big")

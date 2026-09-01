@@ -5,6 +5,12 @@ import numpy as np
 
 from gello.core.camera import CameraDriver
 from gello.core.robot import Robot
+from gello.data.dataset_schema import (
+    ROBOT_EE_POS_QUAT,
+    ROBOT_GRIPPER_POSITION,
+    ROBOT_JOINT_POSITIONS,
+    ROBOT_JOINT_VELOCITIES,
+)
 
 
 class Rate:
@@ -70,13 +76,13 @@ class RobotEnv:
             observations[f"{name}_depth"] = depth
 
         robot_obs = self._robot.get_observations()
-        assert "joint_positions" in robot_obs
-        assert "joint_velocities" in robot_obs
-        assert "ee_pos_quat" in robot_obs
-        observations["joint_positions"] = robot_obs["joint_positions"]
-        observations["joint_velocities"] = robot_obs["joint_velocities"]
-        observations["ee_pos_quat"] = robot_obs["ee_pos_quat"]
-        observations["gripper_position"] = robot_obs["gripper_position"]
+        assert ROBOT_JOINT_POSITIONS in robot_obs
+        assert ROBOT_JOINT_VELOCITIES in robot_obs
+        assert ROBOT_EE_POS_QUAT in robot_obs
+        observations[ROBOT_JOINT_POSITIONS] = robot_obs[ROBOT_JOINT_POSITIONS]
+        observations[ROBOT_JOINT_VELOCITIES] = robot_obs[ROBOT_JOINT_VELOCITIES]
+        observations[ROBOT_EE_POS_QUAT] = robot_obs[ROBOT_EE_POS_QUAT]
+        observations[ROBOT_GRIPPER_POSITION] = robot_obs[ROBOT_GRIPPER_POSITION]
         return observations
 
 

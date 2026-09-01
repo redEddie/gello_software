@@ -9,6 +9,7 @@ import numpy as np
 
 from gello.core.agent import Agent
 from gello.core.env import RobotEnv
+from gello.data.dataset_schema import ROBOT_JOINT_POSITIONS
 
 DEFAULT_MAX_JOINT_DELTA = 1.0
 
@@ -30,7 +31,7 @@ def move_to_start_position(
     print("Going to start position")
     start_pos = agent.act(env.get_obs())
     obs = env.get_obs()
-    joints = obs["joint_positions"]
+    joints = obs[ROBOT_JOINT_POSITIONS]
 
     abs_deltas = np.abs(start_pos - joints)
     id_max_joint_delta = np.argmax(abs_deltas)
@@ -59,7 +60,7 @@ def move_to_start_position(
     for _ in range(steps):
         obs = env.get_obs()
         command_joints = agent.act(obs)
-        current_joints = obs["joint_positions"]
+        current_joints = obs[ROBOT_JOINT_POSITIONS]
         delta = command_joints - current_joints
         max_joint_delta = np.abs(delta).max()
         if max_joint_delta > max_delta:

@@ -7,6 +7,12 @@ import numpy as np
 from pyquaternion import Quaternion
 
 from gello.core.robot import Robot
+from gello.data.dataset_schema import (
+    ROBOT_EE_POS_QUAT,
+    ROBOT_GRIPPER_POSITION,
+    ROBOT_JOINT_POSITIONS,
+    ROBOT_JOINT_VELOCITIES,
+)
 
 
 def _aa_from_quat(quat: np.ndarray) -> np.ndarray:
@@ -333,10 +339,10 @@ class XArmRobot(Robot):
         pos_quat = np.concatenate([state.cartesian_pos(), state.quat()])
         joints = self.get_joint_state()
         return {
-            "joint_positions": joints,  # rotational joint + gripper state
-            "joint_velocities": joints,
-            "ee_pos_quat": pos_quat,
-            "gripper_position": np.array(state.gripper_pos()),
+            ROBOT_JOINT_POSITIONS: joints,  # rotational joint + gripper state
+            ROBOT_JOINT_VELOCITIES: joints,
+            ROBOT_EE_POS_QUAT: pos_quat,
+            ROBOT_GRIPPER_POSITION: np.array(state.gripper_pos()),
         }
 
 
