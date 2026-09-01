@@ -36,8 +36,8 @@ import collect_workspace as cw  # noqa: E402
 
 # 창을 만들면 카메라를 열고 미리보기를 띄운다 -- 기계가 없어도 되게 막는다
 # (다른 인수 테스트가 쓰는 것과 같은 스텁).
-cw.WorkspaceWindow._refresh_cameras = lambda self: None
-cw.WorkspaceWindow._restart_previews = lambda self: None
+cw.CameraOps.refresh_cameras = lambda self: None
+cw.CameraOps.restart_previews = lambda self: None
 cw.WorkspaceWindow._startup_tuning = lambda self: None
 win = cw.WorkspaceWindow(None)
 

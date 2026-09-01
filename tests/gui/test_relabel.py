@@ -28,8 +28,8 @@ subprocess.run([sys.executable, WT + "/scripts/check/check_scene_file.py",
 scene = d / "scene_000.hdf5"
 legacy = d / "selftest_task_demo.hdf5"
 
-cw.WorkspaceWindow._refresh_cameras = lambda self: None
-cw.WorkspaceWindow._restart_previews = lambda self: None
+cw.CameraOps.refresh_cameras = lambda self: None
+cw.CameraOps.restart_previews = lambda self: None
 cw.WorkspaceWindow._startup_tuning = lambda self: None   # pkexec 비밀번호 창 차단
 
 win = cw.WorkspaceWindow(None)

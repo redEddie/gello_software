@@ -47,6 +47,7 @@ class _Stub(QMainWindow):
         super().__init__()
         self.upload = _NoOp()
         self.playback_ops = _NoOp()
+        self.camera_ops = _NoOp()
 
     def __getattr__(self, name):
         if name.startswith("_"):

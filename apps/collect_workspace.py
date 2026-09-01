@@ -55,7 +55,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-from PyQt6.QtCore import (QEvent, QProcess, Qt, QThread, QTimer,
+from PyQt6.QtCore import (QEvent, QProcess, Qt, QTimer,
                           pyqtSlot)
 from PyQt6.QtGui import QIcon, QTextCursor
 from PyQt6 import sip
@@ -103,7 +103,7 @@ from gello.gui.gui_widgets import (  # noqa: E402
     is_progress_line,
 )
 from apps.workspace.constants import LOG_DIR  # noqa: E402
-from apps.workspace.domains import PlaybackOps, UploadOps  # noqa: E402
+from apps.workspace.domains import CameraOps, PlaybackOps, UploadOps  # noqa: E402
 from apps.workspace.models import (  # noqa: E402
     CameraState,
     PlaybackState,
@@ -128,8 +128,6 @@ from apps.dialogs.new_scene_dialog import NewSceneDialog  # noqa: E402
 from apps.dialogs.plan_edit_dialog import PlanEditDialog  # noqa: E402
 from gello.gui.grid_overlay import (  # noqa: E402
     draw_alignment_grid,
-    active_corners,
-    draw_grid,
     load_grid_store,
     save_grid_store,
 )
@@ -277,6 +275,7 @@ class WorkspaceWindow(QMainWindow):
 
         self.upload = UploadOps(self)
         self.playback_ops = PlaybackOps(self)
+        self.camera_ops = CameraOps(self)
 
         build_bottom(self)          # log view exists before anything logs
         # 저장된 설정의 depth 플래그가 무시됐다면 여기서(로그 뷰가 생긴 뒤)
@@ -294,7 +293,7 @@ class WorkspaceWindow(QMainWindow):
         build_statusbar(self)
 
         self.cameras.fps_timer = QTimer(self)
-        self.cameras.fps_timer.timeout.connect(self._tick_fps)
+        self.cameras.fps_timer.timeout.connect(self.camera_ops.tick_fps)
         self.cameras.fps_timer.start(1000)
 
         self.playback.play_timer = QTimer(self)
@@ -307,7 +306,7 @@ class WorkspaceWindow(QMainWindow):
 
         self._set_activity("configure")
         self._set_running(False)
-        self._refresh_cameras()
+        self.camera_ops.refresh_cameras()
         self._refresh_dataset_tree()
         if log_path is not None:
             self.log(f"[로그] 이 세션 로그: {log_path}")
@@ -1189,7 +1188,7 @@ class WorkspaceWindow(QMainWindow):
             return
         role = self._depth_role_combo().currentData() or "agent"
         combo = self.agent_combo if role == "agent" else self.wrist_combo
-        serial = self._combo_serial(combo)
+        serial = self.camera_ops.combo_serial(combo)
         if not serial:
             for v in self._depth_views():
                 v.clear_frame(
@@ -1207,11 +1206,11 @@ class WorkspaceWindow(QMainWindow):
         self._cloud_previews_were_on = (self._cloud_previews_were_on
                                         or bool(self.agent_preview
                                                 or self.wrist_preview))
-        self._stop_previews_async()
+        self.camera_ops.stop_previews_async()
         msg = tr("depth 스트림 여는 중... ({s})").format(s=serial)
         self.cloud_status.setText(msg)
         self.depth_status.setText(msg)
-        self._ensure_camera_node()
+        self.camera_ops.ensure_camera_node()
         w = DepthCloudWorker(role, serial, mode=self.cameras.depth_consumer or "cloud")
         w.cloud_ready.connect(self._on_cloud)
         w.depth_ready.connect(self._on_depth_img)
@@ -1248,7 +1247,7 @@ class WorkspaceWindow(QMainWindow):
             self._cloud_previews_were_on = False
             # 파이프라인이 놓이는 데 잠깐 걸린다 -- 바로 열면 busy.
             QTimer.singleShot(700, lambda: (
-                self._restart_previews() if self.worker is None
+                self.camera_ops.restart_previews() if self.worker is None
                 and self.cameras.cloud_worker is None else None))
 
     @pyqtSlot(object, object)
@@ -1600,134 +1599,10 @@ class WorkspaceWindow(QMainWindow):
             self.log("[설정] 데이터셋 스키마를 저장했습니다.")
 
     # ------------------------------------------------------------ cameras
-    def _refresh_cameras(self) -> None:
-        try:
-            from lerobot.cameras.realsense import RealSenseCamera
-
-            cams = RealSenseCamera.find_cameras()
-        except Exception as e:  # noqa: BLE001
-            self._set_camera_hint(tr("카메라 목록 조회 실패: {e}").format(e=e))
-            self.log(f"[카메라] 목록 조회 실패: {type(e).__name__}: {e}")
-            return
-        entries = []
-        for c in cams:
-            serial = str(c.get("serial_number") or c.get("id") or "")
-            name = str(c.get("name") or "RealSense")
-            if serial:
-                entries.append((serial, f"{name} ({serial})"))
-        for combo, remembered in ((self.agent_combo, "agent_serial"),
-                                  (self.wrist_combo, "wrist_serial")):
-            cur = combo.currentText().strip()
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItem(tr("(선택 안함)"), "")
-            for serial, label in entries:
-                combo.addItem(label, serial)
-            want = cur or self._recents.most_recent(remembered, "")
-            if want:
-                for i in range(combo.count()):
-                    if combo.itemData(i) == want or combo.itemText(i) == want:
-                        combo.setCurrentIndex(i)
-                        break
-            combo.blockSignals(False)
-        self._mirror_camera_combos(rebuild=True)
-        self._set_camera_hint(tr("{n}대 감지됨").format(n=len(entries)))
-        self.log(f"[카메라] {len(entries)}대 감지: {[s for s, _ in entries]}")
-        self._ensure_camera_node()
-
-    def _set_camera_hint(self, text: str) -> None:
-        self.camera_hint.setText(text)
-        if hasattr(self, "layout_camera_hint"):
-            self.layout_camera_hint.setText(text)
-
-    def _mirror_camera_combos(self, rebuild: bool = False) -> None:
-        """Configure 콤보(원본) -> Layout 콤보(미러) 복사. ``rebuild`` 면 항목
-        목록까지 새로 채운다 (_refresh_cameras 뒤)."""
-        if not hasattr(self, "layout_agent_combo"):
-            return
-        for src, dst in ((self.agent_combo, self.layout_agent_combo),
-                         (self.wrist_combo, self.layout_wrist_combo)):
-            dst.blockSignals(True)
-            if rebuild:
-                dst.clear()
-                for i in range(src.count()):
-                    dst.addItem(src.itemText(i), src.itemData(i))
-            i = src.currentIndex()
-            if i >= 0 and src.itemText(i) == src.currentText():
-                dst.setCurrentIndex(i)
-            else:
-                dst.setCurrentText(src.currentText())
-            dst.blockSignals(False)
-
-    def _on_layout_camera_changed(self) -> None:
-        """Layout 콤보에서 고른 것을 원본으로 밀어넣는다. 원본 시그널이
-        _on_camera_changed 를 태워 미리보기 재시작까지 이어진다."""
-        for src, dst in ((self.layout_agent_combo, self.agent_combo),
-                         (self.layout_wrist_combo, self.wrist_combo)):
-            if src.currentText() == dst.currentText():
-                continue
-            i = src.currentIndex()
-            if i >= 0 and src.itemText(i) == src.currentText():
-                dst.setCurrentIndex(i)
-            else:
-                dst.setCurrentText(src.currentText())
-
-    def _combo_serial(self, combo: QComboBox) -> str:
-        data = combo.currentData()
-        if data:
-            return str(data)
-        text = combo.currentText().strip()
-        return "" if text.startswith("(") else text
-
     def _on_square_guide(self, on: bool) -> None:
         for v in list(self.live_views.values()) + list(self.play_views.values()) \
                 + list(getattr(self, "trim_views", {}).values()):
             v.set_square_guide(on)
-
-    def _on_camera_changed(self) -> None:
-        self._mirror_camera_combos()
-        if self.worker is not None:
-            return  # 세션 중 카메라 교체는 없다 -- 노드도 그대로 둔다
-        self._ensure_camera_node()   # 선택이 바뀌면 노드를 새 구성으로 재시작
-        self._restart_previews()
-
-    def _on_toggle_previews(self) -> None:
-        # 세션 중에도 켜고 끌 수 있다: 카메라 노드가 장치를 갖고 있고 이쪽은
-        # 구독자일 뿐이라 worker 와 경합하지 않는다 (2026-09-01).
-        if self.agent_preview or self.wrist_preview:
-            self._stop_previews_async()
-            for role in ("agent", "wrist"):
-                self.live_views[role].clear_frame(tr("미리보기 중단됨"))
-        else:
-            self._restart_previews()
-
-    def _update_preview_btn(self) -> None:
-        if not hasattr(self, "preview_btn"):
-            return
-        on = bool(self.agent_preview or self.wrist_preview)
-        for btn in (self.preview_btn,
-                    getattr(self, "layout_preview_btn", None)):
-            if btn is not None:
-                btn.setText(tr("미리보기 중단") if on else tr("미리보기 시작"))
-                btn.setEnabled(self.worker is None)
-
-    def _restart_previews(self) -> None:
-        self._stop_previews_async()
-        for role, combo in (("agent", self.agent_combo), ("wrist", self.wrist_combo)):
-            serial = self._combo_serial(combo)
-            if not serial:
-                self.live_views[role].clear_frame(tr("카메라를 선택하세요"))
-                self.right_fields[f"cam_{role}"].setText("-")
-                continue
-            w = CameraPreviewWorker(role, serial)
-            w.frame_ready.connect(lambda f, r=role: self._on_preview_frame(r, f))
-            w.error.connect(lambda m, r=role: self._on_preview_error(r, m))
-            w.start()
-            setattr(self, f"{role}_preview", w)
-            self.right_fields[f"cam_{role}"].setText(serial)
-        self.lights["camera"].set("ok" if (self.agent_preview or self.wrist_preview) else "off",
-                                  tr("미리보기") if (self.agent_preview or self.wrist_preview) else "-")
-        self._update_preview_btn()
 
     def _alert(self, title: str, text: str, icon=None) -> None:
         """Non-modal notice.
@@ -1755,147 +1630,14 @@ class WorkspaceWindow(QMainWindow):
             1000)
         self.lights["camera"].set("busy", tr("정리 중"))
 
-    def _previews_busy(self) -> bool:
-        """Prunes finished previews, skipping any whose C++ side is already gone.
-
-        `sip.isdeleted` must come first and cannot be dropped: a QThread that
-        Qt has destroyed leaves its Python wrapper behind, and *any* call on
-        it -- isRunning() included -- raises "wrapped C/C++ object ... has been
-        deleted". That was this list's normal end state, so the exception fired
-        on the next stop/restart and again from closeEvent.
-        """
-        self._dying_previews = [w for w in self._dying_previews
-                                if not sip.isdeleted(w) and w.isRunning()]
-        return bool(self._dying_previews)
-
-    def _release_preview(self, role: str) -> None:
-        """Asks one preview thread to stop, and cuts it off from the UI now.
-
-        Disconnecting before waiting is the important half. A thread that is
-        slow to notice the stop flag (the wrist D405 can sit inside a read for
-        a second) used to keep emitting frames into the GUI thread the whole
-        time, and if a restart replaced the handle while it was still alive the
-        old one was orphaned but still connected -- so every retry added
-        another 30 fps of scaling work to the UI thread. Once disconnected an
-        orphan is harmless: it only still owns the camera, which is what
-        _previews_busy() reports.
-        """
-        w = getattr(self, f"{role}_preview", None)
-        if w is None:
-            return
-        for sig in (w.frame_ready, w.error):
-            try:
-                sig.disconnect()
-            except TypeError:
-                pass  # already disconnected
-        w.stop()
-        setattr(self, f"{role}_preview", None)
-        if w.isRunning():
-            # No deleteLater: this list is the owner. Having both meant Qt
-            # could free the thread while the list still held the wrapper,
-            # which is exactly what _previews_busy() then tripped over. The
-            # entry is dropped once the thread reports finished, and the last
-            # Python reference goes with it.
-            self._dying_previews.append(w)
-
-    def _stop_previews_async(self) -> None:
-        """Non-blocking stop. The GUI thread never waits on a camera here --
-        that wait was up to 7 s per thread and read as a hang."""
-        for role in ("agent", "wrist"):
-            self._release_preview(role)
-        self.lights["camera"].set("busy" if self._previews_busy() else "off",
-                                  tr("정리 중") if self._previews_busy() else "-")
-        self._update_preview_btn()
-        # 멈춘 치메라의 마지막 프레임을 "현재"로 계속 겹쳐 보이지 않게 한다.
-        cams = self.cameras
-        if cams.last_cam_frame:
-            cams.last_cam_frame.clear()
-            if self.center_tabs.currentIndex() == self._layout_tab_index:
-                for role in ("agent", "wrist"):
-                    self._layout_update_role(role)
-    def _stop_previews_blocking(self, timeout_ms: int = 4000) -> None:
-        """Only for shutdown: wait so the cameras are released before exit.
-
-        Blocking is acceptable here and nowhere else -- the window is closing,
-        so there is no interaction left to make unresponsive.
-        """
-        self._stop_previews_async()
-        for w in self._dying_previews:
-            if not sip.isdeleted(w):
-                w.wait(timeout_ms)
-        self._dying_previews = []
-
-    def _on_preview_frame(self, role: str, frame) -> None:
-        # 기록 중에는 worker 가 별내는 프레임이 이긴다 -- 화면에 보이는 것이
-        # 실제로 파일에 쓰이는 그림이어야 하기 때문이다. 그 외 단계(게이트·
-        # 리셋 대기)에서는 worker 가 치메라를 아예 안 읽으므로 여기가 유일한
-        # 공급원이고, 노드 속도 그대로 나온다.
-        if self.session.current_state == "recording":
-            return
-        cams = self.cameras
-        self._update_live_view(role, frame, cams=cams)
-        if self.center_tabs.currentIndex() == self._layout_tab_index:
-            self._layout_update_role(role)
-        cams.fps_count += 1
-
-    def _update_live_view(self, role: str, frame, cams=None) -> None:
-        """라이브 프레임 공용 경로 -- 원본 캐시 + 표시 (겹침 없음)."""
-        if cams is None:
-            cams = self.cameras
-        cams.last_cam_frame[role] = frame      # 격자 없는 원본을 저장
-        self.live_views[role].set_frame(self._with_grid(role, frame))
-
-    def _set_live_maximized(self, role: "str | None") -> None:
-        """좌우 배치는 유지하고 스플리터 비율만 바꾼다 -- 최대화한 쪽이
-        ~88%, 반대쪽은 아주 작게. 겹침(PiP) 없음. 경계는 드래그로도 조절."""
-        if role == self.cameras.live_maximized:
-            return
-        self.cameras.live_maximized = role
-        total = max(self.live_split.width(), 800)
-        if role is None:
-            self.live_split.setSizes([total // 2, total // 2])
-        else:
-            big, small = int(total * 0.88), max(90, int(total * 0.12))
-            self.live_split.setSizes([big, small] if role == "agent"
-                                     else [small, big])
-        idx = 0 if role is None else self.live_view_combo.findData(role)
-        if idx >= 0 and self.live_view_combo.currentIndex() != idx:
-            self.live_view_combo.blockSignals(True)
-            self.live_view_combo.setCurrentIndex(idx)
-            self.live_view_combo.blockSignals(False)
-
-    def _with_grid(self, role: str, frame):
-        """agent 라이브 화면에만 워크스페이스 3×3 격자를 덧그린다 (사본)."""
-        if role != "agent" or not self.grid_live_check.isChecked():
-            return frame
-        corners = active_corners(self.cameras.grid_store)
-        if not corners:
-            return frame
-        return draw_grid(frame, corners, self.grid_alpha_slider.value())
-
-    def _on_grid_live_toggled(self, on: bool) -> None:
-        self.cameras.grid_store["live_on"] = bool(on)
-        save_grid_store(self.cameras.grid_store)
-        if on and active_corners(self.cameras.grid_store) is None:
-            self.log(tr("[격자] 저장된 격자가 없습니다 — '격자 편집...'에서 "
-                        "만들어 저장하세요."))
-        self._regrid_live()
-
     def _on_grid_alpha(self, val: int) -> None:
         # 드래그 중에는 화면만 갱신하고, 저장은 놓을 때 한 번(_on_grid_alpha_done).
         self.grid_alpha_label.setText(tr("{v}%").format(v=val))
         self.cameras.grid_store["alpha"] = int(val)
-        self._regrid_live()
+        self.camera_ops.regrid_live()
 
     def _on_grid_alpha_done(self) -> None:
         save_grid_store(self.cameras.grid_store)
-
-    def _regrid_live(self) -> None:
-        """마지막 프레임으로 agent 뷰를 다시 그린다 -- 멈춘 화면에서도
-        체크박스/슬라이더가 즉시 반영되게."""
-        frame = self.cameras.last_cam_frame.get("agent")
-        if frame is not None:
-            self.live_views["agent"].set_frame(self._with_grid("agent", frame))
 
     def _on_edit_grid(self) -> None:
         bg = self.cameras.last_cam_frame.get("agent")
@@ -1910,14 +1652,8 @@ class WorkspaceWindow(QMainWindow):
                                save_callback=save_grid_store)
         dlg.exec()
         self.cameras.grid_store = load_grid_store()    # 저장 결과를 다시 정본에서
-        self._regrid_live()
+        self.camera_ops.regrid_live()
 
-    def _on_preview_error(self, role: str, msg: str) -> None:
-        self.live_views[role].clear_frame(tr("미리보기 실패"))
-        self.log(f"[카메라 미리보기 실패] {role}: {msg}")
-        self.lights["camera"].set("bad", tr("오류"))
-
-    # ----------------------------------------------------------- session
     def _on_connect(self) -> None:
         if self.worker is not None:
             self.log("[연결] 이미 세션이 실행 중입니다.")
@@ -1941,7 +1677,7 @@ class WorkspaceWindow(QMainWindow):
             # 연습 모드: writer 에 닿지 않지만 WorkerConfig 라벨용 이름은 필요.
             task = "practice"
         resume = False  # legacy 이어찍기 제거 -- scene 은 scene_resume 이 담당
-        agent, wrist = self._combo_serial(self.agent_combo), self._combo_serial(self.wrist_combo)
+        agent, wrist = self.camera_ops.combo_serial(self.agent_combo), self.camera_ops.combo_serial(self.wrist_combo)
         if not agent or not wrist:
             QMessageBox.warning(self, tr("카메라 선택 필요"),
                                 tr("Agent / Wrist 카메라를 모두 선택하세요."))
@@ -1961,7 +1697,7 @@ class WorkspaceWindow(QMainWindow):
                                    "Camera 메뉴 > 카메라 노드 재시작 후 다시 "
                                    "연결하세요."))
             return
-        self._ensure_camera_node()
+        self.camera_ops.ensure_camera_node()
         try:
             ep_len = float(self.eplen_edit.text())
             reset_wait = float(self.resetwait_edit.text())
@@ -1980,7 +1716,7 @@ class WorkspaceWindow(QMainWindow):
         # depth(포인트클라우드)는 사정이 다르다 -- 그건 여전히 장치를 직접
         # 여는 경로라 여기서 놓아야 한다.
         self._stop_cloud(restore_previews=False)
-        if self._previews_busy():
+        if self.camera_ops.previews_busy():
             if self._connect_wait_since is None:
                 self._connect_wait_since = time.monotonic()
                 self.log("[카메라] 미리보기 정리를 기다리는 중 — 정리되면 자동으로 연결합니다.")
@@ -2054,7 +1790,7 @@ class WorkspaceWindow(QMainWindow):
 
         w = CollectionWorker(cfg)
         w.state_changed.connect(self._on_state)
-        w.frames_ready.connect(self._on_frames)
+        w.frames_ready.connect(self.camera_ops.on_frames)
         w.gate_status.connect(self._on_gate)
         w.pose_match_status.connect(self._on_pose_match)
         w.episode_progress.connect(self._on_progress)
@@ -2136,7 +1872,7 @@ class WorkspaceWindow(QMainWindow):
         # 세션 중에 움직이면 가이드와 기록이 어긋난다. 잠근다.
         for w in self._crop_widgets:
             w.setEnabled(not running)
-        self._update_preview_btn()
+        self.camera_ops.update_preview_btn()
         # scene 세션에서만 slot 전환 패널 노출
         self.slot_box.setVisible(running and self.session.scene_session)
         self.lights["robot"].set("ok" if running else "off",
@@ -2186,16 +1922,6 @@ class WorkspaceWindow(QMainWindow):
         self.right_fields["recording"].setText(tr("기록 중") if recording else tr("대기"))
 
     @pyqtSlot(object, object)
-    def _on_frames(self, agent_rgb, wrist_rgb) -> None:
-        layout_on = self.center_tabs.currentIndex() == self._layout_tab_index
-        cams = self.cameras
-        for role, rgb in (("agent", agent_rgb), ("wrist", wrist_rgb)):
-            if rgb is None:
-                continue
-            self._update_live_view(role, rgb, cams=cams)
-            if layout_on:
-                self._layout_update_role(role)
-        cams.fps_count += 1
     @pyqtSlot(object, object, bool)
     def _on_gate(self, leader, follower, all_ok) -> None:
         if leader is None or follower is None:
@@ -2304,7 +2030,7 @@ class WorkspaceWindow(QMainWindow):
         # 유지하기 위해 -- _emit_gate_status 참고) 미리보기가 그 구간의 유일한
         # 영상 공급원이다. 꺼져 있으면 자세를 맞추는 동안 화면이 빈다.
         if not (self.agent_preview or self.wrist_preview):
-            self._restart_previews()
+            self.camera_ops.restart_previews()
         # 이번 task 카운터는 여기서 0 으로 돌아간다(누적은 그대로). 연습 모드도
         # 마찬가지다 -- NullTaskWriter 도 저장을 받아 넘기므로 카운터는 움직인다.
         self.session.counters = _new_stats()
@@ -2368,7 +2094,7 @@ class WorkspaceWindow(QMainWindow):
         if was_scene:
             # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
             self._refresh_scene_combo()
-        self._restart_previews()
+        self.camera_ops.restart_previews()
         if self.cameras.depth_consumer is not None:
             # 세션 동안 Depth/Point Cloud 탭에 머물러 있었다면 스트림을 다시
             # 올린다 (세션 중엔 안내만 보였다). 미리보기가 뜨는 시간을 준다.
@@ -2400,23 +2126,6 @@ class WorkspaceWindow(QMainWindow):
             return name[: limit - 1] + "…"
         return name
 
-    def _tick_fps(self) -> None:
-        cams = self.cameras
-        cams.fps_value = cams.fps_count
-        cams.fps_count = 0
-        self.right_fields["fps"].setText(f"{cams.fps_value:.0f}")
-        if self.worker is not None and not self.session.no_dataset_session:
-            # max(): 저장이 백그라운드라 episode_list_changed 가 몇 초 늦게 온다.
-            # 그 사이를 연결시점 + 이번 task 저장수로 메운다. _session 이 Connect
-            # 마다 리셋되므로 두 값 모두 지금 task 의 것이다.
-            total = max(len(self.session.active_episode_cache or []),
-                        self.session.episodes_at_connect + self.session.counters["saved"])
-            count = tr("{k}: 에피소드 {t}개 (이번 +{s})").format(
-                k=self._current_task_label(limit=32), t=total, s=self.session.counters["saved"])
-        else:
-            count = tr("저장 {s}").format(s=self.session.cumulative["saved"])
-        self.sb_right.setText(
-            f"{cams.fps_value:.0f} fps   |   {count}   |   {self.root_edit.text()}")
     def _refresh_plan_progress(self) -> None:
         """Statistics 의 계획 진행률 표 -- 계획 × 실제 scene 파일 대조."""
         tree = getattr(self, "plan_progress_tree", None)
@@ -3485,116 +3194,6 @@ class WorkspaceWindow(QMainWindow):
 
     # ------------------------------------------------------------- node
     # ------------------------------------------------- 카메라 노드 (별도 프로세스)
-    def _camera_node_specs(self) -> list:
-        specs = []
-        for role, combo in (("agent", self.agent_combo),
-                            ("wrist", self.wrist_combo)):
-            serial = self._combo_serial(combo)
-            if serial:
-                specs.append(f"{role}:{serial}")
-        return specs
-
-    def _on_restart_camera_node(self) -> None:
-        self.cameras.camera_node_user_stopped = False
-        self._ensure_camera_node(restart=True)
-
-    def _on_stop_camera_node_manual(self) -> None:
-        """카메라를 완전히 놓는다 -- VLA 배포 등 외부 프로그램이 장치를
-        직접 열 수 있게. 미리보기·depth 뷰도 함께 내린다 (구독자만 남으면
-        에러만 5초마다 찍는다)."""
-        if self.worker is not None:
-            QMessageBox.warning(self, tr("세션 진행 중"),
-                                tr("수집 세션이 카메라를 쓰고 있습니다. "
-                                   "세션 종료 후 노드를 내리세요."))
-            return
-        self.cameras.camera_node_user_stopped = True
-        self._stop_cloud(restore_previews=False)
-        self._stop_previews_async()
-        self._stop_camera_node()
-        for role in ("agent", "wrist"):
-            self.live_views[role].clear_frame(tr("카메라 노드 종료됨"))
-        self.lights["camera"].set("off", tr("노드 종료"))
-        self.log("[카메라노드] 수동 종료 — 카메라가 해제되어 다른 프로그램"
-                 "(VLA 정책 클라이언트 등)이 열 수 있습니다. 다시 쓰려면 "
-                 "Camera 메뉴 > 카메라 노드 재시작.")
-
-    def _ensure_camera_node(self, restart: bool = False) -> None:
-        """카메라 노드 프로세스를 현재 콤보 선택과 일치하게 유지한다.
-
-        이미 같은 구성으로 떠 있으면 아무것도 하지 않는다 -- 노드의 가치는
-        "카메라를 한 번 열고 계속 스트리밍"에 있으므로 불필요한 재시작이
-        가장 나쁘다. 선택이 바뀌었거나 죽었을 때만 (재)시작한다. 수동 종료
-        래치가 켜져 있으면 건드리지 않는다 (외부 프로그램이 카메라를 쓰는
-        중일 수 있다 -- restart=True 도 래치를 풀지 않는다, 그건
-        _on_restart_camera_node 만 한다)."""
-        if self.cameras.camera_node_user_stopped:
-            return
-        specs = self.cameras.camera_node_specs()
-        key = ",".join(specs)
-        running = (self.procs.camera_node_process is not None and
-                   self.procs.camera_node_process.state()
-                   != QProcess.ProcessState.NotRunning)
-        if running and not restart and key == self.cameras.camera_node_spec:
-            return
-        if running:
-            self._stop_camera_node()
-        if not specs:
-            return
-        proc = QProcess(self)
-        proc.setProgram(sys.executable)
-        proc.setArguments(["-m", "gello.comm.camera_node", "--die-with-parent"]
-                          + [a for sp in specs for a in ("--cam", sp)])
-        proc.setWorkingDirectory(str(Path(__file__).resolve().parent.parent))
-        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        proc.readyReadStandardOutput.connect(self._on_camera_node_output)
-        proc.finished.connect(self._on_camera_node_finished)
-        self.procs.camera_node_process = proc
-        self.cameras.camera_node_spec = key
-        self.log(f"[카메라노드] 시작: {key}")
-        proc.start()
-
-    def _on_camera_node_output(self) -> None:
-        if self.procs.camera_node_process is None:
-            return
-        for line in self._proc_text(self.procs.camera_node_process).splitlines():
-            if line.strip():
-                self.log(f"[카메라노드] {line.rstrip()}")
-
-    def _on_camera_node_finished(self, code: int, _status) -> None:
-        proc = self.sender()
-        if proc is not self.procs.camera_node_process:
-            # _stop_camera_node() 나 _ensure(재시작) 가 이미 손을 뗀 프로세스
-            # -- 의도된 종료라 조용히 보낸다.
-            self.log(f"[카메라노드] 종료 (exit={code})")
-            return
-        # 비정상 종료 -- 자동 재시작한다. 단 crash-loop(예: 포트 충돌로
-        # 뜨자마자 죽는 상태)이면 로그만 가득 채우므로 60초 내 3회를 넘으면
-        # 멈추고 수동(카메라 메뉴)으로 넘긴다.
-        self.procs.camera_node_process = None
-        self.cameras.camera_node_spec = ""
-        now = time.monotonic()
-        self.cameras.camera_node_crashes = [
-            t for t in self.cameras.camera_node_crashes if now - t < 60.0] + [now]
-        if len(self.cameras.camera_node_crashes) > 3:
-            self.log(f"[카메라노드] 비정상 종료 (exit={code}) — 60초 내 "
-                     f"{len(self.cameras.camera_node_crashes)}회째, 자동 재시작을 "
-                     "멈춥니다. Camera 메뉴 > 카메라 노드 재시작으로 수동 "
-                     "시작하세요.")
-            return
-        self.log(f"[카메라노드] 비정상 종료 (exit={code}) — 2초 후 자동 재시작")
-        QTimer.singleShot(2000, self._ensure_camera_node)
-
-    def _stop_camera_node(self) -> None:
-        proc = self.procs.camera_node_process
-        self.procs.camera_node_process = None
-        self.cameras.camera_node_spec = ""
-        if proc is None or proc.state() == QProcess.ProcessState.NotRunning:
-            return
-        proc.terminate()
-        if not proc.waitForFinished(3000):
-            proc.kill()
-            proc.waitForFinished(2000)
-
     def _on_start_node(self) -> None:
         if self.procs.node_process is not None and \
                 self.procs.node_process.state() != QProcess.ProcessState.NotRunning:
@@ -3703,7 +3302,7 @@ class WorkspaceWindow(QMainWindow):
             # 라이브 뷰 더블클릭 = 그 카메라 최대화/복원 토글
             for r, v in getattr(self, "live_views", {}).items():
                 if obj is v:
-                    self._set_live_maximized(
+                    self.camera_ops.set_live_maximized(
                         None if self.cameras.live_maximized == r else r)
                     return True
         if obj is getattr(self, "depth_view", None):
@@ -3773,8 +3372,8 @@ class WorkspaceWindow(QMainWindow):
         if self.playback.play_loader is not None:
             self.playback.play_loader.wait(3000)
         self._stop_cloud(restore_previews=False)
-        self._stop_previews_blocking()
-        self._stop_camera_node()
+        self.camera_ops.stop_previews_blocking()
+        self.camera_ops.stop_camera_node()
         if self.worker is not None and self.worker.isRunning():
             self.worker.cmd_quit()
             self.worker.wait(5000)

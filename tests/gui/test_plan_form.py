@@ -92,8 +92,8 @@ assert w, "push 동사 경고가 안 남음"
 print(f"4 통과: scene 추가({next_sid}, I000부터) + 검증 게이트 + 동사 경고 전달")
 
 # ---- 5. Configure 계획 문장 드롭다운 ----
-cw.WorkspaceWindow._refresh_cameras = lambda self: None
-cw.WorkspaceWindow._restart_previews = lambda self: None
+cw.CameraOps.refresh_cameras = lambda self: None
+cw.CameraOps.restart_previews = lambda self: None
 win = cw.WorkspaceWindow(None)
 i = win.plan_combo.findText("pilot.json")
 assert i >= 0

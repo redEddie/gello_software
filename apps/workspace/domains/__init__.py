@@ -11,7 +11,8 @@ tests/gui/test_domain_attrs.py checks every ``self.win.<name>`` against a real
 window instance.
 """
 
+from apps.workspace.domains.camera import CameraOps
 from apps.workspace.domains.playback import PlaybackOps
 from apps.workspace.domains.upload import UploadOps
 
-__all__ = ["PlaybackOps", "UploadOps"]
+__all__ = ["CameraOps", "PlaybackOps", "UploadOps"]

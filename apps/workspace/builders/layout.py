@@ -89,7 +89,7 @@ def build_center(win) -> None:
     win.live_view_combo.addItem(tr("Agent 최대"), "agent")
     win.live_view_combo.addItem(tr("Wrist 최대"), "wrist")
     win.live_view_combo.currentIndexChanged.connect(
-        lambda *_: win._set_live_maximized(win.live_view_combo.currentData()))
+        lambda *_: win.camera_ops.set_live_maximized(win.live_view_combo.currentData()))
     grow.addWidget(win.live_view_combo)
     grow.addSpacing(16)
     grow.addWidget(win.square_guide_check)
@@ -100,7 +100,7 @@ def build_center(win) -> None:
     win.grid_live_check.setToolTip(tr(
         "저장된 워크스페이스 격자를 agent 라이브 화면에 겹쳐 보입니다.\n"
         "물체를 어느 칸(A1..C3)에 놓을지 확인하는 용도입니다."))
-    win.grid_live_check.toggled.connect(win._on_grid_live_toggled)
+    win.grid_live_check.toggled.connect(win.camera_ops.on_grid_live_toggled)
     grow.addWidget(win.grid_live_check)
     win.grid_alpha_slider = QSlider(Qt.Orientation.Horizontal)
     win.grid_alpha_slider.setRange(10, 100)

@@ -54,8 +54,8 @@ from tests.gui.helpers import _wait_recs  # noqa: E402
 import collect_workspace as cw  # noqa: E402
 from apps.dialogs.recommend_dialog import RecommendDialog  # noqa: E402
 
-cw.WorkspaceWindow._refresh_cameras = lambda self: None
-cw.WorkspaceWindow._restart_previews = lambda self: None
+cw.CameraOps.refresh_cameras = lambda self: None
+cw.CameraOps.restart_previews = lambda self: None
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
 # 탭 진입: 카메라 미선택 -> 안내만, 워커 없음

@@ -39,7 +39,7 @@ def build_toolbar(win) -> None:
     add("discard", tr("🗑 Discard"), lambda: win._cmd("cmd_discard_episode"))
     tb.addSeparator()
     add("home", tr("⌂ Home"), lambda: win._cmd("cmd_go_home"))
-    add("refresh_cam", tr("⟳ Camera"), win._refresh_cameras)
+    add("refresh_cam", tr("⟳ Camera"), win.camera_ops.refresh_cameras)
     tb.addSeparator()
     add("upload", tr("☁ Upload"), lambda: win._set_activity("upload"))
 
@@ -79,12 +79,12 @@ def build_menu(win) -> None:
     m.addAction(tr("홈으로"), lambda: win._cmd("cmd_go_home"))
 
     m = mb.addMenu(tr("Camera"))
-    m.addAction(tr("새로고침"), win._refresh_cameras)
-    m.addAction(tr("미리보기 중지"), win._stop_previews_async)
+    m.addAction(tr("새로고침"), win.camera_ops.refresh_cameras)
+    m.addAction(tr("미리보기 중지"), win.camera_ops.stop_previews_async)
     m.addAction(tr("카메라 노드 재시작"),
-                win._on_restart_camera_node)
+                win.camera_ops.on_restart_camera_node)
     m.addAction(tr("카메라 노드 종료 (카메라 해제)"),
-                win._on_stop_camera_node_manual)
+                win.camera_ops.on_stop_camera_node_manual)
 
     m = mb.addMenu(tr("View"))
     for key, _icon, title, _tip in ACTIVITIES:

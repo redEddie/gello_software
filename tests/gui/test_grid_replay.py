@@ -85,8 +85,8 @@ print("2 통과: 정렬(y 평균)·변환 플래그·저장(active 지정)·불�
 
 # ---- 3. 윈도우: 라이브 오버레이 + 재생 버튼 가드 ----
 infos, warns = [], []
-cw.WorkspaceWindow._refresh_cameras = lambda self: None
-cw.WorkspaceWindow._restart_previews = lambda self: None
+cw.CameraOps.refresh_cameras = lambda self: None
+cw.CameraOps.restart_previews = lambda self: None
 cw.QMessageBox.warning = staticmethod(
     lambda *a, **k: warns.append(a[2] if len(a) > 2 else ""))
 cw.QMessageBox.information = staticmethod(
@@ -96,28 +96,28 @@ win.cameras.grid_store = {"active": "g", "live_on": True, "alpha": 60,
                    "grids": {"g": DEFAULT_CORNERS}}
 win.grid_live_check.setChecked(True)
 frame = np.full((480, 640, 3), 20, np.uint8)
-shown = win._with_grid("agent", frame)
+shown = win.camera_ops.with_grid("agent", frame)
 assert (shown != frame).any() and (frame == 20).all()
-assert win._with_grid("wrist", frame) is frame  # wrist 는 그대로
+assert win.camera_ops.with_grid("wrist", frame) is frame  # wrist 는 그대로
 win.grid_live_check.setChecked(False)
-assert win._with_grid("agent", frame) is frame
+assert win.camera_ops.with_grid("agent", frame) is frame
 print("3 통과: agent 라이브만 오버레이, 체크 해제 시 원본")
 
 # ---- 3b. 카메라 최대화: 좌우 배치 유지, 스플리터 비율만 (겹침 없음) ----
 win.cameras.last_cam_frame["agent"] = np.full((480, 640, 3), 40, np.uint8)
 win.cameras.last_cam_frame["wrist"] = np.full((480, 640, 3), 90, np.uint8)
-win._set_live_maximized("wrist")
+win.camera_ops.set_live_maximized("wrist")
 sizes = win.live_split.sizes()
 assert sizes[1] > sizes[0] * 4, sizes                   # wrist 크게, agent 아주 작게
 assert not win.live_boxes["agent"].isHidden()           # 둘 다 보인다 (겹침 없음)
 assert win.live_view_combo.currentData() == "wrist"     # 콤보 동기화
 # 프레임은 각자 자기 뷰로만 간다 (합성 없음)
-win._update_live_view("agent", np.full((480, 640, 3), 41, np.uint8))
+win.camera_ops.update_live_view("agent", np.full((480, 640, 3), 41, np.uint8))
 assert win.live_views["agent"].pixmap() is not None
-win._set_live_maximized("agent")
+win.camera_ops.set_live_maximized("agent")
 sizes = win.live_split.sizes()
 assert sizes[0] > sizes[1] * 4, sizes                   # 반대 선택 시 반대로
-win._set_live_maximized(None)                           # 나란히 복원
+win.camera_ops.set_live_maximized(None)                           # 나란히 복원
 sizes = win.live_split.sizes()
 assert abs(sizes[0] - sizes[1]) <= max(sizes) * 0.2
 assert win.live_view_combo.currentIndex() == 0

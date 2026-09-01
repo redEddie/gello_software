@@ -163,8 +163,8 @@ print(f"4 통과: 자동 종료 없음 + 버튼 종료 + 프레임 {len(frames)}
 # ---- 5. GUI: 게이트에서 자세 맞을 때만 Start 활성 ----
 import collect_workspace as cw  # noqa: E402
 
-cw.WorkspaceWindow._refresh_cameras = lambda self: None
-cw.WorkspaceWindow._restart_previews = lambda self: None
+cw.CameraOps.refresh_cameras = lambda self: None
+cw.CameraOps.restart_previews = lambda self: None
 cw.WorkspaceWindow._startup_tuning = lambda self: None   # pkexec 비밀번호 창 차단
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)

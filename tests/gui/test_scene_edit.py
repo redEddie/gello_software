@@ -128,8 +128,8 @@ app = QApplication(sys.argv)
 import collect_workspace as cw  # noqa: E402
 from gello.data.libero_format import hdf5_repack_status  # noqa: E402
 
-cw.WorkspaceWindow._refresh_cameras = lambda self: None
-cw.WorkspaceWindow._restart_previews = lambda self: None
+cw.CameraOps.refresh_cameras = lambda self: None
+cw.CameraOps.restart_previews = lambda self: None
 cw.QMessageBox.warning = staticmethod(
     lambda *a, **k: cw.QMessageBox.StandardButton.Yes)   # 성공분 경고 경로도 Yes
 cw.QMessageBox.question = staticmethod(

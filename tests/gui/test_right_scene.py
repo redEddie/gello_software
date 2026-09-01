@@ -12,8 +12,8 @@ app = QApplication(sys.argv)
 import collect_workspace as cw  # noqa: E402
 from gello.scene.scene_format import SceneMetadata  # noqa: E402
 
-cw.WorkspaceWindow._refresh_cameras = lambda self: None
-cw.WorkspaceWindow._restart_previews = lambda self: None
+cw.CameraOps.refresh_cameras = lambda self: None
+cw.CameraOps.restart_previews = lambda self: None
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
 assert "세션 없음" in win.right_scene_view.text()
