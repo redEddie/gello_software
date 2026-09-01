@@ -134,7 +134,7 @@ for name, q in (("episode_000", "success"), ("episode_001", "failed")):
 lp = QTreeWidgetItem(["t_demo.hdf5", "", ""])
 win.dataset_tree.addTopLevelItem(lp)
 lp.addChild(QTreeWidgetItem(["  demo_0", "10", cw.tr("실패")]))
-win._on_select_failed()
+win.dataset_ops.on_select_failed()
 sel = [i.text(0) for i in win.dataset_tree.selectedItems()]
 assert "episode_001" in sel, sel                 # scene 실패 선택됨
 assert any("demo_0" in s for s in sel), sel      # legacy 실패도

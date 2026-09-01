@@ -31,11 +31,11 @@ def build_dataset(win) -> QWidget:
     win.dataset_root_edit = QLineEdit(
         win.root_edit.text() if hasattr(win, "root_edit")
         else str(Path.home() / "libero_datasets"))
-    win.dataset_root_edit.editingFinished.connect(win._refresh_dataset_tree)
+    win.dataset_root_edit.editingFinished.connect(win.dataset_ops.refresh_dataset_tree)
     dr.addWidget(win.dataset_root_edit, 1)
     dbrowse = QPushButton(tr("..."))
     dbrowse.setMaximumWidth(36)
-    dbrowse.clicked.connect(win._browse_dataset_root)
+    dbrowse.clicked.connect(win.dataset_ops.browse_dataset_root)
     dr.addWidget(dbrowse)
     col.addLayout(dr)
     search = QLineEdit()
@@ -50,7 +50,7 @@ def build_dataset(win) -> QWidget:
     win.dataset_tree.setSelectionMode(
         QAbstractItemView.SelectionMode.ExtendedSelection)
     win.dataset_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-    win.dataset_tree.itemSelectionChanged.connect(win._on_dataset_selection)
+    win.dataset_tree.itemSelectionChanged.connect(win.dataset_ops.on_dataset_selection)
     col.addWidget(win.dataset_tree, 1)
     # 파일 삭제는 여기 없다. 에피소드 삭제 바로 옆에 두었더니 실제로 오클릭이
     # 났고, 한 번에 태스크 하나가 통째로 날아간다. 되돌릴 수 없는 조작은
@@ -59,7 +59,7 @@ def build_dataset(win) -> QWidget:
     # 두 줄로 나누고 삭제만 떼어놓는 이유는 폭이 아니라 종류다. 위 네 개는
     # 읽거나 고르기만 하고, 아래 하나만 파일을 바꾼다 -- 한 줄에 다섯 개가
     # 나란히 있으면 그 차이가 라벨 글자에만 남는다.
-    for pair in ((("새로고침", win._refresh_dataset_tree,
+    for pair in ((("새로고침", win.dataset_ops.refresh_dataset_tree,
                    "데이터 폴더를 다시 읽어 목록을 새로 그립니다."),
                   ("구조 확인", win.playback_ops.on_show_structure,
                    "선택한 *파일*의 에피소드 수·용량·이미지 압축·재압축 이력과\n"
@@ -71,10 +71,10 @@ def build_dataset(win) -> QWidget:
                   ("myHDF5 (웹)", win.upload.on_myhdf5,
                    "브라우저에서 myhdf5.hdfgroup.org 를 엽니다.\n"
                    "파일을 창에 끌어다 놓으면 같은 구조를 웹에서 봅니다.")),
-                 (("실패만 선택", win._on_select_failed,
+                 (("실패만 선택", win.dataset_ops.on_select_failed,
                    "success=False 로 표시된 에피소드를 모두 선택합니다.\n"
                    "선택만 하고 지우지 않습니다."),
-                  ("튀는 것만 선택", win._on_select_jerky,
+                  ("튀는 것만 선택", win.dataset_ops.on_select_jerky,
                    "같은 (scene·문장) 그룹 평균과 ±{d} 넘게 차이 나는 에피소드를 모두 선택합니다.\n"
                    "선택만 하고 지우지 않습니다. (Analysis 탭과 같은 기준)"))):
         row = QHBoxLayout()
@@ -103,7 +103,7 @@ def build_dataset(win) -> QWidget:
         "scene 에피소드 전용. 선택한 에피소드의 quality_status 를 성공↔실패로 "
         "뒤집습니다.\nscene 체계에서 삭제를 대신하는 큐레이션 수단입니다 -- "
         "변환은 success 만 내보냅니다.\nbad_data 등 다른 상태는 건드리지 않습니다."))
-    relabel_btn.clicked.connect(win._on_relabel_selected)
+    relabel_btn.clicked.connect(win.dataset_ops.on_relabel_selected)
     col.addWidget(relabel_btn)
 
     # 재생 중에는 이 버튼 자체가 '■ 재생 중단' 으로 바뀐다 -- 별도 중단
@@ -125,7 +125,7 @@ def build_dataset(win) -> QWidget:
         "\n되돌릴 수 없습니다. 수집 중이 아닌 "
         "파일이면 세션 없이도 삭제됩니다. 파일 통째 삭제는 Dataset 메뉴에."))
     del_btn.setStyleSheet("background-color:#c0392b; color:white; padding:6px;")
-    del_btn.clicked.connect(win._on_delete_selected)
+    del_btn.clicked.connect(win.dataset_ops.on_delete_selected)
     col.addWidget(del_btn)
 
     # 빈 채로 시작한다. 고정 안내문은 매번 같은 말을 차지하기만 했고, 정작

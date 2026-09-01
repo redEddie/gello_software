@@ -212,7 +212,7 @@ class PlaybackOps:
             return
         self.win.log(f"[트림] {Path(path).name} {demo}: {self.win.playback.trim_n} → {new_n}프레임 "
                  f"(−{n_trim})")
-        self.win._refresh_dataset_tree()
+        self.win.dataset_ops.refresh_dataset_tree()
         self.win._refresh_analysis(force=True)
         self.show_trim_for(path, demo)
 
@@ -365,7 +365,7 @@ class PlaybackOps:
                                 tr("수집 세션 중에는 실로봇 재생을 할 수 "
                                    "없습니다. 먼저 세션을 종료하세요."))
             return
-        busy = self.win._busy_reason()
+        busy = self.win.dataset_ops.busy_reason()
         if busy:
             QMessageBox.warning(self.win, tr("재생 불가"),
                                 tr("{w} 이(가) 파일을 사용 중입니다. 끝난 뒤 "
@@ -457,7 +457,7 @@ class PlaybackOps:
                         self.win.log(f"[썸네일] {sid}: {n_thumbs}개 캐시 무효화")
                 except Exception as e:  # noqa: BLE001
                     self.win.log(f"[썸네일 캐시 정리 실패] {e}")
-        self.win._refresh_dataset_tree()
+        self.win.dataset_ops.refresh_dataset_tree()
         if self.win.session.scene_session:
             # 저장/재판정마다 saver 가 새 목록을 보내온다 -- slot 카운트 갱신
             self.win.scene_ops.refresh_slot_panel()
@@ -465,7 +465,7 @@ class PlaybackOps:
 
     # -------------------------------------------------------------- hdf5 view
     def on_show_structure(self) -> None:
-        path = self.win._selected_file()
+        path = self.win.dataset_ops.selected_file()
         if path is None:
             QMessageBox.information(self.win, tr("선택 필요"), tr("파일을 선택하세요."))
             return

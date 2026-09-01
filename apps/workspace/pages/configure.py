@@ -122,7 +122,7 @@ def build_configure(win) -> QWidget:
     rl.addWidget(win.root_edit, 1)
     browse = QPushButton(tr("..."))
     browse.setMaximumWidth(36)
-    browse.clicked.connect(win._browse_root)
+    browse.clicked.connect(win.dataset_ops.browse_root)
     rl.addWidget(browse)
     sc_form.addRow(tr("저장 경로"), root_row)
     win.scene_info = SceneInfoView()

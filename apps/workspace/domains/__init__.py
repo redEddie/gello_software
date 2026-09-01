@@ -12,9 +12,10 @@ window instance.
 """
 
 from apps.workspace.domains.camera import CameraOps
+from apps.workspace.domains.dataset import DatasetOps
 from apps.workspace.domains.depth import DepthOps
 from apps.workspace.domains.playback import PlaybackOps
 from apps.workspace.domains.scene import SceneOps
 from apps.workspace.domains.upload import UploadOps
 
-__all__ = ["CameraOps", "DepthOps", "PlaybackOps", "SceneOps", "UploadOps"]
+__all__ = ["CameraOps", "DatasetOps", "DepthOps", "PlaybackOps", "SceneOps", "UploadOps"]

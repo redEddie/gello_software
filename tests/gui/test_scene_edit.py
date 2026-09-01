@@ -142,7 +142,7 @@ sc_eps = list_scene_episodes(scene)
 sc_names = [e["name"] for e in sc_eps]
 victim_uid5 = sc_eps[0]["episode_uid"]
 n5 = len(sc_eps)
-ok = win._delete_episodes({scene: [sc_names[0]], legacy: ["demo_0"]})
+ok = win.dataset_ops.delete_episodes({scene: [sc_names[0]], legacy: ["demo_0"]})
 assert ok
 after = list_scene_episodes(scene)
 assert len(after) == n5 - 1
@@ -172,18 +172,18 @@ have_repo = bool(win.upload.repo_id_for("repo_id"))
 # (a) 사이드카에 이 uid 가 있음 -> "올라가 있음 + 재빌드"
 _sync.hub_episode_uids = lambda repo: ({uid0}, "")
 _sync.hub_meta = lambda repo: ({cur[0]["instruction"]: 99}, {}, "")
-rows, n_ok, note = win._describe_delete_targets(targets)
+rows, n_ok, note = win.dataset_ops.describe_delete_targets(targets)
 assert len(rows) == 2 and all("EP-" in r_ for r_ in rows)
 if have_repo:
     assert "재빌드" in note and uid0 in note, note
 # (b) 사이드카는 있는데 이 uid 없음 -> 같은 문장이 있어도 "올라가 있지 않음"
 _sync.hub_episode_uids = lambda repo: ({"EP-S999-I000-E000"}, "")
-_, _, note_b = win._describe_delete_targets(targets)
+_, _, note_b = win.dataset_ops.describe_delete_targets(targets)
 if have_repo:
     assert "올라가 있지 않습니다" in note_b, note_b
 # (c) 사이드카 없음(legacy repo) -> 문장 일치는 '참고' 로만, 올라갔다고 하지 않음
 _sync.hub_episode_uids = lambda repo: (None, "")
-_, _, note_c = win._describe_delete_targets(targets)
+_, _, note_c = win.dataset_ops.describe_delete_targets(targets)
 if have_repo:
     assert "참고" in note_c and "올라갔다는 뜻은 아닙니다" in note_c, note_c
 print(f"7 통과: 확인창 목록 {len(rows)}행 + Hub 안내 uid 단위 3경로 (repo 설정={'O' if have_repo else '-'})")
@@ -224,7 +224,7 @@ def _capture_question(parent, title, body, *args, **kwargs):
 
 cw.QMessageBox.warning = staticmethod(_capture_warning)
 cw.QMessageBox.question = staticmethod(_capture_question)
-win._refresh_dataset_tree = lambda: None
+win.dataset_ops.refresh_dataset_tree = lambda: None
 
 win.repo_edits["repo_id"].setText("test/repo")
 uid9 = cur[0]["episode_uid"]
@@ -233,7 +233,7 @@ _sync.hub_meta = lambda repo: ({cur[0]["instruction"]: 99}, {}, "")
 
 win.dataset_tree.selectedItems = lambda: [_MockItem(_MockParent(scene), cur[0]["name"])]
 captured_dialogs.clear()
-win._on_delete_selected()
+win.dataset_ops.on_delete_selected()
 
 assert captured_dialogs, "확인창이 뜨지 않음"
 kind, title, body, wargs, wkw = captured_dialogs[-1]

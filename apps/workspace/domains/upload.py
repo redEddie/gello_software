@@ -53,7 +53,7 @@ class UploadOps:
 
     def on_myhdf5(self) -> None:
         webbrowser.open("https://myhdf5.hdfgroup.org/")
-        path = self.win._selected_file()
+        path = self.win.dataset_ops.selected_file()
         if path is not None:
             self.win.log(tr("[myHDF5] 브라우저 창에 파일을 끌어다 놓으세요: {p}")
                      .format(p=path))
@@ -552,7 +552,7 @@ class UploadOps:
         proc.readyReadStandardOutput.connect(
             lambda: self.win._pipe(proc, "[재압축]", "upload"))
         proc.finished.connect(lambda c, _s: (self.win.log(f"[재압축] 종료 (exit={c})", "upload"),
-                                             self.win._refresh_dataset_tree()))
+                                             self.win.dataset_ops.refresh_dataset_tree()))
         self.win.procs.repack_process = proc
         self.win.bottom_tabs.setCurrentWidget(self.win.upload_view)
         self.win.log(f"[재압축] 시작: {len(selected)}개 파일", "upload")

@@ -72,7 +72,7 @@ h5py.File = fail_h5py_File
 try:
     win.session.active_file_path = scene
     win.session.active_episode_cache = eps
-    ok = win._relabel_episodes(
+    ok = win.dataset_ops.relabel_episodes(
         {scene: [success_ep["name"], bad_data_ep["name"]]})
     assert ok
     # bad_data 는 success/failed 가 아니므로 skipped 되고 saver 호출은 1개뿐
@@ -88,7 +88,7 @@ stub_saver.calls.clear()
 logs: list = []
 win.log = lambda msg: logs.append(str(msg))
 win.session.active_episode_cache = [success_ep]
-ok = win._relabel_episodes({scene: [success_ep["name"], bad_data_ep["name"]]})
+ok = win.dataset_ops.relabel_episodes({scene: [success_ep["name"], bad_data_ep["name"]]})
 assert ok
 assert len(stub_saver.calls) == 1
 assert stub_saver.calls[0] == (success_ep["name"], False)
@@ -107,7 +107,7 @@ win.session.active_episode_cache = None
 eps = list_scene_episodes(scene)
 target_scene = eps[0]
 old_q = target_scene["quality_status"]
-ok = win._relabel_episodes({scene: [target_scene["name"]]})
+ok = win.dataset_ops.relabel_episodes({scene: [target_scene["name"]]})
 assert ok
 eps_after = list_scene_episodes(scene)
 new_q = next(e["quality_status"] for e in eps_after

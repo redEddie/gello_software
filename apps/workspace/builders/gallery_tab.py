@@ -40,7 +40,7 @@ def build_gallery_tab(win) -> QWidget:
     b.clicked.connect(win._refresh_gallery_scenes)
     row.addWidget(b)
     win.gallery_relabel_btn = QPushButton(tr("선택 재판정"))
-    win.gallery_relabel_btn.clicked.connect(win._on_gallery_relabel)
+    win.gallery_relabel_btn.clicked.connect(win.dataset_ops.on_gallery_relabel)
     row.addWidget(win.gallery_relabel_btn)
     win.gallery_replay_btn = QPushButton(tr("실로봇 재생"))
     win.gallery_replay_btn.setToolTip(tr(
