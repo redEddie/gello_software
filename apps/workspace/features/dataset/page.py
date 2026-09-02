@@ -18,7 +18,7 @@ from gello.data.episode_stats import TASK_DEV_LIMIT
 from gello.gui.constants import TODO_MARK
 from gello.gui.i18n import tr
 
-from apps.dialogs._widgets import mark_todo
+from apps.workspace.shared.widgets import mark_todo
 
 
 def build_dataset(win) -> QWidget:

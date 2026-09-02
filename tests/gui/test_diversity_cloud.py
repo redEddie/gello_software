@@ -10,7 +10,7 @@ sys.path.insert(0, WT)
 sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
-from apps.dialogs._image_utils import _depth_colormap  # noqa: E402
+from apps.workspace.shared.image_utils import depth_colormap  # noqa: E402
 
 # ---- 1. 추천기 selftest (거리·제약·결정성·비중복) ----
 r = subprocess.run([sys.executable, WT + "/scripts/analyze/recommend_scene.py",
@@ -131,10 +131,10 @@ print("6 통과: Depth 탭 -- 진입/이탈, 컬러맵 렌더, 범위 슬라이�
 
 # ---- 7. 척도 바: 큰 프레임엔 그려지고 작은 프레임엔 생략 ----
 big = np.full((480, 640), 0.6, np.float32)
-out = _depth_colormap(big, 1.2)
+out = depth_colormap(big, 1.2)
 bar = out[120:360, 640 - 28:640 - 10]        # 오른쪽 컬러바 영역
 assert bar.std() > 20, "척도 바가 안 그려짐"    # 그라데이션 존재
-small = _depth_colormap(np.full((48, 64), 0.6, np.float32), 1.2)
+small = depth_colormap(np.full((48, 64), 0.6, np.float32), 1.2)
 assert small.shape == (48, 64, 3)              # 작은 입력은 바 생략, 무오류
 print("7 통과: depth 척도 바 (대형 프레임 표시 / 소형 생략)")
 

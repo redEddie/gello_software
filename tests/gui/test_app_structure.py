@@ -151,8 +151,8 @@ print("4. apps/ 순환 임포트 없음 OK")
 
 # ------------------------------------------------------------------ 5
 # 패키지 __init__ 이 광고하는 이름은 실제로 임포트돼야 한다.
-import apps.dialogs as D            # noqa: E402
-import apps.workspace.builders as B  # noqa: E402
+import apps.workspace.shared as D   # noqa: E402
+import apps.workspace.shell as B    # noqa: E402
 
 for mod in (D, B):
     names = getattr(mod, "__all__", None)

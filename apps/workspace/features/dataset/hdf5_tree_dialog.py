@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 from gello.gui.widgets import np_to_pixmap
 from gello.gui.i18n import tr
 
-from apps.dialogs._image_utils import _depth_colormap
+from apps.workspace.shared.image_utils import depth_colormap
 
 
 class Hdf5TreeDialog(QDialog):
@@ -166,7 +166,7 @@ class Hdf5TreeDialog(QDialog):
                         z = (obj[0] if obj.ndim == 3 else obj[...]) / 1000.0
                         valid = z > 0
                         zmax = float(np.percentile(z[valid], 98)) if valid.any() else 1.0
-                        arr = _depth_colormap(z.astype(np.float32), zmax)
+                        arr = depth_colormap(z.astype(np.float32), zmax)
                         lines.append("")
                         lines.append(tr("(depth 첫 프레임 · 척도 ~{m:.2f}m)")
                                      .format(m=zmax))

@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from apps.dialogs._widgets import SceneInfoView
+from apps.workspace.shared.widgets import SceneInfoView
 from apps.workspace.features.scene.dialogs.recommend_dialog import RecommendDialog
 from gello.gui.i18n import tr
 from gello.scene.props import load_props, props_by_id

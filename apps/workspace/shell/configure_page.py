@@ -18,8 +18,8 @@ from gello.gui.i18n import tr
 from gello.robots.franka_fr3 import FR3_RESET_POSES
 from gello.scene.collection_plan import list_plans
 
-from apps.dialogs._widgets import SceneInfoView
-from apps.workspace.sizing import shrinkable_combo
+from apps.workspace.shared.widgets import SceneInfoView
+from apps.workspace.shared.sizing import shrinkable_combo
 
 
 def build_configure(win) -> QWidget:

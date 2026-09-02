@@ -28,7 +28,9 @@ Arrows point down only. `tests/gui/test_layer_rules.py` enforces this.
   Emits Qt signals but is not a widget; it is allowed to know concrete hardware.
 - `gello/gui/` — Qt only (widgets, dialogs, workers). `gello/comm/` — zmq nodes;
   the process boundary is itself the abstraction, so `gui` may use it.
-- `apps/` — operational entry points (collect_workspace GUI, fr3_policy_client).
+- `apps/workspace/features/<기능>/`   한 기능의 도메인·화면·대화상자
+- `apps/workspace/shell/`             창 골격과 앱 수준 설정 페이지
+- `apps/workspace/shared/`            여러 기능이 함께 쓰는 위젯·헬퍼
 - `scripts/launch|check|calib|convert|analyze/` — purpose-split tools.
 - `experiments/` — research only; nothing in gello/ may import from it.
 - `configs/stations|robots|scenes|collection/` — config data.

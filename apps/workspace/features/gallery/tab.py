@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 
 from gello.gui.i18n import tr
 
-from apps.workspace.sizing import shrinkable_combo
+from apps.workspace.shared.sizing import shrinkable_combo
 
 
 def build_gallery_tab(win) -> QWidget:

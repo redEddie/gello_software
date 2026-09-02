@@ -7,7 +7,7 @@ from gello.data.episode_stats import TASK_DEV_LIMIT
 from gello.gui.constants import TODO_MARK
 from gello.gui.i18n import tr
 
-from apps.dialogs._widgets import StatusLight
+from apps.workspace.shared.widgets import StatusLight
 from apps.workspace.constants import ACTIVITIES, LOG_DIR
 
 

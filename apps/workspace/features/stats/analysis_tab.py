@@ -19,7 +19,7 @@ from gello.data.episode_stats import STILL_VEL, TASK_DEV_LIMIT
 from gello.gui.i18n import tr
 from gello.gui.plot_widgets import BarStrip, Histogram, SeriesPlot
 
-from apps.workspace.sizing import shrinkable_combo
+from apps.workspace.shared.sizing import shrinkable_combo
 
 
 def build_analysis_tab(win) -> QWidget:

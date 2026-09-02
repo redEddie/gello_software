@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from apps.dialogs._widgets import SceneInfoView
+from apps.workspace.shared.widgets import SceneInfoView
 from gello.gui.i18n import tr
 from gello.scene.collection_plan import load_plan
 from gello.scene.scene_diversity import AXES, recommend_detailed

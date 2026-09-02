@@ -26,13 +26,13 @@ from PyQt6.QtWidgets import QApplication, QMainWindow  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
-from apps.workspace.builders import (  # noqa: E402
+from apps.workspace.shell import (  # noqa: E402
+    PAGE_BUILDERS,
     build_menu,
     build_statusbar,
     build_toolbar,
 )
 from apps.workspace.constants import ACTIVITIES  # noqa: E402
-from apps.workspace.pages import PAGE_BUILDERS  # noqa: E402
 
 
 class _NoOp:

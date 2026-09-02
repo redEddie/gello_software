@@ -27,10 +27,10 @@ from gello.gui.constants import TODO_MARK
 from gello.gui.widgets import VideoView
 from gello.gui.i18n import tr
 
-from apps.dialogs._widgets import SceneInfoView, TODO_STYLE, mark_todo
-from apps.workspace.sizing import relax_min_widths
+from apps.workspace.shared.widgets import SceneInfoView, TODO_STYLE, mark_todo
+from apps.workspace.shared.sizing import relax_min_widths
 from apps.workspace.constants import ACTIVITIES, PLAYBACK_SPEEDS, WIDE_FIELDS
-from apps.workspace.pages import PAGE_BUILDERS
+from .page_builders import PAGE_BUILDERS
 
 # Tab builders are imported here rather than through the package __init__ to
 # avoid a circular import (this module is re-exported by __init__, and the tabs

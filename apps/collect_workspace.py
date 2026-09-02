@@ -88,7 +88,7 @@ from apps.workspace.models import (  # noqa: E402
     ProcessRegistry,
     SessionState,
 )
-from apps.workspace.builders import (  # noqa: E402
+from apps.workspace.shell import (  # noqa: E402
     build_bottom,
     build_center,
     build_layout,

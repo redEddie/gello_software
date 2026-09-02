@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 
-def _depth_colormap(z: np.ndarray, zmax: float, zmin: float = 0.05) -> np.ndarray:
+def depth_colormap(z: np.ndarray, zmax: float, zmin: float = 0.05) -> np.ndarray:
     """depth(m) → JET 컬러맵(가까움=빨강) + 오른쪽 척도 바.
 
     라이브 Depth 탭과 HDF5 뷰어의 depth 미리보기가 같은 매핑을 쓰게 하는
@@ -19,10 +19,10 @@ def _depth_colormap(z: np.ndarray, zmax: float, zmin: float = 0.05) -> np.ndarra
     rgb = cv2.cvtColor(cv2.applyColorMap(norm, cv2.COLORMAP_JET),
                        cv2.COLOR_BGR2RGB)
     rgb[~valid] = 0
-    return _draw_depth_scale(rgb, zmax)
+    return draw_depth_scale(rgb, zmax)
 
 
-def _draw_depth_scale(rgb: np.ndarray, zmax: float) -> np.ndarray:
+def draw_depth_scale(rgb: np.ndarray, zmax: float) -> np.ndarray:
     """오른쪽 세로 컬러바 + 거리 눈금(m). 너무 작은 이미지에는 그리지 않는다."""
     import cv2
 

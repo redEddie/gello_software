@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QComboBox
 
 import numpy as np
 
-from apps.dialogs._image_utils import _depth_colormap
+from apps.workspace.shared.image_utils import depth_colormap
 from gello.gui.workers import DepthCloudWorker
 from gello.gui.i18n import tr
 
@@ -138,7 +138,7 @@ class DepthOps:
 
         zmax = self.win.depth_range_slider.value() / 100.0
         self.win.depth_range_label.setText(f"{zmax:.1f} m")
-        frame = _depth_colormap(z, zmax)
+        frame = depth_colormap(z, zmax)
         cursor_txt = ""
         if self.win.cameras.depth_cursor is not None:
             u, v = self.win.cameras.depth_cursor

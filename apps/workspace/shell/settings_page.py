@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 from gello.gui.constants import TODO_MARK
 from gello.gui.i18n import tr
 
-from apps.dialogs._widgets import mark_todo
+from apps.workspace.shared.widgets import mark_todo
 
 
 def build_settings(win) -> QWidget:
