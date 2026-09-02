@@ -12,7 +12,7 @@ refactor(workspace): playback 과 gallery 를 features/ 로 (8-2)
     features/gallery/ops.py         domains/gallery.py
     features/gallery/tab.py         builders/gallery_tab.py
 
-두 기능을 한 커밋에 넣습니다 -- 둘 다 작고 서로 무관합니다.
+두 기능을 함께 처리합니다 -- 둘 다 작고 서로 무관합니다.
 
 ## 주의
 

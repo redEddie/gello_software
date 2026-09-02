@@ -53,6 +53,20 @@ if [ "$RC" -ne 0 ]; then
   exit 1
 fi
 
+AFTER="$(git rev-parse HEAD)"
+if [ "$AFTER" != "$BEFORE" ] && [ -z "$(git status --porcelain)" ]; then
+  # kimi 가 스스로 커밋한 경우. 지시서에 "한 커밋에" 같은 말이 있으면 그렇게
+  # 읽는다. 검증만 하고 그 커밋을 인정한다 -- 되돌렸다가 다시 만들 이유가 없다.
+  say "kimi 가 직접 커밋함 ($(git rev-parse --short HEAD)) -- 검증만 한다"
+  if bash tests/gui/run_all.sh "$PY" >>"$LOG" 2>&1; then
+    say "검증 통과 -- 그 커밋을 인정"; exit 0
+  fi
+  say "검증 실패 -- kimi 의 커밋을 되돌립니다"
+  grep -n 'FAIL' "$LOG" | tail -20 | tee -a "$LOG"
+  git reset --hard "$BEFORE" >>"$LOG" 2>&1; git clean -fd >>"$LOG" 2>&1
+  exit 1
+fi
+
 if [ -z "$(git status --porcelain)" ]; then
   say "변경 없음 -- 커밋할 것이 없습니다"; exit 1
 fi
