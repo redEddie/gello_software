@@ -210,7 +210,7 @@ class DatasetSchemaConfig:
 
     # Off by default: not part of LIBERO's original schema, computed for
     # free from data the control loop already produces (see
-    # gello/libero_gui_worker.py's _get_obs).
+    # gello/collect/worker.py's _get_obs).
     save_joint_velocities: bool = False
     save_timestamp: bool = False
 

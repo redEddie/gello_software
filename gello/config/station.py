@@ -3,7 +3,7 @@
 로봇 IP, ZMQ 노드 주소, 카메라 시리얼과 스트림 포맷, 리더암 USB 포트,
 카메라 마운트에서 오는 크롭 보정값처럼 **하드웨어를 바꾸지 않는 한 변하지
 않는 값**을 한 파일에 모은다. 이전에는 같은 시리얼이 네 곳
-(libero_gui_worker.py, fr3_policy_client.py, 그리고 각각의 기본 인자)에
+(gello/collect/worker.py, fr3_policy_client.py, 그리고 각각의 기본 인자)에
 따로 적혀 있어서, 카메라를 교체하면 어디를 고쳐야 하는지가 grep 실력에
 달려 있었다.
 

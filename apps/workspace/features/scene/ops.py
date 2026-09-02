@@ -204,7 +204,7 @@ class SceneOps:
 
     def apply_session_config(self, cfg: dict) -> list:
         """Puts a file's recorded session_config back into the widgets that
-        produced it (see libero_gui_worker.py's record_session_config).
+        produced it (see gello/collect/worker.py's record_session_config).
 
         Returns the labels of what was actually restored, so the hint can say
         what changed rather than claim more than it did -- older files were

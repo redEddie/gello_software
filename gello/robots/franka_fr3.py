@@ -385,7 +385,7 @@ class FrankaFR3Robot(Robot):
             ROBOT_GRIPPER_POSITION: np.array(gripper_norm),
         }
         # 포스·토크: 필드를 노출하는 pylibfranka 빌드에서만 키가 존재한다.
-        # 소비자(libero_gui_worker._get_obs)는 .get() 으로 읽으므로 키 부재는
+        # 소비자(gello.collect.worker._get_obs)는 .get() 으로 읽으므로 키 부재는
         # "기록 안 함"이지 오류가 아니다.
         if ft is not None:
             out["joint_torques"] = ft[0]        # tau_J, 측정 관절토크 (N*m)

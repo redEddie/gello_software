@@ -1,7 +1,7 @@
 """카메라 노드 구독 클라이언트 (2026-08-25, gello/camera_node.py 의 짝).
 
 NodeCamera 는 lerobot RealSenseCamera 의 read_latest / read_latest_depth
-호출부와 호환되는 API 를 제공한다 -- 수집 worker(libero_gui_worker) 와 GUI
+호출부와 호환되는 API 를 제공한다 -- 수집 worker(gello/collect/worker.py) 와 GUI
 미리보기가 코드 변경 최소로 노드 구독으로 갈아탈 수 있게. 프레임 대신
 "최신 프레임의 나이" 계약(TimeoutError)도 그대로 유지한다.
 

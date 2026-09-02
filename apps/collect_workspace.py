@@ -30,16 +30,17 @@ Panel map (all splitters, all user-resizable):
     │ status bar: robot / camera / recording / fps / episode │
     └────────────────────────────────────────────────────────┘
 
-Widgets and dialogs come from gello/gui_widgets.py, which was split out of the
-old wizard so both could share them without one importing the other's window.
+Widgets and dialogs come from gello/gui/{widgets,dialogs,workers}.py and
+apps/workspace/shared/, split out so the collector and the old wizard could
+share them without one importing the other's window.
 """
 
 from __future__ import annotations
 
 import os
 
-# Must run before numpy/cv2/h5py are imported -- see gello/gui_widgets.py for
-# why this GUI caps the BLAS/OpenCV thread pools at 1.
+# Must run before numpy/cv2/h5py are imported. The GUI caps the BLAS/OpenCV
+# thread pools at 1 so camera preview threads do not fight the control loop.
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")

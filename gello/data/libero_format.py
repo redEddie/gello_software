@@ -634,7 +634,7 @@ class LiberoTaskWriter:
         non-camera session settings (reset_pose, grip, enable_wall,
         max_episode_seconds, reset_wait_seconds) this session was started
         with, so a later session can restore them for the same task. Written
-        by gello/libero_gui_worker.py; the wizard GUI's dropdown used to read
+        by gello/collect/worker.py; the wizard GUI's dropdown used to read
         it back, and the workspace UI that replaced it (62cad92) does not yet.
         Always reflects the LATEST session, not the first-ever one: intentionally overwritten every time, since this is
         "how to continue this task", not a history log.
@@ -703,7 +703,7 @@ class LiberoTaskWriter:
     def detach_buffer(self) -> LiberoEpisodeBuffer:
         """Swap out the filled episode buffer and install a fresh one, so the
         next episode can start recording while the detached buffer is being
-        written by a background thread (see libero_gui_worker.EpisodeSaver)."""
+        written by a background thread (see gello.collect.worker.EpisodeSaver)."""
         buf = self._buffer
         self._buffer = LiberoEpisodeBuffer(self.schema, self.crop_params)
         return buf
