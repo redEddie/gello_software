@@ -103,9 +103,9 @@ win.plan_combo.setCurrentIndex(i)
 # scene 파일이 수집 세션에 잠겨 있어도 돌 수 있게 scene 선택을 주입한다
 win.scene_ops.configure_scene_id = lambda: "S000"
 win.scene_ops.selected_scene_path = lambda: None
-win.scene_ops.refresh_start_plan_combo()
+win.scene_planning.refresh_start_plan_combo()
 combo = win.start_plan_combo
-plan = win.scene_ops.current_plan()
+plan = win.scene_planning.current_plan()
 n_slots = len(plan.slots_for("S000"))
 assert combo.count() == 1 + n_slots, (combo.count(), n_slots)
 combo.setCurrentIndex(1)                 # 첫 계획 문장 선택
@@ -122,7 +122,7 @@ win.scene_iid_edit.setText("I009")
 _, _, _, err = win.scene_ops.scene_config_from_ui()
 assert err and "계획" in err, err
 combo.setCurrentIndex(1)                          # 계획 문장으로 복귀
-win.scene_ops.on_start_plan_pick()   # 인덱스가 그대로면 시그널이 없어 직접 호출
+win.scene_planning.on_start_plan_pick()   # 인덱스가 그대로면 시그널이 없어 직접 호출
 _, _, _, err2 = win.scene_ops.scene_config_from_ui()
 assert err2 is None or "계획" not in err2, err2   # 남는 오류는 scene 선택뿐
 print("6 통과: 계획 선택 시 자유 입력 잠금 + 계획 밖 시작 문장 거부")
@@ -131,15 +131,15 @@ print("6 통과: 계획 선택 시 자유 입력 잠금 + 계획 밖 시작 문�
 QInputDialog.getText = staticmethod(lambda *a, **k: ("tmp-uitest", True))
 cw.QMessageBox.question = staticmethod(
     lambda *a, **k: cw.QMessageBox.StandardButton.Yes)
-win.scene_ops.on_edit_plan = lambda: None        # 모달 편집 열림 방지
+win.scene_planning.on_edit_plan = lambda: None        # 모달 편집 열림 방지
 new_path = PLANS_DIR / "tmp-uitest.json"
 new_path.unlink(missing_ok=True)
 try:
-    win.scene_ops.on_new_plan()
+    win.scene_planning.on_new_plan()
     assert new_path.exists()
     assert win.plan_combo.currentText() == "tmp-uitest.json"
     assert json.loads(new_path.read_text())["scenes"] == []
-    win.scene_ops.on_delete_plan()
+    win.scene_planning.on_delete_plan()
     assert not new_path.exists()
     assert win.plan_combo.findText("tmp-uitest.json") < 0
 finally:

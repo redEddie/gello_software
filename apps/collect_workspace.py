@@ -73,7 +73,20 @@ from gello.gui.widgets import Recents  # noqa: E402
 from gello.gui.workers import CameraPreviewWorker  # noqa: E402
 from gello.gui.text_utils import clean_stream_lines, is_progress_line, repo_id_error  # noqa: E402
 from apps.workspace.constants import LOG_DIR  # noqa: E402
-from apps.workspace.domains import CameraOps, CollectionOps, DatasetOps, DepthOps, GalleryOps, PlaybackOps, SceneOps, StatsOps, SystemOps, UploadOps  # noqa: E402
+from apps.workspace.domains import (  # noqa: E402
+    CameraOps,
+    CollectionOps,
+    DatasetOps,
+    DepthOps,
+    GalleryOps,
+    LayoutRefOps,
+    PlaybackOps,
+    SceneOps,
+    ScenePlanningOps,
+    StatsOps,
+    SystemOps,
+    UploadOps,
+)
 from apps.workspace.models import (  # noqa: E402
     CameraState,
     PlaybackState,
@@ -193,6 +206,8 @@ class WorkspaceWindow(QMainWindow):
         self.upload = UploadOps(self)
         self.playback_ops = PlaybackOps(self)
         self.scene_ops = SceneOps(self)
+        self.scene_planning = ScenePlanningOps(self)
+        self.layout_ref = LayoutRefOps(self)
         self.camera_ops = CameraOps(self)
         self.depth_ops = DepthOps(self)
         self.dataset_ops = DatasetOps(self)
@@ -347,10 +362,10 @@ class WorkspaceWindow(QMainWindow):
         if on:
             self._set_activity("layout")     # 컨트롤이 왼쪽 페이지에 있다
             if not getattr(self, "_layout_all_entries", None):
-                self.scene_ops.layout_reload()
+                self.layout_ref.layout_reload()
             else:
-                self.scene_ops.layout_show()
-            self.scene_ops.layout_apply_interval()
+                self.layout_ref.layout_show()
+            self.layout_ref.layout_apply_interval()
             if self.playback.layout_playing:
                 self._layout_timer.start()
             if self.layout_blink_check.isChecked():
@@ -382,7 +397,7 @@ class WorkspaceWindow(QMainWindow):
                       getattr(self, "trim_views", {})):
             for role, v in views.items():
                 v.set_crop_guide(**p[role])
-        self.scene_ops.layout_rerender()
+        self.layout_ref.layout_rerender()
 
     def _crop_reset(self) -> None:
         d = default_crop_params()
@@ -400,7 +415,7 @@ class WorkspaceWindow(QMainWindow):
             act.setChecked(True)
         if key == "stats":
             self.stats_ops.refresh_stats()
-            self.scene_ops.refresh_plan_progress()
+            self.scene_planning.refresh_plan_progress()
             if not self.session.stats:
                 self.stats_ops.refresh_analysis()
         elif key == "dataset":

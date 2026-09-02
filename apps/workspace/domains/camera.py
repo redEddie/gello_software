@@ -207,7 +207,7 @@ class CameraOps:
             cams.last_cam_frame.clear()
             if self.win.center_tabs.currentIndex() == self.win._layout_tab_index:
                 for role in ("agent", "wrist"):
-                    self.win.scene_ops.layout_update_role(role)
+                    self.win.layout_ref.layout_update_role(role)
 
     def stop_previews_blocking(self, timeout_ms: int = 4000) -> None:
         """Only for shutdown: wait so the cameras are released before exit.
@@ -233,7 +233,7 @@ class CameraOps:
             return
         self.update_live_view(role, frame, cams=cams)
         if win.center_tabs.currentIndex() == win._layout_tab_index:
-            win.scene_ops.layout_update_role(role)
+            win.layout_ref.layout_update_role(role)
         cams.fps_count += 1
 
     def update_live_view(self, role: str, frame, cams=None) -> None:
@@ -302,7 +302,7 @@ class CameraOps:
                 continue
             self.update_live_view(role, rgb, cams=cams)
             if layout_on:
-                win.scene_ops.layout_update_role(role)
+                win.layout_ref.layout_update_role(role)
         cams.fps_count += 1
 
     def tick_fps(self) -> None:

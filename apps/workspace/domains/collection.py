@@ -401,7 +401,7 @@ class CollectionOps:
         if self.win.session.scene_session:
             # scene 파일이 실제로 만들어졌으니 보관해 둔 새 scene 구성은 소진.
             self.win._pending_scene_meta = None
-            self.win.scene_ops.refresh_slot_panel()
+            self.win.scene_planning.refresh_slot_panel()
         self.win.dataset_ops.update_dataset_panel()
         self.win.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
         self.win.dataset_ops.refresh_dataset_tree()

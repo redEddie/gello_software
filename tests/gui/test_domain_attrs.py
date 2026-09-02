@@ -22,7 +22,7 @@ sys.path.insert(0, str(WT))
 os.environ.setdefault("GELLO_NO_PRIVILEGED", "1")
 
 DOMAINS = WT / "apps" / "workspace" / "domains"
-mods = sorted(p for p in DOMAINS.glob("*.py") if p.name != "__init__.py")
+mods = sorted(p for p in DOMAINS.rglob("*.py") if p.name != "__init__.py")
 if not mods:
     print("도메인 모듈이 아직 없습니다 -- 검사할 것 없음 (Phase 4 시작 전)")
     raise SystemExit(0)

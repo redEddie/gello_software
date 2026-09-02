@@ -78,9 +78,9 @@ def build_layout_tab(win) -> QWidget:
 
     win._layout_timer = QTimer(win)
     win._layout_timer.setInterval(5000)
-    win._layout_timer.timeout.connect(lambda: win.scene_ops.layout_step(+1, user=False))
+    win._layout_timer.timeout.connect(lambda: win.layout_ref.layout_step(+1, user=False))
     win._layout_blink_timer = QTimer(win)
     win._layout_blink_timer.setInterval(500)
-    win._layout_blink_timer.timeout.connect(win.scene_ops.layout_blink_tick)
+    win._layout_blink_timer.timeout.connect(win.layout_ref.layout_blink_tick)
     return w
 
