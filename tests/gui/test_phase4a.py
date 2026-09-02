@@ -165,7 +165,7 @@ FW.cfg.instruction_id = "I000"
 FW.cfg.schema = type("S", (), {"action_space": "joint_absolute",
                                "gripper_action_match_obs": True, "image_size": None})()
 FW.cfg.fps = 20
-win._update_dataset_panel()
+win.dataset_ops.update_dataset_panel()
 assert win.right_fields["ds_task"].text() == "I010: close the top drawer", \
     win.right_fields["ds_task"].text()
 print("4 통과: 계획 없음 자유 입력 회귀 없음 + 오른쪽 패널 태스크가 현재 slot 반영")

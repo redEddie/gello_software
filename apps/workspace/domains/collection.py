@@ -6,12 +6,13 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, pyqtSlot
 from PyQt6.QtWidgets import QMessageBox
 
 from gello.gui.i18n import tr
 from gello.collect.worker import CollectionWorker, GATE_RAD, WorkerConfig
 from gello.scene.scene_format import read_scene_metadata, scene_filename
+from apps.workspace.models import _new_stats
 
 
 class CollectionOps:
@@ -180,7 +181,7 @@ class CollectionOps:
             waited = time.monotonic() - self.win._connect_wait_since
             if waited < 12.0:
                 self.win.tb_actions["connect"].setEnabled(False)
-                self.win.connect_progress(waited)
+                self.win.stats_ops.connect_progress(waited)
                 QTimer.singleShot(200, self.win.collection.on_connect)
                 return
             self.win._connect_wait_since = None
@@ -346,7 +347,7 @@ class CollectionOps:
         self.win._refresh_verdict_label()
         self.win.log(f"[저장] {name} ({n_frames} frames)")
         self.win.right_fields["episode"].setText(name)
-        self.win._update_dataset_panel()
+        self.win.dataset_ops.update_dataset_panel()
         self.win.stats_ops.refresh_stats()
 
     def on_save_status(self, text: str) -> None:
@@ -369,3 +370,69 @@ class CollectionOps:
             msg += tr("\n\n서보 보호모드가 걸렸습니다. 세션 종료 후 "
                       "Tools > 리더암 서보 보호 해제 (재부팅) 으로 복구하세요.")
         self.win._alert(tr("오류"), msg, QMessageBox.Icon.Critical)
+
+    def on_connected(self, n_episodes, path) -> None:
+        # 세션이 붙었다 = 노드가 살아 응답했다 (연결 검증이 노드 경유).
+        self.win.lights["node"].set("ok", tr("정상"))
+        self.win.right_fields["node"].setText(tr("정상"))
+        # 연결되면 카메라 화면으로 따라간다. 버튼을 누른 시점이 아니라 여기인
+        # 이유는, 연결이 미리보기 정리를 기다리거나 실패할 수 있기 때문이다 --
+        # 그때 Live 로 옮겨두면 아무것도 안 나오는 탭을 보게 된다.
+        self.win.center_tabs.setCurrentIndex(self.win._live_tab_index)
+        # 기록 외 단계에서는 worker 가 카메라를 읽지 않으므로(게이지를 빠르게
+        # 유지하기 위해 -- _emit_gate_status 참고) 미리보기가 그 구간의 유일한
+        # 영상 공급원이다. 꺼져 있으면 자세를 맞추는 동안 화면이 빈다.
+        if not (self.win.agent_preview or self.win.wrist_preview):
+            self.win.camera_ops.restart_previews()
+        # 이번 task 카운터는 여기서 0 으로 돌아간다(누적은 그대로). 연습 모드도
+        # 마찬가지다 -- NullTaskWriter 도 저장을 받아 넘기므로 카운터는 움직인다.
+        self.win.session.counters = _new_stats()
+        if self.win.session.no_dataset_session:
+            # NullTaskWriter has no real path; claiming one here would make the
+            # dataset tree think a file is locked by this session.
+            self.win.dataset_ops.update_dataset_panel()
+            self.win.log("[연결] 연습 모드로 연결되었습니다.")
+            return
+        self.win.session.active_file_path = Path(path)
+        self.win.session.episodes_at_connect = int(n_episodes)
+        # 직전 세션에서 삭제가 실패해 남았을 수 있는 대기 건수를 청산 --
+        # 새 세션의 첫 목록 갱신이 엉뚱한 무효화를 하지 않게.
+        self.win._pending_scene_deletes = 0
+        if self.win.session.scene_session:
+            # scene 파일이 실제로 만들어졌으니 보관해 둔 새 scene 구성은 소진.
+            self.win._pending_scene_meta = None
+            self.win.scene_ops.refresh_slot_panel()
+        self.win.dataset_ops.update_dataset_panel()
+        self.win.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
+        self.win.dataset_ops.refresh_dataset_tree()
+
+    @pyqtSlot()
+    def on_worker_finished(self) -> None:
+        """워커 run()이 어떤 경로로든 끝나면 세션을 해제한다.
+
+        정상 종료(요약 후), 연결 실패 조기 return, 예외 -- 전부 여기로 온다.
+        summary보다 늦게 도착하므로(둘 다 큐잉, run() 안에서 summary가 먼저
+        emit) 로그 순서도 자연스럽다.
+        """
+        if self.win.worker is not self.sender():
+            # 이미 다른 세션이 시작된 뒤 도착한 옛 워커의 신호 -- 무시.
+            return
+        self.win.worker = None
+        self.win.session.no_dataset_session = False
+        self.win.session.active_file_path = None
+        self.win.session.active_episode_cache = None
+        was_scene = self.win.session.scene_session
+        self.win.session.scene_session = False
+        self.win.scene_ops.set_right_scene(None)
+        self.win.collection.set_running(False)
+        self.win.dataset_ops.refresh_dataset_tree()
+        if was_scene:
+            # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
+            self.win.scene_ops.refresh_scene_combo()
+        self.win.camera_ops.restart_previews()
+        if self.win.cameras.depth_consumer is not None:
+            # 세션 동안 Depth/Point Cloud 탭에 머물러 있었다면 스트림을 다시
+            # 올린다 (세션 중엔 안내만 보였다). 미리보기가 뜨는 시간을 준다.
+            QTimer.singleShot(600, lambda: (
+                self.win.depth_ops.start_cloud() if self.win.worker is None
+                and self.win.cameras.depth_consumer is not None else None))

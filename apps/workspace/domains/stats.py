@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QDialog,
     QLabel,
@@ -33,6 +34,34 @@ class StatsOps:
 
     def __init__(self, win) -> None:
         self.win = win
+
+    def connect_progress(self, waited: float) -> None:
+        self.win.statusBar().showMessage(
+            tr("카메라 정리 중... {s:.0f}초 (정리되면 자동으로 연결합니다)").format(s=waited),
+            1000)
+        self.win.lights["camera"].set("busy", tr("정리 중"))
+
+    def log_progress(self, msg: str, view: str) -> None:
+        """Progress that overwrites its own last line instead of stacking.
+
+        A 1.3 GB upload prints a bar every second; appended, that buries every
+        other message in the tab and makes the log useless exactly while a long
+        job is running. Replacing the previous progress line keeps one live line
+        and leaves the surrounding log readable.
+
+        Deliberately not written to the log file -- the file is what gets read
+        after a crash, and hundreds of superseded percentages help nobody there.
+        """
+        target = self.win._view(view)
+        if self.win._progress_line.get(view):
+            cursor = target.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+            cursor.removeSelectedText()
+            cursor.insertText(msg)
+        else:
+            target.appendPlainText(msg)
+            self.win._progress_line[view] = True
 
     def bump(self, key: str, n: int = 1) -> None:
         """카운터 하나를 이번 task 와 누적 양쪽에 올린다.
@@ -66,7 +95,7 @@ class StatsOps:
 
     def on_summary(self, summary) -> None:
         # 해제는 여기서 하지 않는다 -- 정상 종료에만 오는 신호다. 실제 해제는
-        # 모든 종료 경로에서 오는 finished(_on_worker_finished)가 맡는다.
+        # 모든 종료 경로에서 오는 finished(collection.on_worker_finished)가 맡는다.
         self.win.log(f"[세션 요약] {summary}")
 
     def refresh_analysis(self, force: bool = False) -> None:

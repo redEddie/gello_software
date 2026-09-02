@@ -162,7 +162,7 @@ def build_configure(win) -> QWidget:
     win.no_dataset_check.setToolTip(tr(
         "파일을 전혀 만들지 않고 텔레옵만 합니다. 자세 게이트·카메라·프레임 "
         "카운터는 그대로 동작하고, 저장을 눌러도 버려집니다."))
-    win.no_dataset_check.toggled.connect(win._on_no_dataset_toggled)
+    win.no_dataset_check.toggled.connect(win.dataset_ops.on_no_dataset_toggled)
     sform.addRow(win.no_dataset_check)
     win.mode_hint = QLabel("")
     win.mode_hint.setStyleSheet("color:#888;")

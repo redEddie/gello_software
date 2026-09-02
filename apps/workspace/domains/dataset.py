@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import h5py
 from PyQt6.QtCore import QProcess, Qt
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QTreeWidgetItem
 
+from gello.data.dataset_schema import OBS_AGENTVIEW_RGB
 from gello.data.episode_stats import TASK_DEV_LIMIT
 from gello.data.libero_format import hdf5_repack_status, renumber_episodes
 from gello.gui.text_utils import repo_id_error
@@ -21,11 +23,40 @@ from gello.scene.scene_format import (
 )
 
 
+def soft_wrap(text: str) -> str:
+    """Lets a long filename wrap.
+
+    QLabel only breaks at whitespace, and ``pick_up_the_blue_cup_..._demo.hdf5``
+    has none -- so word wrap did nothing and the name sat on one clipped line.
+    A zero-width space after each separator gives it legal break points without
+    changing the visible characters or what a copy-paste yields... except that
+    the copy would carry U+200B, so this is only ever applied to display text
+    whose real value is also in the tooltip.
+    """
+    for sep in ("_", "-", "."):
+        text = text.replace(sep, sep + "​")
+    return text
+
+
 class DatasetOps:
     """Dataset tree, episode selection, deletion, and relabel operations."""
 
     def __init__(self, win) -> None:
         self.win = win
+
+    def on_no_dataset_toggled(self, on: bool) -> None:
+        """No file is written, so the task/path fields have nothing to name."""
+        self.win.task_box.setEnabled(not on)
+        self.win.mode_hint.setText(tr(
+            "연습 모드: 파일을 만들지 않습니다. 저장을 눌러도 버려집니다."
+        ) if on else "")
+        self.win.mode_hint.setStyleSheet("color:#e67e22;" if on else "color:#888;")
+        for key in ("save", "savefail"):
+            if key in getattr(self.win, "tb_actions", {}):
+                self.win.tb_actions[key].setEnabled(not on and self.win.worker is not None)
+        for b in (getattr(self.win, "save_ok_btn", None), getattr(self.win, "save_ng_btn", None)):
+            if b is not None:
+                b.setEnabled(not on and self.win.worker is not None)
 
     # -------------------------------------------------------------------- root
     def dataset_root(self) -> Path:
@@ -118,7 +149,7 @@ class DatasetOps:
             self.win.scene_ops.refresh_scene_combo()
         if hasattr(self.win, "gallery_scene_combo"):
             self.win.gallery_ops.refresh_gallery_scenes()
-        self.win._update_dataset_panel(self.selected_file())
+        self.update_dataset_panel(self.selected_file())
 
     def selected_file(self) -> Path | None:
         items = self.win.dataset_tree.selectedItems()
@@ -141,7 +172,7 @@ class DatasetOps:
         items = self.win.dataset_tree.selectedItems()
         item = items[0] if items else None
         # 파일 행을 골라도 오른쪽 Dataset 칸은 갱신된다 -- 재생은 에피소드 행에서만.
-        self.win._update_dataset_panel(self.selected_file())
+        self.update_dataset_panel(self.selected_file())
         if self.win.session.stats:
             self.win.stats_ops.refresh_rank_list()
             if item is not None and item.parent() is not None:
@@ -566,3 +597,97 @@ class DatasetOps:
             QMessageBox.critical(self.win, tr("삭제 실패"), str(e))
             self.win.log(f"[파일 삭제 실패] {path.name}: {e}")
         self.refresh_dataset_tree()
+
+    def update_dataset_panel(self, path: "Path | None" = None) -> None:
+        """Fills the right panel's Dataset box.
+
+        During a session it describes what this session is writing (from the
+        config, since the file's own attrs only exist after the first save).
+        Otherwise it describes whichever file is selected in the tree, read
+        straight off disk -- so 'what format is this old file?' is answerable
+        without opening the schema dialog or connecting anything.
+        """
+        f = self.win.right_fields
+        if self.win.worker is not None:
+            cfg = self.win.worker.cfg
+            name = (tr("(기록 안 함)") if self.win.session.no_dataset_session
+                    else Path(str(self.win.session.active_file_path or "-")).name)
+            f["ds_file"].setText(soft_wrap(name))
+            f["ds_file"].setToolTip(name)
+            # 연결 시점 설정이 아니라 '지금' slot 을 보여준다 -- scene 세션은
+            # Disconnect 없이 slot(문장·ID)을 바꾸므로(cmd_set_slot) 설정값만
+            # 보여주면 전환 뒤에도 첫 문장이 그대로 남는다 (실사용 보고).
+            cur_instr = getattr(self.win.worker, "_slot_instruction", None) \
+                or cfg.language_instruction or cfg.task_name
+            cur_iid = getattr(self.win.worker, "_slot_instruction_id", "") or cfg.instruction_id
+            task_text = f"{cur_iid}: {cur_instr}" if (self.win.session.scene_session and cur_iid) \
+                else cur_instr
+            f["ds_task"].setText(task_text)
+            f["ds_task"].setToolTip(task_text)
+            # 저장은 백그라운드라 episode_list_changed가 몇 초 늦게 온다. 그걸
+            # 기다리면 방금 저장한 것이 한동안 안 세어져 "지금 몇 개째인지"를
+            # 알 수 없다. 연결 시점 개수 + 이번 세션 저장 수로 즉시 계산하고,
+            # 목록이 도착하면 그 값이 더 정확하므로 그쪽을 쓴다.
+            listed = len(self.win.session.active_episode_cache or [])
+            counted = self.win.session.episodes_at_connect + self.win.session.counters["saved"]
+            total = max(listed, counted)
+            f["ds_episodes"].setText(
+                tr("{t}개  (이번 +{s})").format(t=total, s=self.win.session.counters["saved"]))
+            f["ds_action"].setText(cfg.schema.action_space)
+            f["ds_gripper"].setText(
+                "0/1 (obs와 동일)" if cfg.schema.gripper_action_match_obs else "-1/+1")
+            f["ds_image"].setText(f"{cfg.schema.image_size}²" if cfg.schema.image_size
+                                  else tr("원본 해상도"))
+            f["ds_fps"].setText(str(cfg.fps))
+            f["ds_repack"].setText("-")
+            return
+
+        if path is None or not Path(path).exists():
+            for k in ("ds_file", "ds_task", "ds_episodes", "ds_action",
+                      "ds_gripper", "ds_image", "ds_fps", "ds_repack"):
+                f[k].setText("-")
+            return
+
+        path = Path(path)
+        st = hdf5_repack_status(path)
+        f["ds_file"].setText(soft_wrap(path.name))
+        f["ds_file"].setToolTip(str(path))
+        f["ds_episodes"].setText(f"{st['episodes']}  ({st['size'] / 1e6:.0f} MB)")
+        f["ds_repack"].setText(
+            tr("혼합 — 다시 필요") if st["mixed"]
+            else (st["marker"] or (tr("완료") if st["repacked"] else tr("안 됨"))))
+        task = action = gripper = image = "-"
+        try:
+            with h5py.File(path, "r") as h:
+                if "data" in h:
+                    data = h["data"]
+                    info = data.attrs.get("problem_info")
+                    if info:
+                        try:
+                            task = json.loads(json.loads(info)["language_instruction"])
+                        except Exception:  # noqa: BLE001
+                            task = str(info)[:60]
+                    names = sorted(data.keys(), key=lambda s: int(s.split("_")[1]))
+                    container = data
+                else:
+                    # scene-v1: task 는 파일 단위 개념이 아니다 -- scene ID 로 표기
+                    task = "scene " + str(h["metadata"].attrs.get("scene_id", "?"))
+                    names = sorted((k for k in h.keys() if k.startswith("episode_")),
+                                   key=lambda s: int(s.split("_")[1]))
+                    container = h
+                if names:
+                    g = container[names[0]]
+                    action = str(g.attrs.get("action_space", "-"))
+                    conv = str(g.attrs.get("gripper_action_convention", ""))
+                    gripper = {"01": "0/1 (obs와 동일)", "pm1": "-1/+1"}.get(conv, conv or "-")
+                    rgb = g.get("obs", {}).get(OBS_AGENTVIEW_RGB)
+                    if rgb is not None and rgb.ndim == 4:
+                        image = f"{rgb.shape[1]}×{rgb.shape[2]}"
+        except Exception as e:  # noqa: BLE001
+            task = f"({type(e).__name__})"
+        f["ds_task"].setText(task)
+        f["ds_task"].setToolTip(task)
+        f["ds_action"].setText(action)
+        f["ds_gripper"].setText(gripper)
+        f["ds_image"].setText(image)
+        f["ds_fps"].setText("-")

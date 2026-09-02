@@ -45,22 +45,17 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
-import json
 import sys
 import traceback
 import time
 from pathlib import Path
 
-import h5py
 import numpy as np
-from PyQt6.QtCore import (QEvent, QProcess, Qt, QTimer,
-                          pyqtSlot)
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtCore import QEvent, QProcess, Qt, QTimer
 from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -69,7 +64,6 @@ from PyQt6.QtWidgets import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.data.dataset_schema import (  # noqa: E402
-    OBS_AGENTVIEW_RGB,
     load_schema_config,
     save_schema_config,
 )
@@ -85,7 +79,6 @@ from apps.workspace.models import (  # noqa: E402
     PlaybackState,
     ProcessRegistry,
     SessionState,
-    _new_stats,
 )
 from apps.workspace.builders import (  # noqa: E402
     build_bottom,
@@ -108,7 +101,6 @@ from gello.data.crop import (  # noqa: E402
     default_crop_params,
     save_crop_params,
 )
-from gello.data.libero_format import hdf5_repack_status  # noqa: E402
 from gello.collect.worker import CollectionWorker  # noqa: E402
 from gello.config.station import load_station  # noqa: E402
 
@@ -138,20 +130,6 @@ LEGACY_REPOS = {
 # STILL_VEL). 여기서 다시 정의하지 않는 이유는, 화면에 찍히는 수와
 # 판정에 쓰이는 수가 갈라지면 조작자가 둘 중 뭘 믿어야 할지 알 수 없기 때문이다.
 
-
-def soft_wrap(text: str) -> str:
-    """Lets a long filename wrap.
-
-    QLabel only breaks at whitespace, and ``pick_up_the_blue_cup_..._demo.hdf5``
-    has none -- so word wrap did nothing and the name sat on one clipped line.
-    A zero-width space after each separator gives it legal break points without
-    changing the visible characters or what a copy-paste yields... except that
-    the copy would carry U+200B, so this is only ever applied to display text
-    whose real value is also in the tooltip.
-    """
-    for sep in ("_", "-", "."):
-        text = text.replace(sep, sep + "​")
-    return text
 
 # The worker's state names, and what the operator can do from each. Both the
 # 진행 label and the shortcut hint read from these, so the hint can never drift
@@ -289,20 +267,6 @@ class WorkspaceWindow(QMainWindow):
 
 
 
-
-    def _on_no_dataset_toggled(self, on: bool) -> None:
-        """No file is written, so the task/path fields have nothing to name."""
-        self.task_box.setEnabled(not on)
-        self.mode_hint.setText(tr(
-            "연습 모드: 파일을 만들지 않습니다. 저장을 눌러도 버려집니다."
-        ) if on else "")
-        self.mode_hint.setStyleSheet("color:#e67e22;" if on else "color:#888;")
-        for key in ("save", "savefail"):
-            if key in getattr(self, "tb_actions", {}):
-                self.tb_actions[key].setEnabled(not on and self.worker is not None)
-        for b in (getattr(self, "save_ok_btn", None), getattr(self, "save_ng_btn", None)):
-            if b is not None:
-                b.setEnabled(not on and self.worker is not None)
 
     def _recents_valid_repo(self, key: str) -> str:
         """Most recent stored id that actually parses -- a bad one is skipped.
@@ -468,28 +432,6 @@ class WorkspaceWindow(QMainWindow):
         if target is not None and not sip.isdeleted(target):
             target.appendPlainText(msg)
 
-    def _log_progress(self, msg: str, view: str) -> None:
-        """Progress that overwrites its own last line instead of stacking.
-
-        A 1.3 GB upload prints a bar every second; appended, that buries every
-        other message in the tab and makes the log useless exactly while a long
-        job is running. Replacing the previous progress line keeps one live line
-        and leaves the surrounding log readable.
-
-        Deliberately not written to the log file -- the file is what gets read
-        after a crash, and hundreds of superseded percentages help nobody there.
-        """
-        target = self._view(view)
-        if self._progress_line.get(view):
-            cursor = target.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            cursor.select(QTextCursor.SelectionType.LineUnderCursor)
-            cursor.removeSelectedText()
-            cursor.insertText(msg)
-        else:
-            target.appendPlainText(msg)
-            self._progress_line[view] = True
-
     def _refresh_verdict_label(self) -> None:
         if self.session.last_saved_name is None:
             self.verdict_label.setText(
@@ -552,12 +494,6 @@ class WorkspaceWindow(QMainWindow):
         box.show()
         box.raise_()
 
-    def connect_progress(self, waited: float) -> None:
-        self.statusBar().showMessage(
-            tr("카메라 정리 중... {s:.0f}초 (정리되면 자동으로 연결합니다)").format(s=waited),
-            1000)
-        self.lights["camera"].set("busy", tr("정리 중"))
-
     def _on_grid_alpha(self, val: int) -> None:
         # 드래그 중에는 화면만 갱신하고, 저장은 놓을 때 한 번(_on_grid_alpha_done).
         self.grid_alpha_label.setText(tr("{v}%").format(v=val))
@@ -596,7 +532,7 @@ class WorkspaceWindow(QMainWindow):
         w.log_message.connect(self.log)
         w.node_status.connect(self._on_node_status)
         w.fatal_error.connect(self.collection.on_fatal)
-        w.connected.connect(self._on_connected)
+        w.connected.connect(self.collection.on_connected)
         w.episode_list_changed.connect(self.playback_ops.on_episode_list)
         w.session_summary.connect(self.stats_ops.on_summary)
         # 세션 해제(버튼 복구, worker=None)는 session_summary가 아니라 finished에
@@ -604,7 +540,7 @@ class WorkspaceWindow(QMainWindow):
         # 전에 조기 return이라 summary가 영영 오지 않는다 -- 그 상태에서는 GUI가
         # '연결됨'에 갇혀 재시도하려면 앱을 닫는 수밖에 없었다. finished는 Qt가
         # run()이 어떤 경로로 끝나든 반드시 쏜다.
-        w.finished.connect(self._on_worker_finished)
+        w.finished.connect(self.collection.on_worker_finished)
         # 저장은 CollectionWorker가 아니라 그 안의 EpisodeSaver 스레드가 알린다
         # (h5py 접근을 한 스레드로 직렬화하려고 분리해 둔 것). 워커 쪽 시그널만
         # 연결해 두면 episode_saved/episode_list_changed가 영원히 오지 않아,
@@ -615,72 +551,6 @@ class WorkspaceWindow(QMainWindow):
         w.saver.log_message.connect(self.log)
         w.saver.save_status.connect(self.collection.on_save_status)
         self.worker = w
-
-    def _on_connected(self, n_episodes, path) -> None:
-        # 세션이 붙었다 = 노드가 살아 응답했다 (연결 검증이 노드 경유).
-        self.lights["node"].set("ok", tr("정상"))
-        self.right_fields["node"].setText(tr("정상"))
-        # 연결되면 카메라 화면으로 따라간다. 버튼을 누른 시점이 아니라 여기인
-        # 이유는, 연결이 미리보기 정리를 기다리거나 실패할 수 있기 때문이다 --
-        # 그때 Live 로 옮겨두면 아무것도 안 나오는 탭을 보게 된다.
-        self.center_tabs.setCurrentIndex(self._live_tab_index)
-        # 기록 외 단계에서는 worker 가 카메라를 읽지 않으므로(게이지를 빠르게
-        # 유지하기 위해 -- _emit_gate_status 참고) 미리보기가 그 구간의 유일한
-        # 영상 공급원이다. 꺼져 있으면 자세를 맞추는 동안 화면이 빈다.
-        if not (self.agent_preview or self.wrist_preview):
-            self.camera_ops.restart_previews()
-        # 이번 task 카운터는 여기서 0 으로 돌아간다(누적은 그대로). 연습 모드도
-        # 마찬가지다 -- NullTaskWriter 도 저장을 받아 넘기므로 카운터는 움직인다.
-        self.session.counters = _new_stats()
-        if self.session.no_dataset_session:
-            # NullTaskWriter has no real path; claiming one here would make the
-            # dataset tree think a file is locked by this session.
-            self._update_dataset_panel()
-            self.log("[연결] 연습 모드로 연결되었습니다.")
-            return
-        self.session.active_file_path = Path(path)
-        self.session.episodes_at_connect = int(n_episodes)
-        # 직전 세션에서 삭제가 실패해 남았을 수 있는 대기 건수를 청산 --
-        # 새 세션의 첫 목록 갱신이 엉뚱한 무효화를 하지 않게.
-        self._pending_scene_deletes = 0
-        if self.session.scene_session:
-            # scene 파일이 실제로 만들어졌으니 보관해 둔 새 scene 구성은 소진.
-            self._pending_scene_meta = None
-            self.scene_ops.refresh_slot_panel()
-        self._update_dataset_panel()
-        self.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
-        self.dataset_ops.refresh_dataset_tree()
-
-    @pyqtSlot()
-    def _on_worker_finished(self) -> None:
-        """워커 run()이 어떤 경로로든 끝나면 세션을 해제한다.
-
-        정상 종료(요약 후), 연결 실패 조기 return, 예외 -- 전부 여기로 온다.
-        summary보다 늦게 도착하므로(둘 다 큐잉, run() 안에서 summary가 먼저
-        emit) 로그 순서도 자연스럽다.
-        """
-        if self.worker is not self.sender():
-            # 이미 다른 세션이 시작된 뒤 도착한 옛 워커의 신호 -- 무시.
-            return
-        self.worker = None
-        self.session.no_dataset_session = False
-        self.session.active_file_path = None
-        self.session.active_episode_cache = None
-        was_scene = self.session.scene_session
-        self.session.scene_session = False
-        self.scene_ops.set_right_scene(None)
-        self.collection.set_running(False)
-        self.dataset_ops.refresh_dataset_tree()
-        if was_scene:
-            # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
-            self.scene_ops.refresh_scene_combo()
-        self.camera_ops.restart_previews()
-        if self.cameras.depth_consumer is not None:
-            # 세션 동안 Depth/Point Cloud 탭에 머물러 있었다면 스트림을 다시
-            # 올린다 (세션 중엔 안내만 보였다). 미리보기가 뜨는 시간을 준다.
-            QTimer.singleShot(600, lambda: (
-                self.depth_ops.start_cloud() if self.worker is None
-                and self.cameras.depth_consumer is not None else None))
 
     def _current_task_label(self, limit: int = 0) -> str:
         """수집 중인 task 이름. 연결 전이거나 연습 모드면 빈 문자열.
@@ -695,103 +565,6 @@ class WorkspaceWindow(QMainWindow):
         if limit and len(name) > limit:
             return name[: limit - 1] + "…"
         return name
-
-    def _update_dataset_panel(self, path: "Path | None" = None) -> None:
-        """Fills the right panel's Dataset box.
-
-        During a session it describes what this session is writing (from the
-        config, since the file's own attrs only exist after the first save).
-        Otherwise it describes whichever file is selected in the tree, read
-        straight off disk -- so 'what format is this old file?' is answerable
-        without opening the schema dialog or connecting anything.
-        """
-        f = self.right_fields
-        if self.worker is not None:
-            cfg = self.worker.cfg
-            name = (tr("(기록 안 함)") if self.session.no_dataset_session
-                    else Path(str(self.session.active_file_path or "-")).name)
-            f["ds_file"].setText(soft_wrap(name))
-            f["ds_file"].setToolTip(name)
-            # 연결 시점 설정이 아니라 '지금' slot 을 보여준다 -- scene 세션은
-            # Disconnect 없이 slot(문장·ID)을 바꾸므로(cmd_set_slot) 설정값만
-            # 보여주면 전환 뒤에도 첫 문장이 그대로 남는다 (실사용 보고).
-            cur_instr = getattr(self.worker, "_slot_instruction", None) \
-                or cfg.language_instruction or cfg.task_name
-            cur_iid = getattr(self.worker, "_slot_instruction_id", "") or cfg.instruction_id
-            task_text = f"{cur_iid}: {cur_instr}" if (self.session.scene_session and cur_iid) \
-                else cur_instr
-            f["ds_task"].setText(task_text)
-            f["ds_task"].setToolTip(task_text)
-            # 저장은 백그라운드라 episode_list_changed가 몇 초 늦게 온다. 그걸
-            # 기다리면 방금 저장한 것이 한동안 안 세어져 "지금 몇 개째인지"를
-            # 알 수 없다. 연결 시점 개수 + 이번 세션 저장 수로 즉시 계산하고,
-            # 목록이 도착하면 그 값이 더 정확하므로 그쪽을 쓴다.
-            listed = len(self.session.active_episode_cache or [])
-            counted = self.session.episodes_at_connect + self.session.counters["saved"]
-            total = max(listed, counted)
-            f["ds_episodes"].setText(
-                tr("{t}개  (이번 +{s})").format(t=total, s=self.session.counters["saved"]))
-            f["ds_action"].setText(cfg.schema.action_space)
-            f["ds_gripper"].setText(
-                "0/1 (obs와 동일)" if cfg.schema.gripper_action_match_obs else "-1/+1")
-            f["ds_image"].setText(f"{cfg.schema.image_size}²" if cfg.schema.image_size
-                                  else tr("원본 해상도"))
-            f["ds_fps"].setText(str(cfg.fps))
-            f["ds_repack"].setText("-")
-            return
-
-        if path is None or not Path(path).exists():
-            for k in ("ds_file", "ds_task", "ds_episodes", "ds_action",
-                      "ds_gripper", "ds_image", "ds_fps", "ds_repack"):
-                f[k].setText("-")
-            return
-
-        path = Path(path)
-        st = hdf5_repack_status(path)
-        f["ds_file"].setText(soft_wrap(path.name))
-        f["ds_file"].setToolTip(str(path))
-        f["ds_episodes"].setText(f"{st['episodes']}  ({st['size'] / 1e6:.0f} MB)")
-        f["ds_repack"].setText(
-            tr("혼합 — 다시 필요") if st["mixed"]
-            else (st["marker"] or (tr("완료") if st["repacked"] else tr("안 됨"))))
-        task = action = gripper = image = "-"
-        try:
-            with h5py.File(path, "r") as h:
-                if "data" in h:
-                    data = h["data"]
-                    info = data.attrs.get("problem_info")
-                    if info:
-                        try:
-                            task = json.loads(json.loads(info)["language_instruction"])
-                        except Exception:  # noqa: BLE001
-                            task = str(info)[:60]
-                    names = sorted(data.keys(), key=lambda s: int(s.split("_")[1]))
-                    container = data
-                else:
-                    # scene-v1: task 는 파일 단위 개념이 아니다 -- scene ID 로 표기
-                    task = "scene " + str(h["metadata"].attrs.get("scene_id", "?"))
-                    names = sorted((k for k in h.keys() if k.startswith("episode_")),
-                                   key=lambda s: int(s.split("_")[1]))
-                    container = h
-                if names:
-                    g = container[names[0]]
-                    action = str(g.attrs.get("action_space", "-"))
-                    conv = str(g.attrs.get("gripper_action_convention", ""))
-                    gripper = {"01": "0/1 (obs와 동일)", "pm1": "-1/+1"}.get(conv, conv or "-")
-                    rgb = g.get("obs", {}).get(OBS_AGENTVIEW_RGB)
-                    if rgb is not None and rgb.ndim == 4:
-                        image = f"{rgb.shape[1]}×{rgb.shape[2]}"
-        except Exception as e:  # noqa: BLE001
-            task = f"({type(e).__name__})"
-        f["ds_task"].setText(task)
-        f["ds_task"].setToolTip(task)
-        f["ds_action"].setText(action)
-        f["ds_gripper"].setText(gripper)
-        f["ds_image"].setText(image)
-        f["ds_fps"].setText("-")
-
-
-
 
     def _on_hdf5_tree(self) -> None:
         path = self.dataset_ops.selected_file()
@@ -831,7 +604,7 @@ class WorkspaceWindow(QMainWindow):
         # 몇 분이면 수십 줄이 쌓여, 그 사이 지나간 다른 로그를 밀어낸다.
         for line in clean_stream_lines(data, state, every_s=1.0):
             if is_progress_line(line):
-                self._log_progress(f"{prefix} {line}", view)
+                self.stats_ops.log_progress(f"{prefix} {line}", view)
             else:
                 self.log(f"{prefix} {line}", view)
 
