@@ -4,6 +4,7 @@
 LiberoTaskWriter / LiberoEpisodeBuffer / write_episode_payload / action_space
 계산 / hdf5_repack_status 의 현재 동작을 붙잡는다.
 """
+import json
 import math
 import shutil
 import sys
@@ -35,6 +36,7 @@ from gello.data.dataset_schema import (
 from gello.data.libero_format import (
     LiberoEpisodeBuffer,
     LiberoTaskWriter,
+    NullTaskWriter,
     hdf5_repack_status,
     write_episode_payload,
 )
@@ -328,9 +330,237 @@ def test_repack_status():
     print("4. repack status OK")
 
 
+def test_curation():
+    """삭제·재번호·재판정 -- GUI 큐레이션이 쓰는 경로.
+
+    2026-09-02 에 안전망을 만들 때 여기가 비어 있었다. 삭제는 되돌릴 수 없고,
+    재번호가 어긋나면 LeRobot 변환과 데이터셋 탐색기가 엉뚱한 에피소드를
+    가리키는데 그 사실이 몇 주 뒤 학습이 이상할 때에야 드러난다.
+
+    이름만 보지 않고 **내용이 따라왔는지**까지 본다: 에피소드마다 프레임 수를
+    다르게 두어, 재번호 뒤에도 각 이름이 원래 그 데이터를 가리키는지 확인한다.
+    """
+    d = tempfile.mkdtemp(prefix="episode_io_curate_")
+    try:
+        root = Path(d)
+        lengths = [3, 5, 7, 9]          # 에피소드마다 길이를 달리해 신원을 만든다
+        with LiberoTaskWriter(
+            root=root,
+            task_name="curate task",
+            language_instruction="pick the cube",
+            schema=DatasetSchemaConfig(),
+        ) as writer:
+            for ep_idx, n in enumerate(lengths):
+                writer.start_episode()
+                for i in range(n):
+                    writer.add_frame(**_make_frame(seed=ep_idx * 100 + i))
+                writer.save_episode(success=(ep_idx % 2 == 0))
+            path = writer.path
+
+            got = [(e["name"], e["num_samples"], e["success"])
+                   for e in writer.list_episodes()]
+            assert got == [("demo_0", 3, True), ("demo_1", 5, False),
+                           ("demo_2", 7, True), ("demo_3", 9, False)], got
+
+            # 가운데 하나를 지우면 뒤가 당겨져 빈 번호가 없어야 한다.
+            writer.delete_episode("demo_1")
+            after = [(e["name"], e["num_samples"]) for e in writer.list_episodes()]
+            assert after == [("demo_0", 3), ("demo_1", 7), ("demo_2", 9)], after
+            assert writer.num_episodes == 3
+
+            # 판정도 데이터와 함께 따라와야 한다 (원래 demo_2 는 성공이었다).
+            succ = {e["name"]: e["success"] for e in writer.list_episodes()}
+            assert succ == {"demo_0": True, "demo_1": True, "demo_2": False}, succ
+
+            # 재판정은 attr 만 바꾸고 프레임·번호는 건드리지 않는다.
+            writer.set_episode_success("demo_1", False)
+            re = [(e["name"], e["num_samples"], e["success"])
+                  for e in writer.list_episodes()]
+            assert re == [("demo_0", 3, True), ("demo_1", 7, False),
+                          ("demo_2", 9, False)], re
+
+            # 없는 이름은 조용히 지나가지 않고 KeyError 여야 한다.
+            for fn, args in ((writer.delete_episode, ("demo_9",)),
+                             (writer.set_episode_success, ("demo_9", True))):
+                try:
+                    fn(*args)
+                except KeyError:
+                    pass
+                else:
+                    raise AssertionError(f"{fn.__name__} 이 없는 이름에 KeyError 를 내지 않았다")
+
+            # 다음 에피소드는 빈 번호가 아니라 그 다음 번호를 받아야 한다.
+            writer.start_episode()
+            for i in range(2):
+                writer.add_frame(**_make_frame(seed=999 + i))
+            assert writer.save_episode(success=True) == "demo_3"
+
+        # 파일을 닫고 되읽어도 같은가 -- flush 가 실제로 됐는지.
+        with h5py.File(path, "r") as f:
+            names = sorted(f["data"].keys(), key=lambda n: int(n.split("_")[1]))
+            assert names == ["demo_0", "demo_1", "demo_2", "demo_3"], names
+            assert [f["data"][n]["actions"].shape[0] for n in names] == [3, 7, 9, 2]
+            assert f["data"].attrs["next_demo_idx"] == 4, dict(f["data"].attrs)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("5. 큐레이션(삭제·재번호·재판정) OK")
+
+
+def test_session_config_and_null_writer():
+    """session_config 는 마지막 것만 남는다. NullTaskWriter 는 아무것도 안 쓴다."""
+    d = tempfile.mkdtemp(prefix="episode_io_cfg_")
+    try:
+        root = Path(d)
+        with LiberoTaskWriter(
+            root=root,
+            task_name="cfg task",
+            language_instruction="pick the cube",
+            schema=DatasetSchemaConfig(),
+        ) as writer:
+            writer.record_session_config(reset_wait_seconds=3, grip=0.5)
+            writer.record_session_config(reset_wait_seconds=7, grip=0.9)
+            path = writer.path
+        with h5py.File(path, "r") as f:
+            cfg = json.loads(f["data"].attrs["session_config"])
+        # 이력이 아니라 "이 task 를 이어서 하려면" 이라서 일부러 덮어쓴다.
+        assert cfg == {"reset_wait_seconds": 7, "grip": 0.9}, cfg
+
+        before = set(Path(d).rglob("*"))
+        null = NullTaskWriter(schema=DatasetSchemaConfig())
+        null.start_episode()
+        null.add_frame(**_make_frame(seed=1))
+        assert null.save_episode(success=True) is None
+        assert null.num_episodes == 0
+        assert null.list_episodes() == []
+        null.close()
+        assert set(Path(d).rglob("*")) == before, "NullTaskWriter 가 파일을 남겼다"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("6. session_config / NullTaskWriter OK")
+
+
+def test_ordering_and_resume():
+    """번호가 두 자리로 넘어가는 순간과, 파일을 다시 열어 이어 쓰는 경로.
+
+    list_episodes 는 이름을 사전순이 아니라 번호순으로 정렬해야 한다. 9개까지는
+    둘이 같아서 티가 안 나고, demo_10 이 생기는 순간 사전순은 demo_10 을 demo_2
+    앞에 놓는다 -- 데이터셋 탐색기와 LeRobot 변환이 엉뚱한 순서를 보게 된다.
+    실제 세션은 열 개를 쉽게 넘긴다.
+
+    resume 은 이어받기다. resume 없이 같은 경로를 열면 덮어쓰지 않고 거절해야
+    한다 (수집한 것을 통째로 날리는 사고가 나므로).
+    """
+    d = tempfile.mkdtemp(prefix="episode_io_order_")
+    try:
+        root = Path(d)
+        kw = dict(root=root, task_name="order task",
+                  language_instruction="pick the cube",
+                  schema=DatasetSchemaConfig())
+        with LiberoTaskWriter(**kw) as writer:
+            for ep in range(12):
+                writer.start_episode()
+                for i in range(2):      # 1프레임 짜리는 아래에서 따로 본다
+                    writer.add_frame(**_make_frame(seed=ep * 10 + i))
+                writer.save_episode(success=True)
+            path = writer.path
+            names = [e["name"] for e in writer.list_episodes()]
+        assert names == [f"demo_{i}" for i in range(12)], names
+        assert names.index("demo_2") < names.index("demo_10"), names
+
+        # resume 없이 같은 파일을 열면 거절해야 한다.
+        try:
+            LiberoTaskWriter(**kw).close()
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("resume 없이 기존 파일을 열었는데 거절하지 않았다")
+
+        # resume 으로 열면 번호를 이어받는다.
+        with LiberoTaskWriter(resume=True, **kw) as writer:
+            assert writer.num_episodes == 12
+            writer.start_episode()
+            writer.add_frame(**_make_frame(seed=99))
+            writer.add_frame(**_make_frame(seed=100))
+            assert writer.save_episode(success=False) == "demo_12"
+
+            # 프레임이 2개 미만인 테이크는 저장하지 않고 조용히 버린다.
+            # 손이 미끄러져 바로 끊은 경우가 데이터셋에 남지 않게 하는 규칙이라,
+            # 여기서 None 이 아니게 되면 한 프레임짜리 에피소드가 쌓인다.
+            writer.start_episode()
+            writer.add_frame(**_make_frame(seed=101))
+            assert writer.save_episode(success=True) is None
+            assert writer.num_episodes == 13
+        with h5py.File(path, "r") as f:
+            assert len(f["data"].keys()) == 13
+            assert f["data"].attrs["next_demo_idx"] == 13
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("7. 번호 정렬(두 자리) / resume 이어받기 OK")
+
+
+def test_optional_obs_fields():
+    """기본이 아닌 스키마 조합 -- depth 와 timestamp 를 켜면 실제로 들어가는가."""
+    d = tempfile.mkdtemp(prefix="episode_io_opt_")
+    try:
+        root = Path(d)
+        schema = DatasetSchemaConfig(
+            save_agentview_depth=True,
+            save_eye_in_hand_depth=True,
+            save_timestamp=True,
+            save_joint_velocities=True,
+        )
+        with LiberoTaskWriter(
+            root=root, task_name="opt task",
+            language_instruction="pick the cube", schema=schema,
+        ) as writer:
+            writer.start_episode()
+            for i in range(4):
+                f = _make_frame(seed=i)
+                f["agentview_depth"] = np.full((480, 640), 0.5, np.float32)
+                f["eye_in_hand_depth"] = np.full((480, 640), 0.4, np.float32)
+                f["timestamp"] = 1000.0 + i
+                f["joint_velocities"] = np.full(7, 0.01, np.float32)
+                writer.add_frame(**f)
+            writer.save_episode(success=True)
+            path = writer.path
+        with h5py.File(path, "r") as f:
+            obs = f["data/demo_0/obs"]
+            for name in ("agentview_depth", "eye_in_hand_depth",
+                         "timestamp", "joint_velocities"):
+                assert name in obs, (name, list(obs.keys()))
+                assert obs[name].shape[0] == 4, (name, obs[name].shape)
+            assert np.allclose(obs["timestamp"][...], [1000.0, 1001.0, 1002.0, 1003.0])
+        # 기본 스키마에서는 이것들이 없어야 한다 (켜야만 들어간다).
+        d2 = tempfile.mkdtemp(prefix="episode_io_opt2_")
+        try:
+            with LiberoTaskWriter(
+                root=Path(d2), task_name="plain task",
+                language_instruction="pick the cube",
+                schema=DatasetSchemaConfig(),
+            ) as writer:
+                writer.start_episode()
+                writer.add_frame(**_make_frame(seed=0))
+                writer.add_frame(**_make_frame(seed=1))
+                writer.save_episode(success=True)
+                p2 = writer.path
+            with h5py.File(p2, "r") as f:
+                obs = f["data/demo_0/obs"]
+                for name in ("agentview_depth", "timestamp", "joint_velocities"):
+                    assert name not in obs, (name, list(obs.keys()))
+        finally:
+            shutil.rmtree(d2, ignore_errors=True)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("8. 선택 obs 필드(depth/timestamp/joint_velocities) OK")
+
+
 if __name__ == "__main__":
     test_round_trip()
     test_action_space_branches()
     test_buffer()
     test_repack_status()
+    test_curation()
+    test_session_config_and_null_writer()
+    test_ordering_and_resume()
+    test_optional_obs_fields()
     print("test_episode_io 전체 통과")
