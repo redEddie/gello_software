@@ -15,10 +15,11 @@ from apps.workspace.domains.camera import CameraOps
 from apps.workspace.domains.collection import CollectionOps
 from apps.workspace.domains.dataset import DatasetOps
 from apps.workspace.domains.depth import DepthOps
+from apps.workspace.domains.gallery import GalleryOps
 from apps.workspace.domains.playback import PlaybackOps
 from apps.workspace.domains.scene import SceneOps
 from apps.workspace.domains.stats import StatsOps
 from apps.workspace.domains.system import SystemOps
 from apps.workspace.domains.upload import UploadOps
 
-__all__ = ["CameraOps", "CollectionOps", "DatasetOps", "DepthOps", "PlaybackOps", "SceneOps", "StatsOps", "SystemOps", "UploadOps"]
+__all__ = ["CameraOps", "CollectionOps", "DatasetOps", "DepthOps", "GalleryOps", "PlaybackOps", "SceneOps", "StatsOps", "SystemOps", "UploadOps"]

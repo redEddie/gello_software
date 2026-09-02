@@ -56,13 +56,12 @@ import h5py
 import numpy as np
 from PyQt6.QtCore import (QEvent, QProcess, Qt, QTimer,
                           pyqtSlot)
-from PyQt6.QtGui import QIcon, QTextCursor
+from PyQt6.QtGui import QTextCursor
 from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
     QLabel,
-    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -79,10 +78,10 @@ from gello.data.dataset_schema import (  # noqa: E402
 from gello.gui.dialogs import DatasetSchemaDialog, hf_account  # noqa: E402
 from gello.gui.constants import PLAYBACK_FPS  # noqa: E402
 from gello.gui.widgets import Recents  # noqa: E402
-from gello.gui.workers import CameraPreviewWorker, GalleryLoadWorker  # noqa: E402
+from gello.gui.workers import CameraPreviewWorker  # noqa: E402
 from gello.gui.text_utils import clean_stream_lines, is_progress_line, repo_id_error  # noqa: E402
 from apps.workspace.constants import LOG_DIR, LAYOUT_DIR, LAYOUT_ZIP  # noqa: E402
-from apps.workspace.domains import CameraOps, CollectionOps, DatasetOps, DepthOps, PlaybackOps, SceneOps, StatsOps, SystemOps, UploadOps  # noqa: E402
+from apps.workspace.domains import CameraOps, CollectionOps, DatasetOps, DepthOps, GalleryOps, PlaybackOps, SceneOps, StatsOps, SystemOps, UploadOps  # noqa: E402
 from apps.workspace.models import (  # noqa: E402
     CameraState,
     PlaybackState,
@@ -117,7 +116,6 @@ from gello.data.libero_format import hdf5_repack_status  # noqa: E402
 from gello.collect.worker import CollectionWorker  # noqa: E402
 from gello.scene.scene_format import (  # noqa: E402
     count_by_slot,
-    iter_scene_files,
     scene_filename,
 )
 from gello.config.station import load_station  # noqa: E402
@@ -228,6 +226,7 @@ class WorkspaceWindow(QMainWindow):
         self.camera_ops = CameraOps(self)
         self.depth_ops = DepthOps(self)
         self.dataset_ops = DatasetOps(self)
+        self.gallery_ops = GalleryOps(self)
         self.stats_ops = StatsOps(self)
         self.system = SystemOps(self)
         self.collection = CollectionOps(self)
@@ -267,101 +266,6 @@ class WorkspaceWindow(QMainWindow):
             self.log(f"[로그] 이 세션 로그: {log_path}")
         self.log("[준비] 로봇 노드를 먼저 띄운 뒤 Connect 를 누르세요.")
         QTimer.singleShot(0, self.system.startup_tuning)
-
-    # ------------------------------------------------------------ gallery
-    def _refresh_gallery_scenes(self) -> None:
-        combo = self.gallery_scene_combo
-        cur = combo.currentData()
-        combo.blockSignals(True)
-        combo.clear()
-        try:
-            for p in iter_scene_files(self.dataset_ops.dataset_root()):
-                combo.addItem(p.name, str(p))
-        except Exception:  # noqa: BLE001
-            pass
-        idx = combo.findData(cur)
-        combo.setCurrentIndex(max(0, idx))
-        combo.blockSignals(False)
-        self._refresh_gallery()
-
-    def _refresh_gallery(self, *_args) -> None:
-        path = self.gallery_scene_combo.currentData()
-        self.gallery_list.clear()
-        self._gallery_episodes = []
-        if not path:
-            self.gallery_status.setText(tr("표시할 scene 파일이 없습니다"))
-            return
-        if self.session.active_file_path is not None and Path(path) == self.session.active_file_path:
-            # HDF5 잠금 -- 실패한 로드 대신 이유와 다음 행동을 말한다
-            self.gallery_status.setText(tr(
-                "수집 세션이 이 scene 파일을 사용 중입니다 — 세션을 종료하면 "
-                "갤러리가 열립니다. (현황은 Collect 페이지 slot 패널에)"))
-            return
-        self.gallery_status.setText(tr("불러오는 중... (첫 로드는 썸네일 생성으로 수 초)"))
-        if self._gallery_loader is not None:
-            self._gallery_loader.wait()
-        self._gallery_loader = GalleryLoadWorker(path)
-        self._gallery_loader.loaded.connect(self._on_gallery_loaded)
-        self._gallery_loader.failed.connect(
-            lambda m: self.gallery_status.setText(tr("갤러리 로드 실패: {m}").format(m=m)))
-        self._gallery_loader.start()
-
-    @pyqtSlot(str, list, object)
-    def _on_gallery_loaded(self, path, episodes, ref_thumb) -> None:
-        if path != self.gallery_scene_combo.currentData():
-            return  # 로드 중 scene 을 바꿨다
-        self._gallery_episodes = episodes
-        # instruction 필터 항목 재구성 (선택 유지)
-        cur = self.gallery_filter_combo.currentData()
-        self.gallery_filter_combo.blockSignals(True)
-        self.gallery_filter_combo.clear()
-        self.gallery_filter_combo.addItem(tr("(모든 instruction)"), None)
-        for iid, instr in sorted({(e["instruction_id"], e["instruction"])
-                                  for e in episodes}):
-            self.gallery_filter_combo.addItem(f"{iid} · {instr[:44]}", iid)
-        idx = self.gallery_filter_combo.findData(cur)
-        self.gallery_filter_combo.setCurrentIndex(max(0, idx))
-        self.gallery_filter_combo.blockSignals(False)
-        self._ref_thumb = ref_thumb
-        self._apply_gallery_filter()
-
-    def _apply_gallery_filter(self, *_args) -> None:
-        want = self.gallery_filter_combo.currentData()
-        path = self.gallery_scene_combo.currentData()
-        self.gallery_list.clear()
-        if getattr(self, "_ref_thumb", None):
-            it = QListWidgetItem(QIcon(self._ref_thumb), tr("기준 사진"))
-            it.setData(Qt.ItemDataRole.UserRole, None)
-            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-            self.gallery_list.addItem(it)
-        shown = 0
-        for e in self._gallery_episodes:
-            if want is not None and e["instruction_id"] != want:
-                continue
-            mark = {"success": "✓", "failed": "✗"}.get(e["quality_status"],
-                                                       e["quality_status"][:4])
-            it = QListWidgetItem(
-                QIcon(e["thumb"]) if e["thumb"] else QIcon(),
-                # E번호는 slot 로컬 (uid 의 마지막 조각) -- I000-E000, I003-E000 …
-                f"{e['instruction_id']}-{e['episode_uid'].rsplit('-', 1)[-1]} {mark}")
-            it.setData(Qt.ItemDataRole.UserRole, (path, e["name"]))
-            it.setToolTip(f"{e['episode_uid']}\n{e['instruction']}\n"
-                          f"{e['num_samples']}프레임 · {e['quality_status']}"
-                          f" · {e.get('collector', '')}")
-            self.gallery_list.addItem(it)
-            shown += 1
-        n_ok = sum(1 for e in self._gallery_episodes
-                   if e["quality_status"] == "success")
-        self.gallery_status.setText(
-            tr("{s}개 표시 (전체 {n}개 · success {ok}개) — 더블클릭: 재생, "
-               "선택 후 재판정 버튼: 성공↔실패").format(
-                   s=shown, n=len(self._gallery_episodes), ok=n_ok))
-
-    def _on_gallery_activated(self, item) -> None:
-        d = item.data(Qt.ItemDataRole.UserRole)
-        if d:
-            self.playback_ops.play_episode(d[0], d[1])
-
 
     # ------------------------------------------------------------- center
     # --------------------------------------------------------------- left

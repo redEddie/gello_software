@@ -28,16 +28,16 @@ def build_gallery_tab(win) -> QWidget:
     row = QHBoxLayout()
     win.gallery_scene_combo = QComboBox()
     shrinkable_combo(win.gallery_scene_combo)
-    win.gallery_scene_combo.currentIndexChanged.connect(win._refresh_gallery)
+    win.gallery_scene_combo.currentIndexChanged.connect(win.gallery_ops.refresh_gallery)
     row.addWidget(win.gallery_scene_combo, 2)
     win.gallery_filter_combo = QComboBox()
     shrinkable_combo(win.gallery_filter_combo)
-    win.gallery_filter_combo.currentIndexChanged.connect(win._apply_gallery_filter)
+    win.gallery_filter_combo.currentIndexChanged.connect(win.gallery_ops.apply_gallery_filter)
     row.addWidget(win.gallery_filter_combo, 2)
     b = QPushButton("↻")
     b.setToolTip(tr("scene 목록·썸네일 새로고침"))
     b.setMaximumWidth(32)
-    b.clicked.connect(win._refresh_gallery_scenes)
+    b.clicked.connect(win.gallery_ops.refresh_gallery_scenes)
     row.addWidget(b)
     win.gallery_relabel_btn = QPushButton(tr("선택 재판정"))
     win.gallery_relabel_btn.clicked.connect(win.dataset_ops.on_gallery_relabel)
@@ -57,7 +57,7 @@ def build_gallery_tab(win) -> QWidget:
     win.gallery_list.setSpacing(8)
     win.gallery_list.setSelectionMode(
         QAbstractItemView.SelectionMode.ExtendedSelection)
-    win.gallery_list.itemActivated.connect(win._on_gallery_activated)
+    win.gallery_list.itemActivated.connect(win.gallery_ops.on_gallery_activated)
     col.addWidget(win.gallery_list, 1)
     win.gallery_status = QLabel(tr("scene 을 선택하세요"))
     win.gallery_status.setStyleSheet("color:#888;")
@@ -65,6 +65,6 @@ def build_gallery_tab(win) -> QWidget:
     col.addWidget(win.gallery_status)
     win._gallery_loader = None
     win._gallery_episodes = []
-    win._refresh_gallery_scenes()
+    win.gallery_ops.refresh_gallery_scenes()
     return w
 

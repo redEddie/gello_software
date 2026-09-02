@@ -117,7 +117,7 @@ class DatasetOps:
         if hasattr(self.win, "scene_combo"):
             self.win.scene_ops.refresh_scene_combo()
         if hasattr(self.win, "gallery_scene_combo"):
-            self.win._refresh_gallery_scenes()
+            self.win.gallery_ops.refresh_gallery_scenes()
         self.win._update_dataset_panel(self.selected_file())
 
     def selected_file(self) -> Path | None:
@@ -257,7 +257,7 @@ class DatasetOps:
                                     tr("재판정할 에피소드를 선택하세요."))
             return
         if self.relabel_episodes(by_file):
-            self.win._refresh_gallery()
+            self.win.gallery_ops.refresh_gallery()
             self.refresh_dataset_tree()
 
     def relabel_episodes(self, by_file: dict) -> bool:
