@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, Qt, pyqtSlot
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QListWidgetItem
 
@@ -13,11 +13,10 @@ from gello.gui.workers import GalleryLoadWorker
 from gello.scene.scene_format import iter_scene_files
 
 
-class GalleryOps(QObject):
+class GalleryOps:
     """Gallery tab: scene episode thumbnails, filter, and activation."""
 
     def __init__(self, win) -> None:
-        super().__init__(win)
         self.win = win
 
     def refresh_gallery_scenes(self) -> None:
@@ -57,7 +56,6 @@ class GalleryOps(QObject):
             lambda m: self.win.gallery_status.setText(tr("갤러리 로드 실패: {m}").format(m=m)))
         self.win._gallery_loader.start()
 
-    @pyqtSlot(str, list, object)
     def on_gallery_loaded(self, path, episodes, ref_thumb) -> None:
         if path != self.win.gallery_scene_combo.currentData():
             return  # 로드 중 scene 을 바꿨다
