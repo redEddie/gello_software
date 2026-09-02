@@ -56,4 +56,3 @@ def build_cloud_tab(win) -> QWidget:
     win.cloud_status.setStyleSheet("color:#888;")
     col.addWidget(win.cloud_status)
     return w
-

@@ -46,7 +46,7 @@ class DepthOps:
             # '살아있다'고 믿으면 탭을 다시 들어와도 스트림이 영영 안 선다)
             self.stop_cloud(restore_previews=False)
         # depth 파이프라인은 RGB 미리보기와 같은 장치를 두 번 열 수 없다.
-        # OR-누적: 카메라 전환 재시작 때(미리보기 이미 내려간 상태) 복원
+        # OR-누적: 카메라 전환 재시작 때(미리보기 이미 남은 상태) 복원
         # 약속을 잊지 않게 한다. 플래그는 실제 복원 때 리셋된다.
         self.win._cloud_previews_were_on = (self.win._cloud_previews_were_on
                                         or bool(self.win.agent_preview

@@ -58,4 +58,3 @@ def build_depth_tab(win) -> QWidget:
     win.depth_status.setWordWrap(True)
     col.addWidget(win.depth_status)
     return w
-

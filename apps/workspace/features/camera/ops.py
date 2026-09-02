@@ -28,8 +28,8 @@ class CameraOps:
 
             cams = RealSenseCamera.find_cameras()
         except Exception as e:  # noqa: BLE001
-            self.set_camera_hint(tr("카베라 목록 조회 실패: {e}").format(e=e))
-            self.win.log(f"[카베라] 목록 조회 실패: {type(e).__name__}: {e}")
+            self.set_camera_hint(tr("카메라 목록 조회 실패: {e}").format(e=e))
+            self.win.log(f"[카메라] 목록 조회 실패: {type(e).__name__}: {e}")
             return
         entries = []
         for c in cams:
@@ -54,7 +54,7 @@ class CameraOps:
             combo.blockSignals(False)
         self.mirror_camera_combos(rebuild=True)
         self.set_camera_hint(tr("{n}대 감지됨").format(n=len(entries)))
-        self.win.log(f"[카베라] {len(entries)}대 감지: {[s for s, _ in entries]}")
+        self.win.log(f"[카메라] {len(entries)}대 감지: {[s for s, _ in entries]}")
         self.ensure_camera_node()
 
     def set_camera_hint(self, text: str) -> None:
@@ -104,13 +104,13 @@ class CameraOps:
     def on_camera_changed(self) -> None:
         self.mirror_camera_combos()
         if self.win.worker is not None:
-            return  # 세션 중 카베라 교체는 없다 -- 노드도 그대로 둔다
+            return  # 세션 중 카메라 교체는 없다 -- 노드도 그대로 둔다
         self.ensure_camera_node()   # 선택이 바뀌면 노드를 새 구성으로 재시작
         self.restart_previews()
 
     # --------------------------------------------------------------- preview
     def on_toggle_previews(self) -> None:
-        # 세션 중에도 켜고 끌 수 있다: 카베라 노드가 장치를 갖고 있고 이쪽은
+        # 세션 중에도 켜고 끌 수 있다: 카메라 노드가 장치를 갖고 있고 이쪽은
         # 구독자일 뿐이라 worker 와 경합하지 않는다 (2026-09-01).
         if self.win.agent_preview or self.win.wrist_preview:
             self.stop_previews_async()
@@ -135,7 +135,7 @@ class CameraOps:
                             ("wrist", self.win.wrist_combo)):
             serial = self.combo_serial(combo)
             if not serial:
-                self.win.live_views[role].clear_frame(tr("카베라를 선택하세요"))
+                self.win.live_views[role].clear_frame(tr("카메라를 선택하세요"))
                 self.win.right_fields[f"cam_{role}"].setText("-")
                 continue
             w = CameraPreviewWorker(role, serial)
@@ -201,7 +201,7 @@ class CameraOps:
             "busy" if self.previews_busy() else "off",
             tr("정리 중") if self.previews_busy() else "-")
         self.update_preview_btn()
-        # 멈춘 카베라의 마지막 프레임을 "현재"로 계속 겹쳐 보이지 않게 한다.
+        # 멈춘 카메라의 마지막 프레임을 "현재"로 계속 겹쳐 보이지 않게 한다.
         cams = self.win.cameras
         if cams.last_cam_frame:
             cams.last_cam_frame.clear()
@@ -225,7 +225,7 @@ class CameraOps:
     def on_preview_frame(self, role: str, frame) -> None:
         # 기록 중에는 worker 가 별내는 프레임이 이긴다 -- 화면에 보이는 것이
         # 실제로 파일에 쓰이는 그림이어야 하기 때문이다. 그 외 단계(게이트·
-        # 리셋 대기)에서는 worker 가 카베라를 아예 안 읽으므로 여기가 유일한
+        # 리셋 대기)에서는 worker 가 카메라를 아예 안 읽으므로 여기가 유일한
         # 공급원이고, 노드 속도 그대로 나온다.
         win = self.win
         cams = win.cameras
@@ -289,7 +289,7 @@ class CameraOps:
 
     def on_preview_error(self, role: str, msg: str) -> None:
         self.win.live_views[role].clear_frame(tr("미리보기 실패"))
-        self.win.log(f"[카베라 미리보기 실패] {role}: {msg}")
+        self.win.log(f"[카메라 미리보기 실패] {role}: {msg}")
         self.win.lights["camera"].set("bad", tr("오류"))
 
     # ----------------------------------------------------------------- worker
@@ -339,12 +339,12 @@ class CameraOps:
         self.ensure_camera_node(restart=True)
 
     def on_stop_camera_node_manual(self) -> None:
-        """카베라를 완전히 놓는다 -- VLA 배포 등 외부 프로그램이 장치를
+        """카메라를 완전히 놓는다 -- VLA 배포 등 외부 프로그램이 장치를
         직접 열 수 있게. 미리보기·depth 뷰도 함께 내린다 (구독자만 남으면
         에러만 5초마다 찍는다)."""
         if self.win.worker is not None:
             QMessageBox.warning(self.win, tr("세션 진행 중"),
-                                tr("수집 세션이 카베라를 쓰고 있습니다. "
+                                tr("수집 세션이 카메라를 쓰고 있습니다. "
                                    "세션 종료 후 노드를 내리세요."))
             return
         self.win.cameras.camera_node_user_stopped = True
@@ -352,19 +352,19 @@ class CameraOps:
         self.stop_previews_async()
         self.stop_camera_node()
         for role in ("agent", "wrist"):
-            self.win.live_views[role].clear_frame(tr("카베라 노드 종료됨"))
+            self.win.live_views[role].clear_frame(tr("카메라 노드 종료됨"))
         self.win.lights["camera"].set("off", tr("노드 종료"))
-        self.win.log("[카베라노드] 수동 종료 — 카베라가 해제되어 다른 프로그램"
+        self.win.log("[카메라노드] 수동 종료 — 카메라가 해제되어 다른 프로그램"
                      "(VLA 정책 클라이언트 등)이 열 수 있습니다. 다시 쓰려면 "
-                     "Camera 메뉴 > 카베라 노드 재시작.")
+                     "Camera 메뉴 > 카메라 노드 재시작.")
 
     def ensure_camera_node(self, restart: bool = False) -> None:
-        """카베라 노드 프로세스를 현재 콤보 선택과 일치하게 유지한다.
+        """카메라 노드 프로세스를 현재 콤보 선택과 일치하게 유지한다.
 
         이미 같은 구성으로 떠 있으면 아무것도 하지 않는다 -- 노드의 가치는
-        "카베라를 한 번 열고 계속 스트리밍"에 있으므로 불필요한 재시작이
+        "카메라를 한 번 열고 계속 스트리밍"에 있으므로 불필요한 재시작이
         가장 나쁘다. 선택이 바뀌었거나 죽었을 때만 (재)시작한다. 수동 종료
-        래치가 켜져 있으면 건드리지 않는다 (외부 프로그램이 카베라를 쓰는
+        래치가 켜져 있으면 건드리지 않는다 (외부 프로그램이 카메라를 쓰는
         중일 수 있다 -- restart=True 도 래치를 풀지 않는다, 그건
         on_restart_camera_node 만 한다)."""
         if self.win.cameras.camera_node_user_stopped:
@@ -384,13 +384,13 @@ class CameraOps:
         proc.setProgram(sys.executable)
         proc.setArguments(["-m", "gello.comm.camera_node", "--die-with-parent"]
                           + [a for sp in specs for a in ("--cam", sp)])
-        proc.setWorkingDirectory(str(Path(__file__).resolve().parent.parent.parent))
+        proc.setWorkingDirectory(str(Path(__file__).resolve().parent.parent.parent.parent))
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.readyReadStandardOutput.connect(self.on_camera_node_output)
         proc.finished.connect(self.on_camera_node_finished)
         self.win.procs.camera_node_process = proc
         self.win.cameras.camera_node_spec = key
-        self.win.log(f"[카베라노드] 시작: {key}")
+        self.win.log(f"[카메라노드] 시작: {key}")
         proc.start()
 
     def on_camera_node_output(self) -> None:
@@ -398,30 +398,30 @@ class CameraOps:
             return
         for line in self.win._proc_text(self.win.procs.camera_node_process).splitlines():
             if line.strip():
-                self.win.log(f"[카베라노드] {line.rstrip()}")
+                self.win.log(f"[카메라노드] {line.rstrip()}")
 
     def on_camera_node_finished(self, code: int, _status) -> None:
         proc = self.win.sender()
         if proc is not self.win.procs.camera_node_process:
             # stop_camera_node() 나 ensure(재시작) 가 이미 손을 뗀 프로세스
             # -- 의도된 종료라 조용히 본낸다.
-            self.win.log(f"[카베라노드] 종료 (exit={code})")
+            self.win.log(f"[카메라노드] 종료 (exit={code})")
             return
         # 비정상 종료 -- 자동 재시작한다. 단 crash-loop(예: 포트 충돌로
         # 뜨자마자 죽는 상태)이면 로그만 가득 채우므로 60초 내 3회를 넘으면
-        # 멈추고 수동(카베라 메뉴)으로 넘긴다.
+        # 멈추고 수동(카메라 메뉴)으로 넘긴다.
         self.win.procs.camera_node_process = None
         self.win.cameras.camera_node_spec = ""
         now = time.monotonic()
         self.win.cameras.camera_node_crashes = [
             t for t in self.win.cameras.camera_node_crashes if now - t < 60.0] + [now]
         if len(self.win.cameras.camera_node_crashes) > 3:
-            self.win.log(f"[카베라노드] 비정상 종료 (exit={code}) — 60초 내 "
+            self.win.log(f"[카메라노드] 비정상 종료 (exit={code}) — 60초 내 "
                          f"{len(self.win.cameras.camera_node_crashes)}회째, 자동 재시작을 "
-                         "멈춥니다. Camera 메뉴 > 카베라 노드 재시작으로 수동 "
+                         "멈춥니다. Camera 메뉴 > 카메라 노드 재시작으로 수동 "
                          "시작하세요.")
             return
-        self.win.log(f"[카베라노드] 비정상 종료 (exit={code}) — 2초 후 자동 재시작")
+        self.win.log(f"[카메라노드] 비정상 종료 (exit={code}) — 2초 후 자동 재시작")
         QTimer.singleShot(2000, self.ensure_camera_node)
 
     def stop_camera_node(self) -> None:

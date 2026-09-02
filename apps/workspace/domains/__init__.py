@@ -11,10 +11,9 @@ tests/gui/test_domain_attrs.py checks every ``self.win.<name>`` against a real
 window instance.
 """
 
-from apps.workspace.domains.camera import CameraOps
+from apps.workspace.features.camera import CameraOps, DepthOps
 from apps.workspace.domains.collection import CollectionOps
 from apps.workspace.features.dataset import DatasetOps
-from apps.workspace.domains.depth import DepthOps
 from apps.workspace.features.gallery import GalleryOps
 from apps.workspace.features.playback import PlaybackOps
 from apps.workspace.features.scene import LayoutRefOps, SceneOps, ScenePlanningOps

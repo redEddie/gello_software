@@ -36,8 +36,7 @@ from apps.workspace.pages import PAGE_BUILDERS
 # avoid a circular import (this module is re-exported by __init__, and the tabs
 # are only needed inside build_center).
 from .analysis_tab import build_analysis_tab
-from .cloud_tab import build_cloud_tab
-from .depth_tab import build_depth_tab
+from apps.workspace.features.camera import build_cloud_tab, build_depth_tab
 from apps.workspace.features.gallery import build_gallery_tab
 from apps.workspace.features.playback import build_trim_tab
 from apps.workspace.features.scene.layout_tab import build_layout_tab
