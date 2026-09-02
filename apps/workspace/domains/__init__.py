@@ -13,7 +13,7 @@ window instance.
 
 from apps.workspace.domains.camera import CameraOps
 from apps.workspace.domains.collection import CollectionOps
-from apps.workspace.domains.dataset import DatasetOps
+from apps.workspace.features.dataset import DatasetOps
 from apps.workspace.domains.depth import DepthOps
 from apps.workspace.domains.gallery import GalleryOps
 from apps.workspace.domains.playback import PlaybackOps

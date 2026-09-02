@@ -1,7 +1,3 @@
-"""Standalone dialogs used by the workspace collection GUI."""
+"""Private helpers shared by workspace dialogs."""
 
-from apps.dialogs.hdf5_tree_dialog import Hdf5TreeDialog
-
-__all__ = [
-    "Hdf5TreeDialog",
-]
+__all__ = []

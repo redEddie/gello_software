@@ -104,7 +104,7 @@ from apps.workspace.builders import (  # noqa: E402
     build_toolbar,
 )
 from apps.workspace.features.scene.dialogs.grid_editor_dialog import GridEditorDialog  # noqa: E402
-from apps.dialogs.hdf5_tree_dialog import Hdf5TreeDialog  # noqa: E402
+from apps.workspace.features.dataset.hdf5_tree_dialog import Hdf5TreeDialog  # noqa: E402
 from gello.gui.grid_overlay import (  # noqa: E402
     load_grid_store,
     save_grid_store,

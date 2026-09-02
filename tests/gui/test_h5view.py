@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 from gello.data.dataset_schema import OBS_AGENTVIEW_RGB  # noqa: E402
-import collect_workspace as cw  # noqa: E402
+from apps.workspace.features.dataset.hdf5_tree_dialog import Hdf5TreeDialog  # noqa: E402
 
 d = tempfile.mkdtemp(prefix="h5view_")
 subprocess.run([sys.executable, WT + "/scripts/check/check_scene_file.py",
@@ -20,7 +20,7 @@ subprocess.run([sys.executable, WT + "/scripts/check/check_scene_file.py",
 p = Path(d) / "scene_000.hdf5"
 assert p.exists()
 
-dlg = cw.Hdf5TreeDialog(None, p)
+dlg = Hdf5TreeDialog(None, p)
 root = dlg.tree.invisibleRootItem()
 names = [root.child(i).text(0) for i in range(root.childCount())]
 assert "metadata" in names and "episode_000" in names, names

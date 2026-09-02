@@ -156,7 +156,7 @@ import apps.workspace.builders as B  # noqa: E402
 
 for mod in (D, B):
     names = getattr(mod, "__all__", None)
-    assert names, f"{mod.__name__} 에 __all__ 이 없다 -- 공개 API 가 불분명하다"
+    assert names is not None, f"{mod.__name__} 에 __all__ 이 없다 -- 공개 API 가 불분명하다"
     for name in names:
         assert hasattr(mod, name), f"{mod.__name__}.__all__ 의 {name} 을 임포트할 수 없다"
     print(f"5. {mod.__name__}.__all__ {len(names)}개 임포트 OK")
