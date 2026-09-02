@@ -11,7 +11,7 @@ from .cloud_tab import build_cloud_tab
 from .depth_tab import build_depth_tab
 from .gallery_tab import build_gallery_tab
 from .layout import build_bottom, build_center, build_layout, build_left, build_right
-from .layout_tab import build_layout_tab
+from apps.workspace.features.scene.layout_tab import build_layout_tab
 from .toolbar import build_menu, build_statusbar, build_toolbar
 from .trim_tab import build_trim_tab
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QInputDialog, QMessageBox, QTreeWidgetItem
 
-from apps.dialogs.plan_edit_dialog import PlanEditDialog
+from apps.workspace.features.scene.dialogs.plan_edit_dialog import PlanEditDialog
 from gello.gui.i18n import tr
 from gello.scene.collection_plan import (
     PLANS_DIR,

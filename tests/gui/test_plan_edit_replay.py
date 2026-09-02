@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 import collect_workspace as cw  # noqa: E402
-from apps.dialogs.plan_json_dialog import PlanJsonDialog  # noqa: E402
+from apps.workspace.features.scene.dialogs.plan_json_dialog import PlanJsonDialog  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="planedit_"))
 plan_copy = TMP / "pilot.json"

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import QDialog, QMessageBox
 
-from apps.dialogs.new_scene_dialog import NewSceneDialog
+from apps.workspace.features.scene.dialogs.new_scene_dialog import NewSceneDialog
 from gello.config.station import load_station
 from gello.gui.i18n import tr
 from gello.scene.scene_format import (

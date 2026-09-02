@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import QApplication, QInputDialog  # noqa: E402
 
 app = QApplication(sys.argv)
 import collect_workspace as cw  # noqa: E402
-from apps.dialogs.plan_edit_dialog import PlanEditDialog  # noqa: E402
+from apps.workspace.features.scene.dialogs.plan_edit_dialog import PlanEditDialog  # noqa: E402
 from gello.scene.collection_plan import PLANS_DIR  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="planform_"))

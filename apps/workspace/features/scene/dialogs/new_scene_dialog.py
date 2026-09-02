@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from apps.dialogs._widgets import SceneInfoView
-from apps.dialogs.recommend_dialog import RecommendDialog
+from apps.workspace.features.scene.dialogs.recommend_dialog import RecommendDialog
 from gello.gui.i18n import tr
 from gello.scene.props import load_props, props_by_id
 from gello.scene.scene_format import (

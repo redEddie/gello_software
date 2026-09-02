@@ -17,7 +17,7 @@ from apps.workspace.domains.dataset import DatasetOps
 from apps.workspace.domains.depth import DepthOps
 from apps.workspace.domains.gallery import GalleryOps
 from apps.workspace.domains.playback import PlaybackOps
-from apps.workspace.domains.scene import LayoutRefOps, SceneOps, ScenePlanningOps
+from apps.workspace.features.scene import LayoutRefOps, SceneOps, ScenePlanningOps
 from apps.workspace.domains.stats import StatsOps
 from apps.workspace.domains.system import SystemOps
 from apps.workspace.domains.upload import UploadOps

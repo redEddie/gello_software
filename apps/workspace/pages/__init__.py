@@ -8,7 +8,7 @@ at startup rather than a silently blank panel -- add to both or neither.
 from .collect import build_collect
 from .configure import build_configure
 from .dataset import build_dataset
-from .layout import build_layout_page
+from apps.workspace.features.scene.layout_page import build_layout_page
 from .settings import build_settings
 from .stats import build_stats
 from .upload import build_upload

@@ -54,8 +54,8 @@ app = QApplication(sys.argv)
 from tests.gui.helpers import _wait_recs  # noqa: E402
 
 import collect_workspace as cw  # noqa: E402
-from apps.dialogs.new_scene_dialog import NewSceneDialog  # noqa: E402
-from apps.dialogs.recommend_dialog import RecommendDialog  # noqa: E402
+from apps.workspace.features.scene.dialogs.new_scene_dialog import NewSceneDialog  # noqa: E402
+from apps.workspace.features.scene.dialogs.recommend_dialog import RecommendDialog  # noqa: E402
 
 cw.CameraOps.refresh_cameras = lambda self: None
 cw.CameraOps.restart_previews = lambda self: None

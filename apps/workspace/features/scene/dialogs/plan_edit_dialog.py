@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from apps.dialogs.plan_json_dialog import PlanJsonDialog
+from apps.workspace.features.scene.dialogs.plan_json_dialog import PlanJsonDialog
 from gello.gui.widgets import Recents
 from gello.gui.i18n import tr
 from gello.scene.collection_plan import load_plan
