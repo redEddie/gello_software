@@ -81,7 +81,7 @@ import collect_workspace as cw  # noqa: E402
 
 cw.CameraOps.refresh_cameras = lambda self: None
 cw.CameraOps.restart_previews = lambda self: None
-cw.WorkspaceWindow._startup_tuning = lambda self: None   # pkexec 비밀번호 창 차단
+cw.SystemOps.startup_tuning = lambda self: None   # pkexec 비밀번호 창 차단
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
 # recents 기본값에 의존하지 않는다 -- 다른 테스트/실사용이 최근 계획을

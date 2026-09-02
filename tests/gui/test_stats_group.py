@@ -74,7 +74,7 @@ import collect_workspace as cw  # noqa: E402
 
 cw.CameraOps.refresh_cameras = lambda self: None
 cw.CameraOps.restart_previews = lambda self: None
-cw.WorkspaceWindow._startup_tuning = lambda self: None   # pkexec 비밀번호 창 차단
+cw.SystemOps.startup_tuning = lambda self: None   # pkexec 비밀번호 창 차단
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
 win.session.stats = stats

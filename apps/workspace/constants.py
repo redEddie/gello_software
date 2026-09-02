@@ -14,6 +14,9 @@ LAYOUT_DIR = WT_ROOT / "assets" / "libero_init_layouts"
 UPLOAD_SCRIPT = str(WT_ROOT / "scripts" / "convert" / "upload_to_hub.py")
 REPACK_SCRIPT = str(WT_ROOT / "scripts" / "convert" / "repack_hdf5.py")
 REPLAY_SCRIPT = str(WT_ROOT / "scripts" / "analyze" / "replay_episode.py")
+CHECK_CAMERAS = str(WT_ROOT / "scripts" / "check" / "check_cameras.py")
+RESET_PROTECTION = str(WT_ROOT / "scripts" / "check" / "gello_reset_protection.py")
+RUNME_SCRIPT = str(WT_ROOT / "scripts" / "runme.sh")
 
 # Activity bar entries: (key, icon, title, tooltip). Icons are emoji rather
 # than a theme lookup -- an icon theme that is missing on this machine would

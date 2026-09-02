@@ -38,12 +38,13 @@ import collect_workspace as cw  # noqa: E402
 # (다른 인수 테스트가 쓰는 것과 같은 스텁).
 cw.CameraOps.refresh_cameras = lambda self: None
 cw.CameraOps.restart_previews = lambda self: None
-cw.WorkspaceWindow._startup_tuning = lambda self: None
+cw.SystemOps.startup_tuning = lambda self: None
 win = cw.WorkspaceWindow(None)
 
 # 창이 만든 뒤에야 생기는 것들 -- 여기에 적는 것은 "없어도 정상"이라는 선언이다.
 LATE = {
     "trim_plots", "series_plots",     # 분석 탭을 처음 열 때 만든다
+    "_camera_check_process",          # Tools > 카메라 점검 실행 시 만들어진다
 }
 
 missing = {}

@@ -71,8 +71,8 @@ def build_menu(win) -> None:
     m.addAction(tr("HDF5 업로드..."), win.upload.on_hdf5_upload)
 
     m = mb.addMenu(tr("Robot"))
-    m.addAction(tr("노드 시작"), win._on_start_node)
-    m.addAction(tr("노드 종료"), win._on_stop_node)
+    m.addAction(tr("노드 시작"), win.system.on_start_node)
+    m.addAction(tr("노드 종료"), win.system.on_stop_node)
     m.addSeparator()
     m.addAction(tr("연결"), win.collection.on_connect)
     m.addAction(tr("세션 종료"), win.collection.on_disconnect)
@@ -100,10 +100,10 @@ def build_menu(win) -> None:
     m.addAction(win.act_toggle_right)
 
     m = mb.addMenu(tr("Tools"))
-    m.addAction(tr("시스템 튜닝 실행 (runme.sh)"), win._run_runme)
-    m.addAction(tr("카메라 점검 (USB 속도·프레임)"), win._on_check_cameras)
+    m.addAction(tr("시스템 튜닝 실행 (runme.sh)"), win.system.run_runme)
+    m.addAction(tr("카메라 점검 (USB 속도·프레임)"), win.system.on_check_cameras)
     m.addAction(tr("리더암 서보 보호 해제 (재부팅)"),
-                win._on_reset_leader_protection)
+                win.system.on_reset_leader_protection)
     m.addAction(tr("Hugging Face 계정..."), win.upload.on_hf_accounts)
     m.addSeparator()
     m.addAction(tr("데이터셋 구조 사용자 설정..."), win._on_schema)
