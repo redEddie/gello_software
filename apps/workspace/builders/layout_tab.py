@@ -23,7 +23,8 @@ def build_layout_tab(win) -> QWidget:
     카메라 쪽은 변환 파이프라인과 같은 크롭(wrist 는 +31px)을 거치므로
     보이는 그대로가 학습 입력 프레이밍이다.
     """
-    win._layout_entries: list = []      # (suite, name, agent_png, wrist_png)
+    win._layout_all_entries: list = []  # all (suite, name, agent_png, wrist_png)
+    win._layout_entries: list = []      # filtered by suite
     win._layout_idx = 0
     win.playback.layout_playing = True
     win.cameras.layout_ref: dict = {}          # role -> (224,224,3) RGB

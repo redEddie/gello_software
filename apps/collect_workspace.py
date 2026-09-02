@@ -46,7 +46,6 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import json
-import shutil
 import sys
 import traceback
 import time
@@ -66,7 +65,6 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QTreeWidgetItem,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -80,7 +78,7 @@ from gello.gui.constants import PLAYBACK_FPS  # noqa: E402
 from gello.gui.widgets import Recents  # noqa: E402
 from gello.gui.workers import CameraPreviewWorker  # noqa: E402
 from gello.gui.text_utils import clean_stream_lines, is_progress_line, repo_id_error  # noqa: E402
-from apps.workspace.constants import LOG_DIR, LAYOUT_DIR, LAYOUT_ZIP  # noqa: E402
+from apps.workspace.constants import LOG_DIR  # noqa: E402
 from apps.workspace.domains import CameraOps, CollectionOps, DatasetOps, DepthOps, GalleryOps, PlaybackOps, SceneOps, StatsOps, SystemOps, UploadOps  # noqa: E402
 from apps.workspace.models import (  # noqa: E402
     CameraState,
@@ -102,22 +100,16 @@ from apps.workspace.builders import (  # noqa: E402
 from apps.dialogs.grid_editor_dialog import GridEditorDialog  # noqa: E402
 from apps.dialogs.hdf5_tree_dialog import Hdf5TreeDialog  # noqa: E402
 from gello.gui.grid_overlay import (  # noqa: E402
-    draw_alignment_grid,
     load_grid_store,
     save_grid_store,
 )
 from gello.gui.i18n import tr  # noqa: E402
 from gello.data.crop import (  # noqa: E402
     default_crop_params,
-    resize_rgb,
     save_crop_params,
 )
 from gello.data.libero_format import hdf5_repack_status  # noqa: E402
 from gello.collect.worker import CollectionWorker  # noqa: E402
-from gello.scene.scene_format import (  # noqa: E402
-    count_by_slot,
-    scene_filename,
-)
 from gello.config.station import load_station  # noqa: E402
 
 # 로봇 IP, ZMQ 주소, 카메라 스트림 포맷, 크롭 초기값은 전부 여기서 온다.
@@ -370,167 +362,6 @@ class WorkspaceWindow(QMainWindow):
         return b
 
     # ------------------------------------------------------------- 분석 탭
-    def _ensure_layout_refs(self) -> bool:
-        """Unpacks assets/libero_init_layouts.zip next to itself.
-
-        Only the zip is in the remote; the extracted pngs fall under
-        .gitignore's *.png. A stamp of the zip's size+mtime decides whether to
-        re-extract, so replacing the zip is all it takes to update the refs.
-        """
-        if not LAYOUT_ZIP.exists():
-            return LAYOUT_DIR.exists()
-        stamp = LAYOUT_DIR / ".zip_stamp"
-        st = LAYOUT_ZIP.stat()
-        want = f"{st.st_size}:{int(st.st_mtime)}"
-        try:
-            if stamp.exists() and stamp.read_text() == want:
-                return True
-            import zipfile
-            if LAYOUT_DIR.exists():
-                shutil.rmtree(LAYOUT_DIR)
-            with zipfile.ZipFile(LAYOUT_ZIP) as z:
-                z.extractall(LAYOUT_DIR)
-            stamp.write_text(want)
-            self.log(f"[레이아웃] 참조 이미지 압축 해제: {LAYOUT_DIR}")
-            return True
-        except Exception as e:  # noqa: BLE001
-            self.log(f"[레이아웃] 압축 해제 실패: {type(e).__name__}: {e}")
-            return False
-
-    def _layout_reload(self) -> None:
-        """Scans the extracted tree and fills the suite filter."""
-        if not self._ensure_layout_refs():
-            self.layout_name_label.setText(
-                tr("assets/libero_init_layouts.zip 이 없습니다"))
-            return
-        entries = []
-        suites = []
-        for suite in sorted(p for p in LAYOUT_DIR.iterdir() if p.is_dir()):
-            found = False
-            for ap in sorted((suite / "agent").glob("*.png")):
-                wp = suite / "wrist" / ap.name
-                if wp.exists():
-                    entries.append((suite.name, ap.stem, str(ap), str(wp)))
-                    found = True
-            if found:
-                suites.append(suite.name)
-        self._layout_all_entries = entries
-        cur = self.layout_suite_combo.currentText()
-        self.layout_suite_combo.blockSignals(True)
-        self.layout_suite_combo.clear()
-        self.layout_suite_combo.addItem(tr("(전체)"), None)
-        for s in suites:
-            self.layout_suite_combo.addItem(s, s)
-        i = self.layout_suite_combo.findText(cur)
-        self.layout_suite_combo.setCurrentIndex(max(0, i))
-        self.layout_suite_combo.blockSignals(False)
-        self.cameras.layout_refilter()
-
-    def _layout_refilter(self) -> None:
-        suite = self.layout_suite_combo.currentData()
-        all_entries = getattr(self, "_layout_all_entries", [])
-        self._layout_entries = [e for e in all_entries
-                                if suite is None or e[0] == suite]
-        self._layout_idx = 0
-        self._layout_show()
-
-    def _layout_step(self, delta: int, user: bool = True) -> None:
-        if not self._layout_entries:
-            return
-        self._layout_idx = (self._layout_idx + delta) % len(self._layout_entries)
-        if user and self._layout_timer.isActive():
-            self._layout_timer.start()      # 수동 이동 시 타이머 리셋
-        self._layout_show()
-
-    def _layout_toggle_play(self) -> None:
-        self.playback.layout_playing = not self.playback.layout_playing
-        self.layout_play_btn.setText(
-            tr("일시정지") if self.playback.layout_playing else tr("재생"))
-        if self.playback.layout_playing and \
-                self.center_tabs.currentIndex() == self._layout_tab_index:
-            self._layout_timer.start()
-        else:
-            self._layout_timer.stop()
-
-    def _layout_apply_interval(self) -> None:
-        sec = self.layout_interval_combo.currentData() or 5
-        self._layout_timer.setInterval(int(sec) * 1000)
-
-    def _layout_show(self) -> None:
-        if not self._layout_entries:
-            for v in self.layout_overlay_views.values():
-                v.clear_frame(tr("참조 이미지 없음"))
-            for v in self.layout_strip_views.values():
-                v.clear_frame("")
-            self.layout_name_label.setText("")
-            return
-        import cv2
-        suite, name, ap, wp = self._layout_entries[self._layout_idx]
-        self.layout_name_label.setText(
-            f"{suite} · {name}  ({self._layout_idx + 1}/{len(self._layout_entries)})")
-        for role, path in (("agent", ap), ("wrist", wp)):
-            bgr = cv2.imread(path)
-            if bgr is None:
-                self.cameras.layout_ref.pop(role, None)
-                continue
-            self.cameras.layout_ref[role] = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            self.layout_strip_views[f"{role}_ref"].set_frame(self.cameras.layout_ref[role])
-            self._layout_update_role(role)
-
-    def _layout_alpha_changed(self, val: int) -> None:
-        self.layout_alpha_label.setText(tr("스틸 {v}%").format(v=val))
-        for role in ("agent", "wrist"):
-            self._layout_update_role(role)
-
-    def _layout_blink_toggled(self, on: bool) -> None:
-        """번갈아 보기 -- 겹침 대신 카메라와 스틸을 0.5초씩 교대로 보여준다."""
-        self.layout_alpha_slider.setEnabled(not on)
-        self._layout_blink_state = False
-        if on and self.center_tabs.currentIndex() == self._layout_tab_index:
-            self._layout_blink_timer.start()
-        else:
-            self._layout_blink_timer.stop()
-        for role in ("agent", "wrist"):
-            self._layout_update_role(role)
-
-    def _layout_blink_tick(self) -> None:
-        self._layout_blink_state = not self._layout_blink_state
-        for role in ("agent", "wrist"):
-            self._layout_update_role(role)
-
-    def _layout_update_role(self, role: str) -> None:
-        """Re-blends one side. Called on slideshow advance, on every camera
-        frame while the tab is visible, and when the alpha slider moves.
-
-        카메라가 바닥, LIBERO 스틸이 그 위에 슬라이더만큼의 불투명도로 올라간다.
-        카메라 프레임이 없으면 참조를 단독으로 보여주는 대신 그렇다고 말한다 --
-        참조 단독은 "겹침이 안 되고 있다"는 사실을 숨긴다.
-        """
-        ref = self.cameras.layout_ref.get(role)
-        if ref is None:
-            return
-        frame = self.cameras.last_cam_frame.get(role)
-        if frame is None:
-            self.layout_overlay_views[role].clear_frame(
-                tr("카메라 없음 — Configure 에서 미리보기를 켜세요"))
-            self.layout_strip_views[f"{role}_live"].clear_frame(tr("카메라 없음"))
-            return
-        p = self.cameras.crop_params[role]
-        live = resize_rgb(frame, ref.shape[0], zoom=p["zoom"],
-                          x_shift=p["x"], y_shift=p["y"])
-        self.layout_strip_views[f"{role}_live"].set_frame(live)
-        if self.layout_blink_check.isChecked():
-            # 교대 모드: 위치 차이가 겹침보다 눈에 잘 띈다 (운동 시차 효과).
-            shown = ref if self._layout_blink_state else live
-        else:
-            a = self.layout_alpha_slider.value()
-            shown = ((live.astype(np.uint16) * (100 - a)
-                      + ref.astype(np.uint16) * a) // 100).astype(np.uint8)
-        if self.layout_grid_check.isChecked():
-            shown = draw_alignment_grid(shown)
-        self.layout_overlay_views[role].set_frame(shown)
-
-
     def _on_center_tab_changed(self, idx: int) -> None:
         """레이아웃 탭이 보이는 동안만 하단 로그를 접고 슬라이드쇼를 돌린다."""
         if idx == getattr(self, "_cloud_tab_index", -1):
@@ -552,10 +383,10 @@ class WorkspaceWindow(QMainWindow):
         if on:
             self._set_activity("layout")     # 컨트롤이 왼쪽 페이지에 있다
             if not getattr(self, "_layout_all_entries", None):
-                self._layout_reload()
+                self.scene_ops.layout_reload()
             else:
-                self._layout_show()
-            self._layout_apply_interval()
+                self.scene_ops.layout_show()
+            self.scene_ops.layout_apply_interval()
             if self.playback.layout_playing:
                 self._layout_timer.start()
             if self.layout_blink_check.isChecked():
@@ -587,7 +418,7 @@ class WorkspaceWindow(QMainWindow):
                       getattr(self, "trim_views", {})):
             for role, v in views.items():
                 v.set_crop_guide(**p[role])
-        self._layout_rerender()
+        self.scene_ops.layout_rerender()
 
     def _crop_reset(self) -> None:
         d = default_crop_params()
@@ -596,18 +427,6 @@ class WorkspaceWindow(QMainWindow):
         self.crop_agent_y.setValue(d["agent"]["y"])
         self.crop_wrist_x.setValue(d["wrist"]["x"])
 
-    def _layout_rerender(self) -> None:
-        for role in ("agent", "wrist"):
-            self._layout_update_role(role)
-
-    def _layout_blink_interval_changed(self, ms: int) -> None:
-        self.layout_blink_label.setText(tr("전환 {s:.2f}초").format(s=ms / 1000))
-        self._layout_blink_timer.setInterval(int(ms))
-
-    # -------------------------------------------------------------- right
-    # ------------------------------------------------------------- bottom
-    # ------------------------------------------------------------- layout
-    # ---------------------------------------------------------- activity
     def _set_activity(self, key: str) -> None:
         """Switch the LEFT panel only. The center camera is untouched -- that
         is the whole point of this layout, so nothing here may touch it."""
@@ -617,7 +436,7 @@ class WorkspaceWindow(QMainWindow):
             act.setChecked(True)
         if key == "stats":
             self.stats_ops.refresh_stats()
-            self._refresh_plan_progress()
+            self.scene_ops.refresh_plan_progress()
             if not self.session.stats:
                 self.stats_ops.refresh_analysis()
         elif key == "dataset":
@@ -876,65 +695,6 @@ class WorkspaceWindow(QMainWindow):
         if limit and len(name) > limit:
             return name[: limit - 1] + "…"
         return name
-
-    def _refresh_plan_progress(self) -> None:
-        """Statistics 의 계획 진행률 표 -- 계획 × 실제 scene 파일 대조."""
-        tree = getattr(self, "plan_progress_tree", None)
-        if tree is None:
-            return
-        tree.clear()
-        plan = self.scene_ops.current_plan()
-        if plan is None:
-            self.plan_progress_label.setText(
-                tr("Configure 에서 수집 계획을 선택하세요."))
-            return
-        root = Path(self.root_edit.text().strip() or ".")
-        done = total = 0
-        skipped: list = []
-        for sp in plan.scenes:
-            path = root / scene_filename(sp.scene_id)
-            counts: dict = {}
-            note = ""
-            if self.session.scene_session and sp.scene_id == self.scene_ops.session_scene_id():
-                counts = self.scene_ops.session_slot_counts()
-                note = tr(" (세션 중 — 캐시)")
-            elif path.exists():
-                try:
-                    counts = count_by_slot(path)
-                except Exception:  # noqa: BLE001 -- 잠금 등
-                    note = tr(" (파일 사용 중)")
-            else:
-                # 파일이 없는(아직 안 찍었거나 지운) scene 은 표에 넣지
-                # 않는다 -- 지운 파일의 slot 목록이 계속 보이는 것이
-                # 혼란스럽다는 실사용 피드백. 개수는 아래 요약에 남긴다.
-                skipped.append(sp.scene_id)
-                continue
-            s_done = s_total = 0
-            top = QTreeWidgetItem([f"{sp.scene_id}{note}", "", "", ""])
-            for s in sp.slots:
-                c = counts.get(s.instruction_id, {}).get("usable", 0)
-                s_done += min(c, s.target)
-                s_total += s.target
-                it = QTreeWidgetItem(
-                    [f"  {s.instruction_id}", str(c), str(s.target),
-                     s.instruction])
-                if c >= s.target:
-                    for col_i in range(4):
-                        it.setForeground(col_i, Qt.GlobalColor.darkGreen)
-                top.addChild(it)
-            top.setText(1, str(s_done))
-            top.setText(2, str(s_total))
-            done += s_done
-            total += s_total
-            tree.addTopLevelItem(top)
-        tree.expandAll()
-        pct = (100 * done // total) if total else 0
-        text = tr("전체 {d}/{t} ({p}%) — {n}").format(
-            d=done, t=total, p=pct, n=plan.path.name)
-        if skipped:
-            text += tr("  ·  파일 없는 scene {n}개 표시 안 함 ({s})").format(
-                n=len(skipped), s=", ".join(skipped[:4]))
-        self.plan_progress_label.setText(text)
 
     def _update_dataset_panel(self, path: "Path | None" = None) -> None:
         """Fills the right panel's Dataset box.

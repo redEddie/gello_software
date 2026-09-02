@@ -69,7 +69,7 @@ def build_stats(win) -> QWidget:
     win.plan_progress_label.setStyleSheet("color:#888;")
     prow.addWidget(win.plan_progress_label, 1)
     pb = QPushButton(tr("새로고침"))
-    pb.clicked.connect(win._refresh_plan_progress)
+    pb.clicked.connect(win.scene_ops.refresh_plan_progress)
     prow.addWidget(pb)
     pcol.addLayout(prow)
     col.addWidget(plan_box)
