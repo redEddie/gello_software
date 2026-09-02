@@ -20,6 +20,6 @@ from apps.workspace.domains.playback import PlaybackOps
 from apps.workspace.features.scene import LayoutRefOps, SceneOps, ScenePlanningOps
 from apps.workspace.domains.stats import StatsOps
 from apps.workspace.domains.system import SystemOps
-from apps.workspace.domains.upload import UploadOps
+from apps.workspace.features.upload import UploadOps
 
 __all__ = ["CameraOps", "CollectionOps", "DatasetOps", "DepthOps", "GalleryOps", "LayoutRefOps", "PlaybackOps", "SceneOps", "ScenePlanningOps", "StatsOps", "SystemOps", "UploadOps"]

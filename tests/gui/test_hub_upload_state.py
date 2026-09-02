@@ -95,7 +95,7 @@ import gello.gui.widgets.recents as _recents
 # PipelineDialog.steps() 는 Recents 에 repo/경로를 기록한다 -- 실제 GUI
 # 기억 파일을 오염시키지 않게 임시 파일로 돌린다 (2026-08-26 사고 재발 방지).
 _recents.RECENTS_PATH = tmp2_recents = Path(tempfile.mkdtemp()) / "recents.json"
-from apps.dialogs.pipeline_dialog import PipelineDialog  # noqa: E402
+from apps.workspace.features.upload import PipelineDialog  # noqa: E402
 from apps.workspace.constants import (  # noqa: E402
     CONVERT_SCRIPT,
     REPACK_SCRIPT,

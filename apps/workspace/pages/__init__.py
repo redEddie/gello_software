@@ -11,7 +11,7 @@ from .dataset import build_dataset
 from apps.workspace.features.scene.layout_page import build_layout_page
 from .settings import build_settings
 from .stats import build_stats
-from .upload import build_upload
+from apps.workspace.features.upload import build_upload
 
 PAGE_BUILDERS = {
     "configure": build_configure,
