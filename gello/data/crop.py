@@ -16,7 +16,7 @@ from gello.core.station import load_station
 
 IMAGE_SIZE = 256  # matches OpenVLA's LIBERO regeneration convention
 
-# 손목 카에라(D405)의 정사각 크롭을 오른쪽으로 미는 양. 640x480 원본 기준 px.
+# 손목 카메라(D405)의 정사각 크롭을 오른쪽으로 미는 양. 640x480 원본 기준 px.
 #
 # D405 의 RGB 는 좌측 이미저에서 나온다(베이스라인 18.2mm). 모듈 중심이 그리퍼
 # 축에 정렬돼 있으므로 광축은 축보다 9.1mm 왼쪽이고, 그리퍼 축은 화면 중앙보다
@@ -38,7 +38,7 @@ EYE_IN_HAND_CROP_X_SHIFT = 31
 # dataset_schema.json / recent_inputs.json 과 같은 자리. GUI 재시작 간 유지용
 # 환경설정이고, 에피소드의 진실은 각 demo attrs["crop_params"] 쪽이다.
 #
-# **스테이션마다 따로** 둔다. 크롭은 카에라가 어디에 어떻게 달렸는지의 결과라
+# **스테이션마다 따로** 둔다. 크롭은 카메라가 어디에 어떻게 달렸는지의 결과라
 # 스테이션이 바뀌면 통째로 달라진다. 예전에는 전역 파일 하나였고, 그 탓에
 # 스테이션을 바꿔도 이전 스테이션에서 맞춘 값이 그대로 이겨서 -- yaml 에 새 값을
 # 적어 두어도 -- 조용히 옛 프레이밍으로 찍혔다.
@@ -56,7 +56,7 @@ def default_crop_params() -> dict:
     +y down). ``zoom`` divides the crop side (1.0 = full square, 2.0 = half).
 
     값은 스테이션 설정(configs/stations/<이름>.yaml 의 ``crop``)에서 온다 --
-    카에라가 어디에 어떻게 달렸는지의 결과라 스테이션마다 다르다. 여기서
+    카메라가 어디에 어떻게 달렸는지의 결과라 스테이션마다 다르다. 여기서
     주는 것은 초기값이고, GUI 에서 조정한 값은 crop_params.json 이 이긴다."""
     return load_station().crop_params()
 

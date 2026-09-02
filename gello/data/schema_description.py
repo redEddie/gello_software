@@ -199,7 +199,7 @@ def describe_episode(grp: Any) -> str:
         f"success: {None if success is None else bool(success)}",
     ]
     # 어디서, 어떤 프레이밍으로 찍혔는지. 파일에는 계속 들어 있었는데 이 요약이
-    # 출력하지 않아서, 구조 확인 창만 본다면 없는 것처럼 보였다. 크롭은 변환 때
+    # 출력하지 않아서, 구조 확인 창만 보면 없는 것처럼 보였다. 크롭은 변환 때
     # 실제로 재현되는 값이라 눈으로 확인할 수 있어야 한다.
     station = grp.attrs.get("station")
     if station is not None:

@@ -4,6 +4,7 @@
 LiberoTaskWriter / LiberoEpisodeBuffer / write_episode_payload / action_space
 계산 / hdf5_repack_status 의 현재 동작을 붙잡는다.
 """
+import math
 import shutil
 import sys
 import tempfile
@@ -147,13 +148,57 @@ def test_action_space_branches():
         ee0 = np.array([0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0], dtype=np.float64)
         ee1 = np.array([0.15, 0.25, 0.35, 0.0, 0.0, 0.0, 1.0], dtype=np.float64)
 
-        # 현재 코드가 내는 값을 그대로 기준으로 삼는다.
+        # 기대값은 2026-09-02 의 코드가 위 입력에 대해 실제로 낸 값을 적어
+        # 굳힌 것이다. 검사 대상 함수를 다시 불러 기준을 만들면 양쪽이 같이
+        # 바뀌어 아무것도 잡지 못한다 -- 실제로 처음 판에서는 이 파일을 옮기며
+        # 관절 델타를 0.9배로 줄이는 변이가 그대로 통과했다.
+        # 이 숫자가 달라졌다면 데이터셋이 달라진 것이므로, 기준선을 고치기 전에
+        # 왜 달라졌는지부터 답해야 한다.
         references = {
+            ACTION_SPACE_JOINT_DELTA: np.array(
+                [0.01, 0.02, 0.03, 0.03999999, 0.05000001, 0.06, 0.06999999, 1.0]),
+            ACTION_SPACE_JOINT_ABSOLUTE: np.array(
+                [0.1, 0.2, 0.30000001, 0.40000001, 0.5, 0.60000002, 0.69999999, 1.0]),
+            ACTION_SPACE_EE_DELTA: np.array(
+                [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0]),
+            ACTION_SPACE_EE_ABSOLUTE: np.array(
+                [0.15000001, 0.25, 0.34999999, 0.0, 0.0, 0.0, 1.0]),
+        }
+
+        # 버퍼를 거치지 않고 함수를 직접 부른 값도 같은 기준으로 확인한다.
+        # write_episode_payload 의 첫 프레임은 이전 프레임이 없어 특수 처리를
+        # 하므로, 위 왕복만으로는 함수 자체의 변화를 놓칠 수 있다.
+        direct = {
             ACTION_SPACE_JOINT_DELTA: compute_joint_delta_action(q0, q1, True),
             ACTION_SPACE_JOINT_ABSOLUTE: compute_joint_absolute_action(q0, True),
             ACTION_SPACE_EE_DELTA: compute_delta_action(ee0, ee1, True),
             ACTION_SPACE_EE_ABSOLUTE: compute_ee_absolute_action(ee1, True),
         }
+        # 위 입력은 쿼터니언이 전부 단위라 회전 변환 경로를 한 번도 밟지
+        # 않는다 -- _quat_to_axis_angle 을 1.01배로 틀어도 0 은 0 이라 통과했다.
+        # 실제로 회전이 있는 자세로 그 경로를 밟는다 (z축 30도 -> 45도).
+        def _qz(deg: float) -> np.ndarray:
+            h = math.radians(deg) / 2
+            return np.array([0.0, 0.0, math.sin(h), math.cos(h)])
+
+        rot_a = np.concatenate([[0.1, 0.2, 0.3], _qz(30)])
+        rot_b = np.concatenate([[0.15, 0.25, 0.35], _qz(45)])
+        assert np.allclose(
+            np.asarray(compute_delta_action(rot_a, rot_b, True), dtype=float),
+            [1.0, 1.0, 1.0, 0.0, 0.0, 0.52359879, 1.0], atol=1e-6), \
+            compute_delta_action(rot_a, rot_b, True)
+        assert np.allclose(
+            np.asarray(compute_ee_absolute_action(rot_b, True), dtype=float),
+            [0.15000001, 0.25, 0.34999999, 0.0, 0.0, 0.78539819, 1.0], atol=1e-6), \
+            compute_ee_absolute_action(rot_b, True)
+
+        for space, want in references.items():
+            got = np.asarray(direct[space], dtype=float)
+            if space == ACTION_SPACE_JOINT_DELTA:
+                # 굳힌 값은 q0->q1 한 걸음. 버퍼 왕복의 첫 프레임과는 다르다.
+                assert np.allclose(got, want, atol=1e-6), (space, got, want)
+            elif space == ACTION_SPACE_JOINT_ABSOLUTE:
+                assert np.allclose(got, want, atol=1e-6), (space, got, want)
 
         path = Path(d) / "actions.hdf5"
         with h5py.File(path, "w") as f:
