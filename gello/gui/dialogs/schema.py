@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.data.dataset_schema import DatasetSchemaConfig
-from gello.data.libero_format import describe_schema
+from gello.data.schema_description import describe_schema
 from gello.gui.i18n import tr
 
 

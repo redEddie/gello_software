@@ -29,7 +29,8 @@ from gello.data.dataset_schema import (  # noqa: E402
     DatasetSchemaConfig,
 )
 from gello.gui.dialogs import DatasetSchemaDialog  # noqa: E402
-from gello.data.libero_format import LiberoTaskWriter, schema_from_episode  # noqa: E402
+from gello.data.libero_format import LiberoTaskWriter  # noqa: E402
+from gello.data.schema_description import schema_from_episode  # noqa: E402
 from gello.gui.libero_gui_worker import CollectionWorker, WorkerConfig  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="depth17_"))

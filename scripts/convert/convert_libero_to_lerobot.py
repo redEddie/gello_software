@@ -152,11 +152,8 @@ from gello.data.dataset_schema import (  # noqa: E402
     SCHEMA_VERSION,
     normalize_schema_version,
 )
-from gello.data.libero_format import (  # noqa: E402
-    EYE_IN_HAND_CROP_X_SHIFT,
-    action_column_names,
-    resize_rgb,
-)
+from gello.data.crop import EYE_IN_HAND_CROP_X_SHIFT, resize_rgb  # noqa: E402
+from gello.data.schema_description import action_column_names  # noqa: E402
 from gello.scene.scene_format import (  # noqa: E402
     EPISODE_GROUP_RE,
     QUALITY_FAILED,

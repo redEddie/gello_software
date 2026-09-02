@@ -84,10 +84,10 @@ from gello.data.dataset_schema import (
     DatasetSchemaConfig,
     normalize_schema_version,
 )
+from gello.data.crop import default_crop_params
 from gello.data.libero_format import (
     LiberoEpisodeBuffer,
     _mark_close_on_exec,
-    default_crop_params,
     write_episode_payload,
 )
 

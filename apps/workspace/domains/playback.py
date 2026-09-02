@@ -14,7 +14,8 @@ from gello.data.episode_trim import plan_trim, suggest_trim, trim_tail
 from gello.gui.constants import PLAYBACK_FPS
 from gello.gui.workers import EpisodeLoadWorker
 from gello.gui.i18n import tr
-from gello.data.libero_format import describe_episode, hdf5_repack_status
+from gello.data.libero_format import hdf5_repack_status
+from gello.data.schema_description import describe_episode
 from gello.gui.scene_gallery import invalidate_scene_thumbs
 from gello.scene.scene_format import count_by_slot, describe_scene, read_scene_metadata
 

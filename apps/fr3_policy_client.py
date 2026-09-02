@@ -168,7 +168,7 @@ def main() -> None:
     from lerobot.cameras.realsense import RealSenseCameraConfig
 
     from gello.agents.lerobot_plugin import JOINT_KEYS, FR3ZMQRobot, FR3ZMQRobotConfig
-    from gello.data.libero_format import load_crop_params, resize_rgb
+    from gello.data.crop import load_crop_params, resize_rgb
     from gello.robots.franka_fr3 import FR3_RESET_POSES
 
     # 정책 입력의 프레이밍은 학습 데이터와 같아야 한다. 수집기가 쓰는 것과

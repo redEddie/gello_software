@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gello.data.libero_format import load_crop_params
+from gello.data.crop import load_crop_params
 from gello.gui.constants import TODO_MARK
 from gello.gui.widgets import VideoView
 from gello.gui.i18n import tr

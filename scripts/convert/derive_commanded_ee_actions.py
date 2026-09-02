@@ -61,7 +61,7 @@ from gello.data.dataset_schema import (
     OBS_JOINT_STATES,
 )
 
-# OSC_POSE normalization, same constants as gello/libero_format.py.
+# OSC_POSE normalization, same constants as gello.data.actions.
 ACTION_POS_MAX = 0.05  # m
 ACTION_ROT_MAX = 0.5  # rad
 
