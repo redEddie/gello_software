@@ -432,7 +432,7 @@ class CollectionOps:
         self.win.camera_ops.restart_previews()
         if self.win.cameras.depth_consumer is not None:
             # 세션 동안 Depth/Point Cloud 탭에 머물러 있었다면 스트림을 다시
-            # 올린다 (세션 중엔 안내만 보였다). 미리보기가 뜨는 시간을 준다.
+            # 올린다 (세션 중엔 안난만 보였다). 미리보기가 뜨는 시간을 준다.
             QTimer.singleShot(600, lambda: (
                 self.win.depth_ops.start_cloud() if self.win.worker is None
                 and self.win.cameras.depth_consumer is not None else None))

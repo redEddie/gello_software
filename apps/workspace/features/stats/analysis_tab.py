@@ -167,4 +167,3 @@ def build_analysis_tab(win) -> QWidget:
     split.setSizes([700, 430])
     outer.addWidget(split)
     return page
-

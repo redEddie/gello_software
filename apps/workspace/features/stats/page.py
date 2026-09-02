@@ -23,7 +23,7 @@ def build_stats(win) -> QWidget:
     col.setContentsMargins(0, 0, 0, 0)
     # 두 열: 왼쪽은 지금 찍고 있는 task, 오른쪽은 GUI 를 켠 뒤 전체.
     # task 를 여러 개 도는 세션에서 "이 task 를 몇 개 모았나"와 "오늘 총
-    # 몇 개인가"는 서로 다른 질문이고, 한 열만 두면 둘 중 하나를 못 본다.
+    # 몇 개인가"는 서로 다른 질문이고, 한 열에만 두면 둘 중 하나를 못 본다.
     win.stats_labels = {}
     win.stats_total_labels = {}
     box = QGroupBox(tr("수집 현황"))
@@ -85,7 +85,7 @@ def build_stats(win) -> QWidget:
     # 반영되는지가 매번 헷갈린다. 선택은 Dataset 하나로 모은다.
     motion = QGroupBox(tr("움직임 분석"))
     mcol = QVBoxLayout(motion)
-    win.stats_hint = QLabel(tr("Dataset 패널에서 파일이나 에피소드를 고르면 "
+    win.stats_hint = QLabel(tr("Dataset 패널에서 파일이나 에피소드를 고륾면 "
                                 "Analysis 탭에 반영됩니다."))
     win.stats_hint.setStyleSheet("color:#888;")
     win.stats_hint.setWordWrap(True)
@@ -96,4 +96,3 @@ def build_stats(win) -> QWidget:
     col.addWidget(motion)
     col.addStretch()
     return w
-

@@ -32,7 +32,7 @@ def build_collect(win) -> QWidget:
     win.slot_current_label.setWordWrap(True)
     sfrm.addRow(tr("현재"), win.slot_current_label)
     # 계획(수집 계획 파일)이 있으면 여기서 slot 을 고른다 -- 항목에 수집
-    # 현황("2/10")이 붙고, 고르면 아래 ID·문장이 채워진다. 문장을 손으로
+    # 현황("2/10")이 붙고, 고륾면 아래 ID·문장이 채워진다. 문장을 손으로
     # 칠 때 생기는 미묘한 갈라짐(실데이터에서 실제 발생)을 막는 장치.
     win.slot_plan_combo = QComboBox()
     shrinkable_combo(win.slot_plan_combo)
@@ -123,4 +123,3 @@ def build_collect(win) -> QWidget:
     col.addWidget(prog)
     col.addStretch()
     return w
-

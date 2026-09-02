@@ -261,7 +261,7 @@ class StatsOps:
         goes stale first, and the operator would have no way to tell which of
         the two was lying.
         """
-        doc = Path(__file__).resolve().parent.parent.parent.parent / "docs" / "curation-metrics.md"
+        doc = Path(__file__).resolve().parents[4] / "docs" / "curation-metrics.md"
         try:
             body = doc.read_text(encoding="utf-8")
         except OSError as e:

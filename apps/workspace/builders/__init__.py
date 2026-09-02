@@ -6,7 +6,7 @@ against the original. Nothing here imports collect_workspace: the arrow points
 one way (window -> builders) and tests/gui/test_dialog_modules.py is where that
 gets nailed down as the rest of WorkspaceWindow follows.
 """
-from .analysis_tab import build_analysis_tab
+from apps.workspace.features.stats.analysis_tab import build_analysis_tab
 from apps.workspace.features.camera import build_cloud_tab, build_depth_tab
 from .layout import build_bottom, build_center, build_layout, build_left, build_right
 from apps.workspace.features.scene.layout_tab import build_layout_tab

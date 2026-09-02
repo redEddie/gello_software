@@ -12,12 +12,12 @@ window instance.
 """
 
 from apps.workspace.features.camera import CameraOps, DepthOps
-from apps.workspace.domains.collection import CollectionOps
+from apps.workspace.features.collection import CollectionOps
 from apps.workspace.features.dataset import DatasetOps
 from apps.workspace.features.gallery import GalleryOps
 from apps.workspace.features.playback import PlaybackOps
 from apps.workspace.features.scene import LayoutRefOps, SceneOps, ScenePlanningOps
-from apps.workspace.domains.stats import StatsOps
+from apps.workspace.features.stats import StatsOps
 from apps.workspace.domains.system import SystemOps
 from apps.workspace.features.upload import UploadOps
 

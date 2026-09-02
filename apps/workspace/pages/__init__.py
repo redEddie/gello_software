@@ -5,12 +5,12 @@ PAGE_BUILDERS by the activity key. build_left walks ACTIVITIES and looks each
 key up here, so a key present in one and missing from the other is a KeyError
 at startup rather than a silently blank panel -- add to both or neither.
 """
-from .collect import build_collect
+from apps.workspace.features.collection import build_collect
 from .configure import build_configure
 from apps.workspace.features.dataset.page import build_dataset
 from apps.workspace.features.scene.layout_page import build_layout_page
 from .settings import build_settings
-from .stats import build_stats
+from apps.workspace.features.stats import build_stats
 from apps.workspace.features.upload import build_upload
 
 PAGE_BUILDERS = {
