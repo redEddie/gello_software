@@ -28,7 +28,7 @@ from gello.gui.widgets import VideoView
 from gello.gui.i18n import tr
 
 from apps.dialogs._widgets import SceneInfoView, TODO_STYLE, mark_todo
-from apps.workspace.builders.sizing import relax_min_widths
+from apps.workspace.sizing import relax_min_widths
 from apps.workspace.constants import ACTIVITIES, PLAYBACK_SPEEDS, WIDE_FIELDS
 from apps.workspace.pages import PAGE_BUILDERS
 

@@ -102,10 +102,32 @@ for p, t in trees.items():
         if not isinstance(n, ast.ImportFrom):
             continue
         if n.level and n.module:                       # from .x import ...
-            deps.add((p.parent / f"{n.module.split('.')[-1]}.py"))
+            base = p.parent / n.module.split(".")[-1]
         elif (n.module or "").startswith("apps."):
-            deps.add(WT / (n.module.replace(".", "/") + ".py"))
-    edges[p] = {d for d in deps if d in trees}
+            base = WT / n.module.replace(".", "/")
+        else:
+            continue
+        # 패키지를 임포트하면 그 __init__.py 가 실행된다. 이것을 빠뜨리면
+        # 패키지를 낀 순환을 통째로 놓친다 -- 실제로 pages -> builders ->
+        # pages 순환이 이 구멍으로 지나갔다 (2026-09-02). 앱은 임포트 순서가
+        # 우연히 맞아 떴고, pages 를 먼저 임포트하면 ImportError 였다.
+        deps.add(base.with_suffix(".py"))
+        deps.add(base / "__init__.py")
+        # 하위 모듈을 임포트하면 그 부모 패키지의 __init__.py 가 **먼저**
+        # 실행된다. `from apps.workspace.sizing import x` 는
+        # builders/__init__.py 를 돌리므로, 파일 단위로만 보면 없는 고리가
+        # 패키지 단위로는 생긴다. 이 한 줄이 없어서 pages -> builders ->
+        # pages 순환이 지나갔다.
+        # 자기 패키지 안의 형제 모듈은 제외한다: 그때 부모 __init__ 은 이미
+        # sys.modules 에 있어 다시 돌지 않는다.
+        for parent in base.parents:
+            if parent == WT:
+                break
+            if parent in p.parents:
+                continue
+            deps.add(parent / "__init__.py")
+    # 패키지 __init__ 이 자기 하위 모듈을 부르는 것은 순환이 아니다.
+    edges[p] = {d for d in deps if d in trees and d != p}
 
 seen, stack = set(), set()
 
