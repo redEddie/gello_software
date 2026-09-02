@@ -38,9 +38,9 @@ from apps.workspace.pages import PAGE_BUILDERS
 from .analysis_tab import build_analysis_tab
 from .cloud_tab import build_cloud_tab
 from .depth_tab import build_depth_tab
-from .gallery_tab import build_gallery_tab
+from apps.workspace.features.gallery import build_gallery_tab
+from apps.workspace.features.playback import build_trim_tab
 from apps.workspace.features.scene.layout_tab import build_layout_tab
-from .trim_tab import build_trim_tab
 
 
 def build_center(win) -> None:
