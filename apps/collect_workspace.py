@@ -73,20 +73,15 @@ from gello.gui.widgets import Recents  # noqa: E402
 from gello.gui.workers import CameraPreviewWorker  # noqa: E402
 from gello.gui.text_utils import clean_stream_lines, is_progress_line, repo_id_error  # noqa: E402
 from apps.workspace.constants import LOG_DIR  # noqa: E402
-from apps.workspace.domains import (  # noqa: E402
-    CameraOps,
-    CollectionOps,
-    DatasetOps,
-    DepthOps,
-    GalleryOps,
-    LayoutRefOps,
-    PlaybackOps,
-    SceneOps,
-    ScenePlanningOps,
-    StatsOps,
-    SystemOps,
-    UploadOps,
-)
+from apps.workspace.features.camera import CameraOps, DepthOps  # noqa: E402
+from apps.workspace.features.collection import CollectionOps  # noqa: E402
+from apps.workspace.features.dataset import DatasetOps  # noqa: E402
+from apps.workspace.features.gallery import GalleryOps  # noqa: E402
+from apps.workspace.features.playback import PlaybackOps  # noqa: E402
+from apps.workspace.features.scene import LayoutRefOps, SceneOps, ScenePlanningOps  # noqa: E402
+from apps.workspace.features.stats import StatsOps  # noqa: E402
+from apps.workspace.features.system import SystemOps  # noqa: E402
+from apps.workspace.features.upload import UploadOps  # noqa: E402
 from apps.workspace.models import (  # noqa: E402
     CameraState,
     PlaybackState,
