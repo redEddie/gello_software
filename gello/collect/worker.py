@@ -41,7 +41,7 @@ from gello.config.constants import ROLL_ABORT_RAD
 from gello.robots.franka_fr3 import FR3_RESET_POSES, FR3_ROLL_JOINTS
 from gello.config.constants import MATCH_GATE_RAD
 from gello.scene.scene_format import QUALITY_FAILED, QUALITY_SUCCESS, SceneMetadata, SceneWriter
-from gello.core.station import load_station
+from gello.config.station import load_station
 
 #: 자세 매칭 게이지의 초록/빨강 임계. 정본은 리더 wall 이다 -- 게이지가
 #: 초록으로 보이는 것과 모터가 실제로 당기기 시작하는 것이 같은 숫자여야

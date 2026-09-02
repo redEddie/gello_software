@@ -45,7 +45,7 @@ from gello.robots.joint_limit_wall import (  # noqa: E402
     ADDR_INPUT_VOLTAGE,
     ADDR_TEMPERATURE,
 )
-from gello.core.station import load_station  # noqa: E402
+from gello.config.station import load_station  # noqa: E402
 
 ADDR_TORQUE_ENABLE = 64  # XL330; read back after reboot as a sanity check
 

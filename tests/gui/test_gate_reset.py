@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 app = QApplication(sys.argv)
 
 from gello.agents.lerobot_plugin import JOINT_KEYS  # noqa: E402
-from gello.gui.libero_gui_worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
+from gello.collect.worker import GATE_RAD, CollectionWorker, WorkerConfig  # noqa: E402
 
 CFG = WorkerConfig(task_name="t", language_instruction="t", data_root="/tmp",
                    auto_match_pose=True, reset_wait_seconds=0.4)

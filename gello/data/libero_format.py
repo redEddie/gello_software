@@ -112,7 +112,7 @@ from gello.data.dataset_schema import (
     REPACK_MARKER_ATTR,
     DatasetSchemaConfig,
 )
-from gello.core.station import load_station
+from gello.config.station import load_station
 from gello.data.actions import (
     _quat_to_axis_angle,
     compute_delta_action,

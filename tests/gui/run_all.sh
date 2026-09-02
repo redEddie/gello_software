@@ -14,7 +14,7 @@ for t in test_phase4a test_grid_replay test_plan_form test_right_scene \
          test_scene_edit test_stats_group test_relabel test_dataset_sync \
          test_hub_upload_state test_camera_node test_match_gate \
          test_app_structure test_ui_surface test_domain_attrs \
-         test_episode_io; do
+         test_episode_io test_layer_rules; do
   if QT_QPA_PLATFORM=offscreen timeout 240 "$PY" -u "$t.py" >"/tmp/$t.out" 2>&1; then
     echo "$t OK"
   else

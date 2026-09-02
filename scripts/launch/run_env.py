@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from gello.core.env import RobotEnv  # noqa: E402
 from gello.robots.franka_fr3 import DEFAULT_RESET_POSE, FR3_RESET_POSES  # noqa: E402
 from gello.core.robot import PrintRobot  # noqa: E402
-from gello.core.station import load_station  # noqa: E402
+from gello.config.station import load_station  # noqa: E402
 from gello.utils.launch_utils import instantiate_from_dict  # noqa: E402
 from gello.comm.zmq_core.robot_node import ZMQClientRobot  # noqa: E402
 from gello.data.dataset_schema import ROBOT_JOINT_POSITIONS  # noqa: E402

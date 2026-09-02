@@ -52,7 +52,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gello.robots.fr3_kinematics import ee_step_to_joint, fk, compute_proprio_single  # noqa: E402  (mamba real_deploy copy)
 
-from gello.core.station import load_station
+from gello.config.station import load_station
 
 # 로봇/카메라/주파수는 스테이션 설정에서 온다 -- 수집 GUI 와 같은 파일을 읽으므로
 # "수집 GUI와 동일" 이 주석이 아니라 구조로 보장된다.

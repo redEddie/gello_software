@@ -14,7 +14,7 @@ sys.path.insert(0, WT + "/scripts")
 sys.argv = ["t"]
 
 from gello.data.dataset_schema import OBS_AGENTVIEW_RGB  # noqa: E402
-from gello.data.dataset_sync import (  # noqa: E402
+from gello.scene.dataset_sync import (  # noqa: E402
     _ordered_paths,
     legacy_files,
     local_tasks,

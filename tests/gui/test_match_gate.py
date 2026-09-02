@@ -119,7 +119,7 @@ finally:
     w.stop()
 
 # ---------------------------------------------------------------- 5
-from gello.gui.libero_gui_worker import GATE_RAD  # noqa: E402
+from gello.collect.worker import GATE_RAD  # noqa: E402
 
 assert GATE_RAD == MATCH_GATE_RAD, \
     "GUI 게이지 임계와 wall 우물 기준이 다르다 -- 보이는 것과 느낌이 어긋난다"

@@ -33,7 +33,7 @@ from lerobot.robots import Robot, RobotConfig
 from lerobot.teleoperators import Teleoperator, TeleoperatorConfig
 
 from gello.robots.franka_fr3 import GRIPPER_CLOSE_AT
-from gello.core.station import load_station
+from gello.config.station import load_station
 from gello.data.dataset_schema import ROBOT_JOINT_POSITIONS
 
 JOINT_KEYS = [f"joint{i}.pos" for i in range(1, 8)] + ["gripper.pos"]

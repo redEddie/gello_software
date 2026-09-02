@@ -338,7 +338,7 @@ def _hub_commit_message(root: Path, repo_id: str, info: dict, replace: bool) -> 
     hub_uids: set = set()
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-        from gello.data.dataset_sync import hub_episode_uids, hub_meta
+        from gello.scene.dataset_sync import hub_episode_uids, hub_meta
 
         counts, _lens, err = hub_meta(repo_id)
         if not err:

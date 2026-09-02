@@ -31,7 +31,7 @@ import h5py
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from gello.core.station import load_station  # noqa: E402
+from gello.config.station import load_station  # noqa: E402
 from gello.data.dataset_schema import (  # noqa: E402
     OBS_COMMANDED_GRIPPER_STATES,
     OBS_COMMANDED_JOINT_STATES,

@@ -163,7 +163,7 @@ assert not probs, probs
 print("6 통과: check_scene_file 불변식 (연속 번호·slot E 연속·uid 일치) 통과")
 
 # ---- 7. 삭제 확인창: 목록 + Hub 안내는 uid 단위 (네트워크 스텁 3경로) ----
-import gello.data.dataset_sync as _sync  # noqa: E402
+import gello.scene.dataset_sync as _sync  # noqa: E402
 
 cur = list_scene_episodes(scene)
 targets = {scene: [e["name"] for e in cur][:2]}

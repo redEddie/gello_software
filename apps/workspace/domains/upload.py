@@ -14,7 +14,7 @@ from PyQt6.QtCore import QProcess, Qt
 from PyQt6.QtWidgets import QApplication, QCheckBox, QDialog, QMessageBox
 
 from apps.dialogs.pipeline_dialog import PipelineDialog
-from gello.data.dataset_sync import plan_sync
+from gello.scene.dataset_sync import plan_sync
 from gello.data.episode_stats import hdf5_files
 from gello.data.hub_upload_state import changed_files
 from gello.data.libero_format import hdf5_repack_status

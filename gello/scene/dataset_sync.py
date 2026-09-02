@@ -37,7 +37,7 @@ from pathlib import Path
 
 import h5py
 
-from gello.scene.scene_format import QUALITY_SUCCESS
+from gello.config.quality import QUALITY_SUCCESS
 
 # Deleting an episode and recording another leaves the count unchanged, so the
 # comparison cannot tell that apart from "nothing happened". The .hdf5 records

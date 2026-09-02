@@ -10,7 +10,7 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QMessageBox
 
 from gello.gui.i18n import tr
-from gello.gui.libero_gui_worker import CollectionWorker, GATE_RAD, WorkerConfig
+from gello.collect.worker import CollectionWorker, GATE_RAD, WorkerConfig
 from gello.scene.scene_format import read_scene_metadata, scene_filename
 
 

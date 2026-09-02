@@ -13,12 +13,21 @@ There is NO repo-local venv and bare `python` is not on PATH.
 
 Dependencies must be readable from the tree without opening files.
 
-- `gello/core/` — abstractions others depend on (robot/agent/camera/env/station).
-- `gello/robots|agents|cameras/` — concrete implementations of core.
-- `gello/hw/` — device drivers (dynamixel, factr). `gello/sim/` — simulation only.
-- `gello/data/` — dataset schema/formats/sync. `gello/scene/` — scene format,
-  rules, props inventory, instruction grammar, plans.
-- `gello/gui/` — Qt components of the collector. `gello/comm/` — zmq/camera nodes.
+Arrows point down only. `tests/gui/test_layer_rules.py` enforces this.
+
+- `gello/config/` — **Shared leaf: imports nothing.** Constants both the robot
+  and the GUI must agree on, station config, episode-quality vocabulary.
+- `gello/core/` — abstractions others depend on (robot/agent/camera/env).
+  Stubs (PrintRobot, DummyCamera) live here too; no vendor SDK may.
+- `gello/robots|agents|cameras|hw|sim/` — concrete implementations. Nothing in
+  `data/`, `scene/` or `gui/` may import these: a data logger must not know
+  whether the arm is an FR3 or a simulator.
+- `gello/data/` — dataset schema/formats. `gello/scene/` — scene format, rules,
+  props, grammar, plans, Hub sync. `scene` may use `data`, never the reverse.
+- `gello/collect/` — the collection engine (drives leader+robot+cameras).
+  Emits Qt signals but is not a widget; it is allowed to know concrete hardware.
+- `gello/gui/` — Qt only (widgets, dialogs, workers). `gello/comm/` — zmq nodes;
+  the process boundary is itself the abstraction, so `gui` may use it.
 - `apps/` — operational entry points (collect_workspace GUI, fr3_policy_client).
 - `scripts/launch|check|calib|convert|analyze/` — purpose-split tools.
 - `experiments/` — research only; nothing in gello/ may import from it.

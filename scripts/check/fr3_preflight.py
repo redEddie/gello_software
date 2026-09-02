@@ -20,11 +20,11 @@ from pathlib import Path
 
 import tyro
 
-# 리포 루트에서 실행하지 않아도 gello.core.station 을 찾게 한다 -- 이 스크립트는
+# 리포 루트에서 실행하지 않아도 gello.config.station 을 찾게 한다 -- 이 스크립트는
 # 어느 디렉터리에서든 돌 수 있어야 한다.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from gello.core.station import load_station  # noqa: E402
+from gello.config.station import load_station  # noqa: E402
 
 
 @dataclass

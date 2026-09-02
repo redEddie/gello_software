@@ -105,18 +105,17 @@ SCENE_DATASET_VERSION = SCHEMA_VERSION
 # 수 cm 흔드는 것은 거의 항상 같은 존에 머문다.
 STANDARD_GRID = [3, 3]
 
-# ---------------------------------------------------------------------- 품질
-QUALITY_SUCCESS = "success"
-QUALITY_FAILED = "failed"
-QUALITY_BAD_DATA = "bad_data"      # 데이터 자체가 불량 (프레임 stall, 크롭 사고 등)
-QUALITY_RETAKE = "retake"          # 다시 찍기로 한 것 -- 새 에피소드가 대체한다
-QUALITY_DEPRECATED = "deprecated"  # 규칙 변경 등으로 배포에서 제외
-QUALITY_STATUSES = (
-    QUALITY_SUCCESS,
-    QUALITY_FAILED,
+# ------------------------------------------------------------------- 품질
+# 낱말 자체는 gello/config/quality.py 에 있다 -- 데이터 동기화와 변환
+# 스크립트도 같은 낱말을 쓰는데, 여기 두면 화살표가 양쪽으로 생긴다.
+from gello.data.edit_marker import mark_scene_edited  # noqa: F401  (재수출)
+from gello.config.quality import (  # noqa: F401  (여기서 재수출한다)
     QUALITY_BAD_DATA,
-    QUALITY_RETAKE,
     QUALITY_DEPRECATED,
+    QUALITY_FAILED,
+    QUALITY_RETAKE,
+    QUALITY_STATUSES,
+    QUALITY_SUCCESS,
 )
 
 # ------------------------------------------------------------------- ID 규칙
@@ -565,19 +564,6 @@ def _next_slot_idx(f: h5py.File, meta: h5py.Group, instruction_id: str) -> int:
     return slot_idx
 
 
-def mark_scene_edited(meta: h5py.Group) -> None:
-    """큐레이션 편집(삭제·트림)이 일어났다는 사실을 파일에 남긴다.
-
-    삭제 후 renumber 는 uid 를 재사용하므로, 변환기의 이어붙이기(resume)가
-    쓰는 "이미 올린 uid 는 스킵" 대조가 편집 이후에는 다른 에피소드를
-    가리킬 수 있다 -- 그래서 편집이 있었던 파일은 resume 을 거부하고 전체
-    재빌드만 허용해야 한다. 이 카운터가 그 거부의 근거다: 변환기가 변환
-    시점의 값을 사이드카(meta/episode_uids.json 의 ``_scene_edits``)에
-    기록하고, resume 때 파일의 현재 값과 다르면 중단한다
-    (scripts/convert/convert_libero_to_lerobot.py). 단조 증가만 하고 리셋되지 않는다.
-    """
-    meta.attrs["edit_count"] = int(meta.attrs.get("edit_count", 0)) + 1
-    meta.attrs["edited"] = _now_iso()
 
 
 def renumber_scene_episodes(f: h5py.File, meta: h5py.Group) -> None:

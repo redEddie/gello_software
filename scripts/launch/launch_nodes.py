@@ -12,7 +12,7 @@ import tyro
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gello.core.robot import BimanualRobot, PrintRobot  # noqa: E402
-from gello.core.station import load_station  # noqa: E402
+from gello.config.station import load_station  # noqa: E402
 from gello.comm.zmq_core.robot_node import ZMQServerRobot  # noqa: E402
 
 _PR_SET_PDEATHSIG = 1

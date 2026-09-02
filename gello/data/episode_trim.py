@@ -221,6 +221,6 @@ def trim_tail(path: str, demo: str, n_trim: int) -> int:
         if _scene:
             # 트림은 uid·개수를 안 바꿔 어떤 개수 검사에도 안 걸린다 --
             # 편집 마커가 없으면 resume 이 트림 전 버전을 Hub 에 남긴다.
-            from gello.scene.scene_format import mark_scene_edited
+            from gello.data.edit_marker import mark_scene_edited
             mark_scene_edited(f["metadata"])
     return keep

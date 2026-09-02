@@ -412,7 +412,7 @@ class DatasetOps:
             # 문장(task) 단위 일치를 '참고' 로만 표시한다 -- 같은 문장의 legacy
             # 에피소드가 있다고 이 에피소드가 올라간 것은 아니다 (실사용 혼란).
             try:
-                from gello.data.dataset_sync import hub_episode_uids, hub_meta
+                from gello.scene.dataset_sync import hub_episode_uids, hub_meta
 
                 hub_uids, err = hub_episode_uids(repo)
                 if err:

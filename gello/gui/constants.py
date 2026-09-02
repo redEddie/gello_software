@@ -29,7 +29,7 @@ from pathlib import Path  # noqa: E402
 import cv2  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from gello.core.station import load_station  # noqa: E402
+from gello.config.station import load_station  # noqa: E402
 
 # The OMP/OPENBLAS/MKL env vars above only cap numpy's BLAS backend --
 # OpenCV's own parallel_for_ executor is a separate thread pool controlled

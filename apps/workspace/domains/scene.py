@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import QDialog, QInputDialog, QMessageBox
 
 from apps.dialogs.new_scene_dialog import NewSceneDialog
 from apps.dialogs.plan_edit_dialog import PlanEditDialog
-from gello.core.station import load_station
+from gello.config.station import load_station
 from gello.gui.i18n import tr
 from gello.scene.collection_plan import (
     PLANS_DIR,

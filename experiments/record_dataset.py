@@ -40,7 +40,7 @@ from gello.agents.lerobot_plugin import (
     GelloFR3TeleopConfig,
 )
 from gello.robots.franka_fr3 import DEFAULT_RESET_POSE, FR3_RESET_POSES
-from gello.core.station import load_station
+from gello.config.station import load_station
 from lerobot.cameras.realsense import RealSenseCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.feature_utils import (

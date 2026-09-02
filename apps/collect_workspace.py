@@ -114,14 +114,14 @@ from gello.data.crop import (  # noqa: E402
     save_crop_params,
 )
 from gello.data.libero_format import hdf5_repack_status  # noqa: E402
-from gello.gui.libero_gui_worker import CollectionWorker  # noqa: E402
+from gello.collect.worker import CollectionWorker  # noqa: E402
 from gello.scene.scene_rules import check  # noqa: E402
 from gello.scene.scene_format import (  # noqa: E402
     count_by_slot,
     iter_scene_files,
     scene_filename,
 )
-from gello.core.station import load_station  # noqa: E402
+from gello.config.station import load_station  # noqa: E402
 
 # 로봇 IP, ZMQ 주소, 카메라 스트림 포맷, 크롭 초기값은 전부 여기서 온다.
 # GELLO_STATION 으로 고르고, 파일은 configs/stations/<이름>.yaml.

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from gello.core.station import load_station
+from gello.config.station import load_station
 
 IMAGE_SIZE = 256  # matches OpenVLA's LIBERO regeneration convention
 
@@ -73,7 +73,7 @@ def load_crop_params(path: Path | None = None, station: str | None = None) -> di
     ``path`` 를 직접 주면 그것만 읽는다(테스트용). 아니면 스테이션별 파일을
     읽고, 그게 없고 기본 스테이션이면 옛 전역 파일을 한 번 물려받는다.
     """
-    from gello.core.station import DEFAULT_STATION
+    from gello.config.station import DEFAULT_STATION
 
     base = default_crop_params()
     if path is None:
