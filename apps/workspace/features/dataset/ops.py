@@ -545,6 +545,7 @@ class DatasetOps:
             except Exception as e:  # noqa: BLE001
                 QMessageBox.critical(self.win, tr("삭제 실패"), f"{path.name}\n{type(e).__name__}: {e}")
                 self.win.log(f"[삭제 실패] {path.name}: {type(e).__name__}: {e}")
+        self.win.collection.refresh_slot_counter()
         return True
 
     def on_delete_file(self) -> None:

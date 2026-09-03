@@ -103,6 +103,14 @@ def build_collect(win) -> QWidget:
 
     prog = QGroupBox(tr("진행"))
     pcol = QVBoxLayout(prog)
+    # 현재 (scene, instruction) 의 HDF5 실측 누계/계획 target -- GUI 를 켠
+    # 순간 누계가 아니다 (issue #38). 조작자가 리더암을 잡은 거리에서 읽어야
+    # 하므로 주변 라벨보다 크게. 갱신은 CollectionOps.refresh_slot_counter 가
+    # 전담 -- 프레임마다 부르지 않는다 (HDF5 를 연다).
+    win.slot_counter = QLabel(tr("—"))
+    win.slot_counter.setFont(QFont("", 16, QFont.Weight.Bold))
+    win.slot_counter.setStyleSheet("color:#888;")
+    pcol.addWidget(win.slot_counter)
     win.ep_progress = QProgressBar()
     win.ep_progress.setFormat("%v / %m frames")
     pcol.addWidget(win.ep_progress)

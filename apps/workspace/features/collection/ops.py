@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import QMessageBox
 
 from gello.gui.i18n import tr
 from gello.collect.worker import CollectionWorker, GATE_RAD, WorkerConfig
-from gello.scene.scene_format import read_scene_metadata, scene_filename
+from gello.scene.scene_format import count_by_slot, read_scene_metadata, scene_filename
 from apps.workspace.models import _new_stats
 
 
@@ -110,6 +110,68 @@ class CollectionOps:
         act = getattr(self.win, "tb_actions", {}).get("record")
         if act is not None:
             act.setEnabled(ok)
+
+    # ------------------------------------------------------------------ slot counter
+    def refresh_slot_counter(self) -> None:
+        """현재 (scene, instruction) 의 수집 누계/계획 target 상시 표시 (#38).
+
+        GUI 를 켠 순간 누계가 아니라 HDF5 실측이다 -- GUI 재시작·에피소드
+        삭제·재판정이 전부 그대로 반영된다. 정본은 count_by_slot (usable =
+        quality_status success) 이고, 세션 중엔 파일이 잠겨 있으므로 saver 가
+        본내준 에피소드 캐시로 같은 규칙으로 센다 (ScenePlanningOps.
+        session_slot_counts). 계획에 그 slot 이 없으면 target 없이 누계만
+        보여준다 (0/0 이나 7/None 은 안 낸다). HDF5 를 열기 때문에 이 함수는
+        scene/slot 선택·저장·삭제·세션 시작/종료 시점에만 부른다.
+        """
+        label = getattr(self.win, "slot_counter", None)
+        if label is None:
+            return  # 창 초기화 중 -- Configure 페이지가 Collect 보다 먼저 만들어진다
+        plan = self.win.scene_planning.current_plan()
+        if self.win.session.scene_session and self.win.worker is not None:
+            # 세션 중: 파일은 saver 가 h5py 로 잠그고 있으므로 다시 열지 않고
+            # 캐시로 센다. 현재 slot 은 워커가 받은 최신 값 (cmd_set_slot).
+            sid = self.win.scene_ops.session_scene_id()
+            iid = (getattr(self.win.worker, "_slot_instruction_id", "")
+                   or getattr(self.win.worker.cfg, "instruction_id", "")
+                   or self.win.slot_iid_edit.text().strip())
+            counts = self.win.scene_planning.session_slot_counts()
+        else:
+            sid = self.win.scene_combo.currentData()
+            iid = self.win.scene_iid_edit.text().strip()
+            counts = {}
+            if sid is not None:
+                path = Path(self.win.root_edit.text().strip() or ".") / scene_filename(sid)
+                if path.exists():
+                    try:
+                        counts = count_by_slot(path)
+                    except BlockingIOError:
+                        # 다른 프로세스가 파일을 쓰는 중 -- 카운터를 비우고
+                        # 넘어간다 (scene/ops.py on_scene_selected 와 같은 처리).
+                        label.setText("")
+                        return
+                    except Exception:  # noqa: BLE001 -- GUI 는 죽지 않는다
+                        label.setText("")
+                        return
+        if not sid:
+            label.setText(tr("—"))
+            label.setStyleSheet("color:#888;")
+            return
+        usable = counts.get(iid, {}).get("usable", 0) if iid else 0
+        target = None
+        if plan is not None and iid:
+            for s in plan.slots_for(sid):
+                if s.instruction_id == iid:
+                    target = s.target
+                    break
+        head = f"{sid} · {iid}" if iid else str(sid)
+        if target is not None:
+            # 목표 도달은 초록. 초과(11/10)도 그대로 -- 숫자는 정확히.
+            label.setText(f"{head} · {usable}/{target}")
+            label.setStyleSheet(
+                "color:#2ecc71;" if usable >= target else "color:#888;")
+        else:
+            label.setText(f"{head} · {usable}")
+            label.setStyleSheet("color:#888;")
 
     # ------------------------------------------------------------------ connect
     def on_connect(self) -> None:
@@ -349,6 +411,7 @@ class CollectionOps:
         self.win.right_fields["episode"].setText(name)
         self.win.dataset_ops.update_dataset_panel()
         self.win.stats_ops.refresh_stats()
+        self.refresh_slot_counter()
 
     def on_save_status(self, text: str) -> None:
         """Background-save progress. Empty string means idle."""
@@ -387,6 +450,7 @@ class CollectionOps:
         # 이번 task 카운터는 여기서 0 으로 돌아간다(누적은 그대로). 연습 모드도
         # 마찬가지다 -- NullTaskWriter 도 저장을 받아 넘기므로 카운터는 움직인다.
         self.win.session.counters = _new_stats()
+        self.refresh_slot_counter()
         if self.win.session.no_dataset_session:
             # NullTaskWriter has no real path; claiming one here would make the
             # dataset tree think a file is locked by this session.
@@ -425,6 +489,7 @@ class CollectionOps:
         self.win.scene_ops.set_right_scene(None)
         self.win.collection.set_running(False)
         self.win.dataset_ops.refresh_dataset_tree()
+        self.refresh_slot_counter()
         if was_scene:
             # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
             self.win.scene_ops.refresh_scene_combo()

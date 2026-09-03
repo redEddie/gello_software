@@ -286,6 +286,7 @@ class ScenePlanningOps:
         if d:
             self.win.slot_iid_edit.setText(d[0])
             self.win.slot_instr_edit.setText(d[1])
+            self.win.collection.refresh_slot_counter()
 
     def on_next_slot(self) -> None:
         """계획에서 목표(target)를 못 채운 첫 slot 을 골라 채워준다 (§6:
@@ -337,6 +338,7 @@ class ScenePlanningOps:
                 return
         self.win.worker.cmd_set_slot(instr, iid)
         self.win.slot_current_label.setText(f"{iid}: {instr}")
+        self.win.collection.refresh_slot_counter()
         # cmd_set_slot 은 워커 큐로 가서 다음 드레인에 반영된다 -- 오른쪽
         # 패널은 사용자가 누른 값으로 즉시 갱신한다 (워커 속성은 곧 같아진다).
         self.win.right_fields["ds_task"].setText(f"{iid}: {instr}")

@@ -57,6 +57,7 @@ class SceneOps:
 
     def on_scene_selected(self, *_args) -> None:
         self.win.scene_planning.refresh_start_plan_combo()
+        self.win.collection.refresh_slot_counter()
         sid = self.win.scene_combo.currentData()
         self.win.scene_new_btn.setEnabled(sid is None)
         if sid is None:
