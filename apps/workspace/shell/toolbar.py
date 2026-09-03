@@ -71,20 +71,27 @@ def build_menu(win) -> None:
     m.addAction(tr("HDF5 업로드..."), win.upload.on_hdf5_upload)
 
     m = mb.addMenu(tr("Robot"))
-    m.addAction(tr("노드 시작"), win.system.on_start_node)
-    m.addAction(tr("노드 종료"), win.system.on_stop_node)
-    m.addSeparator()
     m.addAction(tr("연결"), win.collection.on_connect)
     m.addAction(tr("세션 종료"), win.collection.on_disconnect)
     m.addAction(tr("홈으로"), lambda: win.collection.cmd("cmd_go_home"))
 
-    m = mb.addMenu(tr("Camera"))
-    m.addAction(tr("새로고침"), win.camera_ops.refresh_cameras)
-    m.addAction(tr("미리보기 중지"), win.camera_ops.stop_previews_async)
+    m = mb.addMenu(tr("Process"))
+    m.addAction(tr("노드 시작"), win.system.on_start_node)
+    m.addAction(tr("노드 종료"), win.system.on_stop_node)
+    m.addSeparator()
     m.addAction(tr("카메라 노드 재시작"),
                 win.camera_ops.on_restart_camera_node)
     m.addAction(tr("카메라 노드 종료 (카메라 해제)"),
                 win.camera_ops.on_stop_camera_node_manual)
+    m.addSeparator()
+    m.addAction(tr("시스템 튜닝 실행 (runme.sh)"), win.system.run_runme)
+    m.addAction(tr("리더암 서보 보호 해제 (재부팅)"),
+                win.system.on_reset_leader_protection)
+    m.addAction(tr("카메라 점검 (USB 속도·프레임)"), win.system.on_check_cameras)
+
+    m = mb.addMenu(tr("Camera"))
+    m.addAction(tr("새로고침"), win.camera_ops.refresh_cameras)
+    m.addAction(tr("미리보기 중지"), win.camera_ops.stop_previews_async)
 
     m = mb.addMenu(tr("View"))
     for key, _icon, title, _tip in ACTIVITIES:
@@ -100,10 +107,6 @@ def build_menu(win) -> None:
     m.addAction(win.act_toggle_right)
 
     m = mb.addMenu(tr("Tools"))
-    m.addAction(tr("시스템 튜닝 실행 (runme.sh)"), win.system.run_runme)
-    m.addAction(tr("카메라 점검 (USB 속도·프레임)"), win.system.on_check_cameras)
-    m.addAction(tr("리더암 서보 보호 해제 (재부팅)"),
-                win.system.on_reset_leader_protection)
     m.addAction(tr("Hugging Face 계정..."), win.upload.on_hf_accounts)
     m.addSeparator()
     m.addAction(tr("데이터셋 구조 사용자 설정..."), win._on_schema)

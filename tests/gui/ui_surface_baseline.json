@@ -18,17 +18,22 @@
       "HDF5 업로드..."
     ],
     "Robot": [
-      "노드 시작",
-      "노드 종료",
       "연결",
       "세션 종료",
       "홈으로"
     ],
+    "Process": [
+      "노드 시작",
+      "노드 종료",
+      "카메라 노드 재시작",
+      "카메라 노드 종료 (카메라 해제)",
+      "시스템 튜닝 실행 (runme.sh)",
+      "리더암 서보 보호 해제 (재부팅)",
+      "카메라 점검 (USB 속도·프레임)"
+    ],
     "Camera": [
       "새로고침",
-      "미리보기 중지",
-      "카메라 노드 재시작",
-      "카메라 노드 종료 (카메라 해제)"
+      "미리보기 중지"
     ],
     "View": [
       "Configure",
@@ -42,9 +47,6 @@
       "오른쪽 패널"
     ],
     "Tools": [
-      "시스템 튜닝 실행 (runme.sh)",
-      "카메라 점검 (USB 속도·프레임)",
-      "리더암 서보 보호 해제 (재부팅)",
       "Hugging Face 계정...",
       "데이터셋 구조 사용자 설정...",
       "언어 전환 (미개발)"
@@ -81,13 +83,13 @@
   ],
   "scripts": {
     "LAUNCH_NODES_SCRIPT": "scripts/launch/launch_nodes.py",
-    "REPLAY_SCRIPT": "scripts/analyze/replay_episode.py",
-    "RUNME_SCRIPT": "scripts/runme.sh",
-    "CHECK_CAMERAS": "scripts/check/check_cameras.py",
-    "RESET_PROTECTION": "scripts/check/gello_reset_protection.py",
     "CONVERT_SCRIPT": "scripts/convert/convert_libero_to_lerobot.py",
     "UPLOAD_SCRIPT": "scripts/convert/upload_to_hub.py",
-    "REPACK_SCRIPT": "scripts/convert/repack_hdf5.py"
+    "REPACK_SCRIPT": "scripts/convert/repack_hdf5.py",
+    "REPLAY_SCRIPT": "scripts/analyze/replay_episode.py",
+    "CHECK_CAMERAS": "scripts/check/check_cameras.py",
+    "RESET_PROTECTION": "scripts/check/gello_reset_protection.py",
+    "RUNME_SCRIPT": "scripts/runme.sh"
   },
   "activities": [
     "configure",
