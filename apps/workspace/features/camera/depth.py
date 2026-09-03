@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QTimer, pyqtSlot
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QComboBox
 
 import numpy as np
@@ -64,7 +64,6 @@ class DepthOps:
         self.win.cameras.cloud_worker = w
         self.win.cameras.cloud_serial = serial
 
-    @pyqtSlot(str)
     def on_depth_error(self, m: str) -> None:
         text = tr("depth 오류: {m}").format(m=m)
         self.win.cloud_status.setText(text)
@@ -96,7 +95,6 @@ class DepthOps:
                 self.win.camera_ops.restart_previews() if self.win.worker is None
                 and self.win.cameras.cloud_worker is None else None))
 
-    @pyqtSlot(object, object)
     def on_cloud(self, pts, rgb) -> None:
         self.win.cameras.cloud_pts, self.win.cameras.cloud_rgb = pts, rgb
         if self.win.cameras.depth_consumer == "cloud":     # 보이는 탭만 렌더
@@ -104,7 +102,6 @@ class DepthOps:
             self.win.cloud_status.setText(
                 tr("점 {n:,}개 · 회전/기울임 슬라이더로 시점 변경").format(n=len(pts)))
 
-    @pyqtSlot(object)
     def on_depth_img(self, z) -> None:
         self.win.cameras.depth_img = z
         if self.win.cameras.depth_consumer == "depth":

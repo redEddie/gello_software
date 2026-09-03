@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import h5py
-from PyQt6.QtCore import QProcess, Qt, QTimer, pyqtSlot
+from PyQt6.QtCore import QProcess, Qt, QTimer
 from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
 from gello.data.episode_stats import load_series
@@ -71,7 +71,6 @@ class PlaybackOps:
         self.win.playback.trim_loader.start()
         self.trim_update()
 
-    @pyqtSlot(str, str, object, object)
     def on_trim_loaded(self, path, demo, agent, wrist) -> None:
         if self.win.playback.trim_key != (path, demo):
             return
@@ -239,7 +238,6 @@ class PlaybackOps:
             lambda m: self.win.play_caption.setText(tr("재생 실패: {m}").format(m=m)))
         self.win.playback.play_loader.start()
 
-    @pyqtSlot(str, str, object, object)
     def on_episode_loaded(self, path, demo, agent, wrist) -> None:
         if self.win.playback.play_key != (path, demo):
             return
@@ -439,7 +437,6 @@ class PlaybackOps:
             r=tr("완료") if code == 0 else tr("중단/실패 — 로그 확인"), c=code))
 
     # ---------------------------------------------------------------- session
-    @pyqtSlot(list)
     def on_episode_list(self, episodes) -> None:
         prev_n = len(self.win.session.active_episode_cache) if self.win.session.active_episode_cache else None
         self.win.session.active_episode_cache = episodes

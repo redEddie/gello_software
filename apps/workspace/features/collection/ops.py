@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QTimer, pyqtSlot
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QMessageBox
 
 from gello.gui.i18n import tr
@@ -406,7 +406,6 @@ class CollectionOps:
         self.win.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
         self.win.dataset_ops.refresh_dataset_tree()
 
-    @pyqtSlot()
     def on_worker_finished(self) -> None:
         """워커 run()이 어떤 경로로든 끝나면 세션을 해제한다.
 
