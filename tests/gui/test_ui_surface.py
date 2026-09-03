@@ -139,6 +139,41 @@ n_items = sum(len(v) for v in now["menus"].values())
 print(f"1. 메뉴 {len(now['menus'])}개 / 항목 {n_items}개 기준선과 동일 OK")
 print(f"2. 툴바 {len(now['toolbar'])}개, 상태표시등 {len(now['status_lights'])}개 동일 OK")
 print(f"3. 단축키 {len(now['shortcuts'])}개 동일 OK: {' '.join(now['shortcuts'])}")
+# 파일이 폴더 하나만 깊어져도 __file__ 기반 상대 경로는 조용히 어긋난다.
+# 2026-09-03 에 카메라 노드(작업 디렉터리)와 로봇 노드(스크립트 경로)가 그렇게
+# 깨져서, 카메라가 아예 안 붙었다. apps/ 안의 모든 `Path(__file__)` 식이
+# 저장소 루트를 가리키는지 실제로 계산해 본다.
+import re as _re  # noqa: E402
+
+_root_expr = _re.compile(
+    # .parents[N] 을 먼저 -- 뒤에 두면 그 안의 ".parent" 가 먼저 걸린다.
+    r"Path\(__file__\)\.resolve\(\)(\.parents\[\d+\]|(?:\.parent)+)")
+off = {}
+for _p in sorted((WT / "apps").rglob("*.py")):
+    src = _p.read_text(encoding="utf-8")
+    for m in _root_expr.finditer(src):
+        expr, here = m.group(1), _p.resolve()
+        if expr.startswith(".parents["):
+            # parents[0] 이 .parent 하나와 같다 -- 그래서 +1.
+            n = int(expr[len(".parents["):-1]) + 1
+        else:
+            n = expr.count(".parent")
+        got = here
+        for _ in range(n):
+            got = got.parent
+        # 저장소 루트여야 한다. "루트의 자식도 봐준다" 로 느슨하게 두면
+        # 정작 깨진 식(apps/ 를 가리키던 카메라 노드)이 그 예외로 빠져나간다.
+        # 하위 폴더가 필요하면 WT_ROOT / "..." 로 쓰세요.
+        if got == WT:
+            continue
+        line = src[:m.start()].count("\n") + 1
+        off[f"{_p.relative_to(WT)}:{line}"] = f"{expr} -> {got.relative_to(WT) if WT in got.parents or got == WT else got}"
+assert not off, (
+    "__file__ 기반 경로가 저장소 루트를 벗어난다 -- 파일이 옮겨졌는데 .parent\n"
+    "개수가 안 따라간 것이다. apps/workspace/constants.py 의 WT_ROOT 를 쓰세요:\n  "
+    + "\n  ".join(f"{k}: {v}" for k, v in sorted(off.items())))
+print(f"6. apps/ 의 __file__ 상대 경로가 전부 저장소 루트 기준 OK")
+
 gone = {k: v for k, v in now["scripts"].items() if not (WT / v).exists()}
 assert not gone, (f"GUI 가 실행할 스크립트가 그 경로에 없습니다: {gone} -- "
                   "파일을 옮겼다면 상수도 같이 고쳐야 합니다 (버튼을 누를 때만 죽습니다)")

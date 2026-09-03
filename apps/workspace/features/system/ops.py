@@ -10,15 +10,16 @@ from pathlib import Path
 
 from PyQt6.QtCore import QProcess
 
-from apps.workspace.constants import CHECK_CAMERAS, RESET_PROTECTION, RUNME_SCRIPT
+from apps.workspace.constants import CHECK_CAMERAS, RESET_PROTECTION, RUNME_SCRIPT, WT_ROOT
 from gello.config.station import load_station
 from gello.gui.i18n import tr
 
 STATION = load_station()
 PYLIBFRANKA_PYTHON = STATION.node.python_path
-LAUNCH_NODES_SCRIPT = str(
-    Path(__file__).resolve().parent.parent.parent / "scripts" / "launch" / "launch_nodes.py"
-)
+# 저장소 루트는 constants.WT_ROOT 하나로 정한다. __file__ 에서 .parent 를
+# 세는 방식은 파일이 폴더 하나만 깊어져도 조용히 어긋난다 (2026-09-03 에
+# 카메라 노드와 이 스크립트가 그렇게 깨졌다).
+LAUNCH_NODES_SCRIPT = str(WT_ROOT / "scripts" / "launch" / "launch_nodes.py")
 
 
 def _read(path: Path) -> str:

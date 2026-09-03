@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 
 from PyQt6 import sip
 from PyQt6.QtCore import QProcess, QTimer
@@ -12,6 +11,7 @@ from PyQt6.QtWidgets import QComboBox, QMessageBox
 
 from gello.gui.workers import CameraPreviewWorker
 from gello.gui.grid_overlay import active_corners, draw_grid, save_grid_store
+from apps.workspace.constants import WT_ROOT
 from gello.gui.i18n import tr
 
 
@@ -384,7 +384,9 @@ class CameraOps:
         proc.setProgram(sys.executable)
         proc.setArguments(["-m", "gello.comm.camera_node", "--die-with-parent"]
                           + [a for sp in specs for a in ("--cam", sp)])
-        proc.setWorkingDirectory(str(Path(__file__).resolve().parent.parent.parent.parent))
+        # 이 프로세스는 GUI 의 sys.path 를 물려받지 않는다 -- 저장소 루트에서
+        # 띄워야 `python -m gello.comm.camera_node` 가 gello 를 찾는다.
+        proc.setWorkingDirectory(str(WT_ROOT))
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.readyReadStandardOutput.connect(self.on_camera_node_output)
         proc.finished.connect(self.on_camera_node_finished)
