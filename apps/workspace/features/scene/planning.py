@@ -10,6 +10,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QInputDialog, QMessageBox, QTreeWidgetItem
 
 from apps.workspace.features.scene.dialogs.plan_edit_dialog import PlanEditDialog
+from gello.config.quality import QUALITY_SUCCESS
 from gello.gui.i18n import tr
 from gello.scene.collection_plan import (
     PLANS_DIR,
@@ -379,7 +380,7 @@ class ScenePlanningOps:
                 continue
             c = counts.setdefault(iid, {"total": 0, "usable": 0})
             c["total"] += 1
-            if e.get("quality_status") == "success":
+            if e.get("quality_status") == QUALITY_SUCCESS:
                 c["usable"] += 1
         return counts
 

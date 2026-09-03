@@ -76,8 +76,8 @@ def build_menu(win) -> None:
     m.addAction(tr("홈으로"), lambda: win.collection.cmd("cmd_go_home"))
 
     m = mb.addMenu(tr("Process"))
-    m.addAction(tr("노드 시작"), win.system.on_start_node)
-    m.addAction(tr("노드 종료"), win.system.on_stop_node)
+    m.addAction(tr("로봇 노드 시작"), win.system.on_start_node)
+    m.addAction(tr("로봇 노드 종료"), win.system.on_stop_node)
     m.addSeparator()
     m.addAction(tr("카메라 노드 재시작"),
                 win.camera_ops.on_restart_camera_node)

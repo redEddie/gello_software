@@ -63,7 +63,7 @@ _EN: dict[str, str] = {
     # ---- buttons ----
     "찾아보기...": "Browse...",
     "카메라 목록 새로고침": "Refresh camera list",
-    "노드 시작": "Start node",
+    "로봇 노드 시작": "Start robot node",
     "노드 재시작": "Restart node",
     "노드 중지": "Stop node",
     "로봇 연결": "Connect robot",
