@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QMessageBox
 from gello.gui.i18n import tr
 from gello.collect.worker import CollectionWorker, GATE_RAD, WorkerConfig
 from gello.scene.scene_format import count_by_slot, read_scene_metadata, scene_filename
+from apps.workspace.features.collection.header import set_header_state
 from apps.workspace.models import _new_stats
 
 
@@ -183,6 +184,25 @@ class CollectionOps:
         else:
             label.setText(f"{head} · {usable}")
             label.setStyleSheet("color:#888;")
+        self._refresh_header(sid, iid, usable, target)
+
+    def _refresh_header(self, sid, iid, usable, target) -> None:
+        """카메라 위 HUD 에 같은 숫자를 크게 -- 숫자는 위에서 이미 정했다."""
+        if getattr(self.win, "hud_counter", None) is None:
+            return
+        self.win.hud_counter.setText(
+            f"{usable} / {target}" if target is not None else str(usable))
+        self.win.hud_counter.setStyleSheet(
+            "color:#7bed9f;" if target is not None and usable >= target
+            else "color:#fff;")
+        self.win.hud_slot.setText(f"{sid} · {iid}" if iid else str(sid or ""))
+        # 지시문: 세션 중이면 워커가 쥔 것, 아니면 Configure 에서 고른 것.
+        if self.win.session.scene_session and self.win.worker is not None:
+            instr = (getattr(self.win.worker, "_slot_instruction", "")
+                     or self.win.slot_instr_edit.text().strip())
+        else:
+            instr = self.win.lang_edit.text().strip()
+        self.win.hud_instruction.setText(instr or tr("(지시문 없음)"))
 
     # ------------------------------------------------------------------ connect
     def on_connect(self) -> None:
@@ -360,6 +380,7 @@ class CollectionOps:
         self.win.session.current_state = state
         self.update_start_controls()
         self.win.state_label.setText(self.win.STATE_LABELS.get(state, state))
+        set_header_state(self.win, state)
         self.win.shortcut_hint.setText(self.win.SHORTCUT_HINTS.get(state, ""))
         self.win.right_fields["state"].setText(state)
         recording = "기록" in state or "record" in state.lower()

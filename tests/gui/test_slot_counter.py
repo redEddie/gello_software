@@ -161,6 +161,33 @@ win.collection.refresh_slot_counter()
 assert win.slot_counter.text() == "—", win.slot_counter.text()
 print("7 통과: scene 미선택 -- 자리 비움")
 
+# ---- 8. HUD: 같은 숫자를 카메라 위 고정 띠에도, 스크롤 밖으로 밀리지 않게 ----
+# 이 검사가 있는 이유: 카운터는 원래 왼쪽 "진행" 상자에만 있었는데, 세션이
+# 시작되면 위 상자들에 밀려 스크롤 영역 밖으로 나가 조작자가 찾지 못했다
+# (2026-09-04 실측 y=800, 높이 395, 패널 1009px). 자리를 옮긴 것으로는
+# 재발을 막지 못하므로 "스크롤 조상이 없다"를 계약으로 박는다.
+from PyQt6.QtWidgets import QScrollArea  # noqa: E402
+
+win.scene_combo.setCurrentIndex(win.scene_combo.findData("S000"))
+win.scene_iid_edit.setText(IID)
+_write_plan(10)
+win.collection.refresh_slot_counter()
+assert win.hud_counter.text() == "1 / 10", win.hud_counter.text()
+assert win.hud_slot.text() == f"S000 · {IID}", win.hud_slot.text()
+assert win.hud_counter.font().pointSize() >= 24, "거리에서 읽히려면 크게"
+
+anc, scrolled = win.hud_counter.parent(), False
+while anc is not None:
+    scrolled = scrolled or isinstance(anc, QScrollArea)
+    anc = anc.parent()
+assert not scrolled, "HUD 가 스크롤 영역 안에 있으면 다시 밀려날 수 있다"
+win.resize(1280, 768)
+app.processEvents()
+bar = win.hud_bar
+assert bar.mapTo(win, bar.rect().topLeft()).y() + bar.height() <= win.height(), \
+    "작은 창에서도 HUD 는 창 안에 있어야 한다"
+print("8 통과: HUD 에 같은 숫자(1/10) + 스크롤 밖 아님 + 768 높이에서도 보임")
+
 print("\nslot 카운터 (issue #38) 검증 통과")
 import os  # noqa: E402
 

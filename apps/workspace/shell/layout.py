@@ -35,6 +35,7 @@ from .page_builders import PAGE_BUILDERS
 # Tab builders are imported here rather than through the package __init__ to
 # avoid a circular import (this module is re-exported by __init__, and the tabs
 # are only needed inside build_center).
+from apps.workspace.features.collection import build_collect_header
 from apps.workspace.features.stats.analysis_tab import build_analysis_tab
 from apps.workspace.features.camera import build_cloud_tab, build_depth_tab
 from apps.workspace.features.gallery import build_gallery_tab
@@ -338,7 +339,17 @@ def build_layout(win) -> None:
     # 트리, 상태 목록)이 먼저 손해를 본다. VS Code의 사이드바가 전체 높이를
     # 쓰고 패널이 에디터 아래에만 오는 것과 같은 이유다.
     win.center_split = QSplitter(Qt.Orientation.Vertical)
-    win.center_split.addWidget(win.center_tabs)
+    # 수집 HUD 는 탭 위에 고정한다 -- 스플리터에 따로 넣지 않는 이유는
+    # 조작자가 그것을 접거나 0 으로 줄일 수 있으면 안 되기 때문이다
+    # (왼쪽 패널의 "진행" 상자가 스크롤 밖으로 밀려 안 보이던 것이 이
+    # 작업의 출발점이다).
+    center_col = QWidget()
+    cc = QVBoxLayout(center_col)
+    cc.setContentsMargins(0, 0, 0, 0)
+    cc.setSpacing(0)
+    cc.addWidget(build_collect_header(win))
+    cc.addWidget(win.center_tabs, 1)
+    win.center_split.addWidget(center_col)
     win.center_split.addWidget(win.bottom_tabs)
     win.center_split.setStretchFactor(0, 1)
     win.center_split.setStretchFactor(1, 0)
