@@ -9,24 +9,56 @@ scene 수집 때 물체를 어느 칸(A1..C3)에 놓을지 화면에서 확인�
 레이아웃 스틸(224×224)처럼 해상도가 달라도 같은 격자가 같은 곳에 그려진다.
 순서는 tl, tr, br, bl (시계 방향).
 
-저장 파일: ~/libero_gui_logs/workspace_grids.json
+저장 파일은 **스테이션마다 하나**다 (2026-09-04 결정 -- 격자는 카메라
+자세에 종속된 물리 셋업 값이라 스테이션이 다르면 섞이면 안 된다):
+
+    ~/libero_gui_logs/grids/<station>.json
     {"active": 이름, "live_on": bool, "alpha": 10..100, "grids": {이름: 꼭짓점}}
+
+스테이션은 GELLO_STATION / load_station() 이 정한다. 첫 실행 때 옛 전역
+파일(~/libero_gui_logs/workspace_grids.json)이 있으면 그 스테이션 파일로
+1회 복사한다.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
 
-GRID_STORE_PATH = Path.home() / "libero_gui_logs" / "workspace_grids.json"
+GRID_DIR = Path.home() / "libero_gui_logs" / "grids"
+LEGACY_GRID_STORE_PATH = Path.home() / "libero_gui_logs" / "workspace_grids.json"
 # 화면 가운데쯤의 사다리꼴 -- 위가 멀고 아래가 가까운 일반적인 카메라 각도.
 DEFAULT_CORNERS = [[0.30, 0.30], [0.70, 0.30], [0.80, 0.80], [0.20, 0.80]]
 GRID_COLOR = (80, 255, 140)   # RGB
 
 
-def load_grid_store(path: Path = GRID_STORE_PATH) -> dict:
+def grid_store_path(station: "str | None" = None) -> Path:
+    """스테이션의 격자 저장 파일. station=None 이면 현재 스테이션."""
+    if station is None:
+        from gello.config.station import load_station
+
+        station = load_station().name
+    return GRID_DIR / f"{station}.json"
+
+
+def load_grid_store(path: "Path | None" = None) -> dict:
+    # 마이그레이션은 path 를 지정하지 않은 호출(= 현재 스테이션 파일)에서만
+    # 한다. 호출자가 준 경로에까지 옛 파일을 복사하면 "빈 저장소를 달라"고
+    # 넘긴 경로에 남의 격자가 들어온다 -- 읽기 함수가 지정된 곳에 쓰는 셈이다.
+    migrate = path is None
+    path = Path(path) if path is not None else grid_store_path()
+    if (migrate and not path.exists()
+            and path != LEGACY_GRID_STORE_PATH
+            and LEGACY_GRID_STORE_PATH.exists()):
+        # 옛 전역 저장소 -> 이 스테이션 파일로 1회 마이그레이션
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(LEGACY_GRID_STORE_PATH, path)
+        except OSError:
+            pass
     try:
         d = json.loads(path.read_text())
         if not isinstance(d.get("grids"), dict):
@@ -40,7 +72,8 @@ def load_grid_store(path: Path = GRID_STORE_PATH) -> dict:
     return d
 
 
-def save_grid_store(store: dict, path: Path = GRID_STORE_PATH) -> None:
+def save_grid_store(store: dict, path: "Path | None" = None) -> None:
+    path = Path(path) if path is not None else grid_store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(store, ensure_ascii=False, indent=2))
 

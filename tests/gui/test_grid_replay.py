@@ -18,8 +18,13 @@ from gello.gui.grid_overlay import (  # noqa: E402
     DEFAULT_CORNERS, active_corners, draw_grid, grid_segments,
     load_grid_store, save_grid_store,
 )
+import gello.gui.grid_overlay as go  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="grid_"))
+# 이 파일의 저장소 단위 테스트는 옛 전역 파일(실재할 수 있음) 마이그레이션과
+# 무관하게 돌려야 한다 -- 1b 에서 명시적으로 다루기 전까지 비워 둔다.
+_real_legacy = go.LEGACY_GRID_STORE_PATH
+go.LEGACY_GRID_STORE_PATH = TMP / "no-legacy.json"
 
 # ---- 1. grid_overlay 단위 ----
 segs = grid_segments([[0, 0], [1, 0], [1, 1], [0, 1]], 300, 300)
@@ -42,6 +47,27 @@ st2 = load_grid_store(sp)
 assert active_corners(st2) == DEFAULT_CORNERS and st2["alpha"] == 42
 assert load_grid_store(TMP / "none.json")["grids"] == {}
 print("1 통과: 격자 계산(원근 항등 검증)·그리기·저장 왕복")
+
+# ---- 1b. per-station 저장 (2026-09-04): 스테이션마다 grids/<station>.json ----
+assert go.grid_store_path("st-a").name == "st-a.json"
+assert go.grid_store_path("st-a").parent.name == "grids"
+assert go.grid_store_path("st-a") != go.grid_store_path("st-b")
+# 옛 전역 파일(workspace_grids.json)이 있고 스테이션 파일이 없으면 1회 복사.
+# 실사용 경로 그대로 확인한다 -- 인자 없는 load_grid_store(). 명시 경로로는
+# 마이그레이션하지 않는다(아래 마지막 줄), 읽기 함수가 호출자가 지정한 곳에
+# 쓰면 안 되기 때문이다.
+go.LEGACY_GRID_STORE_PATH = sp                      # 방금 저장한 파일을 옛 것처럼
+mig_path = TMP / "grids" / "st-new.json"
+_real_station_path = go.grid_store_path
+go.grid_store_path = lambda station=None: mig_path
+mig = go.load_grid_store()
+assert mig["alpha"] == 42 and mig_path.exists(), "인자 없는 호출에서 복사돼야 한다"
+other = TMP / "explicit-not-migrated.json"
+assert go.load_grid_store(other)["grids"] == {} and not other.exists(), \
+    "명시 경로에는 옛 파일을 복사하면 안 된다"
+go.grid_store_path = _real_station_path
+go.LEGACY_GRID_STORE_PATH = _real_legacy            # 창 생성 전에 원복
+print("1b 통과: 스테이션별 경로 분리 + 마이그레이션은 기본 경로에서만")
 
 import collect_workspace as cw  # noqa: E402
 from apps.workspace.constants import REPLAY_SCRIPT  # noqa: E402
