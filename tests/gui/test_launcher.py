@@ -27,7 +27,7 @@ from apps.workspace.launcher.pages import (  # noqa: E402
     PAGE_MODE,
     PAGE_NEW,
 )
-from gello.scene.dataset_meta import load_identity  # noqa: E402
+from gello.scene.dataset_meta import DatasetIdentity, load_identity  # noqa: E402
 from gello.gui.widgets import Recents  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="launcher_"))
@@ -167,6 +167,64 @@ proc2, key2 = hw.take_node()
 assert proc2 is None and key2 == "", "두 번 넘기지 않는다"
 hw.cleanup()                                       # 넘긴 뒤 정리는 무해해야
 print("6 통과: 카메라 노드 인계 -- spec 규칙 + 소유권 이전 + 중복 인계 없음")
+
+# ---- 7. 스테이션 편집기: 기존은 읽기 전용, 새 것만 만들고 지운다 ----
+# 기존 스테이션을 GUI 로 못 고치게 한 것은 의도된 제약이다 -- 셋업 값 변경을
+# 코드로만 하게 해서 git 커밋 기록을 강제한다 (2026-09-05). 이 검사가 그
+# 제약을 지킨다: 읽기 전용이 풀리면 실패한다.
+from apps.workspace.launcher.station_editor import NEW_STATION  # noqa: E402
+from gello.config.station import (  # noqa: E402
+    CameraSpec,
+    list_stations,
+    load_station,
+    station_path,
+    validate_station_name,
+)
+
+TEST_ST = "zz-test-station"
+station_path(TEST_ST).unlink(missing_ok=True)      # 앞선 실패의 잔재 정리
+ed = wiz.page(PAGE_HW).station_editor
+ed.reload(select=None)
+assert ed.combo.count() >= 2 and ed.combo.itemData(ed.combo.count() - 1) == NEW_STATION
+
+assert ed.name_edit.isReadOnly(), "등록된 스테이션은 읽기 전용이어야 한다"
+assert not (ed.copy_btn.isEnabled() or ed.del_btn.isEnabled()
+            or ed.save_btn.isEnabled()), "기존 선택에서는 세 버튼 모두 비활성"
+
+ed.combo.setCurrentIndex(ed.combo.findData(NEW_STATION))
+assert not ed.name_edit.isReadOnly() and ed.copy_btn.isEnabled()
+assert not ed.save_btn.isEnabled(), "이름이 비면 저장 불가"
+ed.name_edit.setText(list_stations()[0])
+assert not ed.save_btn.isEnabled(), "이름이 겹치면 저장 불가"
+assert validate_station_name(list_stations()[0]) is not None
+ed.name_edit.setText("bad name/x")
+assert not ed.save_btn.isEnabled(), "파일명에 못 쓰는 이름은 저장 불가"
+
+ed.name_edit.setText(TEST_ST)
+ed.ip_edit.setText("10.0.0.9")
+ed.port_spin.setValue(6099)
+assert ed.save_btn.isEnabled()
+try:
+    assert ed.save_new({"agent": CameraSpec(serial="AAA"),
+                        "wrist": CameraSpec(serial="BBB")}) == TEST_ST
+    assert station_path(TEST_ST).is_file()
+    cfg = load_station(TEST_ST)
+    assert cfg.robot.ip == "10.0.0.9" and cfg.node.port == 6099
+    assert cfg.camera("agent").serial == "AAA"
+    # 저장 직후: 드롭다운이 그 이름으로 옮겨가도 이번 세션 것이라 삭제 가능
+    assert ed.combo.currentData() == TEST_ST
+    assert ed.del_btn.isEnabled(), "방금 만든 것은 지울 수 있어야 한다"
+    assert ed.name_edit.isReadOnly(), "저장 뒤에는 다시 읽기 전용"
+    ed._on_delete()
+    assert not station_path(TEST_ST).exists()
+finally:
+    station_path(TEST_ST).unlink(missing_ok=True)
+
+# identity 에 station 이 붙는다 (이어서 하기의 기본 선택 근거)
+ident_st = DatasetIdentity(name="x", station="knu-eng7")
+assert DatasetIdentity.from_dict(ident_st.to_dict()).station == "knu-eng7"
+assert DatasetIdentity.from_dict({"name": "old"}).station == "", "옛 데이터셋은 빈 값"
+print("7 통과: 스테이션 편집기 -- 기존 읽기전용 / 새 것 생성·삭제 / identity.station")
 
 print("\n런처 마법사 검증 통과")
 _cleanup()

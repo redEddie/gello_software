@@ -58,6 +58,10 @@ class DatasetIdentity:
     concept: str = ""
     created: str = ""
     schema_version: str = SCHEMA_VERSION
+    # 이 데이터셋을 모은 물리 셋업 (configs/stations/<이름>.yaml). 런처가
+    # "이어서 하기" 때 기본 선택으로 되살린다 -- 스테이션이 여럿인 곳에서
+    # 엉뚱한 로봇 IP 로 붙는 것을 막는다. 옛 데이터셋에는 없으므로 빈 문자열.
+    station: str = ""
 
     def __post_init__(self) -> None:
         if not self.hf_repo:
@@ -74,6 +78,7 @@ class DatasetIdentity:
             concept=str(d.get("concept") or ""),
             created=str(d.get("created") or ""),
             schema_version=str(d.get("schema_version") or SCHEMA_VERSION),
+            station=str(d.get("station") or ""),
         )
 
 

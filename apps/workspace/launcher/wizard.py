@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -105,6 +105,7 @@ class LauncherWizard(QWizard):
     def _build_result(self) -> LaunchResult:
         hw: HardwarePage = self.page(PAGE_HW)  # type: ignore[assignment]
         agent, wrist = hw.cameras()
+        station = hw.station()
         today = time.strftime("%Y-%m-%d")
         if self.mode == "new":
             pg: NewDatasetPage = self.page(PAGE_NEW)  # type: ignore[assignment]
@@ -112,7 +113,7 @@ class LauncherWizard(QWizard):
             ident = DatasetIdentity(
                 name=pg.name_edit.text().strip(),
                 concept=pg.concept_edit.toPlainText().strip(),
-                created=today)
+                created=today, station=station)
             root.mkdir(parents=True, exist_ok=False)
             save_identity(root, ident)
             src = pg.copy_source()
@@ -126,12 +127,18 @@ class LauncherWizard(QWizard):
             ident = load_identity(root)
             if ident is None:
                 # 메타 없는 legacy 폴더 -- 폴더명으로 identity 를 만들어 준다
-                ident = DatasetIdentity(name=root.name, created=today)
+                ident = DatasetIdentity(name=root.name, created=today,
+                                        station=station)
+                save_identity(root, ident)
+            elif station and ident.station != station:
+                # 스테이션을 바꿔 이어 찍는다 -- 다음에 열 때도 이 선택이
+                # 기본이 되도록 기록해 둔다.
+                ident = replace(ident, station=station)
                 save_identity(root, ident)
         node, node_key = hw.take_node()
         return LaunchResult(mode=self.mode or "continue",
                             dataset_root=root,
-                            station=hw.station(),
+                            station=station,
                             agent_serial=agent,
                             wrist_serial=wrist,
                             identity=ident,

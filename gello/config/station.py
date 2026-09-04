@@ -35,6 +35,7 @@
 
 from __future__ import annotations
 
+import re
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -214,3 +215,74 @@ def list_stations() -> list[str]:
     if not STATIONS_DIR.is_dir():
         return []
     return sorted(p.stem for p in STATIONS_DIR.glob("*.yaml"))
+
+
+# ----------------------------------------------------------------- 쓰기
+# 런처 마법사가 새 스테이션을 등록할 때만 쓴다. **기존 스테이션 수정은
+# 일부러 GUI 에서 막아 두었다** -- 코드로 고치게 해서 git 커밋 기록을
+# 남기려는 것이다 (2026-09-05 사용자 결정). 그래서 여기에도 "덮어쓰기"가
+# 없다: save_station 은 이미 있는 이름을 거부한다.
+STATION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def validate_station_name(name: str) -> Optional[str]:
+    """이름이 규칙에 맞지 않으면 이유를, 맞으면 None."""
+    if not name:
+        return "이름이 비어 있습니다."
+    if not STATION_NAME_RE.fullmatch(name):
+        return "영문·숫자로 시작하고 영문·숫자·.-_ 만 쓸 수 있습니다 (파일명이 됩니다)."
+    if name in list_stations():
+        return f"'{name}' 은 이미 있습니다. 다른 이름을 쓰세요."
+    return None
+
+
+def station_path(name: str) -> Path:
+    """이 이름의 스테이션 파일 경로 (있든 없든)."""
+    return STATIONS_DIR / f"{name}.yaml"
+
+
+def save_station(cfg: StationConfig) -> Path:
+    """새 스테이션을 YAML 로 쓴다. 이름이 이미 있으면 ValueError.
+
+    crop 과 fps 는 쓰지 않는다 -- 크롭은 GUI 슬라이더가 따로 저장하고
+    (crop_params.json), 나머지는 기본값이 정본이다. 여기 적어두면 "두 곳에
+    적힌 같은 값"이 되어 갈라진다.
+    """
+    import yaml
+
+    err = validate_station_name(cfg.name)
+    if err:
+        raise ValueError(err)
+    data = {
+        "name": cfg.name,
+        "description": cfg.description,
+        "robot": {"kind": cfg.robot.kind, "ip": cfg.robot.ip,
+                  "reset_pose": cfg.robot.reset_pose},
+        "node": {"host": cfg.node.host, "port": int(cfg.node.port),
+                 "python": cfg.node.python},
+        "leader": ({"port": cfg.leader.port} if cfg.leader.port else {}),
+        "cameras": {role: {"serial": c.serial, "model": c.model,
+                           "width": c.width, "height": c.height, "fps": c.fps}
+                    for role, c in cfg.cameras.items()},
+    }
+    path = station_path(cfg.name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = (
+        "# 스테이션 설정 -- 런처 마법사가 만들었습니다.\n"
+        "# 이 파일은 git 추적 대상입니다. 커밋해 두지 않으면 아이콘 실행 때\n"
+        "# 자동 git pull 이 건너뛰어집니다 (작업 트리가 더럽기 때문).\n"
+        "# 내용 수정은 이 파일을 직접 고치세요 -- GUI 는 일부러 막아 두었습니다.\n"
+    )
+    tmp = path.with_suffix(".yaml.tmp")
+    tmp.write_text(header + yaml.safe_dump(data, allow_unicode=True,
+                                           sort_keys=False),
+                   encoding="utf-8")
+    tmp.replace(path)
+    _cache.pop(cfg.name, None)      # 다음 load_station 이 파일을 읽게
+    return path
+
+
+def delete_station(name: str) -> None:
+    """스테이션 파일 삭제. 마법사는 **이번 세션에서 만든 것**에만 허용한다."""
+    station_path(name).unlink(missing_ok=True)
+    _cache.pop(name, None)

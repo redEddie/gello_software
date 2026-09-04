@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import time
 from pathlib import Path
 
@@ -28,11 +29,14 @@ from apps.workspace.shared.camera_node_proc import (
     spawn_node,
     spec_key,
 )
-from gello.config.station import list_stations, load_station
+from gello.config.station import CameraSpec, load_station
+from apps.workspace.constants import WT_ROOT
+from apps.workspace.launcher.station_editor import StationEditor
 from gello.scene.dataset_meta import (
     DEFAULT_DATASETS_PARENT,
     DatasetEntry,
     discover_datasets,
+    load_identity,
     plan_progress,
     validate_dataset_name,
 )
@@ -262,11 +266,18 @@ class HardwarePage(QWizardPage):
         super().__init__()
         self.setTitle(tr("하드웨어"))
         self.setSubTitle(tr("수집 스테이션과 카메라를 선택하세요."))
-        form = QFormLayout(self)
-        self.station_combo = QComboBox()
-        for s in list_stations():
-            self.station_combo.addItem(s, s)
-        form.addRow(tr("스테이션"), self.station_combo)
+        outer = QVBoxLayout(self)
+        self.station_editor = StationEditor()
+        self.station_editor.save_requested.connect(self._on_save_station)
+        outer.addWidget(self.station_editor)
+        form = QFormLayout()
+        outer.addLayout(form)
+        # 커밋 안 된 스테이션 파일이 있으면 아이콘의 자동 git pull 이 건너뛰어진다.
+        # 막지는 않고 알리기만 한다 (2026-09-05 사용자 결정).
+        self.git_warn = QLabel("")
+        self.git_warn.setWordWrap(True)
+        self.git_warn.setStyleSheet("color:#e67e22;")
+        outer.addWidget(self.git_warn)
         self.agent_combo = QComboBox()
         self.wrist_combo = QComboBox()
         for c in (self.agent_combo, self.wrist_combo):
@@ -295,7 +306,8 @@ class HardwarePage(QWizardPage):
         self.cam_hint.setStyleSheet("color:#888;")
         row.addWidget(self.cam_hint, 1)
         form.addRow(row)
-        self.station_combo.currentIndexChanged.connect(self._apply_station_defaults)
+        self.station_editor.combo.currentIndexChanged.connect(
+            self._apply_station_defaults)
         # 이 페이지가 띄운 노드. 마법사가 끝나면 워크스페이스가 물려받는다
         # (take_node) -- 넘기지 않으면 창이 같은 카메라를 두 번 열려다
         # 포트 6021 충돌로 죽는다.
@@ -304,10 +316,11 @@ class HardwarePage(QWizardPage):
 
     def initializePage(self) -> None:  # noqa: N802 - Qt override
         import os
-        want = os.environ.get("GELLO_STATION", "")
-        idx = self.station_combo.findData(want)
-        if idx >= 0:
-            self.station_combo.setCurrentIndex(idx)
+        # 기본 선택: 이어서 수집이면 그 데이터세트가 쓰던 스테이션.
+        want = self._wanted_station() or os.environ.get("GELLO_STATION", "")
+        if want:
+            self.station_editor.reload(select=want)
+        self._refresh_git_warning()
         # 목록부터 만들고(모델명 포함) 그 안에서 기억된 것을 고른다. 버튼을
         # 눌러야만 모델명이 보이면 아무도 안 누른다.
         self.detect_cameras()
@@ -399,7 +412,7 @@ class HardwarePage(QWizardPage):
         """
         recents = Recents()
         try:
-            cfg = load_station(self.station_combo.currentData() or None)
+            cfg = load_station(self.station_editor.current_name() or None)
         except Exception:  # noqa: BLE001
             cfg = None
         for combo, role, key in ((self.agent_combo, "agent", "agent_serial"),
@@ -447,7 +460,46 @@ class HardwarePage(QWizardPage):
         self.cam_hint.setText(tr("{n}대 감지됨").format(n=len(entries)))
 
     def station(self) -> str:
-        return str(self.station_combo.currentData() or "")
+        return self.station_editor.current_name()
+
+    def _wanted_station(self) -> str:
+        """이어서 수집이면 그 데이터세트가 쓰던 스테이션 (identity 에 기록)."""
+        wiz = self.wizard()
+        root = None
+        if wiz is not None and getattr(wiz, "mode", "") == "continue":
+            root = wiz.page(PAGE_CONTINUE).selected_path()
+        if root is None:
+            return ""
+        ident = load_identity(root)
+        return ident.station if ident is not None else ""
+
+    def _on_save_station(self) -> None:
+        """편집기의 저장 버튼 -- 카메라 시리얼은 이 페이지가 안다."""
+        agent, wrist = self.cameras()
+        cams = {"agent": CameraSpec(serial=agent),
+                "wrist": CameraSpec(serial=wrist)}
+        if self.station_editor.save_new(cams):
+            self._refresh_git_warning()
+
+    def _refresh_git_warning(self) -> None:
+        """커밋 안 된 스테이션 파일이 있으면 알린다.
+
+        막지는 않는다 -- 사용자가 감수하기로 한 부분이다. 다만 그 상태에서는
+        아이콘 실행 때 `git pull --ff-only` 가 실패해 **최신 코드를 받지
+        못한 채** 돌게 되므로, 모르고 지나가지는 않게 한다.
+        """
+        try:
+            out = subprocess.run(
+                ["git", "status", "--porcelain", "--", "configs/stations"],
+                cwd=str(WT_ROOT), capture_output=True, text=True, timeout=5).stdout
+        except Exception:  # noqa: BLE001 -- git 이 없거나 저장소가 아니면 조용히
+            out = ""
+        dirty = [ln[3:] for ln in out.splitlines() if ln.strip()]
+        self.git_warn.setText(tr(
+            "커밋되지 않은 스테이션 파일이 있습니다: {f}\n"
+            "이 상태에서는 아이콘 실행 때 자동 git pull 이 건너뛰어져 옛 코드로 "
+            "돌 수 있습니다. 커밋해 두세요.").format(f=", ".join(dirty))
+            if dirty else "")
 
     def isComplete(self) -> bool:  # noqa: N802 - Qt override
         return True     # 카메라 미선택도 허용
