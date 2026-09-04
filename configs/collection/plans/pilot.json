@@ -627,6 +627,16 @@
           "target": 10
         }
       ]
+    },
+    {
+      "scene_id": "S015",
+      "slots": [
+        {
+          "instruction_id": "I000",
+          "instruction": "pick up the white cup and place it on the white bowl",
+          "target": 10
+        }
+      ]
     }
   ]
 }

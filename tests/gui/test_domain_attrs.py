@@ -29,8 +29,9 @@ mods = sorted({
     for p in base.rglob("*.py")
     if p.name != "__init__.py"
 })
-# features/ 안에서도 도메인 클래스(Ops)가 들어 있는 ops.py 만 검사한다.
-mods = [p for p in mods if p.parent == DOMAINS or p.name == "ops.py"]
+# features/ 의 모든 모듈을 본다. ops.py 만 보던 때는 planning.py 나 depth.py
+# 처럼 이름이 다른 도메인 파일이 검사 밖이었다 (2026-09-04).
+
 if not mods:
     print("도메인 모듈이 아직 없습니다 -- 검사할 것 없음 (Phase 4 시작 전)")
     raise SystemExit(0)
@@ -79,7 +80,51 @@ assert not missing, (
     + "\n".join(f"  {k}: {v}" for k, v in missing.items()))
 
 n = sum(1 for _ in mods)
-print(f"도메인 {n}개, 창에서 읽는 이름 전부 실재 OK")
+print(f"1. 도메인 {n}개, 창에서 읽는 이름 전부 실재 OK")
+
+# ------------------------------------------------------------------ 2
+# 반대 방향: connect() 가 가리키는 슬롯이 실제로 있는가.
+#
+# 1번은 "도메인이 창에서 읽는 이름" 을 본다. 그런데 실제로 터진 사고는 그
+# 반대였다 -- 창이 w.episode_discarded.connect(self._on_discarded) 로 자기
+# 자신의 없는 메서드를 가리키고 있었다. Phase 4-8 이 그 메서드를 지우면서
+# 도메인으로 옮기지 않았고, 조작자가 테이크를 버릴 때마다 죽었다.
+# 시그널 연결은 부를 때까지 조용하므로 여기서 미리 풀어 본다.
+import re  # noqa: E402
+
+# self 가 창인 곳(collect_workspace.py)과, win 이 창인 곳(features/shell)만
+# 본다. 대화상자 안의 self 는 그 대화상자라 여기서 풀면 안 된다.
+PATTERNS = (
+    (WT / "apps" / "collect_workspace.py", r"\.connect\(\s*self((?:\.\w+)+)\s*\)"),
+)
+bad = []
+for path, pat in PATTERNS:
+    src = path.read_text(encoding="utf-8")
+    for m in re.finditer(pat, src):
+        parts = m.group(1).lstrip(".").split(".")
+        line = src[:m.start()].count("\n") + 1
+        obj = win
+        for part in parts:
+            obj = getattr(obj, part, None)
+            if obj is None:
+                bad.append(f"{path.relative_to(WT)}:{line}  self.{'.'.join(parts)}")
+                break
+# features / shell 에서는 win.<...> 가 창이다.
+for path in sorted((WT / "apps" / "workspace").rglob("*.py")):
+    src = path.read_text(encoding="utf-8")
+    for m in re.finditer(r"\.connect\(\s*(?:self\.win|win)((?:\.\w+)+)\s*\)", src):
+        parts = m.group(1).lstrip(".").split(".")
+        line = src[:m.start()].count("\n") + 1
+        obj = win
+        for part in parts:
+            obj = getattr(obj, part, None)
+            if obj is None:
+                bad.append(f"{path.relative_to(WT)}:{line}  win.{'.'.join(parts)}")
+                break
+assert not bad, (
+    "connect() 가 없는 슬롯을 가리킨다 -- 그 시그널이 처음 울리는 순간 죽는다:\n  "
+    + "\n  ".join(bad))
+print("2. connect() 대상이 전부 실재 OK")
 win.close()
 win.deleteLater()
 app.processEvents()
@@ -90,4 +135,5 @@ app.processEvents()
 # 읽는다). 창을 만드는 다른 인수 테스트들과 같은 방식으로 끝낸다.
 import os  # noqa: E402
 
+sys.stdout.flush()   # os._exit 는 버퍼를 비우지 않는다
 os._exit(0)

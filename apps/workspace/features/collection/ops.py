@@ -419,6 +419,26 @@ class CollectionOps:
         self.win.save_status_label.setStyleSheet(
             "color:#f39c12;" if text else "color:#888;")
 
+    def on_node_status(self, ok) -> None:
+        """로봇 노드 응답 여부를 상태표시등과 오른쪽 패널에 반영한다.
+
+        on_discarded 와 같이 Phase 4-8 에서 창에서 지워지고 옮겨지지 않았다
+        (2026-09-04 복구). 노드가 처음 응답할 때 죽었을 것이다.
+        """
+        txt = tr("정상") if ok else tr("응답 없음")
+        self.win.lights["node"].set("ok" if ok else "bad", txt)
+        self.win.right_fields["node"].setText(txt)
+
+    def on_discarded(self, n_frames) -> None:
+        """폐기된 테이크. 저장하지 않으므로 통계에만 남긴다.
+
+        Phase 4-8 이 창에서 이 메서드를 지우면서 여기로 옮기지 않아, 조작자가
+        테이크를 버릴 때마다 AttributeError 로 죽었다 (2026-09-04 복구).
+        """
+        self.win.stats_ops.bump("discarded")
+        self.win.log(f"[버림] {n_frames} frames")
+        self.win.stats_ops.refresh_stats()
+
     def on_countdown(self, seconds) -> None:
         # 자동 진행이 없어졌으므로 카운트다운이 아니라 경과 시간이다.
         self.win.state_label.setText(
