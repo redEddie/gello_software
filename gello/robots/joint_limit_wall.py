@@ -120,6 +120,10 @@ from gello.hw.dynamixel.driver import (
 )
 
 # XL330 control-table addresses for supply-health monitoring.
+# 루프가 주기를 넘겼을 때도 반드시 내어 주는 최소 시간. 0 이면 GIL 을 놓지
+# 않아 같은 프로세스의 GUI·카메라 스레드가 굶는다 (2026-09-04).
+_MIN_YIELD_S = 0.0005
+
 ADDR_HW_ERROR = 70        # Hardware Error Status (1 B, bitfield)
 ADDR_INPUT_VOLTAGE = 144  # Present Input Voltage (2 B, units of 0.1 V)
 ADDR_TEMPERATURE = 146    # Present Temperature (1 B, deg C)
@@ -1003,9 +1007,13 @@ class JointLimitWall:
                     "tau_g": tau_g,
                 }
 
-                rest = self._dt - (time.time() - t0)
-                if rest > 0:
-                    time.sleep(rest)
+                # 한 바퀴가 dt 를 넘기면 rest <= 0 이라 예전에는 sleep 을 아예
+                #건너뛰었다 -- 그 구간에서 이 스레드는 GIL 을 놓지 않고 도는
+                # 것과 같아, 같은 프로세스의 Qt 메인 스레드와 카메라 구독자가
+                # 굶는다. 최소 양보를 보장한다: 정상 구간(rest > 0)은 그대로
+                # 300Hz 를 지키고, 오버런 구간에서만 0.5ms 를 양보한다
+                # (300Hz 기준 15% -- 제어 주기에 의미 있는 영향은 없다).
+                time.sleep(max(self._dt - (time.time() - t0), _MIN_YIELD_S))
         except BaseException as e:  # noqa: BLE001 -- surfaced via poll()
             self._error = e
 

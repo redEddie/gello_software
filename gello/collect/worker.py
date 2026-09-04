@@ -47,6 +47,9 @@ from gello.config.station import load_station
 #: 초록으로 보이는 것과 모터가 실제로 당기기 시작하는 것이 같은 숫자여야
 #: 하기 때문이다 (issue #37A). 여기서 재정의하면 둘이 어긋난다.
 GATE_RAD = MATCH_GATE_RAD
+#: 게이트/정렬 루프는 50Hz 로 돌지만 게이지 갱신은 이 주기로만 보낸다
+#: (_emit_gate_status 참조).
+_GATE_EMIT_PERIOD_S = 1.0 / 15
 # rad/tick @ 20Hz. The FR3 driver's reference filter saturates at 1.0 rad/s
 # regardless, so this only has to be large enough not to be the binding
 # constraint -- 0.10 lets the filter reach ~0.91 rad/s (0.05 gave ~0.80).
@@ -265,6 +268,7 @@ class CollectionWorker(QThread):
         self._writer: Optional[LiberoTaskWriter] = None
         self._reset_q = FR3_RESET_POSES[self.cfg.reset_pose]
         self._episode_count = 0
+        self._last_gate_emit = 0.0
         # scene 모드 slot 상태. cmd_set_slot 으로 바뀌고, 에피소드에는
         # "기록 시작 시점의 slot"(_episode_slot 캡처본)이 찍힌다 -- 저장이
         # 백그라운드라 저장 시점의 현재 slot 을 읽으면 안 된다.
@@ -825,7 +829,16 @@ class CollectionWorker(QThread):
         q_rob = np.array([obs[k] for k in JOINT_KEYS[:7]])
         delta = np.abs(q_led - q_rob)
         all_ok = bool(delta.max() <= GATE_RAD)
-        self.gate_status.emit(self._joint_vec(act), self._joint_vec(obs), all_ok)
+        # 판정(delta/all_ok)은 매 틱 계산하되 화면 갱신은 줄인다. 이 시그널
+        # 하나가 DeltaBar 8개를 다시 그리게 하는데, 루프가 50Hz 라 초당 400회
+        # 다시 그리기가 된다. 메인 스레드가 그걸 못 따라가면 큐가 밀리고 --
+        # 2026-09-04 로그에서 11초까지 밀렸다 -- 정렬이 멈춘 것처럼 보인다
+        # ("[자동정렬] 시작..."이 emit 11초 뒤에 찍혔다). 15Hz 면 게이지는
+        # 여전히 부드럽고 큐는 쌓이지 않는다.
+        now = time.monotonic()
+        if now - self._last_gate_emit >= _GATE_EMIT_PERIOD_S:
+            self._last_gate_emit = now
+            self.gate_status.emit(self._joint_vec(act), self._joint_vec(obs), all_ok)
         return delta, all_ok
 
     def _pose_gate(self, timeout: float = 3600.0) -> str:

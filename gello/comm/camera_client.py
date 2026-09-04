@@ -15,6 +15,7 @@ read_* 호출 때마다 큐를 논블로킹으로 비우면서(drain) 최신 프
 from __future__ import annotations
 
 import json
+import threading
 import time
 
 import numpy as np
@@ -91,6 +92,15 @@ class NodeCamera:
         self._sub: zmq.Socket | None = None
         self._latest: dict[str, tuple[float, np.ndarray]] = {}  # kind -> (ts, arr)
         self.depth_scale: float | None = None  # depth meta 에서 채워진다 (m/단위)
+        # 큐를 비우는 일을 전용 스레드가 맡는다 (2026-09-04). 예전에는 read_*
+        # 안에서만 비웠는데, RCVHWM=12 는 0.2초치라 호출자가 그보다 오래 딴
+        # 일을 하면(자동정렬이 10초 넘게 그랬다) ZMQ 가 **새로 오는 프레임을
+        # 버리고 있던 것을 남긴다**. 그래서 정렬 직후 첫 read 가 20초 묵은
+        # 프레임을 보고 세션이 죽었다. 소켓은 이 스레드만 만지고, read_* 는
+        # 락 아래에서 캐시만 본다 -- 프레임 신선도가 호출 시점과 무관해진다.
+        self._lock = threading.Lock()
+        self._drain_thread: threading.Thread | None = None
+        self._stop = threading.Event()
 
     def __repr__(self) -> str:
         return f"NodeCamera({self.role}:{self.serial or '?'})"
@@ -130,6 +140,13 @@ class NodeCamera:
         while time.time() < t_end:
             self._drain(poll_ms=200)
             if "color" in self._latest:
+                # 첫 프레임을 받은 뒤에야 스레드를 올린다 -- 워밍업 실패 경로가
+                # 스레드를 정리할 필요가 없어진다.
+                self._stop.clear()
+                self._drain_thread = threading.Thread(
+                    target=self._drain_loop, name=f"camdrain-{self.role}",
+                    daemon=True)
+                self._drain_thread.start()
                 return
         self.disconnect()
         raise ConnectionError(
@@ -138,13 +155,30 @@ class NodeCamera:
             "기다리거나 케이블을 확인하세요.")
 
     def disconnect(self) -> None:
+        # 소켓을 닫기 전에 드레인 스레드를 반드시 세운다 -- 닫힌 소켓을
+        # poll 하면 프로세스가 죽는다.
+        self._stop.set()
+        t, self._drain_thread = self._drain_thread, None
+        if t is not None and t.is_alive():
+            t.join(timeout=2.0)
         if self._sub is not None:
             self._sub.close(linger=0)
             self._sub = None
         if self._ctx is not None:
             self._ctx.term()
             self._ctx = None
-        self._latest.clear()
+        with self._lock:
+            self._latest.clear()
+
+    def _drain_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                if self._sub is None:
+                    return
+                if self._sub.poll(100):
+                    self._drain()
+            except Exception:  # noqa: BLE001 -- 종료 중 소켓이 닫힌 경우 등
+                return
 
     # ---------------------------------------------------------------- reads
     def _drain(self, poll_ms: int = 0) -> None:
@@ -164,22 +198,29 @@ class NodeCamera:
             kind = topic.decode().split("/", 1)[1]
             arr = np.frombuffer(payload, dtype=m["dtype"]) \
                 .reshape(m["shape"])
-            self._latest[kind] = (m["ts"], arr)
+            with self._lock:
+                self._latest[kind] = (m["ts"], arr)
             if kind == "depth" and "depth_scale" in m:
                 self.depth_scale = float(m["depth_scale"])
 
     def _read(self, kind: str, max_age_ms: int) -> np.ndarray:
         if self._sub is None:
             raise RuntimeError(f"{self} is not connected")
-        self._drain()
-        ent = self._latest.get(kind)
+        # 소켓은 드레인 스레드만 만진다 -- 여기서는 캐시만 본다.
+        with self._lock:
+            ent = self._latest.get(kind)
         age_ms = (time.time() - ent[0]) * 1e3 if ent else float("inf")
         if age_ms > max_age_ms:
-            # 큐가 말랐다 -- 짧게 기다려 fresh 프레임에 기회를 준다 (노드
-            # 재시작·일시 정지 직후 첫 read 가 바로 죽지 않게).
-            self._drain(poll_ms=min(300, max_age_ms))
-            ent = self._latest.get(kind)
-            age_ms = (time.time() - ent[0]) * 1e3 if ent else float("inf")
+            # 아직 안 왔다 -- 짧게 기다려 fresh 프레임에 기회를 준다 (노드
+            # 재시작 직후 첫 read 가 바로 죽지 않게).
+            deadline = time.time() + min(0.3, max_age_ms / 1e3)
+            while time.time() < deadline:
+                time.sleep(0.005)
+                with self._lock:
+                    ent = self._latest.get(kind)
+                age_ms = (time.time() - ent[0]) * 1e3 if ent else float("inf")
+                if age_ms <= max_age_ms:
+                    break
         if ent is None:
             raise TimeoutError(f"{self} 에 {kind} 프레임이 아직 없습니다 "
                                "(노드가 재시작 중일 수 있음)")
