@@ -9,7 +9,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gello.gui.dialogs import hf_account
 from gello.gui.constants import TODO_MARK
 from gello.gui.i18n import tr
 
@@ -20,9 +19,12 @@ def build_upload(win) -> QWidget:
     w = QWidget()
     col = QVBoxLayout(w)
     col.setContentsMargins(0, 0, 0, 0)
-    acct_text, acct_color = hf_account()
-    win.hf_label = QLabel(acct_text)
-    win.hf_label.setStyleSheet(f"color:{acct_color}; font-weight:bold;")
+    # 계정 조회는 여기서 하지 않는다 -- whoami() 가 네트워크를 치는데
+    # (실측 451ms, 회선이 나쁘면 더) 시작 화면은 Configure 라 이 라벨은
+    # 보이지도 않는다. Upload 패널에 들어올 때 _set_activity 가 채운다.
+    # 업로드 전에 누구로 올라가는지 보이는 성질은 그대로다.
+    win.hf_label = QLabel(tr("HF 계정 확인 중..."))
+    win.hf_label.setStyleSheet("color:#888; font-weight:bold;")
     win.hf_label.setWordWrap(True)
     col.addWidget(win.hf_label)
     # 이 PC는 공용이라 '누구로 올라가는가'가 매번 다를 수 있다. 확인과 전환을

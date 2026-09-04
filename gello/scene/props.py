@@ -33,9 +33,25 @@ class Prop:
     retired: bool = False  # 교체로 은퇴한 ID. 새 scene 에는 못 쓰지만 기존 metadata 해석용으로 남는다.
 
 
+#: (해석된 경로) -> (stat 지문, 파싱 결과). props.yaml 은 정적 설정인데
+#: 문법 린트가 문장마다 조회해서 창 하나 띄우는 데 193번 읽고 파싱했다
+#: (2026-09-05 프로파일: WorkspaceWindow.__init__ 2.6초 중 대부분). 파일이
+#: 바뀌면 지문이 달라져 무효가 되므로 정본은 여전히 파일이다.
+_PROPS_CACHE: dict[str, tuple[tuple, list["Prop"]]] = {}
+
+
 def load_props(path: Path = PROPS_PATH) -> list[Prop]:
     """인벤토리 전체(은퇴 포함). 파일이 깨졌으면 조용히 넘어가지 않고 던진다 --
     인벤토리가 틀린 채 수집하는 것이 곧 재수집이다."""
+    key = fp = None
+    try:
+        st = Path(path).stat()
+        key, fp = str(Path(path).resolve()), (st.st_size, st.st_mtime_ns)
+        hit = _PROPS_CACHE.get(key)
+        if hit is not None and hit[0] == fp:
+            return list(hit[1])       # Prop 은 frozen -- 목록만 새로 준다
+    except OSError:
+        pass
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     entries = data.get("props") or []
     props: list[Prop] = []
@@ -56,6 +72,8 @@ def load_props(path: Path = PROPS_PATH) -> list[Prop]:
         props.append(p)
     if not props:
         raise ValueError(f"{path}: props 목록이 비어 있다")
+    if key is not None:
+        _PROPS_CACHE[key] = (fp, list(props))
     return props
 
 

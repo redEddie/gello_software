@@ -248,7 +248,11 @@ class WorkspaceWindow(QMainWindow):
         self._set_activity("configure")
         self.collection.set_running(False)
         self.camera_ops.refresh_cameras()
-        self.dataset_ops.refresh_dataset_tree()
+        # 데이터셋 트리는 여기서 만들지 않는다. 시작 화면은 Configure 인데
+        # 트리는 Dataset 패널에만 보이고, 만드는 데 데이터셋의 scene 파일을
+        # 전부 열어야 한다 (16개 568ms 실측, 2026-09-05). _set_activity 가
+        # 패널에 들어올 때 만들고 on_connected 도 다시 만드므로, 시작 시점의
+        # 이 호출은 아무도 안 보는 것을 위해 창 뜨는 것을 늦추기만 했다.
         if log_path is not None:
             self.log(f"[로그] 이 세션 로그: {log_path}")
         self.log("[준비] 로봇 노드를 먼저 띄운 뒤 Connect 를 누르세요.")
