@@ -113,6 +113,18 @@ class CollectionOps:
 
     # ------------------------------------------------------------------ slot counter
     def refresh_slot_counter(self) -> None:
+        """현재 (scene, instruction) 누계 + 데이터셋 전체 진행률을 함께 갱신한다.
+
+        계획 진행률 트리는 Collect "진행" 상자에 있고 (2026-09-04: Statistics
+        에서 이동), 이 함수가 저장/삭제/slot 변경 시점에 이미 불리므로 거기에
+        얹는다 -- 호출부를 더 늘리지 않기 위함.
+        """
+        self._refresh_slot_counter()
+        sp = getattr(self.win, "scene_planning", None)
+        if sp is not None:
+            sp.refresh_plan_progress()
+
+    def _refresh_slot_counter(self) -> None:
         """현재 (scene, instruction) 의 수집 누계/계획 target 상시 표시 (#38).
 
         GUI 를 켠 순간 누계가 아니라 HDF5 실측이다 -- GUI 재시작·에피소드
@@ -199,22 +211,22 @@ class CollectionOps:
         resume = False  # legacy 이어찍기 제거 -- scene 은 scene_resume 이 담당
         agent, wrist = self.win.camera_ops.combo_serial(self.win.agent_combo), self.win.camera_ops.combo_serial(self.win.wrist_combo)
         if not agent or not wrist:
-            QMessageBox.warning(self.win, tr("칩로라 선택 필요"),
-                                tr("Agent / Wrist 칩로라를 모두 선택하세요."))
+            QMessageBox.warning(self.win, tr("카메라 선택 필요"),
+                                tr("Agent / Wrist 카메라를 모두 선택하세요."))
             return
         if agent == wrist:
-            QMessageBox.warning(self.win, tr("칩로라 중복"),
-                                tr("Agent와 Wrist에 같은 칩로라가 선택되었습니다."))
+            QMessageBox.warning(self.win, tr("카메라 중복"),
+                                tr("Agent와 Wrist에 같은 카메라가 선택되었습니다."))
             return
         # 노드가 죽었거나 다른 구성으로 떠 있으면 여기서 맞춘다. worker 는
-        # 장치를 직접 열지 않으므로(노드 구독) 이게 유일한 칩로라 준비 단계다.
+        # 장치를 직접 열지 않으므로(노드 구독) 이게 유일한 카메라 준비 단계다.
         if self.win.cameras.camera_node_user_stopped:
             # 수동 종료 상태에서 몰래 되살리면 외부 프로그램(VLA)이 쥔
-            # 칩로라를 노드가 빼앗으려 든다 -- 명시적 재시작을 요구한다.
-            QMessageBox.warning(self.win, tr("칩로라 노드 종료 상태"),
-                                tr("칩로라 노드가 수동으로 종료되어 있습니다 "
-                                   "(외부 프로그램용 칩로라 해제).\n"
-                                   "Camera 메뉴 > 칩로라 노드 재시작 후 다시 "
+            # 카메라를 노드가 빼앗으려 든다 -- 명시적 재시작을 요구한다.
+            QMessageBox.warning(self.win, tr("카메라 노드 종료 상태"),
+                                tr("카메라 노드가 수동으로 종료되어 있습니다 "
+                                   "(외부 프로그램용 카메라 해제).\n"
+                                   "Process 메뉴 > 카메라 노드 재시작 후 다시 "
                                    "연결하세요."))
             return
         self.win.camera_ops.ensure_camera_node()
@@ -226,9 +238,9 @@ class CollectionOps:
             return
 
         # 미리보기는 이제 세션 나이 살아 둔다 (2026-09-01). 예전에는 여기서
-        # 껐다 -- worker 가 칩로라 장치를 직접 열고 있었고, RealSense 파이프라인을
+        # 껐다 -- worker 가 카메라 장치를 직접 열고 있었고, RealSense 파이프라인을
         # 두 번 열 수 없어서였다. 2026-08-25 3-프로세스 분리 이후로는 장치를
-        # 칩로라 노드가 독점하고 미리보기도 worker 도 그냥 ZMQ 구독자다
+        # 카메라 노드가 독점하고 미리보기도 worker 도 그냥 ZMQ 구독자다
         # (PUB/SUB 는 팬아웃이라 경쟁이 없다). 끄면 오히려 게이트 중 화면이
         # 노드 속도(30 fps)에서 수집 루프 속도로 떨어지고, 게이지가 그 프레임
         # 뒤에 줄을 서서 같이 느려졌다.
@@ -239,7 +251,7 @@ class CollectionOps:
         if self.win.camera_ops.previews_busy():
             if self.win._connect_wait_since is None:
                 self.win._connect_wait_since = time.monotonic()
-                self.win.log("[칩로라] 미리보기 정리를 기다리는 중 -- 정리되면 자동으로 연결합니다.")
+                self.win.log("[카메라] 미리보기 정리를 기다리는 중 -- 정리되면 자동으로 연결합니다.")
             waited = time.monotonic() - self.win._connect_wait_since
             if waited < 12.0:
                 self.win.tb_actions["connect"].setEnabled(False)
@@ -249,8 +261,8 @@ class CollectionOps:
             self.win._connect_wait_since = None
             self.win.tb_actions["connect"].setEnabled(True)
             self.win.statusBar().clearMessage()
-            self.win._alert(tr("칩로라 해제 지연"),
-                        tr("미리보기가 칩로라를 12초 넘게 붙잡고 있습니다.\n\n"
+            self.win._alert(tr("카메라 해제 지연"),
+                        tr("미리보기가 카메라를 12초 넘게 붙잡고 있습니다.\n\n"
                            "Camera 메뉴 > 미리보기 중지 후 다시 시도하세요. 계속되면 "
                            "USB 케이블을 다시 꽂아야 합니다 -- 손목 D405는 USB 2 링크라 "
                            "접촉이 나쁘면 이렇게 됩니다."))

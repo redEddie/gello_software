@@ -4,10 +4,13 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QTreeWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -111,6 +114,28 @@ def build_collect(win) -> QWidget:
     win.slot_counter.setFont(QFont("", 16, QFont.Weight.Bold))
     win.slot_counter.setStyleSheet("color:#888;")
     pcol.addWidget(win.slot_counter)
+    # 데이터셋 전체 진행률 (계획 × scene 파일 실측) -- 수집 중에 보는 정보는
+    # 수집 화면에 있어야 한다 (2026-09-04: Statistics 에서 이동). 갱신은
+    # CollectionOps.refresh_slot_counter 에 얹혀 저장/삭제/slot 변경 때
+    # 자동으로 일어난다.
+    win.plan_progress_label = QLabel("")
+    win.plan_progress_label.setStyleSheet("color:#888;")
+    win.plan_progress_label.setWordWrap(True)
+    pcol.addWidget(win.plan_progress_label)
+    win.plan_progress_tree = QTreeWidget()
+    win.plan_progress_tree.setHeaderLabels(
+        [tr("scene / slot"), tr("수집"), tr("목표"), tr("문장")])
+    win.plan_progress_tree.setRootIsDecorated(True)
+    win.plan_progress_tree.header().setSectionResizeMode(
+        3, QHeaderView.ResizeMode.Stretch)
+    win.plan_progress_tree.setMinimumHeight(140)
+    pcol.addWidget(win.plan_progress_tree)
+    prow = QHBoxLayout()
+    prow.addStretch(1)
+    plan_refresh = QPushButton(tr("진행률 새로고침"))
+    plan_refresh.clicked.connect(win.scene_planning.refresh_plan_progress)
+    prow.addWidget(plan_refresh)
+    pcol.addLayout(prow)
     win.ep_progress = QProgressBar()
     win.ep_progress.setFormat("%v / %m frames")
     pcol.addWidget(win.ep_progress)

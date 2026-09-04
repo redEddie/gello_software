@@ -5,11 +5,8 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QGroupBox,
-    QHBoxLayout,
-    QHeaderView,
     QLabel,
     QPushButton,
-    QTreeWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -52,27 +49,9 @@ def build_stats(win) -> QWidget:
             store[key] = lab
     col.addWidget(box)
 
-    # 계획 진행률 -- scene×slot 전체가 한눈에. 카운트는 언제나 scene
-    # 파일에서 센다 (세션이 쥔 파일만 캐시로 대신).
-    plan_box = QGroupBox(tr("수집 계획 진행률"))
-    pcol = QVBoxLayout(plan_box)
-    win.plan_progress_tree = QTreeWidget()
-    win.plan_progress_tree.setHeaderLabels(
-        [tr("scene / slot"), tr("수집"), tr("목표"), tr("문장")])
-    win.plan_progress_tree.setRootIsDecorated(True)
-    win.plan_progress_tree.header().setSectionResizeMode(
-        3, QHeaderView.ResizeMode.Stretch)
-    win.plan_progress_tree.setMinimumHeight(160)
-    pcol.addWidget(win.plan_progress_tree)
-    prow = QHBoxLayout()
-    win.plan_progress_label = QLabel("")
-    win.plan_progress_label.setStyleSheet("color:#888;")
-    prow.addWidget(win.plan_progress_label, 1)
-    pb = QPushButton(tr("새로고침"))
-    pb.clicked.connect(win.scene_planning.refresh_plan_progress)
-    prow.addWidget(pb)
-    pcol.addLayout(prow)
-    col.addWidget(plan_box)
+    # 계획 진행률 트리는 Collect 패널 "진행" 상자로 옮겼다 (2026-09-04) --
+    # 수집 중에 보는 정보는 수집 화면에 있어야 하고, 같은 정보를 두 패널에
+    # 두지 않는다 (아래 파일 목록 주석과 같은 원칙).
 
     win.disk_box = QGroupBox(tr("디스크"))
     dform = QFormLayout(win.disk_box)
