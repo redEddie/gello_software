@@ -551,7 +551,7 @@ class WorkspaceWindow(QMainWindow):
         # 전에 조기 return이라 summary가 영영 오지 않는다 -- 그 상태에서는 GUI가
         # '연결됨'에 갇혀 재시도하려면 앱을 닫는 수밖에 없었다. finished는 Qt가
         # run()이 어떤 경로로 끝나든 반드시 쏜다.
-        w.finished.connect(self.collection.on_worker_finished)
+        w.finished.connect(lambda _w=w: self.collection.on_worker_finished(_w))
         # 저장은 CollectionWorker가 아니라 그 안의 EpisodeSaver 스레드가 알린다
         # (h5py 접근을 한 스레드로 직렬화하려고 분리해 둔 것). 워커 쪽 시그널만
         # 연결해 두면 episode_saved/episode_list_changed가 영원히 오지 않아,

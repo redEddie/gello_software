@@ -490,15 +490,21 @@ class CollectionOps:
         self.win.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
         self.win.dataset_ops.refresh_dataset_tree()
 
-    def on_worker_finished(self) -> None:
+    def on_worker_finished(self, worker=None) -> None:
         """워커 run()이 어떤 경로로든 끝나면 세션을 해제한다.
 
         정상 종료(요약 후), 연결 실패 조기 return, 예외 -- 전부 여기로 온다.
         summary보다 늦게 도착하므로(둘 다 큐잉, run() 안에서 summary가 먼저
         emit) 로그 순서도 자연스럽다.
         """
-        if self.win.worker is not self.sender():
+        if worker is not None and self.win.worker is not worker:
             # 이미 다른 세션이 시작된 뒤 도착한 옛 워커의 신호 -- 무시.
+            #
+            # 예전에는 self.sender() 로 보낸 쪽을 알아냈다. 그건 QObject 의
+            # 메서드라, 이 메서드가 창에서 평범한 Ops 클래스로 옮겨온 뒤로는
+            # AttributeError 로 죽었다 (2026-09-04, 세션 종료가 안 됨).
+            # 연결할 때 그 워커를 인자로 묶어 넘기는 쪽이 명시적이고, 클래스가
+            # QObject 인지에 기대지 않는다.
             return
         self.win.worker = None
         self.win.session.no_dataset_session = False

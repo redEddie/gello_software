@@ -111,6 +111,48 @@ print(f"2. features 의 on_* 슬롯 {checked}개 실제 connect OK")
 
 # QApplication 을 만들었으므로 정상 종료하면 Qt 객체가 잘못된 순서로 풀린다.
 # 다른 인수 테스트와 같은 방식으로 끝내되, 버퍼를 먼저 비운다.
+# ------------------------------------------------------------------ 3
+# QObject 에만 있는 메서드를 평범한 클래스가 self 로 부르면 안 된다.
+#
+# sender() 가 그 예다. 창(QMainWindow)의 메서드였을 때는 "이 시그널을 보낸
+# 객체" 를 돌려줬지만, 같은 코드가 평범한 Ops 클래스로 옮겨오면
+# AttributeError 로 죽는다 -- 그것도 그 시그널이 처음 울릴 때에야.
+# 실제로 세션 종료가 그렇게 막혔다 (2026-09-04).
+#
+# 이런 것은 연결할 때 필요한 값을 인자로 묶어 넘기는 쪽이 옳다. 클래스가
+# QObject 인지에 기대지 않고, 무엇에 의존하는지가 코드에 보인다.
+QT_ONLY = {
+    "sender", "signalsBlocked", "blockSignals", "thread", "moveToThread",
+    "deleteLater", "startTimer", "killTimer", "children", "parent",
+    "setParent", "installEventFilter", "objectName", "setObjectName",
+    "disconnect", "dumpObjectInfo",
+}
+QOBJ_BASES = {"QObject", "QWidget", "QDialog", "QMainWindow", "QThread",
+              "QLabel", "QAbstractItemView", "QComboBox", "QListWidget"}
+
+misuse = []
+for p in sorted((WT / "apps").rglob("*.py")):
+    tree = ast.parse(p.read_text(encoding="utf-8"))
+    for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+        bases = {getattr(b, "id", getattr(b, "attr", "")) for b in cls.bases}
+        if bases & QOBJ_BASES:
+            continue                       # 진짜 QObject -- 써도 된다
+        own = {m.name for m in cls.body if isinstance(m, ast.FunctionDef)}
+        for n in ast.walk(cls):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and isinstance(n.func.value, ast.Name)
+                    and n.func.value.id == "self"
+                    and n.func.attr in QT_ONLY
+                    and n.func.attr not in own):
+                misuse.append(
+                    f"{p.relative_to(WT)}:{n.lineno}  {cls.name}.self.{n.func.attr}()")
+assert not misuse, (
+    "QObject 가 아닌 클래스가 Qt 전용 메서드를 self 로 부른다 -- 그 자리가\n"
+    "실행되는 순간 AttributeError 다. 필요한 값은 연결할 때 인자로 넘기세요:\n  "
+    + "\n  ".join(misuse))
+print(f"3. QObject 전용 메서드 오용 없음 OK ({len(QT_ONLY)}종 검사)")
+
+
 print("\n시그널·슬롯 배선 통과")
 sys.stdout.flush()
 os._exit(0)
