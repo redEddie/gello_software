@@ -106,11 +106,16 @@ win.collection.refresh_slot_counter()
 t = win.slot_counter.text()
 assert t == f"S000 · {IID} · 2/10", t
 assert "#2ecc71" not in win.slot_counter.styleSheet()
-# 진행률 트리는 Collect "진행" 상자로 옮겼고, refresh_slot_counter 가 연쇄
-# 갱신한다 (2026-09-04: Statistics 에서 이동)
+# 진행률 트리는 Collect "진행" 상자에 있지만 refresh_slot_counter 가 연쇄
+# 갱신하지는 **않는다**: 그 표는 계획의 모든 scene 파일을 열기 때문에
+# (실측 16개 543ms) 저장·삭제마다 부르면 메인 스레드가 그만큼 멈춘다.
+# 갱신 시점은 Collect 페이지 진입과 새로고침 버튼이다.
+assert win.plan_progress_label.text() == "", \
+    f"카운터 갱신이 진행률 표까지 끌고 오면 안 된다: {win.plan_progress_label.text()}"
+win.scene_planning.refresh_plan_progress()          # 페이지 진입/버튼과 같은 경로
 assert "전체 2/10" in win.plan_progress_label.text(), win.plan_progress_label.text()
 assert win.plan_progress_tree.topLevelItemCount() == 1
-print(f"3 통과: 계획 target 과 맞춤 -- {t} (미달이라 초록 아님) + 진행률 연쇄 갱신")
+print(f"3 통과: 계획 target 과 맞춤 -- {t} (미달이라 초록 아님) + 진행률은 별도 갱신")
 
 # ---- 4. target 도달(2/2) 이면 초록, 초과(11/10)도 숫자 정확 ----
 _write_plan(2)

@@ -113,16 +113,15 @@ class CollectionOps:
 
     # ------------------------------------------------------------------ slot counter
     def refresh_slot_counter(self) -> None:
-        """현재 (scene, instruction) 누계 + 데이터셋 전체 진행률을 함께 갱신한다.
+        """현재 (scene, instruction) 의 누계만 갱신한다 -- scene 파일 하나.
 
-        계획 진행률 트리는 Collect "진행" 상자에 있고 (2026-09-04: Statistics
-        에서 이동), 이 함수가 저장/삭제/slot 변경 시점에 이미 불리므로 거기에
-        얹는다 -- 호출부를 더 늘리지 않기 위함.
+        진행률 표(계획 전체)는 여기서 부르지 않는다. 잠깐 그렇게 했다가
+        되돌렸다: 이 함수는 저장·삭제·연결마다 불리는데 표는 계획의 모든
+        scene 파일을 연다. 데이터셋 16개 파일 기준 저장 한 번에 543ms 씩
+        메인 스레드가 멈췄다 (2026-09-04 실측). 표는 Collect 페이지에 들어올
+        때(_set_activity)와 "진행률 새로고침" 버튼에서만 갱신한다.
         """
         self._refresh_slot_counter()
-        sp = getattr(self.win, "scene_planning", None)
-        if sp is not None:
-            sp.refresh_plan_progress()
 
     def _refresh_slot_counter(self) -> None:
         """현재 (scene, instruction) 의 수집 누계/계획 target 상시 표시 (#38).

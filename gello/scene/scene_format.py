@@ -615,14 +615,45 @@ def delete_scene_episodes(path: Path, names: list) -> None:
         renumber_scene_episodes(f, meta)
 
 
+#: (해석된 경로) -> (stat 지문, 결과). list_scene_episodes 전용.
+_EPISODES_CACHE: dict[str, tuple[tuple, list[dict]]] = {}
+
+
 def list_scene_episodes(path: Path) -> list[dict]:
     """파일을 열지 않고 있는(writer 없는) 호출자용 에피소드 요약. attrs 만
-    읽으므로 이미지 청크는 건드리지 않는다."""
+    읽으므로 이미지 청크는 건드리지 않는다.
+
+    (size, mtime_ns) 로 캐시한다. "두 개의 진실 금지"를 어기지 않는다 --
+    파일이 바뀌면 지문이 달라져 무효가 되므로 정본은 여전히 파일이고,
+    hub_upload_state 장부가 쓰는 것과 같은 판정이다. 파일 하나가 8~18GB 라
+    비싼 건 읽는 바이트가 아니라 여는 횟수다: 데이터셋 16개를 훑는 데
+    543ms 가 들고, 그것이 저장·연결마다 메인 스레드에서 일어났다
+    (2026-09-04 실측).
+    """
+    path = Path(path)
+    try:
+        st = path.stat()
+        key = str(path.resolve())
+        fp = (st.st_size, st.st_mtime_ns)
+        hit = _EPISODES_CACHE.get(key)
+        if hit is not None and hit[0] == fp:
+            return [dict(d) for d in hit[1]]   # 호출자가 고쳐도 캐시는 그대로
+    except OSError:
+        key = fp = None
     with h5py.File(path, "r") as f:
         items = [
             _episode_summary(k, f[k]) for k in f.keys() if EPISODE_GROUP_RE.match(k)
         ]
     items.sort(key=lambda d: d["episode_id"])
+    if key is not None:
+        # 읽는 사이에 또 바뀌었을 수 있다 -- 읽고 난 뒤의 stat 으로 기록해야
+        # 낡은 결과를 새 지문에 붙이지 않는다.
+        try:
+            st2 = path.stat()
+            _EPISODES_CACHE[key] = ((st2.st_size, st2.st_mtime_ns),
+                                    [dict(d) for d in items])
+        except OSError:
+            pass
     return items
 
 
