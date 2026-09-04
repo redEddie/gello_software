@@ -236,3 +236,12 @@ class SystemOps:
             self.win.procs.node_process.kill()
             self.win.procs.node_process.waitForFinished(2000)
         self.win.log("[노드] 종료했습니다.")
+
+    def on_restart_node(self) -> None:
+        """[NODE DOWN] 로그가 지시하는 그 동작. 종료 뒤 다시 띄운다.
+
+        on_stop_node 는 프로세스가 끝날 때까지 기다리므로 그 다음 줄에서
+        바로 시작해도 FCI 를 쥔 채 겹치지 않는다."""
+        self.win.log("[노드] 재시작합니다...")
+        self.on_stop_node()
+        self.on_start_node()

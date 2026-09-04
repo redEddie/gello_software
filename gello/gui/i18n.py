@@ -64,6 +64,8 @@ _EN: dict[str, str] = {
     "찾아보기...": "Browse...",
     "카메라 목록 새로고침": "Refresh camera list",
     "로봇 노드 시작": "Start robot node",
+    "로봇 노드 재시작": "Restart robot node",
+    "로봇 노드 종료": "Stop robot node",
     "노드 재시작": "Restart node",
     "노드 중지": "Stop node",
     "로봇 연결": "Connect robot",
@@ -301,6 +303,42 @@ _EN: dict[str, str] = {
     "Process > 리더암 토크 과부하 잠금 해제 를 실행하세요.":
         "\n\nA servo locked itself on torque overload. End the session, then run "
         "Process > Leader arm: clear torque overload lock.",
+
+    # ---- launcher wizard (apps/workspace/launcher/) ----
+    "FR3 GELLO 데이터 수집": "FR3 GELLO Data Collection",
+    "데이터 수집 시작": "Start data collection",
+    "이어서 하기": "Continue",
+    "새 데이터세트": "New dataset",
+    "기존 데이터셋을 골라 바로 수집을 시작합니다": "Pick an existing dataset and start collecting right away",
+    "이름·컨셉·저장 위치를 정해 새 데이터셋을 만듭니다": "Set a name, concept, and location to create a new dataset",
+    "수집을 이어갈 데이터셋을 선택하세요.": "Select the dataset to continue collecting.",
+    "계획 {d}/{t} ({p}%)": "plan {d}/{t} ({p}%)",
+    "계획 없음": "no plan",
+    "  (메타 없음)": "  (no metadata)",
+    "{n}개 데이터셋 발견": "{n} datasets found",
+    "데이터셋 이름·컨셉·저장 위치를 정합니다. 폴더와 dataset-identity.json 이 만들어집니다.":
+        "Set the dataset name, concept, and location. A folder and dataset-identity.json will be created.",
+    "이름": "Name",
+    "저장 위치": "Location",
+    "생성될 경로": "Will create",
+    "설정 가져오기": "Copy settings from",
+    "이 데이터셋이 어떤 태스크·장면을 모으는지 (업로드 시 설명으로 쓰입니다)":
+        "What tasks/scenes this dataset collects (used as the description on upload)",
+    "컨셉": "Concept",
+    "이름을 입력하세요.": "Enter a name.",
+    "이미 존재하는 폴더이고 비어 있지 않습니다.": "The folder already exists and is not empty.",
+    "저장 위치(부모 폴더)가 존재하지 않습니다.": "The location (parent folder) does not exist.",
+    "저장 위치 선택": "Choose location",
+    "(비어 있게 시작)": "(start blank)",
+    "하드웨어": "Hardware",
+    "수집 스테이션과 카메라를 선택하세요.": "Select the station and cameras.",
+    "스테이션": "Station",
+    "Agent 카메라": "Agent camera",
+    "Wrist 카메라": "Wrist camera",
+    "카메라 감지": "Detect cameras",
+    "감지 실패: {e}": "Detection failed: {e}",
+    "데이터셋 준비 실패": "Failed to prepare dataset",
+    "선택된 데이터셋이 없습니다.": "No dataset selected.",
 
     # ---- language toggle button itself ----
     "한국어 / English": "한국어 / English",

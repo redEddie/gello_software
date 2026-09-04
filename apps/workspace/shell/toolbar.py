@@ -77,6 +77,9 @@ def build_menu(win) -> None:
 
     m = mb.addMenu(tr("Process"))
     m.addAction(tr("로봇 노드 시작"), win.system.on_start_node)
+    # [NODE DOWN] 로그가 "'노드 재시작' 버튼을 누르세요"라고 지시하는데
+    # 정작 그 버튼이 없었다 (2026-09-04).
+    m.addAction(tr("로봇 노드 재시작"), win.system.on_restart_node)
     m.addAction(tr("로봇 노드 종료"), win.system.on_stop_node)
     m.addSeparator()
     m.addAction(tr("카메라 노드 재시작"),

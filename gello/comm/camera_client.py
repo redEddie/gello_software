@@ -25,7 +25,7 @@ from gello.comm.camera_node import DEFAULT_CTL_PORT, DEFAULT_PUB_PORT
 _CONNECT_HELP = (
     "카메라 노드가 응답하지 않습니다 (tcp://{host}:{pub}). GUI 가 자동으로 "
     "띄우는 프로세스인데 죽었을 수 있습니다 -- 로그의 [카메라노드] 줄을 "
-    "확인하고, Camera 메뉴 > 카메라 노드 재시작을 누르세요."
+    "확인하고, Process 메뉴 > 카메라 노드 재시작을 누르세요."
 )
 
 

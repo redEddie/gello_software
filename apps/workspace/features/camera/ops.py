@@ -356,7 +356,7 @@ class CameraOps:
         self.win.lights["camera"].set("off", tr("노드 종료"))
         self.win.log("[카메라노드] 수동 종료 — 카메라가 해제되어 다른 프로그램"
                      "(VLA 정책 클라이언트 등)이 열 수 있습니다. 다시 쓰려면 "
-                     "Camera 메뉴 > 카메라 노드 재시작.")
+                     "Process 메뉴 > 카메라 노드 재시작.")
 
     def ensure_camera_node(self, restart: bool = False) -> None:
         """카메라 노드 프로세스를 현재 콤보 선택과 일치하게 유지한다.
@@ -420,7 +420,7 @@ class CameraOps:
         if len(self.win.cameras.camera_node_crashes) > 3:
             self.win.log(f"[카메라노드] 비정상 종료 (exit={code}) — 60초 내 "
                          f"{len(self.win.cameras.camera_node_crashes)}회째, 자동 재시작을 "
-                         "멈춥니다. Camera 메뉴 > 카메라 노드 재시작으로 수동 "
+                         "멈춥니다. Process 메뉴 > 카메라 노드 재시작으로 수동 "
                          "시작하세요.")
             return
         self.win.log(f"[카메라노드] 비정상 종료 (exit={code}) — 2초 후 자동 재시작")
