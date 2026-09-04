@@ -1,0 +1,10 @@
+# 아이콘 참조용. Exec 경로는 체크아웃 위치에 맞출 것.
+# 파이썬을 직접 부르지 않는다 -- .sh 가 실행 전에 git pull 을 건다.
+[Desktop Entry]
+Type=Application
+Name=FR3 GELLO 수집
+Comment=런처 마법사(이어서 하기/새 데이터세트) 후 수집 워크스페이스 — 실행할 때마다 최신 코드를 자동 pull
+Exec=/home/franka/teleop-franka/gello_software-dev/run_scene_collector.sh
+Icon=applications-science
+Terminal=false
+Categories=Development;Science;

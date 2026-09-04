@@ -3,7 +3,12 @@
 Run inside lerobot-venv::
 
     (pylibfranka-venv) python scripts/launch/launch_nodes.py --robot fr3   # terminal 1
-    (lerobot-venv)     python apps/collect_workspace.py          # terminal 2
+    (lerobot-venv)     python apps/collect_launcher.py                     # terminal 2
+
+데스크톱 아이콘은 collect_launcher.py 를 실행한다 -- 런처 마법사(이어서
+하기/새 데이터세트 + 하드웨어 선택)가 먼저 뜨고, 그 결과가 recents/env 에
+반영된 뒤 이 워크스페이스가 열린다. 이 파일을 직접 실행하면 마법사 없이
+바로 열린다 (직전 recents 값 사용).
 
 Replaces the 3-phase wizard (준비 -> 수집 -> 정리). The wizard assumed the
 phases are visited in order and left once, but in practice an operator moves
@@ -68,6 +73,7 @@ from gello.data.dataset_schema import (  # noqa: E402
     load_schema_config,
     save_schema_config,
 )
+from gello.scene.dataset_meta import load_identity  # noqa: E402
 from gello.gui.dialogs import DatasetSchemaDialog, hf_account  # noqa: E402
 from gello.gui.constants import PLAYBACK_FPS  # noqa: E402
 from gello.gui.widgets import Recents  # noqa: E402
@@ -286,6 +292,16 @@ class WorkspaceWindow(QMainWindow):
         becomes the default forever. Falling back to the newest *valid* entry
         means a bad run does not poison the next one.
         """
+        # 데이터셋 귀속 기본값이 우선이다: dataset-identity.json 의 hf_repo 가
+        # 이 데이터셋의 정본 저장소 (recents 는 마지막 수동 입력일 뿐).
+        try:
+            ident = load_identity(Path(self.root_edit.text().strip()))
+        except Exception:  # noqa: BLE001
+            ident = None
+        if ident is not None and ident.hf_repo:
+            repo = ident.hf_repo if key == "hdf5_repo_id" else f"{ident.hf_repo}-lerobot"
+            if repo_id_error(repo) is None:
+                return repo
         for v in self._recents.get(key):
             if repo_id_error(v) is None and v not in LEGACY_REPOS:
                 return v
@@ -411,9 +427,11 @@ class WorkspaceWindow(QMainWindow):
             act.setChecked(True)
         if key == "stats":
             self.stats_ops.refresh_stats()
-            self.scene_planning.refresh_plan_progress()
             if not self.session.stats:
                 self.stats_ops.refresh_analysis()
+        elif key == "collect":
+            # 진행률 트리는 Collect "진행" 상자에 있다 (Statistics 에서 이동)
+            self.scene_planning.refresh_plan_progress()
         elif key == "dataset":
             self.dataset_ops.refresh_dataset_tree()
         elif key == "upload":
@@ -764,13 +782,14 @@ def _install_excepthook(log_path: Path, window_ref: dict) -> None:
     sys.excepthook = hook
 
 
-def main() -> None:
+def main(app: "QApplication | None" = None) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"workspace_{time.strftime('%Y%m%d_%H%M%S')}.log"
     window_ref: dict = {}
     _install_excepthook(log_path, window_ref)
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
+    if app is None:
+        app = QApplication(sys.argv)
+        app.setStyle("Fusion")
     win = WorkspaceWindow(log_path)
     window_ref["win"] = win
     win.show()
