@@ -199,4 +199,28 @@ for p, t in trees.items():
 assert not stale, f"쓰지 않는 임포트가 남아 있다(옮기고 안 지운 자국?): {stale}"
 print(f"6. apps/ 고아 임포트 없음 OK (허용 목록 {len(ALLOWED_UNUSED)}개 제외)")
 
+# ---- 7. self 도 @staticmethod 도 없는 메서드 ----
+# 2026-09-04: ScenePlanningOps.next_iid 가 리팩토링 중 @staticmethod 를
+# 잃었다. 정의는 (known) 한 개를 받는데 호출은 self.next_iid(known) 이라
+# 인자가 둘이 되어 TypeError -- 임포트도 되고 창도 뜬다. Configure 에서
+# 시작 문장을 고칠 때만 터져서 커밋되고 한참 뒤에야 드러났다.
+unbound = {}
+for p, t in trees.items():
+    for cls in (n for n in ast.walk(t) if isinstance(n, ast.ClassDef)):
+        for fn in cls.body:
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            deco = {d.id for d in fn.decorator_list if isinstance(d, ast.Name)}
+            if deco & {"staticmethod", "classmethod", "property"}:
+                continue
+            args = fn.args.posonlyargs + fn.args.args
+            if not args or args[0].arg in ("self", "cls"):
+                continue
+            unbound[f"{_rel(p)}:{fn.lineno}"] = f"{cls.name}.{fn.name}({args[0].arg}, ...)"
+assert not unbound, (
+    "첫 인자가 self/cls 가 아닌데 @staticmethod 도 없는 메서드 -- 호출하면 "
+    "TypeError 다:\n  "
+    + "\n  ".join(f"{k}: {v}" for k, v in sorted(unbound.items())))
+print("7. self/@staticmethod 짝 맞음 OK")
+
 print("\napps/ 구조 계약 통과")

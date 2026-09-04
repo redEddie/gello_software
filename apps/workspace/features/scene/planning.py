@@ -413,6 +413,7 @@ class ScenePlanningOps:
                 pass
         return m
 
+    @staticmethod
     def next_iid(known: dict) -> str:
         used = [int(i[1:]) for i in known if INSTRUCTION_ID_RE.match(i)]
         return f"I{(max(used) + 1) if used else 0:03d}"
