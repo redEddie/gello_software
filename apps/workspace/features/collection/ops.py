@@ -430,8 +430,8 @@ class CollectionOps:
         # GUI 재시작이 아니라 서보 Reboot 으로만 복구된다 -- 그 툴이 있는
         # 위치를 오류 대화상자에서 바로 알려준다 (#37B).
         if "hardware error" in msg:
-            msg += tr("\n\n서보 보호모드가 걸렸습니다. 세션 종료 후 "
-                      "Tools > 리더암 서보 보호 해제 (재부팅) 으로 복구하세요.")
+            msg += tr("\n\n서보가 토크 과부하로 잠겼습니다. 세션을 종료한 뒤 "
+                      "Process > 리더암 토크 과부하 잠금 해제 를 실행하세요.")
         self.win._alert(tr("오류"), msg, QMessageBox.Icon.Critical)
 
     def on_connected(self, n_episodes, path) -> None:

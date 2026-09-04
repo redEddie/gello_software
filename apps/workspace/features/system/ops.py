@@ -111,7 +111,7 @@ class SystemOps:
         proc.start()
 
     def on_reset_leader_protection(self) -> None:
-        """scripts/check/gello_reset_protection.py 실행 -- 과토크 보호모드 해제 (#37B).
+        """scripts/check/gello_reset_protection.py 실행 -- 토크 과부하 잠금 해제 (#37B).
 
         서보의 overload(0x20) 래치는 Reboot 으로만 풀린다. 스크립트가 리더암
         시리얼 포트를 직접 여므로, 세션(worker)이 포트를 잡고 있는 동안은
@@ -121,7 +121,7 @@ class SystemOps:
         """
         p = self.win.procs.reset_protection_process
         if p is not None and p.state() != QProcess.ProcessState.NotRunning:
-            self.win.log("[리더암] 보호 해제가 이미 실행 중입니다.")
+            self.win.log("[리더암] 과부하 잠금 해제가 이미 실행 중입니다.")
             return
         if self.win.worker is not None:
             self.win.log("[리더암] 세션이 리더암 포트를 잡고 있어 실행할 수 없습니다 -- "
@@ -135,13 +135,13 @@ class SystemOps:
             lambda: [self.win.log(f"[리더암] {ln}")
                      for ln in self.win._proc_text(proc).splitlines() if ln.strip()])
         proc.finished.connect(lambda c, _s: self.win.log(
-            {0: "[리더암] 보호 해제 완료 -- 새 세션을 시작할 수 있습니다.",
+            {0: "[리더암] 과부하 잠금 해제 완료 -- 새 세션을 시작할 수 있습니다.",
              1: "[리더암] 일부 서보가 복구되지 않았습니다 -- 5V 전원을 껐다 켜고 "
                 "관절이 물리적으로 걸려 있지 않은지 확인하세요.",
              2: "[리더암] 리더암 포트를 열지 못했습니다 -- 연결/전원을 확인하세요."}
-            .get(c, f"[리더암] 보호 해제 종료 (exit={c})")))
+            .get(c, f"[리더암] 과부하 잠금 해제 종료 (exit={c})")))
         self.win.procs.reset_protection_process = proc
-        self.win.log("=== 리더암 서보 보호 해제 ===")
+        self.win.log("=== 리더암 토크 과부하 잠금 해제 ===")
         proc.start()
 
     def run_runme(self) -> None:

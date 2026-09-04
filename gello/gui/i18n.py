@@ -290,11 +290,11 @@ _EN: dict[str, str] = {
     "Joint-angle absolute (절대 목표값)": "Joint-angle absolute (target value)",
 
     # ---- menu items ----
-    "리더암 서보 보호 해제 (재부팅)": "Leader arm: clear servo protection (reboot)",
-    "\n\n서보 보호모드가 걸렸습니다. 세션 종료 후 "
-    "Tools > 리더암 서보 보호 해제 (재부팅) 으로 복구하세요.":
-        "\n\nA servo tripped its torque protection. End the session, then run "
-        "Tools > Leader arm: clear servo protection (reboot) to recover.",
+    "리더암 토크 과부하 잠금 해제": "Leader arm: clear torque overload lock",
+    "\n\n서보가 토크 과부하로 잠겼습니다. 세션을 종료한 뒤 "
+    "Process > 리더암 토크 과부하 잠금 해제 를 실행하세요.":
+        "\n\nA servo locked itself on torque overload. End the session, then run "
+        "Process > Leader arm: clear torque overload lock.",
 
     # ---- language toggle button itself ----
     "한국어 / English": "한국어 / English",

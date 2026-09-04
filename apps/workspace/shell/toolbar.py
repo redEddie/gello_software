@@ -85,7 +85,7 @@ def build_menu(win) -> None:
                 win.camera_ops.on_stop_camera_node_manual)
     m.addSeparator()
     m.addAction(tr("시스템 튜닝 실행 (runme.sh)"), win.system.run_runme)
-    m.addAction(tr("리더암 서보 보호 해제 (재부팅)"),
+    m.addAction(tr("리더암 토크 과부하 잠금 해제"),
                 win.system.on_reset_leader_protection)
     m.addAction(tr("카메라 점검 (USB 속도·프레임)"), win.system.on_check_cameras)
 
