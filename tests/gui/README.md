@@ -18,3 +18,5 @@ bash tests/gui/run_all.sh ~/lerobot-venv/bin/python
 | test_plan_edit_replay | JSON 원문 편집기, replay 로더 양포맷 |
 | test_scene_edit | scene 삭제 후 renumber(그룹·episode_id·slot E·uid), 트림 양포맷, GUI 혼합 삭제+확인창, 검사기 불변식 |
 | test_stats_group | Analysis 그룹 = (scene, 문장): 같은 문장도 scene 별 분리, legacy 는 문장 단위 |
+| test_dataset_meta | dataset-identity.json 왕복, discover_datasets(부모 스캔·dedupe·legacy), plan_progress 실측 |
+| test_launcher | 런처 마법사: 모드 버튼 2개(Cancel/Next 없음), 분기, 새 데이터셋 생성+설정 복사, legacy identity 자동 생성, apply_result env/recents |

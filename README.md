@@ -6,6 +6,7 @@
   <img src="imgs/libero_collector_gui.jpg" width="90%" />
 </p>
 
+- **`apps/collect_launcher.py`** -- 수집 런처 마법사 (표준 진입점, 데스크톱 아이콘이 실행). 설치 마법사처럼 "이어서 하기 / 새 데이터세트" 버튼 2개로 시작해 데이터셋 선택(또는 생성: 이름·컨셉·위치 + 기존 데이터셋 설정 복사)과 하드웨어(스테이션·카메라) 선택을 거쳐 워크스페이스를 연다. 데이터셋마다 `dataset-identity.json`(이름·컨셉·HF repo)과 `instructions.json`(수집 계획, 고정 파일명)이 폴더 안에 딸려 다닌다.
 - **`apps/collect_workspace.py`** -- PyQt6 메인 GUI (워크스페이스형). VS Code 식 레이아웃: 왼쪽 액티비티 바(Configure/Collect/Dataset/Upload/Statistics/Settings)가 왼쪽 패널만 바꾸고, **카메라 미리보기는 항상 중앙에 유지된다** -- 3단계 마법사(준비/수집/정리)를 대체한 것으로, 단계 전환마다 화면 전체가(카메라까지) 바뀌던 문제를 없앴다. 중앙은 Live/Playback 탭, 오른쪽은 로봇·카메라·기록 상태, 아래는 Log/Upload/Validation 탭, 맨 아래 상태바. 로봇 노드 시작/종료, 자세 매칭 게이트(조인트별 델타 바), 에피소드 제어, 데이터셋 탐색기와 20fps 재생, 재압축·HDF5 업로드·LeRobot 변환/업로드까지 한 창에서 처리한다. 모든 패널은 스플리터로 자유롭게 조절된다.
 - **`scripts/check/check_cameras.py`** -- 카메라 USB 링크 속도와 실제 프레임 수신을 세션 전에 확인하는 독립 스크립트 (`scripts/check/check_cameras.py`, `--stream` 붙이면 실제 프레임까지). sysfs에서 협상된 링크 속도를 읽으므로 GUI가 켜져 있어도 정확하고, librealsense 쪽에서는 수집기가 쓰는 시리얼을 가져와 둘을 대조한다 -- USB에는 붙어 있는데 SDK가 못 보면 접촉 불량이다. `devnum`이 높으면 재연결이 잦았다는 뜻이라 함께 경고한다. 종료 코드 0=정상, 1=문제, 2=일부 확인 못 함.
 - **`gello/gui/gui_widgets.py`** -- 두 GUI가 공유하던 위젯·대화상자를 분리한 모듈 (VideoView, DeltaBar, EpisodeLoadWorker, CameraPreviewWorker, 스키마/변환/업로드/재압축 대화상자).
@@ -17,7 +18,7 @@
 - **`gello/gui/i18n.py`** -- GUI 오른쪽 위 English/한국어 토글이 쓰는 문자열 테이블. 실시간 로그·서브프로세스(runme.sh, 변환/업로드 스크립트) 출력은 번역 대상이 아니라 한국어 그대로 유지.
 - **버그 수정 (기존 파일)**: `GelloAgent.close()`가 leader의 Dynamixel 시리얼 포트를 한 번도 닫지 않아, 같은 프로세스에서 재연결 시 포트가 자기 자신에 의해 점유된 것으로 잡혀 `fuser -k`가 자기 자신을 죽이는 버그를 고침 (`gello/agents/gello_agent.py`, `gello/robots/dynamixel.py`, `gello/hw/dynamixel/driver.py`). 홈 복귀 중 그리퍼가 직전 상태를 그대로 유지하던(안 열리던) 버그도 고침 (`gello/gui/libero_gui_worker.py`의 `_ramp_to`).
 
-실행: `run_libero_collector.sh` 또는 바탕화면 바로가기로 GUI만 켜면, 그 안에서 로봇 노드까지 관리 가능.
+실행: 데스크톱 바로가기(`apps/collect_launcher.py` — 런처 마법사가 먼저 뜬다)로 GUI만 켜면, 그 안에서 로봇 노드까지 관리 가능. 마법사 없이 워크스페이스를 바로 열려면 `apps/collect_workspace.py` 직접 실행.
 
 ### 문서
 
