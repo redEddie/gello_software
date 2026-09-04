@@ -10,16 +10,17 @@ sys.path.insert(0, WT)
 sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
-from PyQt6.QtWidgets import QApplication, QInputDialog  # noqa: E402
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
 import collect_workspace as cw  # noqa: E402
 from apps.workspace.features.scene.dialogs.plan_edit_dialog import PlanEditDialog  # noqa: E402
-from gello.scene.collection_plan import PLANS_DIR  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="planform_"))
+# 실제 계획은 데이터셋 폴더로 옮겼고 리포에는 포맷 문서용 example.json 만
+# 남는다 (2026-09-04). 폼 테스트는 그 사본으로 돌린다.
 plan_copy = TMP / "pilot.json"
-shutil.copy(f"{WT}/configs/collection/plans/pilot.json", plan_copy)
+shutil.copy(f"{WT}/configs/collection/plans/example.json", plan_copy)
 orig = json.loads(plan_copy.read_text())
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 cw.QMessageBox.information = staticmethod(lambda *a, **k: None)
@@ -97,9 +98,11 @@ print(f"4 통과: scene 추가({next_sid}, I000부터) + 검증 게이트 + 동�
 cw.CameraOps.refresh_cameras = lambda self: None
 cw.CameraOps.restart_previews = lambda self: None
 win = cw.WorkspaceWindow(None)
-i = win.plan_combo.findText("pilot.json")
-assert i >= 0
-win.plan_combo.setCurrentIndex(i)
+# 계획은 데이터셋 폴더 안 instructions.json 에 귀속 -- 저장 경로를 그쪽으로
+DS = Path(tempfile.mkdtemp(prefix="planform_ds_"))
+shutil.copy(plan_copy, DS / "instructions.json")
+win.root_edit.setText(str(DS))
+win.scene_ops.refresh_scene_combo()
 # scene 파일이 수집 세션에 잠겨 있어도 돌 수 있게 scene 선택을 주입한다
 win.scene_ops.configure_scene_id = lambda: "S000"
 win.scene_ops.selected_scene_path = lambda: None
@@ -127,26 +130,25 @@ _, _, _, err2 = win.scene_ops.scene_config_from_ui()
 assert err2 is None or "계획" not in err2, err2   # 남는 오류는 scene 선택뿐
 print("6 통과: 계획 선택 시 자유 입력 잠금 + 계획 밖 시작 문장 거부")
 
-# ---- 7. 계획 파일 새로 만들기 / 삭제 ----
-QInputDialog.getText = staticmethod(lambda *a, **k: ("tmp-uitest", True))
+# ---- 7. 계획 파일 새로 만들기 / 삭제 (데이터셋 폴더 안 instructions.json) ----
 cw.QMessageBox.question = staticmethod(
     lambda *a, **k: cw.QMessageBox.StandardButton.Yes)
 win.scene_planning.on_edit_plan = lambda: None        # 모달 편집 열림 방지
-new_path = PLANS_DIR / "tmp-uitest.json"
-new_path.unlink(missing_ok=True)
+DS2 = Path(tempfile.mkdtemp(prefix="planform_ds2_"))
+win.root_edit.setText(str(DS2))
+win.scene_ops.refresh_scene_combo()
+new_path = DS2 / "instructions.json"
 try:
     win.scene_planning.on_new_plan()
     assert new_path.exists()
-    assert win.plan_combo.currentText() == "tmp-uitest.json"
     assert json.loads(new_path.read_text())["scenes"] == []
+    assert "instructions.json" in win.plan_label.text()
     win.scene_planning.on_delete_plan()
     assert not new_path.exists()
-    assert win.plan_combo.findText("tmp-uitest.json") < 0
+    assert "없음" in win.plan_label.text()
 finally:
     new_path.unlink(missing_ok=True)
-    # 실사용 recents 오염 복구 -- 생성 시 tmp-uitest 가 최근 계획으로 남는다
-    win._recents.add("plan_file", "pilot.json")
-print("7 통과: 계획 파일 생성(+선택) / 삭제(+목록 갱신)")
+print("7 통과: 계획 파일 생성(데이터셋 폴더) / 삭제(+표시 갱신)")
 
 # ---- 8. 번호 정리: 빈 scene 만 압축, 수집된 scene 은 거부 ----
 warns = []

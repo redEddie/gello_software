@@ -1,8 +1,12 @@
 # 수집 계획 (slot plan)
 
 Scene × Instruction 조합(slot)과 목표 에피소드 수를 GUI 에 주입하는 파일.
-계획은 Notion(§6 matrix)에서 관리하고, 확정(freeze)된 것을 여기로 export 해서
-커밋한다 — git 이력이 곧 "언제 계획이 바뀌었나"의 기록이다.
+
+**위치 (2026-09-04 변경)**: 실제 수집 계획은 각 **데이터셋 폴더 안의
+`instructions.json`**(고정 파일명)이다 — 계획은 데이터셋에 귀속되고,
+GUI 의 계획 선택 드롭다운은 폐지됐다. 이 디렉터리에는 포맷 문서용
+`example.json` 만 남는다. 데이터셋 폴더에는 그 외에 `dataset-identity.json`
+(이름·컨셉·HF repo — `gello/scene/dataset_meta.py`)이 있다.
 
 ## 스키마
 
@@ -45,4 +49,4 @@ Scene × Instruction 조합(slot)과 목표 에피소드 수를 GUI 에 주입�
 `example.json` 이 Notion §6 의 matrix 예시를 그대로 옮긴 것이다.
 단 example.json 은 현 단계 §4 동사 집합 밖의 문장(위치 지칭 I004, `put`
 I005)을 포함한 **향후 확장 예시**라 통일 문법 lint 대상이 아니다 — lint
-기준은 실사용 계획(pilot*.json)이다 (2026-08-24 결정).
+기준은 실사용 계획(활성 데이터셋의 `instructions.json`)이다 (2026-08-24 결정).

@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QInputDialog, QMessageBox, QTreeWidgetItem
+from PyQt6.QtWidgets import QDialog, QMessageBox, QTreeWidgetItem
 
 from apps.workspace.features.scene.dialogs.plan_edit_dialog import PlanEditDialog
 from gello.config.quality import QUALITY_SUCCESS
+from gello.scene.dataset_meta import PLAN_FILENAME, plan_path
 from gello.gui.i18n import tr
 from gello.scene.collection_plan import (
-    PLANS_DIR,
     check_scene_against_plan,
-    list_plans,
     load_plan,
 )
 from gello.scene.scene_format import (
@@ -40,7 +38,7 @@ class ScenePlanningOps:
         plan = self.current_plan()
         if plan is None:
             self.win.plan_progress_label.setText(
-                tr("Configure 에서 수집 계획을 선택하세요."))
+                tr("이 데이터셋에는 계획이 없습니다 (instructions.json 없음)."))
             return
         root = Path(self.win.root_edit.text().strip() or ".")
         done = total = 0
@@ -149,97 +147,104 @@ class ScenePlanningOps:
                               scene_id=self.win.scene_ops.session_scene_id(),
                               episodes=self.win.session.active_episode_cache)
 
+    def dataset_plan_path(self) -> Path:
+        """현재 데이터셋(저장 경로)의 계획 파일 — 고정 파일명 컨벤션
+        (instructions.json). 폴더에 있으면 계획 수집, 없으면 자유 입력."""
+        return plan_path(Path(self.win.root_edit.text().strip() or "."))
+
     def current_plan(self):
-        """선택된 계획 파일. 작아서 캐시 없이 매번 읽는다 -- 파일을 고치고
-        새로고침할 때 낡은 캐시가 남는 쪽이 더 나쁘다."""
-        data = getattr(self.win, "plan_combo", None) and self.win.plan_combo.currentData()
-        if not data:
+        """데이터셋 폴더의 instructions.json. 작아서 캐시 없이 매번 읽는다 --
+        파일을 고치고 새로고침할 때 낡은 캐시가 남는 쪽이 더 나쁘다."""
+        path = self.dataset_plan_path()
+        if not path.is_file():
             return None
         try:
-            return load_plan(Path(data))
+            return load_plan(path)
         except Exception as e:  # noqa: BLE001
-            self.win.log(f"[계획] {Path(data).name} 로드 실패: {type(e).__name__}: {e}")
+            self.win.log(f"[계획] {path.name} 로드 실패: {type(e).__name__}: {e}")
             return None
 
-    def refresh_plan_combo(self, select: "str | None" = None) -> None:
-        """계획 파일 목록을 다시 읽는다. select 로 파일명을 주면 그걸 고른다."""
-        keep = select or self.win.plan_combo.currentText()
-        self.win.plan_combo.blockSignals(True)
-        self.win.plan_combo.clear()
-        self.win.plan_combo.addItem(tr("(계획 없음 — 자유 입력)"), None)
-        for p in list_plans():
-            self.win.plan_combo.addItem(p.name, str(p))
-        idx = self.win.plan_combo.findText(keep)
-        self.win.plan_combo.setCurrentIndex(max(0, idx))
-        self.win.plan_combo.blockSignals(False)
-        self.on_plan_selected()
+    def refresh_plan_label(self) -> None:
+        """Configure 의 읽기 전용 계획 표시. 계획은 데이터셋에 귀속되므로
+        선택 드롭다운은 없다."""
+        label = getattr(self.win, "plan_label", None)
+        if label is None:
+            return
+        path = self.dataset_plan_path()
+        plan = self.current_plan()
+        if plan is not None:
+            n = sum(len(sp.slots) for sp in plan.scenes)
+            label.setText(tr("{f} — scene {s}개 · slot {n}개").format(
+                f=PLAN_FILENAME, s=len(plan.scenes), n=n))
+            label.setStyleSheet("")
+        elif path.is_file():
+            label.setText(tr("{f} — 로드 실패 (로그 참조)").format(f=PLAN_FILENAME))
+            label.setStyleSheet("color:#e74c3c;")
+        else:
+            label.setText(tr("(계획 없음 — 자유 입력)"))
+            label.setStyleSheet("color:#888;")
 
     def on_new_plan(self) -> None:
-        name, ok = QInputDialog.getText(
-            self.win, tr("새 수집 계획"),
-            tr("계획 이름 (영문/숫자/-/_, 확장자 없이):"))
-        if not ok or not name.strip():
-            return
-        name = name.strip()
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-            QMessageBox.warning(self.win, tr("이름 오류"),
-                                tr("영문·숫자·-·_ 만 쓸 수 있습니다."))
-            return
-        path = PLANS_DIR / f"{name}.json"
+        """이 데이터셋에 빈 계획(instructions.json)을 만들고 바로 편집."""
+        path = self.dataset_plan_path()
         if path.exists():
-            QMessageBox.warning(self.win, tr("이미 있음"),
-                                tr("{n} 이 이미 있습니다. 드롭다운에서 "
-                                   "선택하세요.").format(n=path.name))
+            QMessageBox.information(self.win, tr("이미 있음"), tr(
+                "이 데이터셋에는 이미 계획이 있습니다. ✎ 로 편집하세요."))
             return
-        PLANS_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"plan_version": 1, "scenes": []},
-                                   ensure_ascii=False, indent=2) + "\n",
-                        encoding="utf-8")
-        self.win.log(f"[계획] 새 계획 생성: {path.name}")
-        self.refresh_plan_combo(select=path.name)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"plan_version": 1, "scenes": []},
+                                       ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8")
+        except OSError as e:
+            QMessageBox.warning(self.win, tr("생성 실패"), str(e))
+            return
+        self.win.log(f"[계획] 새 계획 생성: {path}")
+        self.on_plan_changed()
         self.on_edit_plan()    # 빈 계획은 쓸모없으니 바로 편집으로
 
     def on_delete_plan(self) -> None:
-        data = self.win.plan_combo.currentData()
-        if not data:
+        path = self.dataset_plan_path()
+        if not path.exists():
             QMessageBox.information(self.win, tr("계획 없음"),
-                                    tr("삭제할 계획 파일을 먼저 선택하세요."))
+                                    tr("이 데이터셋에는 계획 파일이 없습니다."))
             return
-        p = Path(data)
         ans = QMessageBox.question(
             self.win, tr("계획 삭제"),
-            tr("{n} 을(를) 삭제할까요?\n수집 파일에는 영향이 없고, git 이력"
-               "에서 되살릴 수 있습니다.").format(n=p.name))
+            tr("{n} 을(를) 삭제할까요?\n수집 파일에는 영향이 없습니다.")
+            .format(n=path.name))
         if ans != QMessageBox.StandardButton.Yes:
             return
         try:
-            p.unlink()
+            path.unlink()
         except OSError as e:
             QMessageBox.warning(self.win, tr("삭제 실패"), str(e))
             return
-        self.win.log(f"[계획] 삭제: {p.name}")
-        self.refresh_plan_combo(select="")
+        self.win.log(f"[계획] 삭제: {path}")
+        self.on_plan_changed()
 
     def on_edit_plan(self) -> None:
-        data = self.win.plan_combo.currentData()
-        if not data:
-            QMessageBox.information(self.win, tr("계획 없음"),
-                                    tr("편집할 계획 파일을 먼저 선택하세요."))
+        path = self.dataset_plan_path()
+        if not path.exists():
+            QMessageBox.information(self.win, tr("계획 없음"), tr(
+                "이 데이터셋에는 계획 파일이 없습니다. + 로 먼저 만드세요."))
             return
-        dlg = PlanEditDialog(self.win, Path(data))
+        dlg = PlanEditDialog(self.win, path)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             for w in getattr(dlg, "warnings", []):
                 self.win.log(f"[계획 경고] {w}")
-            self.win.log(f"[계획] {Path(data).name} 저장됨")
+            self.win.log(f"[계획] {path.name} 저장됨")
             # 갱신된 목표/slot 이 화면에 반영되게
-            self.on_plan_selected()
+            self.on_plan_changed()
 
-    def on_plan_selected(self, *_args) -> None:
+    def on_plan_changed(self) -> None:
+        """계획 파일이 생기/바뀌/사라지거나 데이터셋(저장 경로)이 바뀐 뒤
+        화면 전반을 갱신한다."""
         plan = self.current_plan()
         if plan is not None:
-            self.win._recents.add("plan_file", self.win.plan_combo.currentText())
             for w in plan.warnings:
                 self.win.log(f"[계획 경고] {w}")
+        self.refresh_plan_label()
         self.refresh_slot_panel()
         self.win.scene_ops.on_scene_selected()
 

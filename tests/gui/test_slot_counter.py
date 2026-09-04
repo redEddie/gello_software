@@ -82,8 +82,8 @@ win = cw.WorkspaceWindow(None)
 win.root_edit.setText(str(d))
 win.scene_ops.refresh_scene_combo()
 win.scene_combo.setCurrentIndex(win.scene_combo.findData("S000"))
-# 기동 시 복원되는 실제 계획이 이 slot 을 가질 수 있다 -- '계획 없음' 으로 명시 해제
-win.plan_combo.setCurrentIndex(0)
+# 계획은 데이터셋 폴더의 instructions.json 이다 -- 이 임시 폴더에는 아직 없다
+# (= 자유 입력). 명시 해제할 드롭다운은 더 이상 없다.
 win.scene_iid_edit.setText(IID)
 win.collection.refresh_slot_counter()
 t = win.slot_counter.text()
@@ -91,28 +91,29 @@ assert t == f"S000 · {IID} · 2", t          # target 없음 -- 누계만, 0/0 
 assert "/" not in t
 print(f"2 통과: 계획 없음 -- 누계만 ({t})")
 
+
+def _write_plan(target: int) -> None:
+    # 데이터셋 폴더 안 고정 파일명 instructions.json (2026-09-04 컨벤션)
+    (d / "instructions.json").write_text(json.dumps({"plan_version": 1, "scenes": [
+        {"scene_id": "S000", "slots": [
+            {"instruction_id": IID, "instruction": INSTR, "target": target}]}]},
+        ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 # ---- 3. 계획 target 10 -> '2/10', 미달이면 초록 아님 ----
-plan10 = d / "plan10.json"
-plan10.write_text(json.dumps({"plan_version": 1, "scenes": [
-    {"scene_id": "S000", "slots": [
-        {"instruction_id": IID, "instruction": INSTR, "target": 10}]}]},
-    ensure_ascii=False), encoding="utf-8")
-win.plan_combo.addItem(plan10.name, str(plan10))
-win.plan_combo.setCurrentIndex(win.plan_combo.count() - 1)
+_write_plan(10)
 win.collection.refresh_slot_counter()
 t = win.slot_counter.text()
 assert t == f"S000 · {IID} · 2/10", t
 assert "#2ecc71" not in win.slot_counter.styleSheet()
-print(f"3 통과: 계획 target 과 맞춤 -- {t} (미달이라 초록 아님)")
+# 진행률 트리는 Collect "진행" 상자로 옮겼고, refresh_slot_counter 가 연쇄
+# 갱신한다 (2026-09-04: Statistics 에서 이동)
+assert "전체 2/10" in win.plan_progress_label.text(), win.plan_progress_label.text()
+assert win.plan_progress_tree.topLevelItemCount() == 1
+print(f"3 통과: 계획 target 과 맞춤 -- {t} (미달이라 초록 아님) + 진행률 연쇄 갱신")
 
 # ---- 4. target 도달(2/2) 이면 초록, 초과(11/10)도 숫자 정확 ----
-plan2 = d / "plan2.json"
-plan2.write_text(json.dumps({"plan_version": 1, "scenes": [
-    {"scene_id": "S000", "slots": [
-        {"instruction_id": IID, "instruction": INSTR, "target": 2}]}]},
-    ensure_ascii=False), encoding="utf-8")
-win.plan_combo.addItem(plan2.name, str(plan2))
-win.plan_combo.setCurrentIndex(win.plan_combo.findText(plan2.name))
+_write_plan(2)
 win.collection.refresh_slot_counter()
 assert win.slot_counter.text() == f"S000 · {IID} · 2/2", win.slot_counter.text()
 assert "#2ecc71" in win.slot_counter.styleSheet(), win.slot_counter.styleSheet()
@@ -136,7 +137,7 @@ print(f"5 통과: 계획에 없는 slot -- 누계만 ({t})")
 
 # ---- 6. 에피소드 삭제 -> 숫자가 줄어든다 (이슈 #38 핵심) ----
 #    GUI DatasetOps 삭제 경로로 지우고, 카운터가 HDF5 를 다시 읽는지 본다.
-win.plan_combo.setCurrentIndex(win.plan_combo.findText(plan10.name))
+_write_plan(10)
 win.collection.refresh_slot_counter()
 assert win.slot_counter.text() == f"S000 · {IID} · 2/10"
 ok = win.dataset_ops.delete_episodes({scene: [ok0]})

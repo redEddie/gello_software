@@ -22,18 +22,32 @@ from gello.scene.collection_plan import (  # noqa: E402
 )
 from gello.scene.scene_format import list_scene_episodes  # noqa: E402
 
-PLANS = Path(WT) / "configs" / "collection" / "plans"
+TMP = Path(tempfile.mkdtemp(prefix="p4a_"))
+atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 
-# ---- 1. 로더: pilot.json + 규칙 검증 ----
-plan = load_plan(PLANS / "pilot.json")
+# ---- 1. 로더: 합성 계획 + 규칙 검증 ----
+# 실제 계획 파일은 데이터셋 폴더로 옮겼다 (instructions.json, 2026-09-04) --
+# 테스트는 라이브 데이터에 기대지 않고 합성 계획을 만든다.
+pilot = TMP / "pilot.json"
+pilot.write_text(json.dumps({"plan_version": 1, "scenes": [
+    {"scene_id": "S000", "slots": [
+        {"instruction_id": "I000",
+         "instruction": "pick up the blue cup and place it on the blue bowl",
+         "target": 10},
+        {"instruction_id": "I001",
+         "instruction": "pick up the white cup and place it on the blue bowl",
+         "target": 10}]},
+    {"scene_id": "S001", "slots": [
+        {"instruction_id": "I000", "instruction": "open the top drawer",
+         "target": 10}]}]}, ensure_ascii=False), encoding="utf-8")
+plan = load_plan(pilot)
 assert plan.version == 1 and len(plan.scenes) >= 2
 assert plan.slots_for("S000")[0].instruction_id == "I000"
 assert len(plan.slots_for("S001")) >= 1 and plan.slots_for("S001")[0].instruction_id == "I000"
-assert not plan.warnings, f"pilot.json 이 동사 규칙 위반: {plan.warnings}"
+assert not plan.warnings, f"합성 계획이 동사 규칙 위반: {plan.warnings}"
+# 리포 plans/ 에는 포맷 문서용 example.json 만 남는다
 names = [p.name for p in list_plans()]
-assert names[0] == "pilot.json" and names[-1] == "example.json", names
-TMP = Path(tempfile.mkdtemp(prefix="p4a_"))
-atexit.register(shutil.rmtree, TMP, ignore_errors=True)
+assert names == ["example.json"], names
 bad1 = TMP / "bad1.json"
 bad1.write_text(json.dumps({"plan_version": 1, "scenes": [
     {"scene_id": "S000", "slots": [
@@ -60,7 +74,7 @@ try:
     raise AssertionError("같은 scene 내 중복 ID 가 통과됨")
 except ValueError as e:
     assert "유일" in str(e) or "서로 다른 문장" in str(e)
-print("1 통과: pilot 로드, 동사 경고, scene 간 ID 재사용 허용, scene 내 중복 거부")
+print("1 통과: 계획 로드, 동사 경고, scene 간 ID 재사용 허용, scene 내 중복 거부")
 
 # ---- 2. 계획-파일 불일치 감지 (합성 에피소드 -- 실파일은 수집 중 변함) ----
 eps = [
@@ -84,11 +98,8 @@ cw.CameraOps.restart_previews = lambda self: None
 cw.SystemOps.startup_tuning = lambda self: None   # pkexec 비밀번호 창 차단
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
-# recents 기본값에 의존하지 않는다 -- 다른 테스트/실사용이 최근 계획을
-# 바꿔 놓을 수 있다. 명시적으로 pilot 을 고른다.
-_pi = win.plan_combo.findText("pilot.json")
-assert _pi > 0
-win.plan_combo.setCurrentIndex(_pi)
+# 계획은 데이터셋 폴더의 instructions.json 에 귀속된다 -- 임시 데이터셋 폴더에
+# 계획을 두고 저장 경로를 그쪽으로 돌린다 (드롭다운 선택은 폐지, 2026-09-04).
 # scene 세션을 흉내 -- 세션 중엔 파일이 잠기므로(HDF5 잠금) 워커 cfg 의
 # scene_id + saver 캐시로 계산한다. 파일은 경로로만 쓰이고 아래에서 캐시를
 # 직접 주입하므로 빈 파일이면 충분하다. (예전엔 실제 scene_000.hdf5 를
@@ -100,6 +111,9 @@ TMPD = Path(tempfile.mkdtemp(prefix="p4a_s_"))
 atexit.register(shutil.rmtree, TMPD, ignore_errors=True)
 scene_copy = TMPD / "scene_000.hdf5"
 scene_copy.touch()
+shutil.copy(pilot, TMPD / "instructions.json")
+win.root_edit.setText(str(TMPD))
+win.scene_ops.refresh_scene_combo()
 
 
 class FakeW:
@@ -140,9 +154,9 @@ win.scene_planning.on_next_slot()
 assert win.slot_iid_edit.text() == "I000" and win.slot_instr_edit.text()
 print("3 통과: 계획 자동선택, 카운트(2/10), 불일치 경고, 드롭다운 채움, 다음 slot 제시")
 
-# ---- 4. 계획 없음 회귀 ----
-win.plan_combo.setCurrentIndex(0)  # (계획 없음)
-win.scene_planning.refresh_slot_panel()
+# ---- 4. 계획 없음 회귀 -- instructions.json 을 지우면 자유 입력 ----
+(TMPD / "instructions.json").unlink()
+win.scene_planning.on_plan_changed()
 assert win.slot_plan_combo.count() == 1  # (직접 입력) 만
 calls = []
 class FW:

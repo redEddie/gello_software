@@ -24,7 +24,6 @@ from PyQt6.QtWidgets import (
 )
 
 from apps.workspace.features.scene.dialogs.plan_json_dialog import PlanJsonDialog
-from gello.gui.widgets import Recents
 from gello.gui.i18n import tr
 from gello.scene.collection_plan import load_plan
 from gello.scene.scene_format import INSTRUCTION_ID_RE, SCENE_ID_RE
@@ -227,9 +226,8 @@ class PlanEditDialog(QDialog):
         try:
             from gello.scene.scene_format import list_scene_episodes, scene_filename
 
-            root = Path(Recents().most_recent("data_root",
-                                              str(Path.home() / "libero_datasets")))
-            path = root / scene_filename(sid)
+            # 계획 파일이 있는 폴더가 곧 데이터셋 폴더다 (per-dataset 컨벤션)
+            path = self._path.parent / scene_filename(sid)
             if not path.exists():
                 return False
             return len(list_scene_episodes(path)) > 0

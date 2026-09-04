@@ -1,7 +1,14 @@
-"""수집 계획(slot plan) 로더 — configs/collection/plans/*.json.
+"""수집 계획(slot plan) 로더 — 데이터셋 폴더 안의 instructions.json.
 
-계획은 Notion §6 matrix 가 정본이고, freeze 된 것을 JSON 으로 export 해
-커밋한다. 이 모듈은 그 파일을 읽고 규칙을 검증할 뿐, collected 를 계산하지
+계획은 데이터셋에 귀속한다 (2026-09-04 결정): 각 데이터셋 폴더
+(scene_NNN.hdf5 가 있는 곳) 안의 고정 파일명 instructions.json 이 그
+데이터셋의 유일한 계획이다. 리포의 configs/collection/plans/ 에는 포맷
+문서용 example.json 만 남는다. 파일명이 고정이라 dataset-identity.json
+에 포인터 필드도 없다 -- 폴더에 instructions.json 이 있으면 계획 기반
+수집, 없으면 자유 입력이다. 고정 파일명 상수는
+gello/scene/dataset_meta.py 의 PLAN_FILENAME.
+
+이 모듈은 그 파일을 읽고 규칙을 검증할 뿐, collected 를 계산하지
 않는다 — 수집 현황은 항상 scene 파일에서 파생한다
 (gello.scene.scene_format.count_by_slot, "두 개의 진실 금지").
 
@@ -34,6 +41,8 @@ from gello.scene.scene_format import (
     SCENE_ID_RE,
 )
 
+# 실제 수집 계획은 각 데이터셋 폴더의 instructions.json 에 둔다 (위 모듈
+# docstring). 여기에는 포맷 문서용 example.json 과 README 만 남는다.
 PLANS_DIR = Path(__file__).resolve().parents[2] / "configs" / "collection" / "plans"
 
 # §4 동사 집합·문장 문법의 정본은 gello/instruction_grammar.lint 하나다.

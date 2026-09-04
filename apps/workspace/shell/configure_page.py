@@ -16,7 +16,6 @@ from PyQt6.QtWidgets import (
 
 from gello.gui.i18n import tr
 from gello.robots.franka_fr3 import FR3_RESET_POSES
-from gello.scene.collection_plan import list_plans
 
 from apps.workspace.shared.widgets import SceneInfoView
 from apps.workspace.shared.sizing import shrinkable_combo
@@ -73,35 +72,30 @@ def build_configure(win) -> QWidget:
     # 새 문장=다음 빈 ID) -- ID-문장 갈라짐 방지.
     win.lang_edit.editingFinished.connect(win.scene_ops.on_start_sentence_edited)
     sc_form.addRow(tr("시작 문장"), win.lang_edit)
-    # 수집 계획 (slot plan). 계획이 있으면 Collect 의 slot 패널이 계획
-    # 기반 드롭다운 + 수집 카운트로 동작한다. 없어도 자유 입력은 그대로.
-    win.plan_combo = QComboBox()
-    shrinkable_combo(win.plan_combo)
-    win.plan_combo.addItem(tr("(계획 없음 — 자유 입력)"), None)
-    for p in list_plans():
-        win.plan_combo.addItem(p.name, str(p))
-    last_plan = win._recents.most_recent("plan_file", "pilot.json")
-    idx = win.plan_combo.findText(last_plan)
-    if idx > 0:
-        win.plan_combo.setCurrentIndex(idx)
-    win.plan_combo.currentIndexChanged.connect(win.scene_planning.on_plan_selected)
+    # 수집 계획은 데이터셋에 귀속된다 -- 저장 경로 폴더 안의 instructions.json
+    # (고정 파일명, 2026-09-04 결정). 고르는 드롭다운은 없고 읽기 전용 표시 +
+    # 편집 버튼만 둔다. 계획이 있으면 Collect 의 slot 패널이 계획 기반
+    # 드롭다운 + 수집 카운트로 동작하고, 없으면 자유 입력.
+    win.plan_label = QLabel(tr("(계획 없음 — 자유 입력)"))
+    win.plan_label.setStyleSheet("color:#888;")
     plan_row = QWidget()
     prow = QHBoxLayout(plan_row)
     prow.setContentsMargins(0, 0, 0, 0)
-    prow.addWidget(win.plan_combo, 1)
+    prow.addWidget(win.plan_label, 1)
     win.plan_edit_btn = QPushButton("✎")
-    win.plan_edit_btn.setToolTip(tr("선택한 계획 파일 편집 (저장 시 규칙 검증)"))
+    win.plan_edit_btn.setToolTip(tr("이 데이터셋의 계획(instructions.json) 편집 "
+                                    "(저장 시 규칙 검증)"))
     win.plan_edit_btn.setMaximumWidth(32)
     win.plan_edit_btn.clicked.connect(win.scene_planning.on_edit_plan)
     prow.addWidget(win.plan_edit_btn)
     plan_new_btn = QPushButton("+")
-    plan_new_btn.setToolTip(tr("새 계획 파일 만들기 (이름을 정하면 빈 계획이 "
-                               "생기고 바로 편집이 열립니다)"))
+    plan_new_btn.setToolTip(tr("이 데이터셋에 빈 계획(instructions.json) 만들기 "
+                               "(만들면 바로 편집이 열립니다)"))
     plan_new_btn.setMaximumWidth(32)
     plan_new_btn.clicked.connect(win.scene_planning.on_new_plan)
     prow.addWidget(plan_new_btn)
     plan_del_btn = QPushButton("🗑")
-    plan_del_btn.setToolTip(tr("선택한 계획 파일 삭제 (git 이력에는 남습니다)"))
+    plan_del_btn.setToolTip(tr("이 데이터셋의 계획 파일 삭제 (수집 파일에는 영향 없음)"))
     plan_del_btn.setMaximumWidth(32)
     plan_del_btn.clicked.connect(win.scene_planning.on_delete_plan)
     prow.addWidget(plan_del_btn)

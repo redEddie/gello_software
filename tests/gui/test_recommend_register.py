@@ -38,7 +38,9 @@ base = SceneMetadata(
 
 TMP = Path(tempfile.mkdtemp(prefix="recreg_"))
 plan_copy = TMP / "pilot.json"
-shutil.copy(f"{WT}/configs/collection/plans/pilot.json", plan_copy)
+# 실제 계획은 데이터셋 폴더의 instructions.json 으로 옮겼다 -- 폼·다이얼로그
+# 테스트는 리포에 남은 포맷 문서용 example.json 사본으로 돌린다 (2026-09-04).
+shutil.copy(f"{WT}/configs/collection/plans/example.json", plan_copy)
 orig = json.loads(plan_copy.read_text())
 
 # ---- 1. RecommendDialog: 문장 체크리스트 표시 + 전체 기본 선택 ----
@@ -127,7 +129,11 @@ print("5 통과: 규칙 통과 시 경고 없음 + 단일 개체 조합엔 short
 from gello.scene.instruction_grammar import lint  # noqa: E402
 for cb in sents:                          # 추천 체크리스트 = 문법이 생성한 문장
     assert lint(cb.text()) is None, (cb.text(), lint(cb.text()))
-plan = json.loads(Path(f"{WT}/configs/collection/plans/pilot.json").read_text())
+# 정본 계획은 데이터셋에 귀속됐다 (2026-09-04) -- 활성 데이터셋의
+# instructions.json 이 있으면 그것을, 없으면 example.json 을 검사한다.
+_live = Path.home() / "libero_datasets" / "fr3-tabletop" / "instructions.json"
+plan = json.loads((_live if _live.is_file() else Path(
+    f"{WT}/configs/collection/plans/example.json")).read_text())
 n_warn = 0
 total = 0
 for sc in plan["scenes"]:

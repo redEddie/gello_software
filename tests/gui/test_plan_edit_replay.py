@@ -17,8 +17,10 @@ import collect_workspace as cw  # noqa: E402
 from apps.workspace.features.scene.dialogs.plan_json_dialog import PlanJsonDialog  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="planedit_"))
-plan_copy = TMP / "pilot.json"
-shutil.copy(f"{WT}/configs/collection/plans/pilot.json", plan_copy)
+# 실제 계획은 데이터셋 폴더(instructions.json)로 옮겼다 -- 리포에는 포맷
+# 문서용 example.json 만 남는다 (2026-09-04).
+plan_copy = TMP / "plan.json"
+shutil.copy(f"{WT}/configs/collection/plans/example.json", plan_copy)
 
 # 1. 편집 다이얼로그: 유효한 수정 -> 저장됨
 dlg = PlanJsonDialog(None, plan_copy)

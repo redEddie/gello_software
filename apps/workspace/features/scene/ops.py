@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QDialog, QMessageBox
 
 from apps.workspace.features.scene.dialogs.new_scene_dialog import NewSceneDialog
 from gello.config.station import load_station
+from gello.scene.dataset_meta import plan_path as dataset_plan_path
 from gello.gui.i18n import tr
 from gello.scene.scene_format import (
     INSTRUCTION_ID_RE,
@@ -53,7 +54,9 @@ class SceneOps:
         except Exception:  # noqa: BLE001
             pass
         self.win.scene_combo.blockSignals(False)
-        self.on_scene_selected()
+        # 저장 경로가 바뀌었을 수 있으니 데이터셋 귀속 계획(instructions.json)
+        # 표시·slot 패널·scene 정보를 함께 갱신한다.
+        self.win.scene_planning.on_plan_changed()
 
     def on_scene_selected(self, *_args) -> None:
         self.win.scene_planning.refresh_start_plan_combo()
@@ -110,9 +113,10 @@ class SceneOps:
             QMessageBox.warning(self.win, tr("경로 오류"),
                                 tr("저장 경로를 확인하세요: {e}").format(e=e))
             return
-        plan_data = self.win.plan_combo.currentData() if hasattr(self.win, "plan_combo") else None
-        plan_path = Path(plan_data) if plan_data else None
-        dlg = NewSceneDialog(self.win, sid, data_root=root, plan_path=plan_path,
+        # 계획은 데이터셋 폴더 안 instructions.json 하나뿐이다 (고정 파일명).
+        pp = dataset_plan_path(root)
+        dlg = NewSceneDialog(self.win, sid, data_root=root,
+                             plan_path=pp if pp.is_file() else None,
                              station_name=STATION.name)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.metadata is not None:
             self.win._pending_scene_meta = dlg.metadata
