@@ -289,6 +289,12 @@ _EN: dict[str, str] = {
     "Joint-angle delta (변화량)": "Joint-angle delta (change)",
     "Joint-angle absolute (절대 목표값)": "Joint-angle absolute (target value)",
 
+    "계획에 등록 — Configure 에서 계획 파일을 먼저 고르세요":
+        "Register into a plan \u2014 pick a plan file in Configure first",
+    "지금은 계획이 선택돼 있지 않아 문장을 등록할 곳이 없습니다. "
+    "채택해도 배치만 반영되고 문장은 남지 않습니다.":
+        "No plan is selected, so there is nowhere to register the sentences. "
+        "Accepting will apply the layout only; the sentences will not be kept.",
     # ---- menu items ----
     "리더암 토크 과부하 잠금 해제": "Leader arm: clear torque overload lock",
     "\n\n서보가 토크 과부하로 잠겼습니다. 세션을 종료한 뒤 "

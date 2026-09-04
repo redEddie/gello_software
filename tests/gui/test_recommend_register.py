@@ -143,4 +143,21 @@ print(f"6 통과: 생성 문장 자기일관성 + 계획 {total}개 문장 전�
 print("\nRecommendDialog 문장/등록 + NewSceneDialog lint 검증 통과")
 import os  # noqa: E402
 
+
+# ---- 계획이 없을 때: 조용히 건너뛰지 말고 왜 못 하는지 보여준다 (2026-09-04) ----
+#    숨기면 조작자는 추천을 채택하고도 문장이 어디에도 안 남은 것을 한참 뒤에야
+#    안다. 실제로 그렇게 겪었다.
+rd_noplan = RecommendDialog(None, [base], props, "S998")      # plan_path 없음
+cb = rd_noplan._register_check
+assert cb is not None, "계획이 없을 때 등록 체크박스를 아예 숨기고 있다"
+assert not cb.isEnabled(), "등록할 곳이 없는데 체크박스가 켜져 있다"
+assert not cb.isChecked(), "꺼져 있어야 한다 -- accept 경로가 이것을 본다"
+assert "Configure" in cb.text(), f"어떻게 해야 하는지 안 적혀 있다: {cb.text()!r}"
+assert cb.toolTip(), "왜 못 하는지 설명이 없다"
+print("계획 미선택 시 등록 불가 이유를 보여준다 OK")
+
+import os  # noqa: E402
+
+# os._exit 는 버퍼를 비우지 않는다 -- 먼저 비운다.
+sys.stdout.flush()
 os._exit(0)

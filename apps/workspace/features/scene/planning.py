@@ -176,7 +176,7 @@ class ScenePlanningOps:
 
     def on_new_plan(self) -> None:
         name, ok = QInputDialog.getText(
-            self, tr("새 수집 계획"),
+            self.win, tr("새 수집 계획"),
             tr("계획 이름 (영문/숫자/-/_, 확장자 없이):"))
         if not ok or not name.strip():
             return
@@ -207,7 +207,7 @@ class ScenePlanningOps:
             return
         p = Path(data)
         ans = QMessageBox.question(
-            self, tr("계획 삭제"),
+            self.win, tr("계획 삭제"),
             tr("{n} 을(를) 삭제할까요?\n수집 파일에는 영향이 없고, git 이력"
                "에서 되살릴 수 있습니다.").format(n=p.name))
         if ans != QMessageBox.StandardButton.Yes:

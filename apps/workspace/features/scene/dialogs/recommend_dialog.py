@@ -126,7 +126,19 @@ class RecommendDialog(QDialog):
             self._register_check.setChecked(True)
             col.addWidget(self._register_check)
         else:
-            self._register_check = None
+            # 계획이 없으면 등록할 곳이 없다. 그래도 체크박스를 **보여준다** --
+            # 숨기면 조작자는 추천을 채택하고도 문장이 어디에도 안 남은 것을
+            # 한참 뒤에야 안다 (2026-09-04 에 실제로 그렇게 됐다). 왜 못 하는지
+            # 와 어떻게 해야 하는지를 그 자리에서 말한다.
+            self._register_check = QCheckBox(
+                tr("계획에 등록 — Configure 에서 계획 파일을 먼저 고르세요"))
+            self._register_check.setChecked(False)
+            self._register_check.setEnabled(False)
+            self._register_check.setStyleSheet("color:#e67e22;")
+            self._register_check.setToolTip(tr(
+                "지금은 계획이 선택돼 있지 않아 문장을 등록할 곳이 없습니다. "
+                "채택해도 배치만 반영되고 문장은 남지 않습니다."))
+            col.addWidget(self._register_check)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                                    | QDialogButtonBox.StandardButton.Cancel)
