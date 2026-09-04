@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 import time
 
 from PyQt6 import sip
@@ -11,7 +10,7 @@ from PyQt6.QtWidgets import QComboBox, QMessageBox
 
 from gello.gui.workers import CameraPreviewWorker
 from gello.gui.grid_overlay import active_corners, draw_grid, save_grid_store
-from apps.workspace.constants import WT_ROOT
+from apps.workspace.shared.camera_node_proc import spawn_node, spec_key
 from gello.gui.i18n import tr
 
 
@@ -370,7 +369,7 @@ class CameraOps:
         if self.win.cameras.camera_node_user_stopped:
             return
         specs = self.camera_node_specs()
-        key = ",".join(specs)
+        key = spec_key(specs)
         running = (self.win.procs.camera_node_process is not None and
                    self.win.procs.camera_node_process.state()
                    != QProcess.ProcessState.NotRunning)
@@ -378,22 +377,14 @@ class CameraOps:
             return
         if running:
             self.stop_camera_node()
-        if not specs:
+        proc = spawn_node(specs, parent=self.win)
+        if proc is None:
             return
-        proc = QProcess(self.win)
-        proc.setProgram(sys.executable)
-        proc.setArguments(["-m", "gello.comm.camera_node", "--die-with-parent"]
-                          + [a for sp in specs for a in ("--cam", sp)])
-        # 이 프로세스는 GUI 의 sys.path 를 물려받지 않는다 -- 저장소 루트에서
-        # 띄워야 `python -m gello.comm.camera_node` 가 gello 를 찾는다.
-        proc.setWorkingDirectory(str(WT_ROOT))
-        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.readyReadStandardOutput.connect(self.on_camera_node_output)
         proc.finished.connect(self.on_camera_node_finished)
         self.win.procs.camera_node_process = proc
         self.win.cameras.camera_node_spec = key
         self.win.log(f"[카메라노드] 시작: {key}")
-        proc.start()
 
     def on_camera_node_output(self) -> None:
         if self.win.procs.camera_node_process is None:

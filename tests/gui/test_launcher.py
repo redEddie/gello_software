@@ -140,6 +140,34 @@ saved = json.loads(rec_path.read_text())
 assert saved["data_root"][0] == str(ds)
 print("5 통과: apply_result -- GELLO_STATION + data_root recents 반영")
 
+# ---- 6. 카메라 노드 인계 계약 (하드웨어 없이) ----
+# 마법사가 미리보기용으로 띄운 노드를 창이 이어받는다. 넘기지 않고 창이
+# 새로 띄우면 같은 카메라를 두 번 열려다 포트 6021 충돌로 죽는다
+# (2026-09-05). 프로세스를 실제로 띄우지 않고 계약만 본다: take_node 가
+# 소유권을 넘기는지, 넘긴 뒤 페이지가 손을 떼는지.
+from PyQt6.QtCore import QProcess  # noqa: E402
+
+from apps.workspace.launcher.pages import PAGE_HW  # noqa: E402
+from apps.workspace.shared.camera_node_proc import (  # noqa: E402
+    node_specs,
+    spec_key,
+)
+
+assert node_specs("A1", "B2") == ["agent:A1", "wrist:B2"]
+assert node_specs("A1", "") == ["agent:A1"]       # 빈 시리얼은 빠진다
+assert spec_key(node_specs("A1", "B2")) == "agent:A1,wrist:B2"
+
+hw = wiz.page(PAGE_HW)
+fake = QProcess()                                  # start() 하지 않는다
+hw._node, hw._node_key = fake, "agent:A1,wrist:B2"
+proc, key = hw.take_node()
+assert proc is fake and key == "agent:A1,wrist:B2"
+assert hw._node is None and hw._node_key == "", "넘긴 뒤에는 페이지가 손을 뗀다"
+proc2, key2 = hw.take_node()
+assert proc2 is None and key2 == "", "두 번 넘기지 않는다"
+hw.cleanup()                                       # 넘긴 뒤 정리는 무해해야
+print("6 통과: 카메라 노드 인계 -- spec 규칙 + 소유권 이전 + 중복 인계 없음")
+
 print("\n런처 마법사 검증 통과")
 _cleanup()
 os._exit(0)

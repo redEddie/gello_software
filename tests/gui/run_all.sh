@@ -6,6 +6,10 @@ PY="${1:-python}"
 # 없어 그대로 멈춘다. 리더암이 꽂힌 채 재연결/재부팅된 뒤에만 뜨므로 기계
 # 상태에 따라 떴다 안 떴다 한다 -- 2026-09-01 에 실제로 막혔다.
 export GELLO_NO_PRIVILEGED=1
+# 이 스위트는 로봇도 카메라도 없이 돈다. 마법사 하드웨어 페이지가 미리보기를
+# 위해 카메라 노드를 띄우므로, 여기서 막지 않으면 테스트가 실제 카메라를
+# 붙잡아 조작자의 GUI 를 방해한다 (2026-09-05).
+export GELLO_NO_CAMERA_NODE=1
 cd "$(dirname "$0")"
 fail=0
 for t in test_phase4a test_grid_replay test_plan_form test_right_scene \

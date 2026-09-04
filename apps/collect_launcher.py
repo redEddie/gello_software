@@ -65,7 +65,9 @@ def main() -> None:
 
     from apps import collect_workspace  # noqa: E402  -- 지연 임포트 (위 참조)
 
-    collect_workspace.main(app=app)
+    res = wiz.result()
+    collect_workspace.main(app=app, camera_node=res.camera_node,
+                           camera_node_spec=res.camera_node_spec)
 
 
 if __name__ == "__main__":

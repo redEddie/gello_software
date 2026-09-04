@@ -95,6 +95,7 @@ from apps.workspace.models import (  # noqa: E402
     ProcessRegistry,
     SessionState,
 )
+from apps.workspace.shared.camera_node_proc import adopt_node  # noqa: E402
 from apps.workspace.shell import (  # noqa: E402
     build_bottom,
     build_center,
@@ -168,7 +169,8 @@ SHORTCUT_HINTS = {
 
 
 class WorkspaceWindow(QMainWindow):
-    def __init__(self, log_path: Path | None) -> None:
+    def __init__(self, log_path: Path | None,
+                 camera_node=None, camera_node_spec: str = "") -> None:
         super().__init__()
         self.setWindowTitle(tr("FR3 GELLO 데이터 수집 워크스페이스"))
         self.resize(1780, 1020)
@@ -244,6 +246,19 @@ class WorkspaceWindow(QMainWindow):
         # App-wide, not window-scoped: the operator's hands are on the leader,
         # so whichever widget happens to hold focus must not swallow the keys.
         QApplication.instance().installEventFilter(self)
+
+        # 마법사가 미리보기용으로 이미 띄운 노드가 있으면 그것을 이어서 쓴다.
+        # refresh_cameras() 가 ensure_camera_node() 를 부르는데, 여기서 먼저
+        # 등록해 두면 같은 구성이라 그냥 넘어간다 -- 안 그러면 카메라를 두 번
+        # 열려다 포트 6021 충돌로 죽는다.
+        if camera_node is not None:
+            adopt_node(camera_node, self)
+            camera_node.readyReadStandardOutput.connect(
+                self.camera_ops.on_camera_node_output)
+            camera_node.finished.connect(self.camera_ops.on_camera_node_finished)
+            self.procs.camera_node_process = camera_node
+            self.cameras.camera_node_spec = camera_node_spec
+            self.log(f"[카메라노드] 마법사에서 이어받음: {camera_node_spec}")
 
         self._set_activity("configure")
         self.collection.set_running(False)
@@ -786,7 +801,8 @@ def _install_excepthook(log_path: Path, window_ref: dict) -> None:
     sys.excepthook = hook
 
 
-def main(app: "QApplication | None" = None) -> None:
+def main(app: "QApplication | None" = None, camera_node=None,
+         camera_node_spec: str = "") -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"workspace_{time.strftime('%Y%m%d_%H%M%S')}.log"
     window_ref: dict = {}
@@ -794,7 +810,8 @@ def main(app: "QApplication | None" = None) -> None:
     if app is None:
         app = QApplication(sys.argv)
         app.setStyle("Fusion")
-    win = WorkspaceWindow(log_path)
+    win = WorkspaceWindow(log_path, camera_node=camera_node,
+                          camera_node_spec=camera_node_spec)
     window_ref["win"] = win
     win.show()
     sys.exit(app.exec())

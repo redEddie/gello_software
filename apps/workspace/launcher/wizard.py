@@ -55,6 +55,11 @@ class LaunchResult:
     agent_serial: str
     wrist_serial: str
     identity: DatasetIdentity
+    # 하드웨어 페이지가 미리보기를 위해 띄운 카메라 노드. 워크스페이스가
+    # 이어서 쓴다 -- 여기서 죽였다가 창이 다시 띄우면 카메라를 두 번 여는
+    # 셈이라 느리고, 겹치면 포트 6021 충돌로 죽는다.
+    camera_node: object = None
+    camera_node_spec: str = ""
 
 
 class LauncherWizard(QWizard):
@@ -91,6 +96,12 @@ class LauncherWizard(QWizard):
             return
         super().accept()
 
+    def reject(self) -> None:  # noqa: N802 - Qt override
+        # 창을 닫으면 종료다 -- 미리보기용으로 띄운 카메라 노드를 남기면
+        # 카메라를 쥔 프로세스가 주인 없이 떠돈다.
+        self.page(PAGE_HW).cleanup()
+        super().reject()
+
     def _build_result(self) -> LaunchResult:
         hw: HardwarePage = self.page(PAGE_HW)  # type: ignore[assignment]
         agent, wrist = hw.cameras()
@@ -117,9 +128,12 @@ class LauncherWizard(QWizard):
                 # 메타 없는 legacy 폴더 -- 폴더명으로 identity 를 만들어 준다
                 ident = DatasetIdentity(name=root.name, created=today)
                 save_identity(root, ident)
+        node, node_key = hw.take_node()
         return LaunchResult(mode=self.mode or "continue",
                             dataset_root=root,
                             station=hw.station(),
                             agent_serial=agent,
                             wrist_serial=wrist,
-                            identity=ident)
+                            identity=ident,
+                            camera_node=node,
+                            camera_node_spec=node_key)

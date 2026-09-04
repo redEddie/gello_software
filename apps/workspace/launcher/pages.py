@@ -21,6 +21,13 @@ from PyQt6.QtWidgets import (
     QWizardPage,
 )
 
+from gello.gui.widgets import VideoView
+from gello.gui.workers import CameraPreviewWorker
+from apps.workspace.shared.camera_node_proc import (
+    node_specs,
+    spawn_node,
+    spec_key,
+)
 from gello.config.station import list_stations, load_station
 from gello.scene.dataset_meta import (
     DEFAULT_DATASETS_PARENT,
@@ -264,8 +271,22 @@ class HardwarePage(QWizardPage):
         self.wrist_combo = QComboBox()
         for c in (self.agent_combo, self.wrist_combo):
             c.setEditable(True)
-        form.addRow(tr("Agent 카메라"), self.agent_combo)
-        form.addRow(tr("Wrist 카메라"), self.wrist_combo)
+        # 시리얼도 모델명도 "어느 쪽이 손목인지"는 안 알려준다. 특히 같은
+        # 모델이 두 대면 구별할 방법이 없다. 작게라도 그림이 보이면 즉시
+        # 갈린다 -- 이걸 위해 이 페이지에서 카메라 노드를 띄운다(_ensure_node).
+        self.previews: dict[str, VideoView] = {}
+        self._preview_workers: dict[str, CameraPreviewWorker] = {}
+        for role, combo, label in (("agent", self.agent_combo, tr("Agent 카메라")),
+                                   ("wrist", self.wrist_combo, tr("Wrist 카메라"))):
+            cell = QHBoxLayout()
+            cell.addWidget(combo, 1)
+            view = VideoView()
+            view.setFixedSize(160, 120)
+            view.setText(tr("대기"))
+            self.previews[role] = view
+            cell.addWidget(view)
+            form.addRow(label, cell)
+            combo.currentIndexChanged.connect(self._on_camera_pick)
         row = QHBoxLayout()
         detect = QPushButton(tr("카메라 감지"))
         detect.clicked.connect(self.detect_cameras)
@@ -275,6 +296,11 @@ class HardwarePage(QWizardPage):
         row.addWidget(self.cam_hint, 1)
         form.addRow(row)
         self.station_combo.currentIndexChanged.connect(self._apply_station_defaults)
+        # 이 페이지가 띄운 노드. 마법사가 끝나면 워크스페이스가 물려받는다
+        # (take_node) -- 넘기지 않으면 창이 같은 카메라를 두 번 열려다
+        # 포트 6021 충돌로 죽는다.
+        self._node = None
+        self._node_key = ""
 
     def initializePage(self) -> None:  # noqa: N802 - Qt override
         import os
@@ -282,11 +308,95 @@ class HardwarePage(QWizardPage):
         idx = self.station_combo.findData(want)
         if idx >= 0:
             self.station_combo.setCurrentIndex(idx)
+        # 목록부터 만들고(모델명 포함) 그 안에서 기억된 것을 고른다. 버튼을
+        # 눌러야만 모델명이 보이면 아무도 안 누른다.
+        self.detect_cameras()
         self._apply_station_defaults()
+        self._on_camera_pick()
+
+    # ------------------------------------------------------------ 미리보기
+    def cameras(self) -> tuple[str, str]:
+        return (self._serial(self.agent_combo), self._serial(self.wrist_combo))
+
+    @staticmethod
+    def _serial(combo: QComboBox) -> str:
+        data = combo.currentData()
+        if data and data != _NO_CAMERA:
+            return str(data)
+        text = combo.currentText().strip()
+        return "" if text.startswith("(") else text
+
+    def _on_camera_pick(self, *_a) -> None:
+        """선택이 바뀌면 노드를 그 구성으로 맞추고 미리보기를 다시 건다."""
+        agent, wrist = self.cameras()
+        specs = node_specs(agent, wrist)
+        key = spec_key(specs)
+        if key == self._node_key and self._node is not None:
+            return
+        self._stop_previews()
+        self._stop_node()
+        self._node = spawn_node(specs)
+        self._node_key = key if self._node is not None else ""
+        if self._node is None:
+            for v in self.previews.values():
+                v.clear_frame(tr("카메라를 고르세요"))
+            return
+        for role, serial in (("agent", agent), ("wrist", wrist)):
+            view = self.previews[role]
+            if not serial:
+                view.clear_frame(tr("(선택 안함)"))
+                continue
+            view.clear_frame(tr("연결 중..."))
+            w = CameraPreviewWorker(role, serial)
+            w.frame_ready.connect(lambda f, v=view: v.set_frame(f))
+            w.error.connect(lambda m, v=view: v.clear_frame(m[:40]))
+            w.start()
+            self._preview_workers[role] = w
+
+    def _stop_previews(self) -> None:
+        for w in self._preview_workers.values():
+            for sig in (w.frame_ready, w.error):
+                try:
+                    sig.disconnect()
+                except TypeError:
+                    pass
+            w.stop()
+            w.wait(3000)
+        self._preview_workers.clear()
+
+    def _stop_node(self) -> None:
+        if self._node is None:
+            return
+        self._node.terminate()
+        if not self._node.waitForFinished(3000):
+            self._node.kill()
+            self._node.waitForFinished(2000)
+        self._node = None
+        self._node_key = ""
+
+    def take_node(self):
+        """(QProcess, spec key) 를 넘기고 이 페이지는 손을 뗀다.
+
+        미리보기는 여기서 끝낸다 -- 창이 자기 미리보기를 새로 걸기 때문에,
+        구독자가 겹치면 같은 프레임을 두 번 디코딩하게 된다.
+        """
+        self._stop_previews()
+        proc, key = self._node, self._node_key
+        self._node, self._node_key = None, ""
+        return proc, key
+
+    def cleanup(self) -> None:
+        """마법사를 취소하고 나갈 때 -- 넘기지 않은 노드는 정리한다."""
+        self._stop_previews()
+        self._stop_node()
 
     def _apply_station_defaults(self) -> None:
-        """스테이션 YAML 의 카메라 시리얼을 채운다. recents 에 기록이 있으면
-        그쪽이 우선 (마지막으로 실제 쓴 조합이 가장 그럴듯하다)."""
+        """어느 카메라를 고를지만 정한다 -- 목록은 detect_cameras 가 만든다.
+
+        예전에는 여기서 목록을 지우고 시리얼만 넣어서, "카메라 감지"를 누르기
+        전까지 230422272249 같은 숫자만 보였다. 어느 게 손목인지 알 수 없다.
+        recents 가 우선 (마지막으로 실제 쓴 조합이 가장 그럴듯하다).
+        """
         recents = Recents()
         try:
             cfg = load_station(self.station_combo.currentData() or None)
@@ -300,11 +410,15 @@ class HardwarePage(QWizardPage):
                     serial = cfg.camera(role).serial
                 except Exception:  # noqa: BLE001
                     serial = ""
-            combo.clear()
-            combo.addItem(tr("(선택 안함)"), _NO_CAMERA)
-            if serial:
-                combo.addItem(serial, serial)
-                combo.setCurrentIndex(1)
+            if not serial:
+                continue
+            i = combo.findData(serial)
+            if i < 0:
+                # 기억된 카메라가 지금 안 꽂혀 있다. 지우지 않고 그 사실을
+                # 보여준다 -- 목록에서 사라지면 왜 없는지 알 수 없다.
+                combo.addItem(tr("{s} — 연결 안 됨").format(s=serial), serial)
+                i = combo.count() - 1
+            combo.setCurrentIndex(i)
 
     def detect_cameras(self) -> None:
         try:
@@ -321,25 +435,19 @@ class HardwarePage(QWizardPage):
             if serial:
                 entries.append((serial, f"{name} ({serial})"))
         for combo in (self.agent_combo, self.wrist_combo):
-            cur = combo.currentText().strip()
+            # 선택은 시리얼(itemData)로 기억한다. 표시 문자열로 맞추면
+            # 라벨에 모델명이 붙는 순간 못 찾는다.
+            cur = combo.currentData()
             combo.clear()
             combo.addItem(tr("(선택 안함)"), _NO_CAMERA)
             for serial, label in entries:
                 combo.addItem(label, serial)
-            for i in range(combo.count()):
-                if combo.itemData(i) == cur:
-                    combo.setCurrentIndex(i)
-                    break
+            i = combo.findData(cur) if cur else -1
+            combo.setCurrentIndex(max(0, i))
         self.cam_hint.setText(tr("{n}대 감지됨").format(n=len(entries)))
 
     def station(self) -> str:
         return str(self.station_combo.currentData() or "")
-
-    def cameras(self) -> "tuple[str, str]":
-        def _serial(combo: QComboBox) -> str:
-            data = combo.currentData()
-            return str(data if data is not None else combo.currentText()).strip()
-        return _serial(self.agent_combo), _serial(self.wrist_combo)
 
     def isComplete(self) -> bool:  # noqa: N802 - Qt override
         return True     # 카메라 미선택도 허용
