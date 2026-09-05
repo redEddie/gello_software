@@ -70,7 +70,12 @@ for _ in range(5):
         joint_positions=r.standard_normal(7).astype(np.float32),
         gripper_position=0.5, ee_pos_quat=np.zeros(7), gripper_closed=False,
         commanded_joint_positions=r.standard_normal(7).astype(np.float32),
-        commanded_gripper=0.0)
+        commanded_gripper=0.0,
+        # knu-1.1.0 필수 -- 이 파일은 그 버전으로 찍혀 있으므로 이어 붙이는
+        # 에피소드에도 있어야 한다 (없으면 검증기가 잡는다).
+        joint_torques=r.standard_normal(7).astype(np.float32),
+        ext_joint_torques=r.standard_normal(7).astype(np.float32),
+        ee_wrench=r.standard_normal(6).astype(np.float32))
 new_name = w.save_buffer(w.detach_buffer(), instruction=victim["instruction"],
                          instruction_id=iid, success=True, collector="t")
 w.close()
@@ -106,7 +111,12 @@ for _ in range(40):
         joint_positions=r.standard_normal(7).astype(np.float32),
         gripper_position=0.5, ee_pos_quat=np.zeros(7), gripper_closed=False,
         commanded_joint_positions=r.standard_normal(7).astype(np.float32),
-        commanded_gripper=0.0)
+        commanded_gripper=0.0,
+        # knu-1.1.0 필수 -- 이 파일은 그 버전으로 찍혀 있으므로 이어 붙이는
+        # 에피소드에도 있어야 한다 (없으면 검증기가 잡는다).
+        joint_torques=r.standard_normal(7).astype(np.float32),
+        ext_joint_torques=r.standard_normal(7).astype(np.float32),
+        ee_wrench=r.standard_normal(6).astype(np.float32))
 long_name = w3.save_buffer(w3.detach_buffer(), instruction=victim["instruction"],
                            instruction_id=iid, success=True, collector="t")
 w3.close()

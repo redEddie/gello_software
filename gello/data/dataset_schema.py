@@ -46,7 +46,9 @@ DEFAULT_CONFIG_PATH = Path.home() / "libero_gui_logs" / "dataset_schema.json"
 #
 # 명세 문서는 docs/dataset-schema.md 이고, 이 상수들이 그 문서의 코드 쪽
 # 정본이다 (문서와 어긋나면 검증기가 잡는다).
-SCHEMA_VERSION = "knu-1.0.0"
+#: 지금 쓰는(기록하는) 버전. 읽기는 같은 MAJOR 안에서 위아래 모두 된다
+#: (schema_is_readable 참조).
+SCHEMA_VERSION = "knu-1.1.0"
 
 # --------------------------------------------------------- observation/dataset keys
 # Robot observation keys (returned by Robot.get_observations / RobotEnv.get_obs).
@@ -67,6 +69,11 @@ OBS_EE_STATES = "ee_states"
 OBS_EE_POS = "ee_pos"
 OBS_EE_ORI = "ee_ori"
 OBS_JOINT_VELOCITIES = "joint_velocities"
+# 포스·토크 (knu-1.1.0 에서 추가). FR3 의 robot state 에서 온다 -- 그 필드가
+# 없는 펌웨어에서는 기록되지 않으므로, 이 셋이 있으면 1.1.0, 없으면 1.0.0 이다.
+OBS_JOINT_TORQUES = "joint_torques"
+OBS_EXT_JOINT_TORQUES = "ext_joint_torques"
+OBS_EE_WRENCH = "ee_wrench"
 
 # HDF5 repack markers (used by libero_format.py, dataset_sync.py, repack_hdf5.py).
 REPACK_MARKER_ATTR = "repacked"
@@ -113,6 +120,23 @@ SCHEMA_FIELDS = {
             "dataset_version", "created", "next_episode_idx",
         ),
     },
+}
+
+#: knu-1.1.0 = knu-1.0.0 + 포스·토크 3종 (2026-09-05).
+#:
+#: 왜 버전을 올렸나: S015 를 찍을 때부터 obs/joint_torques,
+#: ext_joint_torques, ee_wrench 가 들어가기 시작했는데 버전 문자열은 그대로
+#: knu-1.0.0 이었다. "같은 버전인데 필드가 다른 파일 두 벌"이 생긴 것이고,
+#: 그 문자열을 믿고 필드 구성을 가정하는 소비자는 틀리게 된다 -- 버저닝이
+#: 막으려던 바로 그 상황이다.
+#:
+#: MINOR 는 추가만 한다는 규칙대로, 1.0.0 항목은 손대지 않고 새 키를 만든다.
+#: 옛 파일(scene_000~014)은 계속 1.0.0 규칙으로 검사된다.
+SCHEMA_FIELDS["knu-1.1.0"] = {
+    **SCHEMA_FIELDS["knu-1.0.0"],
+    "obs_datasets": SCHEMA_FIELDS["knu-1.0.0"]["obs_datasets"] + (
+        OBS_JOINT_TORQUES, OBS_EXT_JOINT_TORQUES, OBS_EE_WRENCH,
+    ),
 }
 
 
@@ -302,12 +326,17 @@ def selftest() -> None:
     assert cur is not None and SCHEMA_VERSION in SCHEMA_FIELDS
     assert set(cur) == {"episode_datasets", "obs_datasets",
                         "episode_attrs", "metadata_attrs"}
-    # depth 는 0.1.0 에 없다 -- 드라이버 미지원으로 수집 자체가 꺼져 있고,
-    # 되살아나면 '추가'라 1.1.0 이다 (docs/dataset-schema.md)
+    # depth 는 아직 없다 -- 드라이버 미지원으로 수집 자체가 꺼져 있다.
+    # 되살아나면 '추가'라 또 한 번 MINOR 를 올린다 (docs/dataset-schema.md)
     assert not any("depth" in f for f in cur["obs_datasets"])
     assert "save_agentview_depth" in DatasetSchemaConfig._FIXED
-    # 토크도 아직 없다 (issue #16 -> 1.1.0)
-    assert not any("torque" in f for f in cur["obs_datasets"])
+    # 포스·토크는 1.1.0 에서 들어왔다. 1.0.0 은 그대로 없어야 한다 --
+    # MINOR 는 추가만 하므로 옛 규칙을 고치면 옛 파일 검사가 틀어진다.
+    assert all(f in cur["obs_datasets"] for f in
+               (OBS_JOINT_TORQUES, OBS_EXT_JOINT_TORQUES, OBS_EE_WRENCH))
+    old = schema_required_fields("knu-1.0.0")
+    assert not any("torque" in f or "wrench" in f for f in old["obs_datasets"])
+    assert len(cur["obs_datasets"]) == len(old["obs_datasets"]) + 3
 
     # 모르는 버전은 필드 목록이 없다 -> 검증기가 "모르는 스키마 버전" 으로 잡는다
     assert schema_required_fields("knu-9.9.9") is None

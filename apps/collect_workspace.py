@@ -70,6 +70,7 @@ from PyQt6.QtWidgets import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gello.data.dataset_schema import (  # noqa: E402
+    SCHEMA_VERSION,
     load_schema_config,
     save_schema_config,
 )
@@ -174,11 +175,16 @@ SHORTCUT_HINTS = {
 
 class WorkspaceWindow(QMainWindow):
     def __init__(self, log_path: Path | None,
-                 camera_node=None, camera_node_spec: str = "") -> None:
+                 camera_node=None, camera_node_spec: str = "",
+                 schema_version: str = SCHEMA_VERSION) -> None:
         super().__init__()
         self.setWindowTitle(tr("FR3 GELLO 데이터 수집 워크스페이스"))
         self.resize(1780, 1020)
 
+        # 이 세션이 기록할 스키마 버전. 런처가 데이터셋을 보고 정해 주고
+        # 여기서는 고정으로 쓴다 -- 새 scene 파일에 그대로 찍힌다. 기록기가
+        # 내용을 보고 추측하면 토크를 못 주는 장비에서 어긋난다 (2026-09-05).
+        self.schema_version = schema_version
         self.worker: CollectionWorker | None = None
         self.procs = ProcessRegistry()
         self.playback = PlaybackState()
@@ -806,7 +812,8 @@ def _install_excepthook(log_path: Path, window_ref: dict) -> None:
 
 
 def main(app: "QApplication | None" = None, camera_node=None,
-         camera_node_spec: str = "") -> None:
+         camera_node_spec: str = "",
+         schema_version: str = SCHEMA_VERSION) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"workspace_{time.strftime('%Y%m%d_%H%M%S')}.log"
     window_ref: dict = {}
@@ -815,7 +822,8 @@ def main(app: "QApplication | None" = None, camera_node=None,
         app = QApplication(sys.argv)
         app.setStyle("Fusion")
     win = WorkspaceWindow(log_path, camera_node=camera_node,
-                          camera_node_spec=camera_node_spec)
+                          camera_node_spec=camera_node_spec,
+                          schema_version=schema_version)
     window_ref["win"] = win
     win.show()
     sys.exit(app.exec())

@@ -27,8 +27,10 @@ from typing import Optional
 
 from PyQt6.QtWidgets import QMessageBox, QWizard
 
+from gello.data.dataset_schema import SCHEMA_VERSION
 from gello.scene.dataset_meta import (
     DatasetIdentity,
+    dataset_schema_version,
     load_identity,
     plan_path,
     save_identity,
@@ -58,6 +60,10 @@ class LaunchResult:
     cameras: dict
     cam_roles: dict
     identity: DatasetIdentity
+    #: 이 세션이 기록할 스키마 버전. **런처가 정하고 워크스페이스는 고정으로
+    #: 쓴다** -- 기록기가 내용을 보고 추측하면, 토크를 못 주는 장비에서 토크
+    #: 필수 버전을 찍는 식으로 어긋난다 (2026-09-05).
+    schema_version: str = SCHEMA_VERSION
     # 하드웨어 페이지가 미리보기를 위해 띄운 카메라 노드. 워크스페이스가
     # 이어서 쓴다 -- 여기서 죽였다가 창이 다시 띄우면 카메라를 두 번 여는
     # 셈이라 느리고, 겹치면 포트 6021 충돌로 죽는다.
@@ -157,6 +163,12 @@ class LauncherWizard(QWizard):
                 ident = replace(ident, station=station or ident.station,
                                 cameras=dict(serials))
                 save_identity(root, ident)
+        # 이어 찍을 때는 이미 있는 파일과 같은 모양으로 써야 한다 -- 파일이
+        # 정본이고, 새 데이터셋이면 지금 기록기의 버전이다.
+        schema = dataset_schema_version(root)
+        if ident.schema_version != schema:
+            ident = replace(ident, schema_version=schema)
+            save_identity(root, ident)
         node, node_key = hw.take_node()
         return LaunchResult(mode=self.mode or "continue",
                             dataset_root=root,
@@ -165,4 +177,5 @@ class LauncherWizard(QWizard):
                             cam_roles=dict(cam_roles),
                             identity=ident,
                             camera_node=node,
-                            camera_node_spec=node_key)
+                            camera_node_spec=node_key,
+                            schema_version=schema)

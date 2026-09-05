@@ -111,7 +111,33 @@ schema** — the same version can be stored either way.
   No recorded file contains depth. When the driver supports it, depth is a
   field **addition** → `knu-1.1.0`.
 - **Joint torques / external forces** (`tau_J`, `tau_ext_hat_filtered`,
-  `O_F_ext_hat_K`) — issue #16. Also an addition → `knu-1.1.0`.
+  `O_F_ext_hat_K`) — issue #16. Added in `knu-1.1.0` below.
+
+## `knu-1.1.0` — frozen 2026-09-05
+
+Adds three observation datasets. Everything else is identical to `knu-1.0.0`.
+
+```
+episode_NNN/obs/joint_torques       (T, 7) float32   tau_J
+episode_NNN/obs/ext_joint_torques   (T, 7) float32   tau_ext_hat_filtered
+episode_NNN/obs/ee_wrench           (T, 6) float32   O_F_ext_hat_K
+```
+
+They come straight from the FR3 robot state. A firmware without those fields
+makes the node log a warning and skip them — a file written on such a rig has
+`knu-1.0.0`'s field set and must be stamped `knu-1.0.0`, not `1.1.0`.
+
+**Why the bump was needed, in hindsight.** The torque fields started being
+written with `scene_015` (2026-09-04) while the version string stayed
+`knu-1.0.0`. That produced two files both claiming `knu-1.0.0` with different
+observation sets — exactly what versioning exists to prevent. `scene_015` was
+stamped `knu-1.1.0` in place on 2026-09-05 (two attributes; no episode
+touched). `scene_000` … `scene_014` genuinely lack the fields and stay
+`knu-1.0.0`.
+
+Nothing downstream of the HDF5 changes: the LeRobot converter never consumed
+these keys (`_CONSUMED_OBS_KEYS`), so the published `-lerobot` dataset is
+unaffected.
 
 ## How to bump a MINOR
 

@@ -39,8 +39,10 @@ from gello.config.station import CameraSpec, load_station
 from apps.workspace.constants import WT_ROOT
 from apps.workspace.shared.sizing import shrinkable_combo
 from apps.workspace.launcher.station_editor import StationEditor
+from gello.data.dataset_schema import SCHEMA_VERSION
 from gello.scene.dataset_meta import (
     DEFAULT_DATASETS_PARENT,
+    dataset_schema_version,
     DatasetEntry,
     discover_datasets,
     load_identity,
@@ -300,6 +302,12 @@ class HardwarePage(QWizardPage):
         self.station_editor.cams_changed.connect(self._rebuild_cam_rows)
         # 커밋 안 된 스테이션 파일이 있으면 아이콘의 자동 git pull 이 건너뛰어진다.
         # 막지는 않고 알리기만 한다 (2026-09-05 사용자 결정).
+        # 이 세션이 어떤 스키마 버전으로 기록하는지. 이어 찍을 때는 이미 있는
+        # 파일과 같아야 하므로 데이터셋이 정하고, 워크스페이스는 그대로 쓴다.
+        self.schema_label = QLabel("")
+        self.schema_label.setWordWrap(True)
+        self.schema_label.setStyleSheet("color:#888;")
+        outer.addWidget(self.schema_label)
         self.git_warn = QLabel("")
         self.git_warn.setWordWrap(True)
         self.git_warn.setStyleSheet("color:#e67e22;")
@@ -366,6 +374,7 @@ class HardwarePage(QWizardPage):
             if want:
                 self.station_editor.reload(select=want)
             self._refresh_git_warning()
+            self._refresh_schema_label()
             # 목록부터 만들고(모델명 포함) 그 안에서 기억된 것을 고른다. 버튼을
             # 눌러야만 모델명이 보이면 아무도 안 누른다.
             with self._combos_quiet():
@@ -647,6 +656,34 @@ class HardwarePage(QWizardPage):
                 "wrist": CameraSpec(serial=wrist)}
         if self.station_editor.save_new(cams):
             self._refresh_git_warning()
+
+    def _refresh_schema_label(self) -> None:
+        """이 데이터셋이 쓰는 스키마 버전을 보여준다.
+
+        이어 찍기면 이미 있는 scene 파일이 정본이다 -- 그 모양대로 써야
+        같은 데이터셋 안에서 필드가 갈라지지 않는다. 새 데이터셋이면 지금
+        기록기의 버전이다.
+        """
+        wiz = self.wizard()
+        root = None
+        if wiz is not None and getattr(wiz, "mode", "") == "continue":
+            root = wiz.page(PAGE_CONTINUE).selected_path()
+        if root is None:
+            self.schema_label.setText(tr("스키마 {v} (새 데이터셋)")
+                                      .format(v=SCHEMA_VERSION))
+            self.schema_label.setStyleSheet("color:#888;")
+            return
+        v = dataset_schema_version(root)
+        if v == SCHEMA_VERSION:
+            self.schema_label.setText(tr("스키마 {v}").format(v=v))
+            self.schema_label.setStyleSheet("color:#888;")
+        else:
+            # 기록기는 더 새 버전을 쓸 수 있지만, 이어 찍는 파일에 맞춘다.
+            self.schema_label.setText(tr(
+                "스키마 {v} — 이 데이터셋에 이미 있는 파일에 맞춥니다 "
+                "(기록기 기본값은 {cur}). 새 필드는 기록되지 않습니다.")
+                .format(v=v, cur=SCHEMA_VERSION))
+            self.schema_label.setStyleSheet("color:#e67e22;")
 
     def _refresh_git_warning(self) -> None:
         """커밋 안 된 스테이션 파일이 있으면 알린다.

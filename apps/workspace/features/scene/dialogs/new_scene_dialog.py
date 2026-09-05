@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 
 from apps.workspace.shared.widgets import SceneInfoView
 from apps.workspace.features.scene.dialogs.recommend_dialog import RecommendDialog
+from gello.data.dataset_schema import SCHEMA_VERSION
 from gello.gui.i18n import tr
 from gello.scene.props import load_props, props_by_id
 from gello.scene.scene_format import (
@@ -39,7 +40,8 @@ class NewSceneDialog(QDialog):
     def __init__(self, parent, scene_id: str,
                  data_root: "Path | None" = None,
                  plan_path: "Path | None" = None,
-                 station_name: str = "") -> None:
+                 station_name: str = "",
+                 schema_version: str = SCHEMA_VERSION) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("새 Scene 구성 — {sid}").format(sid=scene_id))
         self.setMinimumWidth(720)
@@ -47,6 +49,7 @@ class NewSceneDialog(QDialog):
         self._data_root = data_root
         self._plan_path = plan_path
         self._station_name = station_name
+        self._schema_version = schema_version
         self._placements: dict = {}
         self.metadata = None  # accept 시 SceneMetadata
 
@@ -167,6 +170,8 @@ class NewSceneDialog(QDialog):
                                    for o, z in self._placements.items()}},
             description=self.desc_edit.text().strip(),
             station=self._station_name,
+            # 세션 버전을 그대로 -- 이어 찍는 데이터셋과 같은 모양이어야 한다.
+            dataset_version=self._schema_version,
         )
 
     def _refresh(self, *_args) -> None:

@@ -117,7 +117,8 @@ class SceneOps:
         pp = dataset_plan_path(root)
         dlg = NewSceneDialog(self.win, sid, data_root=root,
                              plan_path=pp if pp.is_file() else None,
-                             station_name=STATION.name)
+                             station_name=STATION.name,
+                             schema_version=self.win.schema_version)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.metadata is not None:
             self.win._pending_scene_meta = dlg.metadata
             self.on_scene_selected()

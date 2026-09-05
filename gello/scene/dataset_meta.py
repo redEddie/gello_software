@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
-from gello.data.dataset_schema import SCHEMA_VERSION
+from gello.data.dataset_schema import SCHEMA_VERSION, parse_schema_version
 from gello.scene.collection_plan import load_plan
 from gello.scene.scene_format import (
     count_by_slot,
@@ -187,6 +187,40 @@ def discover_datasets(candidate_roots: Iterable[Path]) -> list[DatasetEntry]:
             continue
     entries.sort(key=lambda e: e.mtime, reverse=True)
     return entries
+
+
+def dataset_schema_version(root: Path) -> str:
+    """이 데이터셋이 쓰는 스키마 버전. **파일이 정본이다.**
+
+    이미 찍힌 scene 파일의 metadata 를 보고, 없으면 identity, 그것도 없으면
+    지금 기록기의 버전을 준다. 파일이 서로 다른 버전이면 가장 낮은 것을
+    준다 -- 이어 찍을 때는 이미 있는 것과 같은 모양으로 써야 한다.
+
+    이 값을 **런처가 세션 시작 전에 정하고 워크스페이스는 그대로 쓴다**
+    (2026-09-05 결정). 기록기가 내용을 보고 추측하면, 토크를 못 주는 장비에서
+    토크 필수 버전을 찍는 식으로 어긋난다.
+    """
+    import h5py
+
+    from gello.data.dataset_schema import normalize_schema_version
+
+    seen = set()
+    for p in iter_scene_files(root):
+        try:
+            with h5py.File(p, "r") as f:
+                v = f["metadata"].attrs.get("schema_version")
+        except Exception:  # noqa: BLE001 -- 잠긴/깨진 파일은 건너뛴다
+            continue
+        if v is None:
+            continue
+        seen.add(normalize_schema_version(
+            v.decode() if isinstance(v, bytes) else v))
+    if seen:
+        return min(seen, key=lambda s: parse_schema_version(s) or (0, 0, 0))
+    ident = load_identity(root)
+    if ident is not None and ident.schema_version:
+        return normalize_schema_version(ident.schema_version)
+    return SCHEMA_VERSION
 
 
 def plan_progress(root: Path) -> "tuple[int, int] | None":
