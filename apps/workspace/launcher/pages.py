@@ -320,6 +320,7 @@ class HardwarePage(QWizardPage):
         super().__init__()
         self.setTitle(tr("하드웨어"))
         self.setSubTitle(tr(
+            "수집 스테이션 · 카메라 · 데이터세트 스키마 버전을 정합니다. "
             "데이터세트 스키마 버전은 [확인] 으로 FCI 에서 값이 인출되는지 "
             "확인할 수 있습니다."))
         # 왼쪽은 미리보기, 오른쪽은 설정. 아래로 쌓지 않는 이유는 둘이다:
