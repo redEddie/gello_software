@@ -39,9 +39,15 @@ def node_specs(serials) -> list[str]:
     return out
 
 
-def spec_key(specs: list[str]) -> str:
-    """"이 노드가 지금 어떤 구성인가"를 나타내는 비교용 문자열."""
-    return ",".join(specs)
+def spec_key(specs) -> str:
+    """"이 노드가 지금 어떤 구성인가"를 나타내는 비교용 문자열.
+
+    **정렬한다.** 노드는 시리얼 집합만 알면 되고 순서는 의미가 없다. 정렬하지
+    않으면 cam1 과 cam2 의 카메라를 맞바꿨을 때 -- 여는 장치는 똑같은데 --
+    키가 달라져 노드를 쓸데없이 재시작한다 (2026-09-05). 그것이 바로 Q2 가
+    없애려던 "역할만 바꿨는데 재시작" 이라, 순서까지 지워야 약속이 완성된다.
+    """
+    return ",".join(sorted(specs))
 
 
 def spawn_node(specs: list[str], parent=None) -> "QProcess | None":

@@ -159,6 +159,13 @@ assert node_specs(["A1", "B2"]) == ["A1", "B2"]
 assert node_specs(["A1", ""]) == ["A1"]            # 빈 시리얼은 빠진다
 assert node_specs(["A1", "A1"]) == ["A1"]          # 같은 장치를 두 번 열지 않는다
 assert spec_key(node_specs(["A1", "B2"])) == "A1,B2"
+# 키는 순서를 지운다: cam1 과 cam2 의 카메라를 맞바꾸면 여는 장치는 똑같으므로
+# 노드를 재시작할 이유가 없다. 순서가 남아 있으면 "역할만 바꿨는데 재시작"이
+# 그대로 살아난다 (Q2 가 없애려던 것).
+assert spec_key(node_specs(["A1", "B2"])) == spec_key(node_specs(["B2", "A1"])), \
+    "cam 을 맞바꾼 것만으로 노드가 재시작하면 안 된다"
+assert spec_key(node_specs(["A1", "B2"])) != spec_key(node_specs(["A1", "C3"]))
+assert spec_key(node_specs(["A1", "B2"])) != spec_key(node_specs(["A1"]))
 assert all(":" not in x for x in node_specs(["A1", "B2"])), \
     "spec 에 역할이 섞이면 안 된다"
 
