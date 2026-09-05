@@ -275,17 +275,23 @@ class HardwarePage(QWizardPage):
         super().__init__()
         self.setTitle(tr("하드웨어"))
         self.setSubTitle(tr("수집 스테이션과 카메라를 선택하세요."))
-        # 왼쪽은 설정, 오른쪽은 미리보기. 아래로 쌓지 않는 이유는 둘이다:
+        # 왼쪽은 미리보기, 오른쪽은 설정. 아래로 쌓지 않는 이유는 둘이다:
         # 모니터가 16:9 라 세로가 아쉽고, 무엇보다 칼럼이 갈려 있어야 "여기는
-        # 설정하는 곳, 저기는 보는 곳"이 한눈에 읽힌다 (2026-09-05 사용자 결정).
+        # 보는 곳, 저기는 설정하는 곳"이 한눈에 읽힌다 (2026-09-05 사용자 결정).
         # 예전엔 한 줄에 [콤보][미리보기] 를 짝지어 두었는데, 역할이 셋만 되어도
         # 둘이 번갈아 나와 못 읽고, 긴 콤보에 밀려 미리보기가 9px 세로줄로
         # 잘리기까지 했다.
+        #
+        # 설정을 오른쪽에 두는 이유: 글은 왼쪽에서 시작해 오른쪽으로 흐르므로,
+        # 값이 길어질 때(경로·설명) 오른쪽이 자유롭게 넓어지는 것이 자연스럽다.
+        # 그래서 늘어나는 몫(stretch)도 설정 쪽이 크다.
         two_col = QHBoxLayout(self)
-        left = QWidget()
-        outer = QVBoxLayout(left)
+        self.preview_column = CameraPreviewColumn(CAMERA_ROLES)
+        two_col.addWidget(self.preview_column, 2)
+        right = QWidget()
+        outer = QVBoxLayout(right)
         outer.setContentsMargins(0, 0, 0, 0)
-        two_col.addWidget(left, 3)
+        two_col.addWidget(right, 3)
         self.station_editor = StationEditor()
         self.station_editor.save_requested.connect(self._on_save_station)
         outer.addWidget(self.station_editor)
@@ -326,8 +332,6 @@ class HardwarePage(QWizardPage):
         # 시리얼도 모델명도 "어느 쪽이 손목인지"는 안 알려준다. 특히 같은
         # 모델이 두 대면 구별할 방법이 없다. 그림이면 즉시 갈린다 -- 이걸
         # 위해 이 페이지에서 카메라 노드를 띄운다(_on_camera_pick).
-        self.preview_column = CameraPreviewColumn(CAMERA_ROLES)
-        two_col.addWidget(self.preview_column, 2)
         self.previews = self.preview_column.views()
         self.station_editor.combo.currentIndexChanged.connect(
             self._apply_station_defaults)
