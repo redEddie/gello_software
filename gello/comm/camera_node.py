@@ -47,6 +47,20 @@ import zmq
 DEFAULT_PUB_PORT = 6021
 DEFAULT_CTL_PORT = 6022
 
+#: wait_for_frames 한 번의 대기 (ms). 종료 응답 속도가 이 값에 묶인다 --
+#: 종료 플래그를 세워도 스레드는 이 안에 갇혀 있다.
+#:
+#: 500ms 로 줄여 봤으나 되돌렸다 (2026-09-05): 종료가 2,476 -> 1,835ms 로
+#: 641ms 밖에 안 줄었다. 그 시간의 대부분(~1초)은 pipe.stop() 의 장치 정리라
+#: 타임아웃과 무관하고, 500ms 로는 스트림을 막 연 직후 첫 프레임이 늦어
+#: "프레임 없음" 이 헛되이 찍혀 첫 프레임용 예외 처리가 또 필요했다.
+#: 무엇보다 노드 신원을 시리얼로 바꾼 뒤로는(Q2) 역할 변경에 재시작이 없어,
+#: 이 비용은 카메라를 실제로 바꿔 꽂을 때만 든다 -- 드문 일에 상수 둘과
+#: 플래그 하나를 얹을 값어치가 없다.
+FRAME_WAIT_MS = 2000
+#: 몇 번 연속 비면 스트림이 죽은 것으로 보고 재오픈하는가.
+FRAME_TIMEOUTS_BEFORE_REOPEN = 2
+
 
 def _log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -172,20 +186,22 @@ class CameraWorker(threading.Thread):
                 .as_video_stream_profile().get_intrinsics()
             self.alive = True
             self.last_error = ""
-            _log(f"{self.serial}: 스트림 시작 ({self.serial}, "
-                 f"{self.w}x{self.h}@{self.fps}, depth_scale={scale})")
+            _log(f"{self.serial}: 스트림 시작 "
+                 f"({self.w}x{self.h}@{self.fps}, depth_scale={scale})")
             seq = 0
             t_fps, n_fps = time.time(), 0
             timeouts = 0
             while self.running:
                 try:
-                    frames = pipe.wait_for_frames(2000)
+                    frames = pipe.wait_for_frames(FRAME_WAIT_MS)
                     timeouts = 0
                 except Exception as e:  # noqa: BLE001
+                    if not self.running:
+                        break          # 종료 중이면 오류가 아니다
                     timeouts += 1
                     self.last_error = f"프레임 없음: {e}"
                     _log(f"{self.serial}: {self.last_error} ({timeouts}회)")
-                    if timeouts >= 2:
+                    if timeouts >= FRAME_TIMEOUTS_BEFORE_REOPEN:
                         break  # 스트림 사망 -> 재오픈 루프로
                     continue
                 cf, df = frames.get_color_frame(), frames.get_depth_frame()
