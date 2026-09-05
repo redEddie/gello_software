@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -31,6 +35,7 @@ from apps.workspace.shared.camera_node_proc import (
 )
 from gello.config.station import CameraSpec, load_station
 from apps.workspace.constants import WT_ROOT
+from apps.workspace.shared.sizing import shrinkable_combo
 from apps.workspace.launcher.station_editor import StationEditor
 from gello.scene.dataset_meta import (
     DEFAULT_DATASETS_PARENT,
@@ -50,6 +55,10 @@ PAGE_NEW = 2
 PAGE_HW = 3
 
 _NO_CAMERA = ""      # "(선택 안함)" 항목의 data
+
+# 카메라 역할. 여기에 한 줄 더하면 콤보와 미리보기가 함께 늘어난다 --
+# 둘을 같은 목록에서 만들기 때문에 한쪽만 빠뜨릴 수 없다.
+CAMERA_ROLES = (("agent", "Agent (정면)"), ("wrist", "Wrist (손목)"))
 
 
 class ModePage(QWizardPage):
@@ -278,26 +287,28 @@ class HardwarePage(QWizardPage):
         self.git_warn.setWordWrap(True)
         self.git_warn.setStyleSheet("color:#e67e22;")
         outer.addWidget(self.git_warn)
-        self.agent_combo = QComboBox()
-        self.wrist_combo = QComboBox()
-        for c in (self.agent_combo, self.wrist_combo):
-            c.setEditable(True)
-        # 시리얼도 모델명도 "어느 쪽이 손목인지"는 안 알려준다. 특히 같은
-        # 모델이 두 대면 구별할 방법이 없다. 작게라도 그림이 보이면 즉시
-        # 갈린다 -- 이걸 위해 이 페이지에서 카메라 노드를 띄운다(_ensure_node).
+        # 고르는 곳과 보는 곳을 아예 나눈다. 한 줄에 [콤보][미리보기] 로 짝지어
+        # 두면 역할이 셋 이상이 되는 순간 둘이 번갈아 나와 못 읽고, 실제로
+        # 고정폭 미리보기가 긴 콤보에 밀려 9px 짜리 세로줄로 잘렸다
+        # (2026-09-05, 콤보가 폭 511 을 가져가 미리보기가 x=605 에 놓였다).
+        # 위: 역할별 콤보만. 아래: 미리보기만 나란히.
+        self.combos: dict[str, QComboBox] = {}
         self.previews: dict[str, VideoView] = {}
         self._preview_workers: dict[str, CameraPreviewWorker] = {}
-        for role, combo, label in (("agent", self.agent_combo, tr("Agent 카메라")),
-                                   ("wrist", self.wrist_combo, tr("Wrist 카메라"))):
-            cell = QHBoxLayout()
-            cell.addWidget(combo, 1)
-            view = VideoView()
-            view.setFixedSize(160, 120)
-            view.setText(tr("대기"))
-            self.previews[role] = view
-            cell.addWidget(view)
-            form.addRow(label, cell)
-            combo.currentIndexChanged.connect(self._on_camera_pick)
+        for role, title in CAMERA_ROLES:
+            combo = QComboBox()
+            combo.setEditable(True)
+            # 항목 문자열("Intel RealSense D405 (2304...)")이 콤보의 최소 폭을
+            # 정하게 두면 옆칸을 밀어낸다 -- 줄여서 말줄임하게 한다.
+            shrinkable_combo(combo)
+            # currentIndexChanged 가 아니라 activated 다. 전자는 목록을 다시
+            # 채우기만 해도 터진다 -- clear() 로 -1, 첫 addItem 으로 0, 마지막
+            # setCurrentIndex 로 또 한 번. 그때마다 "조작자가 카메라를 바꿨다"로
+            # 읽혀 노드를 죽였다 띄웠고(각 3~5초), 그것이 페이지 진입이 3~8초
+            # 걸린 원인이었다. activated 는 사람이 고른 경우에만 온다.
+            combo.activated.connect(self._on_camera_pick)
+            self.combos[role] = combo
+            form.addRow(title, combo)
         row = QHBoxLayout()
         detect = QPushButton(tr("카메라 감지"))
         detect.clicked.connect(self.detect_cameras)
@@ -306,6 +317,29 @@ class HardwarePage(QWizardPage):
         self.cam_hint.setStyleSheet("color:#888;")
         row.addWidget(self.cam_hint, 1)
         form.addRow(row)
+
+        # 시리얼도 모델명도 "어느 쪽이 손목인지"는 안 알려준다. 특히 같은
+        # 모델이 두 대면 구별할 방법이 없다. 그림이면 즉시 갈린다 -- 이걸
+        # 위해 이 페이지에서 카메라 노드를 띄운다(_on_camera_pick).
+        prev_box = QGroupBox(tr("미리보기"))
+        prow = QHBoxLayout(prev_box)
+        for role, title in CAMERA_ROLES:
+            cell = QVBoxLayout()
+            cap = QLabel(title)
+            cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cap.setStyleSheet("color:#888;")
+            view = VideoView()
+            view.setMinimumSize(160, 120)
+            # 정사각 크롭 가이드는 끈다. 여기서 볼 것은 "어느 쪽이 손목인가"
+            # 하나뿐이라, 좌우를 어둡게 덮으면 판별만 어려워진다. 프레이밍은
+            # 워크스페이스 Layout 패널에서 맞춘다.
+            view.set_square_guide(False)
+            view.setText(tr("대기"))
+            self.previews[role] = view
+            cell.addWidget(view, 1)
+            cell.addWidget(cap)
+            prow.addLayout(cell, 1)
+        outer.addWidget(prev_box, 1)
         self.station_editor.combo.currentIndexChanged.connect(
             self._apply_station_defaults)
         # 이 페이지가 띄운 노드. 마법사가 끝나면 워크스페이스가 물려받는다
@@ -316,20 +350,52 @@ class HardwarePage(QWizardPage):
 
     def initializePage(self) -> None:  # noqa: N802 - Qt override
         import os
-        # 기본 선택: 이어서 수집이면 그 데이터세트가 쓰던 스테이션.
-        want = self._wanted_station() or os.environ.get("GELLO_STATION", "")
-        if want:
-            self.station_editor.reload(select=want)
-        self._refresh_git_warning()
-        # 목록부터 만들고(모델명 포함) 그 안에서 기억된 것을 고른다. 버튼을
-        # 눌러야만 모델명이 보이면 아무도 안 누른다.
-        self.detect_cameras()
-        self._apply_station_defaults()
-        self._on_camera_pick()
+        # 이 페이지에 들어오는 데 3~8초가 걸렸다 (2026-09-05). 카메라 USB
+        # 열거가 느린 것도 있지만, 진짜 원인은 콤보를 다시 채울 때마다
+        # currentIndexChanged 가 터져 _on_camera_pick 이 여러 번 불린 것이다 --
+        # 매번 노드를 죽이고(waitForFinished 3초 + kill 2초) 다시 띄웠다.
+        # 목록을 만드는 동안은 신호를 막고, 노드는 마지막에 한 번만 맞춘다.
+        #
+        # 그 사이 클릭이 큐에 쌓였다가 한꺼번에 들어와 설정을 확인하지도 못하고
+        # 넘어가는 일이 있었다. 마법사를 비활성으로 두면 Qt 가 그 클릭을
+        # 큐에 쌓지 않고 버린다 -- 대기 커서와 함께.
+        wiz = self.wizard()
+        if wiz is not None:
+            wiz.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()   # 비활성·커서를 먼저 화면에 반영
+        try:
+            # 기본 선택: 이어서 수집이면 그 데이터세트가 쓰던 스테이션.
+            want = self._wanted_station() or os.environ.get("GELLO_STATION", "")
+            if want:
+                self.station_editor.reload(select=want)
+            self._refresh_git_warning()
+            # 목록부터 만들고(모델명 포함) 그 안에서 기억된 것을 고른다. 버튼을
+            # 눌러야만 모델명이 보이면 아무도 안 누른다.
+            with self._combos_quiet():
+                self.detect_cameras()
+                self._apply_station_defaults()
+            self._on_camera_pick()
+        finally:
+            QApplication.restoreOverrideCursor()
+            if wiz is not None:
+                wiz.setEnabled(True)
+
+    @contextmanager
+    def _combos_quiet(self):
+        """콤보를 다시 채우는 동안 currentIndexChanged 를 막는다."""
+        for c in self.combos.values():
+            c.blockSignals(True)
+        try:
+            yield
+        finally:
+            for c in self.combos.values():
+                c.blockSignals(False)
 
     # ------------------------------------------------------------ 미리보기
     def cameras(self) -> tuple[str, str]:
-        return (self._serial(self.agent_combo), self._serial(self.wrist_combo))
+        # 지금은 두 역할뿐이라 튜플이다. 역할이 늘면 serials() 로 바꾼다.
+        return tuple(self._serial(self.combos[r]) for r, _ in CAMERA_ROLES)
 
     @staticmethod
     def _serial(combo: QComboBox) -> str:
@@ -415,8 +481,8 @@ class HardwarePage(QWizardPage):
             cfg = load_station(self.station_editor.current_name() or None)
         except Exception:  # noqa: BLE001
             cfg = None
-        for combo, role, key in ((self.agent_combo, "agent", "agent_serial"),
-                                 (self.wrist_combo, "wrist", "wrist_serial")):
+        for role, _title in CAMERA_ROLES:
+            combo, key = self.combos[role], f"{role}_serial"
             serial = recents.most_recent(key, "")
             if not serial and cfg is not None:
                 try:
@@ -447,7 +513,7 @@ class HardwarePage(QWizardPage):
             name = str(c.get("name") or "RealSense")
             if serial:
                 entries.append((serial, f"{name} ({serial})"))
-        for combo in (self.agent_combo, self.wrist_combo):
+        for combo in self.combos.values():
             # 선택은 시리얼(itemData)로 기억한다. 표시 문자열로 맞추면
             # 라벨에 모델명이 붙는 순간 못 찾는다.
             cur = combo.currentData()

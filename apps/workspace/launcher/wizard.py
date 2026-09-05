@@ -19,6 +19,7 @@ Finish 하면:
 from __future__ import annotations
 
 import shutil
+import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -77,7 +78,23 @@ class LauncherWizard(QWizard):
         self.setStartId(PAGE_MODE)
         self.currentIdChanged.connect(self._on_page)
         self._on_page(PAGE_MODE)
-        self.resize(640, 520)
+        self.resize(760, 780)
+        # lerobot.cameras.realsense 첫 임포트가 ~1초다. 하드웨어 페이지에서
+        # 그걸 물면 페이지가 그 시간만큼 늦게 뜬다. 조작자가 첫 화면과 데이터셋
+        # 목록을 보는 동안 미리 물어 둔다 -- 임포트는 멱등이라 나중에 다시
+        # 불러도 캐시가 쓰인다.
+        threading.Thread(target=self._warm_camera_import, daemon=True).start()
+
+    @staticmethod
+    def _warm_camera_import() -> None:
+        # 모듈을 캐시에 올려두는 것이 목적이라 이름을 쓰지 않는다.
+        # import 문으로 쓰면 "고아 임포트"로 보이므로 의도를 드러내 부른다.
+        import importlib
+
+        try:
+            importlib.import_module("lerobot.cameras.realsense")
+        except Exception:  # noqa: BLE001 -- 없으면 하드웨어 페이지가 알린다
+            pass
 
     # 첫 페이지에는 모드 버튼 2개만 보인다 -- Back/Next 는 중복이라 숨긴다.
     def _on_page(self, page_id: int) -> None:

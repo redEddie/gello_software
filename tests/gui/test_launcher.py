@@ -226,6 +226,32 @@ assert DatasetIdentity.from_dict(ident_st.to_dict()).station == "knu-eng7"
 assert DatasetIdentity.from_dict({"name": "old"}).station == "", "옛 데이터셋은 빈 값"
 print("7 통과: 스테이션 편집기 -- 기존 읽기전용 / 새 것 생성·삭제 / identity.station")
 
+# ---- 8. 미리보기가 부모 밖으로 잘리지 않는다 ----
+# 2026-09-05: 콤보와 미리보기를 한 줄에 짝지어 두었더니, 긴 항목 문자열
+# ("Intel RealSense D405 (2304...)")이 콤보의 최소 폭을 262px 로 밀어올려
+# 고정폭 미리보기가 x=605 에 놓였고 부모(614)를 넘어 **9px 세로줄**로만
+# 보였다. 고르는 곳과 보는 곳을 나눠서 고쳤다. 위젯 크기만 보면 160x120 로
+# 멀쩡해 보이므로, 부모 안에 들어오는지를 봐야 잡힌다.
+from apps.workspace.launcher.pages import CAMERA_ROLES  # noqa: E402
+
+hwp = wiz.page(PAGE_HW)
+assert set(hwp.previews) == {r for r, _ in CAMERA_ROLES}, "역할마다 미리보기가 있어야"
+assert set(hwp.combos) == {r for r, _ in CAMERA_ROLES}, "역할마다 콤보가 있어야"
+wiz.resize(760, 780)
+app.processEvents()
+app.processEvents()
+for _role, _v in hwp.previews.items():
+    par = _v.parentWidget()
+    assert _v.x() + _v.width() <= par.width() + 1, (
+        f"{_role} 미리보기가 부모 밖으로 나감: "
+        f"x={_v.x()} w={_v.width()} 부모={par.width()}")
+    assert _v.width() >= 120, f"{_role} 미리보기가 너무 좁다: {_v.width()}px"
+for _role, _c in hwp.combos.items():
+    assert _c.minimumSizeHint().width() <= 160, (
+        f"{_role} 콤보가 항목 문자열만큼 폭을 요구한다 "
+        f"({_c.minimumSizeHint().width()}px) -- shrinkable_combo 가 빠졌다")
+print("8 통과: 콤보/미리보기 영역 분리 -- 잘림 없음, 콤보가 폭을 강요하지 않음")
+
 print("\n런처 마법사 검증 통과")
 _cleanup()
 os._exit(0)
