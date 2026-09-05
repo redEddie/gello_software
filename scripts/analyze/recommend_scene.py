@@ -223,6 +223,67 @@ def _selftest() -> None:
     print("9 통과: 배치만 추천 (조합 불변 + 배치 3종 + 규칙 준수, "
           "compose 위반 조합도 배치는 제공)")
 
+    # 10. 규칙 엔진 동등성 (인수 조건 1) -- 표본이 아니라 **전수**로.
+    # 규칙 정본은 yaml 하나인데 소비자가 둘이다: check() 와 CP-SAT 컴파일러.
+    # 둘이 어긋나면 "규칙에 맞는 배치를 추천했다"는 말이 거짓이 되므로,
+    # 가능한 배치 전체에서 양방향으로 같은 집합인지 본다.
+    import itertools
+
+    from gello.scene.placement_solver import (
+        cells,
+        compile_placement_model,
+        enumerate_placements,
+        solve_placement,
+    )
+    from gello.scene.scene_rules import violations_by_section
+
+    def _placement_ok(objs, zones) -> bool:
+        md = SceneMetadata(
+            scene_id="S900", objects=list(objs),
+            layout={"grid": [3, 3],
+                    "placements": {o: {"zone": list(z)}
+                                   for o, z in zip(objs, zones)}})
+        return not violations_by_section(md, props)["placement"]
+
+    grid = cells()
+    checked = 0
+    for objs in (
+        ["OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01"],                       # 서랍 없음
+        ["OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01", "OBJ-DRAWER-01"],      # 서랍 포함
+        ["OBJ-CUP-BLU-01", "OBJ-BOWLS-YEL-01", "OBJ-BOWLL-WHT-01",
+         "OBJ-DRAWER-01"],
+        ["OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01", "OBJ-BOWLS-YEL-01",
+         "OBJ-BOWLS-GRN-01", "OBJ-DRAWER-01"],                      # 5물체
+    ):
+        solver_set = {tuple(z[o] for o in objs)
+                      for z in enumerate_placements(objs, props)}
+        check_set = {perm for perm in itertools.permutations(grid, len(objs))
+                     if _placement_ok(objs, perm)}
+        assert solver_set == check_set, (
+            f"{objs}: 솔버만 {len(solver_set - check_set)}개, "
+            f"check 만 {len(check_set - solver_set)}개")
+        assert solver_set, objs
+        checked += len(list(itertools.permutations(grid, len(objs))))
+
+    # 미지원 rule 이름은 컴파일러도 예외 (조용한 무시 금지)
+    try:
+        compile_placement_model(
+            ["OBJ-CUP-BLU-01"], props,
+            {"version": 1, "placement": [{"rule": "no_such_rule"}]})
+    except ValueError as e:
+        assert "no_such_rule" in str(e), e
+    else:
+        raise AssertionError("미지원 rule 은 컴파일 시 예외여야 한다")
+
+    # 결정성: 같은 seed -> 같은 배치, 전수 열거도 결정적
+    objs4 = ["OBJ-CUP-BLU-01", "OBJ-BOWLS-YEL-01", "OBJ-DRAWER-01"]
+    assert solve_placement(objs4, props, seed=7) == \
+        solve_placement(objs4, props, seed=7)
+    assert enumerate_placements(objs4, props) == \
+        enumerate_placements(objs4, props)
+    print(f"10 통과: 규칙 엔진 동등성 전수 {checked}배치 (솔버 == check), "
+          "미지원 rule 예외 + 결정성")
+
     print("\nselftest 통과")
 
 

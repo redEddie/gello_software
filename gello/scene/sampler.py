@@ -6,15 +6,17 @@
 - :func:`place_objects`       물체 집합은 주어지고 배치만 뽑는다
   (사람이 소품을 고른 뒤 배치만 추천받는 워크플로).
 
-배치는 지금 균등 난수다. recommender-v3-plan.md D2 에 따라 다음 단계에서
-:mod:`gello.scene.placement_solver` (CP-SAT) 가 이 자리를 대신한다 --
-그때도 이 두 함수의 시그니처는 그대로다.
+배치는 :mod:`gello.scene.placement_solver` (CP-SAT)가 만든다 -- 규칙을
+제약으로 걸고 실행 가능한 배치를 받으므로, 무작위로 뽑아 놓고 버리는
+재시도가 없다. 커버리지 목적함수는 다음 단계에서 솔버 쪽에 들어간다
+(recommender-v3-plan.md D2).
 """
 
 from __future__ import annotations
 
 import random
 
+from gello.scene.placement_solver import enumerate_placements, solve_placement
 from gello.scene.scene_format import SceneMetadata
 from gello.scene.scene_rules import (
     check,
@@ -23,29 +25,28 @@ from gello.scene.scene_rules import (
 )
 from gello.scene.signature import GRID
 
+#: compose 규칙만 먼저 보기 위한 더미 배치용 칸 순서 (배치는 솔버가 정한다).
+_CELLS = [(r, c) for r in range(GRID[0]) for c in range(GRID[1])]
+
 #: 씬의 물체 개수 범위. 정본은 scene_rules.yaml 의 object_count 규칙이고,
 #: count 커버리지 축의 서포트와 같은 값을 본다. 규칙 yaml 을 고치면
 #: 프로세스 재시작이 필요하다 (_default_rules 캐시와 같은 정책).
 MIN_OBJECTS, MAX_OBJECTS = object_count_range()
 
-__all__ = ["MIN_OBJECTS", "MAX_OBJECTS", "generate_candidate", "place_objects"]
+__all__ = ["MIN_OBJECTS", "MAX_OBJECTS", "generate_candidate",
+           "place_objects", "all_placements"]
+
+_DESCRIPTION = "(추천안 -- 채택 시 배치 의도를 적어주세요)"
 
 
-def _shuffled_cells(rng: random.Random) -> list:
-    cells = [(r, c) for r in range(GRID[0]) for c in range(GRID[1])]
-    rng.shuffle(cells)
-    return cells
-
-
-def _md(objects: list, cells: list, scene_id: str,
-        description: str = "(추천안 -- 채택 시 배치 의도를 적어주세요)") -> SceneMetadata:
+def _md(objects: list, zones: dict, scene_id: str) -> SceneMetadata:
+    """{물체: (행,열)} 배치를 SceneMetadata 로. 물체 순서는 objects 를 따른다."""
     return SceneMetadata(
         scene_id=scene_id,
         objects=list(objects),
         layout={"grid": list(GRID),
-                "placements": {o: {"zone": list(cells[i])}
-                               for i, o in enumerate(objects)}},
-        description=description,
+                "placements": {o: {"zone": list(zones[o])} for o in objects}},
+        description=_DESCRIPTION,
     )
 
 
@@ -101,7 +102,18 @@ def generate_candidate(props: dict, rng: random.Random,
                 picked.append(rng.choice(by_cat[c][next(iter(by_cat[c]))]))
         if not MIN_OBJECTS <= len(picked) <= MAX_OBJECTS:
             continue
-        md = _md([p.id for p in picked], _shuffled_cells(rng), scene_id)
+        ids = [p.id for p in picked]
+        # 물체 구성 규칙은 배치와 무관하므로 솔버를 부르기 전에 먼저 거른다.
+        probe = _md(ids, dict(zip(ids, _CELLS)), scene_id)
+        if violations_by_section(probe, props)["compose"]:
+            continue
+        zones = solve_placement(ids, props, seed=rng.randrange(2 ** 31))
+        if zones is None:
+            continue                       # 규칙상 놓을 자리가 없는 조합
+        md = _md(ids, zones, scene_id)
+        # 최종 게이트: 추천기는 규칙을 어긴 scene 을 절대 내보내지 않는다.
+        # (솔버와 check() 의 동등성은 selftest 가 전수로 검사하지만, 실행
+        #  시점에도 한 번 더 확인하는 값이 파싱 한 번보다 크다.)
         if not check(md, props):
             return md
     raise ValueError(
@@ -110,8 +122,7 @@ def generate_candidate(props: dict, rng: random.Random,
 
 
 def place_objects(objects: list, props: dict, rng: random.Random,
-                  scene_id: str = "S999",
-                  max_attempts: int = 200) -> SceneMetadata:
+                  scene_id: str = "S999") -> SceneMetadata:
     """물체 집합이 정해졌을 때 규칙을 만족하는 배치 하나.
 
     **배치 규칙만** 본다. 물체 구성 자체의 위반(compose: 예를 들어 컵이 한
@@ -123,13 +134,22 @@ def place_objects(objects: list, props: dict, rng: random.Random,
     """
     if not objects:
         raise ValueError("배치할 물체가 없다")
-    if len(objects) > GRID[0] * GRID[1]:
+    zones = solve_placement(objects, props, seed=rng.randrange(2 ** 31))
+    if zones is None:
         raise ValueError(
-            f"물체 {len(objects)}개는 격자 {GRID[0]}x{GRID[1]} 칸보다 많다")
-    for _ in range(max_attempts):
-        md = _md(objects, _shuffled_cells(rng), scene_id)
-        if not violations_by_section(md, props)["placement"]:
-            return md
-    raise ValueError(
-        f"배치 규칙을 만족하는 배치를 {max_attempts}회 시도 중 찾지 못함 -- "
-        "물체 구성이 격자에 들어갈 수 없을 수 있다")
+            "배치 규칙을 만족하는 배치가 없다 -- 이 물체 구성은 격자에 "
+            "들어갈 수 없다 (예: 키 큰 소품이 여러 열을 비운다)")
+    return _md(objects, zones, scene_id)
+
+
+def all_placements(objects: list, props: dict,
+                   scene_id: str = "S999") -> list:
+    """실행 가능한 배치 **전부** [SceneMetadata, ...].
+
+    무작위 표본이 아니라 가능한 배치 전체다 -- 배치만 추천하는 워크플로는
+    후보를 뽑을 필요 없이 전수에서 고른다.
+    """
+    if not objects:
+        raise ValueError("배치할 물체가 없다")
+    return [_md(objects, z, scene_id)
+            for z in enumerate_placements(objects, props)]

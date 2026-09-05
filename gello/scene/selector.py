@@ -31,7 +31,7 @@ from gello.scene.axes import (
     coverage_gain,
     coverage_uniformity,
 )
-from gello.scene.sampler import MIN_OBJECTS, generate_candidate, place_objects
+from gello.scene.sampler import MIN_OBJECTS, all_placements, generate_candidate
 from gello.scene.signature import scene_distance, signature
 
 #: 버킷 순환 순서. 첫 추천은 여전히 가장 새로운(원거리) 것이 되도록
@@ -113,16 +113,14 @@ def _select(cands: list, ex_sigs: list, props: dict, k: int) -> list:
     return picked
 
 
-def _collect(make_md, props: dict, ex_sigs: list, n_candidates: int,
-             keep=None) -> list:
-    """후보를 n_candidates 번 만들어 중복·기존동일을 걸러 모은다.
+def _collect(mds, props: dict, ex_sigs: list, keep=None) -> list:
+    """SceneMetadata 들에서 중복·기존동일을 걸러 (md, sig, 최소거리) 로.
 
-    make_md() 가 SceneMetadata 를 준다. keep(md) 가 False 면 버린다.
+    keep(md) 가 False 면 버린다.
     """
     cands: list = []
     seen: set = set()
-    for _ in range(n_candidates):
-        md = make_md()
+    for md in mds:
         if keep is not None and not keep(md):
             continue
         sig = signature(md, props)
@@ -152,16 +150,22 @@ def recommend_detailed(existing: list, props: dict, k: int = 3,
     """
     rng = random.Random(seed)
     ex_sigs = [signature(md, props) for md in existing]
-    cands = _collect(lambda: generate_candidate(props, rng, scene_id=scene_id),
-                     props, ex_sigs, n_candidates,
-                     keep=lambda md: len(md.objects) >= min_objects)
+    cands = _collect(
+        (generate_candidate(props, rng, scene_id=scene_id)
+         for _ in range(n_candidates)),
+        props, ex_sigs, keep=lambda md: len(md.objects) >= min_objects)
     return _select(cands, ex_sigs, props, k)
 
 
 def recommend_placement(objects: list, existing: list, props: dict,
-                        k: int = 3, n_candidates: int = 200, seed: int = 0,
+                        k: int = 3, n_candidates: int = 3000, seed: int = 0,
                         scene_id: str = "S999") -> list:
     """물체 집합이 정해졌을 때 배치만 추천한다 (워크플로 ② 배치만 추천).
+
+    후보는 무작위 표본이 아니라 CP-SAT 이 센 **실행 가능한 배치 전부**다
+    (물체 5개면 규칙 적용 후 수천 개). n_candidates 를 넘으면 그 전수에서
+    균등 추출한다 -- 표본이어도 모집단이 "규칙을 만족하는 배치 전체"라,
+    무작위로 뽑아 버리던 예전과 달리 놓칠 수 있는 배치가 없다.
 
     반환 모양은 :func:`recommend_detailed` 와 같아 GUI·CLI 가 같은 카드를
     쓴다. 커버리지 히스토그램도 같은 것을 보므로, 이렇게 만든 scene 도
@@ -174,10 +178,10 @@ def recommend_placement(objects: list, existing: list, props: dict,
     """
     rng = random.Random(seed)
     ex_sigs = [signature(md, props) for md in existing]
-    cands = _collect(
-        lambda: place_objects(objects, props, rng, scene_id=scene_id),
-        props, ex_sigs, n_candidates)
-    return _select(cands, ex_sigs, props, k)
+    mds = all_placements(objects, props, scene_id=scene_id)
+    if len(mds) > n_candidates:
+        mds = rng.sample(mds, n_candidates)
+    return _select(_collect(mds, props, ex_sigs), ex_sigs, props, k)
 
 
 def recommend(existing: list, props: dict, k: int = 3,

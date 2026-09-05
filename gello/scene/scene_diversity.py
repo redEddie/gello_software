@@ -6,6 +6,7 @@
     signature.py   Signature · 합산 거리 · scene 모양 상수(GRID, 개수 범위)
     axes.py        다양성 축 레지스트리 -- 거리 분해와 커버리지의 단일 어휘
     sampler.py     후보 생성 (조합+배치 / 배치만)
+    placement_solver.py  배치 CP-SAT -- 규칙을 제약으로, 실행 가능 배치 전수
     selector.py    선택 정책 -- 거리 버킷 쿼터 + 커버리지 보강
 
 왜 나눴나: 배치 특징을 축으로 추가하려면 예전에는 두 벌의 축 이름
@@ -33,6 +34,7 @@ from gello.scene.axes import (  # noqa: F401  (재수출)
 from gello.scene.sampler import (  # noqa: F401  (재수출)
     MAX_OBJECTS,
     MIN_OBJECTS,
+    all_placements,
     generate_candidate,
     place_objects,
 )
@@ -58,6 +60,6 @@ __all__ = [
     "Signature", "signature", "scene_distance",
     "axis_distances", "axis_support", "axis_coverage", "add_to_coverage",
     "coverage_uniformity", "coverage_gain",
-    "generate_candidate", "place_objects",
+    "generate_candidate", "place_objects", "all_placements",
     "recommend", "recommend_detailed", "recommend_placement",
 ]
