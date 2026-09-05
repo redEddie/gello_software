@@ -4,7 +4,6 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QLabel, QMessageBox, QToolBar
 
 from gello.data.episode_stats import TASK_DEV_LIMIT
-from gello.gui.constants import TODO_MARK
 from gello.gui.i18n import tr
 
 from apps.workspace.shared.widgets import StatusLight
@@ -113,7 +112,6 @@ def build_menu(win) -> None:
     m.addAction(tr("Hugging Face 계정..."), win.upload.on_hf_accounts)
     m.addSeparator()
     m.addAction(tr("데이터셋 구조 사용자 설정..."), win._on_schema)
-    m.addAction(f'{tr("언어 전환")} ({TODO_MARK})').setEnabled(False)
 
     m = mb.addMenu(tr("Help"))
     m.addAction(tr("단축키..."), lambda: QMessageBox.information(

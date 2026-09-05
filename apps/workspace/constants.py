@@ -28,7 +28,7 @@ ACTIVITIES = (
     ("upload", "☁", "Upload", "재압축·LeRobot 변환·업로드"),
     ("stats", "📊", "Statistics", "세션 통계"),
     ("layout", "🎯", "Layout", "LIBERO 초기 배치와 카메라 비교"),
-    ("settings", "🛠", "Settings", "언어·스키마"),
+    ("settings", "🛠", "Settings", "스키마·레이아웃"),
 )
 # 오른쪽 패널에서 값이 길어 좌우 배치로는 읽기 어려운 항목들.
 WIDE_FIELDS = {"ds_file", "ds_task"}

@@ -150,18 +150,22 @@ LEGACY_REPOS = {
 # The worker's state names, and what the operator can do from each. Both the
 # 진행 label and the shortcut hint read from these, so the hint can never drift
 # out of sync with what eventFilter() actually accepts.
+# Status 는 영어다 (i18n.py 의 언어 계층). 0.5초 곁눈질로 읽는 것이라
+# 글이 아니라 기호로 인식되고, 외국인 연구원도 화면만 보고 상태를 안다.
+# **무엇을 해야 하는지**는 아래 SHORTCUT_HINTS 가 한국어로 말한다 -- 그쪽은
+# 읽고 이해하는 안내라서 대부분의 사용자인 한국인의 모국어로 둔다.
 STATE_LABELS = {
-    "connecting": "연결 중...",
-    "idle": "대기",
-    "homing": "홈 복귀 중",
-    "reset_wait": "리셋 대기 — 물체를 다시 놓으세요",
-    "gate": "자세 정렬 — 리더를 팔로워에 맞추세요",
-    "approach": "접근 중",
-    "recording": "기록 중",
+    "connecting": "CONNECTING",
+    "idle": "IDLE",
+    "homing": "HOMING",
+    "reset_wait": "RESET WAIT",
+    "gate": "GATE",
+    "approach": "APPROACH",
+    "recording": "RECORDING",
 }
 SHORTCUT_HINTS = {
-    "reset_wait": "Enter: 리셋 완료 — 계속   Esc: 직전 에피소드 판정 뒤집기",
-    "gate": "Space: 텔레옵 시작   Enter: 자동 정렬 다시",
+    "reset_wait": "물체를 제자리에 놓으세요.   Enter: 계속   Esc: 직전 판정 뒤집기",
+    "gate": "리더를 팔로워 자세에 맞추세요.   Space: 텔레옵 시작   Enter: 자동 정렬",
     "recording": "Space: 성공으로 끝내기   Esc: 실패로 끝내기   Del: 폐기",
 }
 
