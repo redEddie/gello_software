@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QComboBox, QMessageBox
 
 from gello.gui.workers import CameraPreviewWorker
 from gello.gui.grid_overlay import active_corners, draw_grid, save_grid_store
-from apps.workspace.shared.camera_node_proc import spawn_node, spec_key
+from apps.workspace.shared.camera_node_proc import node_specs, spawn_node, spec_key
 from gello.gui.i18n import tr
 
 
@@ -325,13 +325,13 @@ class CameraOps:
 
     # ------------------------------------------------------------------ node
     def camera_node_specs(self) -> list:
-        specs = []
-        for role, combo in (("agent", self.win.agent_combo),
-                            ("wrist", self.win.wrist_combo)):
-            serial = self.combo_serial(combo)
-            if serial:
-                specs.append(f"{role}:{serial}")
-        return specs
+        """노드에 넘길 --cam 목록 = 시리얼. 노드는 역할을 모른다.
+
+        창의 콤보는 아직 역할별이지만(agent/wrist), 그것은 UI 계층 이야기다.
+        전송 계층으로 넘어가는 순간 시리얼만 남는다 (2026-09-05 3층 분리).
+        """
+        return node_specs(self.combo_serial(c) for c in
+                          (self.win.agent_combo, self.win.wrist_combo))
 
     def on_restart_camera_node(self) -> None:
         self.win.cameras.camera_node_user_stopped = False

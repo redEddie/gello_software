@@ -5,7 +5,7 @@ NodeCamera 는 lerobot RealSenseCamera 의 read_latest / read_latest_depth
 미리보기가 코드 변경 최소로 노드 구독으로 갈아탈 수 있게. 프레임 대신
 "최신 프레임의 나이" 계약(TimeoutError)도 그대로 유지한다.
 
-동작: SUB 소켓 하나로 "{role}/color" 와 "{role}/depth" 를 구독하고,
+동작: SUB 소켓 하나로 "{serial}/color" 와 "{serial}/depth" 를 구독하고,
 read_* 호출 때마다 큐를 논블로킹으로 비우면서(drain) 최신 프레임만 캐시에
 남긴다. 나이는 노드가 캡처 시점에 찍은 time.time() 기준 -- 같은 호스트라
 시계가 같다. 스레드 하나에서만 쓰는 것을 전제로 한다 (worker 루프 또는
@@ -48,7 +48,7 @@ def node_ping(host: str = "127.0.0.1", ctl_port: int = DEFAULT_CTL_PORT,
         s.close(linger=0)
 
 
-def fetch_aligned(role: str, host: str = "127.0.0.1",
+def fetch_aligned(serial: str, host: str = "127.0.0.1",
                   ctl_port: int = DEFAULT_CTL_PORT,
                   timeout_ms: int = 2500) -> dict | None:
     """포인트클라우드 표시용: 정렬(depth->color) 프레임 1쌍 + 내부 파라미터.
@@ -61,7 +61,7 @@ def fetch_aligned(role: str, host: str = "127.0.0.1",
     s.setsockopt(zmq.LINGER, 0)
     try:
         s.connect(f"tcp://{host}:{ctl_port}")
-        s.send(json.dumps({"cmd": "aligned", "role": role}).encode())
+        s.send(json.dumps({"cmd": "aligned", "serial": serial}).encode())
         parts = s.recv_multipart()
         meta = json.loads(parts[0])
         if not meta.get("ok") or len(parts) < 3:
@@ -78,13 +78,17 @@ def fetch_aligned(role: str, host: str = "127.0.0.1",
 
 
 class NodeCamera:
-    """role 하나("agent"/"wrist")의 최신 프레임 구독자."""
+    """카메라 한 대(시리얼)의 최신 프레임 구독자.
 
-    def __init__(self, role: str, serial: str | None = None,
+    신원은 시리얼이다 -- 역할(agent/wrist)은 데이터세트 계층의 이름이라
+    전송 계층이 알 이유가 없다 (2026-09-05 3층 분리). 역할별로 쓰고 싶으면
+    부르는 쪽이 role -> serial 을 풀어서 넘긴다.
+    """
+
+    def __init__(self, serial: str,
                  host: str = "127.0.0.1", pub_port: int = DEFAULT_PUB_PORT,
                  ctl_port: int = DEFAULT_CTL_PORT) -> None:
-        self.role = role
-        self.serial = serial  # 지정 시 connect 에서 노드의 role 시리얼과 대조
+        self.serial = serial
         self.host = host
         self.pub_port = pub_port
         self.ctl_port = ctl_port
@@ -103,7 +107,7 @@ class NodeCamera:
         self._stop = threading.Event()
 
     def __repr__(self) -> str:
-        return f"NodeCamera({self.role}:{self.serial or '?'})"
+        return f"NodeCamera({self.serial})"
 
     # ------------------------------------------------------------ lifecycle
     @property
@@ -111,30 +115,25 @@ class NodeCamera:
         return self._sub is not None
 
     def connect(self, warmup_s: float = 4.0) -> None:
-        """구독 시작 + 첫 color 프레임 대기. 노드가 없거나 이 role 의 시리얼이
-        다르면 ConnectionError -- worker 가 세션 시작 시 바로 알아채게."""
+        """구독 시작 + 첫 color 프레임 대기. 노드가 그 시리얼을 열고 있지
+        않으면 ConnectionError -- worker 가 세션 시작 시 바로 알아채게."""
         info = node_ping(self.host, self.ctl_port)
         if info is None:
             raise ConnectionError(_CONNECT_HELP.format(
                 host=self.host, pub=self.pub_port))
-        cam = info.get("cams", {}).get(self.role)
+        cam = info.get("cams", {}).get(self.serial)
         if cam is None:
             raise ConnectionError(
-                f"카메라 노드에 '{self.role}' 카메라가 없습니다 "
+                f"카메라 노드가 {self.serial} 을 열고 있지 않습니다 "
                 f"(노드 구성: {sorted(info.get('cams', {}))}). "
-                "카메라 노드를 재시작하세요.")
-        if self.serial and cam.get("serial") != self.serial:
-            raise ConnectionError(
-                f"카메라 노드의 {self.role} 는 {cam.get('serial')} 인데 "
-                f"GUI 선택은 {self.serial} 입니다. 카메라 선택을 바꿨으면 "
-                "카메라 노드를 재시작하세요.")
+                "카메라 선택을 바꿨으면 카메라 노드를 재시작하세요.")
         self._ctx = zmq.Context()
         self._sub = self._ctx.socket(zmq.SUB)
         self._sub.setsockopt(zmq.RCVHWM, 12)
         self._sub.connect(f"tcp://{self.host}:{self.pub_port}")
         for kind in ("color", "depth"):
             self._sub.setsockopt(zmq.SUBSCRIBE,
-                                 f"{self.role}/{kind}".encode())
+                                 f"{self.serial}/{kind}".encode())
         # 워밍업: 첫 color 가 올 때까지 (PUB/SUB 조인에 수백 ms 걸릴 수 있다)
         t_end = time.time() + warmup_s
         while time.time() < t_end:
@@ -144,13 +143,13 @@ class NodeCamera:
                 # 스레드를 정리할 필요가 없어진다.
                 self._stop.clear()
                 self._drain_thread = threading.Thread(
-                    target=self._drain_loop, name=f"camdrain-{self.role}",
+                    target=self._drain_loop, name=f"camdrain-{self.serial}",
                     daemon=True)
                 self._drain_thread.start()
                 return
         self.disconnect()
         raise ConnectionError(
-            f"카메라 노드는 응답하지만 {self.role} 프레임이 {warmup_s:.0f}초 "
+            f"카메라 노드는 응답하지만 {self.serial} 프레임이 {warmup_s:.0f}초 "
             f"내에 오지 않았습니다 (노드 상태: {cam}). 카메라가 살아나기를 "
             "기다리거나 케이블을 확인하세요.")
 

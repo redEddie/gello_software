@@ -29,7 +29,11 @@ from PyQt6.QtWidgets import (
 
 from gello.gui.workers import CameraPreviewWorker
 from apps.workspace.launcher.camera_panel import CameraPreviewColumn
-from apps.workspace.shared.camera_node_proc import spawn_node, spec_key
+from apps.workspace.shared.camera_node_proc import (
+    node_specs,
+    spawn_node,
+    spec_key,
+)
 from gello.config.station import CameraSpec, load_station
 from apps.workspace.constants import WT_ROOT
 from apps.workspace.shared.sizing import shrinkable_combo
@@ -452,13 +456,9 @@ class HardwarePage(QWizardPage):
         if picked_cam:
             self._dedup(picked_cam)
         serials = self.serials()
-        roles = self.station_editor.cam_roles()
-        # 노드 토픽은 아직 **역할** 기준이다 (agent/color). 그래서 여기서도
-        # role:serial 로 띄워야 워크스페이스가 이 노드를 그대로 이어받는다.
-        # 노드를 하드웨어(시리얼) 기준으로 바꾸면 이 변환이 사라지고, 역할만
-        # 바꿀 때 노드를 재시작할 이유도 없어진다 -- 설계 중.
-        specs = [f"{roles[cam]}:{s}" for cam, s in serials.items()
-                 if s and roles.get(cam)]
+        # 노드는 시리얼만 안다. 역할을 바꿔도 여는 장치가 같으면 spec 이
+        # 그대로라 재시작하지 않는다 (3층 분리의 실질적 이득).
+        specs = node_specs(serials.values())
         key = spec_key(specs)
         if key == self._node_key and self._node is not None:
             return
@@ -477,12 +477,9 @@ class HardwarePage(QWizardPage):
             if not serial:
                 view.clear_frame(tr("(선택 안함)"))
                 continue
-            role = roles.get(cam)
-            if not role:
-                view.clear_frame(tr("역할이 없습니다"))
-                continue
             view.clear_frame(tr("연결 중..."))
-            w = CameraPreviewWorker(role, serial)
+            # 라벨은 cam id, 전송은 시리얼.
+            w = CameraPreviewWorker(cam, serial)
             w.frame_ready.connect(lambda f, v=view: v.set_frame(f))
             w.error.connect(lambda m, v=view: v.clear_frame(m[:40]))
             w.start()

@@ -123,7 +123,7 @@ class CameraPreviewWorker(QThread):
 
         from gello.comm.camera_client import NodeCamera
 
-        cam = NodeCamera(self.role, serial=self.serial)
+        cam = NodeCamera(self.serial)
         try:
             cam.connect(warmup_s=6.0)
         except Exception as e:  # noqa: BLE001
@@ -186,7 +186,7 @@ class DepthCloudWorker(QThread):
 
         from gello.comm.camera_client import NodeCamera, fetch_aligned
 
-        cam = NodeCamera(self.role, serial=self.serial or None)
+        cam = NodeCamera(self.serial)
         try:
             cam.connect(warmup_s=6.0)
         except Exception as e:  # noqa: BLE001
@@ -203,7 +203,7 @@ class DepthCloudWorker(QThread):
                         if self._running:
                             self.depth_ready.emit(z_full)
                     else:
-                        al = fetch_aligned(self.role, ctl_port=cam.ctl_port,
+                        al = fetch_aligned(self.serial, ctl_port=cam.ctl_port,
                                            host=cam.host)
                         if al is None:
                             raise TimeoutError("정렬 프레임 응답 없음 "

@@ -26,12 +26,16 @@ from apps.workspace.constants import WT_ROOT
 NO_NODE_ENV = "GELLO_NO_CAMERA_NODE"
 
 
-def node_specs(agent_serial: str, wrist_serial: str) -> list[str]:
-    """--cam 인자에 쓰는 "role:serial" 목록. 빈 시리얼은 빠진다."""
-    out = []
-    for role, serial in (("agent", agent_serial), ("wrist", wrist_serial)):
-        if serial:
-            out.append(f"{role}:{serial}")
+def node_specs(serials) -> list[str]:
+    """--cam 인자 목록 = 시리얼 그대로. 빈 값과 중복은 빠진다.
+
+    노드는 역할을 모른다 (2026-09-05 3층 분리) -- 신원이 시리얼이라
+    "역할만 바꿨는데 노드가 재시작"하는 일이 없다.
+    """
+    out: list[str] = []
+    for serial in serials:
+        if serial and serial not in out:
+            out.append(serial)
     return out
 
 

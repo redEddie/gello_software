@@ -14,17 +14,22 @@
 
 구조:
 - 카메라마다 캡처 스레드 1개 (pyrealsense2 직접 사용, lerobot 래퍼 없음).
-- PUB(기본 tcp://*:6021): 토픽 "{role}/color"(RGB u8 HxWx3),
-  "{role}/depth"(비정렬 raw z16 u16 HxWx1, lerobot 과 동일 의미론 --
+- PUB(기본 tcp://*:6021): 토픽 "{serial}/color"(RGB u8 HxWx3),
+  "{serial}/depth"(비정렬 raw z16 u16 HxWx1, lerobot 과 동일 의미론 --
   기존 scene 파일과 호환), "status"(1Hz json). 메시지는
   [토픽, meta json, payload] 3부.
 - REP(기본 tcp://*:6022): {"cmd": "ping"} -> 상태,
-  {"cmd": "aligned", "role": r} -> 정렬(depth->color) 프레임 1쌍 + 내부
+  {"cmd": "aligned", "serial": s} -> 정렬(depth->color) 프레임 1쌍 + 내부
   파라미터 (포인트클라우드 표시 전용 -- 기록 경로와 분리).
 - --fake: 하드웨어 없이 합성 프레임 (테스트용).
 
 실행:
-    python -m gello.comm.camera_node --cam agent:338122300664 --cam wrist:230422272249
+    python -m gello.comm.camera_node --cam 338122300664 --cam 230422272249
+
+노드는 **역할(agent/wrist)을 모른다** (2026-09-05 3층 분리). 신원은 시리얼
+하나뿐이다: 하드웨어 계층이 데이터세트 계층의 이름을 알면, 역할만 바꿔도
+노드를 재시작해야 한다 (같은 카메라 두 대를 그대로 쓰는데도). 역할 -> 시리얼
+매핑은 구독하는 쪽이 안다 (gello/scene/dataset_meta.resolve_cameras).
 """
 
 from __future__ import annotations
@@ -66,10 +71,9 @@ class _Publisher:
 class CameraWorker(threading.Thread):
     """카메라 하나: 캡처 -> 발행 -> (요청 시) 정렬 계산 -> 죽으면 자가복구."""
 
-    def __init__(self, role: str, serial: str, pub: _Publisher,
+    def __init__(self, serial: str, pub: _Publisher,
                  width: int = 640, height: int = 480, fps: int = 30) -> None:
-        super().__init__(daemon=True, name=f"cam-{role}")
-        self.role = role
+        super().__init__(daemon=True, name=f"cam-{serial}")
         self.serial = serial
         self.pub = pub
         self.w, self.h, self.fps = width, height, fps
@@ -105,9 +109,9 @@ class CameraWorker(threading.Thread):
                 if dev.get_info(rs.camera_info.serial_number) == self.serial:
                     dev.hardware_reset()
                     self.resets += 1
-                    _log(f"{self.role}: hardware_reset ({self.resets}번째)")
+                    _log(f"{self.serial}: hardware_reset ({self.resets}번째)")
         except Exception as e:  # noqa: BLE001
-            _log(f"{self.role}: hardware_reset 실패: {e}")
+            _log(f"{self.serial}: hardware_reset 실패: {e}")
         time.sleep(3.5)  # 재열거 대기
 
     # ------------------------------------------------------------------ run
@@ -131,7 +135,7 @@ class CameraWorker(threading.Thread):
                 self.last_error = "장치가 USB 에 없음 (케이블 확인)"
                 if time.time() - last_absent_log > 10:
                     last_absent_log = time.time()
-                    _log(f"{self.role}: {self.last_error} -- 기다리는 중")
+                    _log(f"{self.serial}: {self.last_error} -- 기다리는 중")
                 time.sleep(1.0)
                 continue
             pipe = rs.pipeline()
@@ -146,7 +150,7 @@ class CameraWorker(threading.Thread):
             except Exception as e:  # noqa: BLE001
                 self.alive = False
                 self.last_error = f"열기 실패: {e}"
-                _log(f"{self.role}: {self.last_error}")
+                _log(f"{self.serial}: {self.last_error}")
                 if not self.running:
                     return
                 # busy = 다른 프로세스(VLA 정책 클라이언트, 이전 노드 등)가
@@ -168,7 +172,7 @@ class CameraWorker(threading.Thread):
                 .as_video_stream_profile().get_intrinsics()
             self.alive = True
             self.last_error = ""
-            _log(f"{self.role}: 스트림 시작 ({self.serial}, "
+            _log(f"{self.serial}: 스트림 시작 ({self.serial}, "
                  f"{self.w}x{self.h}@{self.fps}, depth_scale={scale})")
             seq = 0
             t_fps, n_fps = time.time(), 0
@@ -180,7 +184,7 @@ class CameraWorker(threading.Thread):
                 except Exception as e:  # noqa: BLE001
                     timeouts += 1
                     self.last_error = f"프레임 없음: {e}"
-                    _log(f"{self.role}: {self.last_error} ({timeouts}회)")
+                    _log(f"{self.serial}: {self.last_error} ({timeouts}회)")
                     if timeouts >= 2:
                         break  # 스트림 사망 -> 재오픈 루프로
                     continue
@@ -190,12 +194,12 @@ class CameraWorker(threading.Thread):
                 ts = time.time()
                 rgb = np.asanyarray(cf.get_data())          # (H,W,3) u8
                 z16 = np.asanyarray(df.get_data())          # (H,W)   u16
-                self.pub.send(f"{self.role}/color",
+                self.pub.send(f"{self.serial}/color",
                               {"ts": ts, "shape": rgb.shape,
                                "dtype": "uint8", "seq": seq},
                               rgb.tobytes())
                 # depth 는 lerobot read_latest_depth 와 같은 (H,W,1) 의미론
-                self.pub.send(f"{self.role}/depth",
+                self.pub.send(f"{self.serial}/depth",
                               {"ts": ts, "shape": (self.h, self.w, 1),
                                "dtype": "uint16", "seq": seq,
                                "depth_scale": scale},
@@ -218,7 +222,7 @@ class CameraWorker(threading.Thread):
                                            "ppx": intr.ppx, "ppy": intr.ppy},
                         }
                     except Exception as e:  # noqa: BLE001
-                        _log(f"{self.role}: 정렬 실패: {e}")
+                        _log(f"{self.serial}: 정렬 실패: {e}")
                         self._aligned_result = None
                     self._aligned_done.set()
             self.alive = False
@@ -247,7 +251,7 @@ class FakeCameraWorker(CameraWorker):
 
     def run(self) -> None:
         self.alive = True
-        _log(f"{self.role}: FAKE 스트림 시작 ({self.serial})")
+        _log(f"{self.serial}: FAKE 스트림 시작 ({self.serial})")
         seq = 0
         base = np.zeros((self.h, self.w, 3), dtype=np.uint8)
         base[:, :, 0] = np.linspace(0, 255, self.w, dtype=np.uint8)[None, :]
@@ -257,10 +261,10 @@ class FakeCameraWorker(CameraWorker):
             x = (seq * 7) % self.w
             rgb[:, x:x + 12, 1] = 255                      # 움직이는 초록 줄
             z16 = np.full((self.h, self.w), 800 + seq % 50, dtype=np.uint16)
-            self.pub.send(f"{self.role}/color",
+            self.pub.send(f"{self.serial}/color",
                           {"ts": ts, "shape": rgb.shape,
                            "dtype": "uint8", "seq": seq}, rgb.tobytes())
-            self.pub.send(f"{self.role}/depth",
+            self.pub.send(f"{self.serial}/depth",
                           {"ts": ts, "shape": (self.h, self.w, 1),
                            "dtype": "uint16", "seq": seq,
                            "depth_scale": 0.001}, z16.tobytes())
@@ -298,7 +302,7 @@ def main() -> None:
         ctypes.CDLL("libc.so.6", use_errno=True).prctl(
             1, signal.SIGTERM)  # PR_SET_PDEATHSIG
     if not args.cam:
-        raise SystemExit("--cam ROLE:SERIAL 이 최소 1개 필요합니다")
+        raise SystemExit("--cam SERIAL 이 최소 1개 필요합니다")
 
     ctx = zmq.Context()
     pub = _Publisher(ctx, args.pub_port)
@@ -309,12 +313,13 @@ def main() -> None:
     cls = FakeCameraWorker if args.fake else CameraWorker
     workers: dict[str, CameraWorker] = {}
     for spec in args.cam:
-        role, _, serial = spec.partition(":")
+        # 옛 형식(ROLE:SERIAL)도 받아준다 -- 뒤쪽이 시리얼이다. 노드는 역할을
+        # 모르므로 앞부분은 버린다.
+        serial = spec.rpartition(":")[2] or spec
         if not serial:
-            raise SystemExit(f"--cam 형식 오류: {spec} (ROLE:SERIAL)")
-        workers[role] = cls(role, serial, pub, args.width, args.height,
-                            args.fps)
-        workers[role].start()
+            raise SystemExit(f"--cam 형식 오류: {spec} (SERIAL)")
+        workers[serial] = cls(serial, pub, args.width, args.height, args.fps)
+        workers[serial].start()
 
     running = True
 
@@ -324,7 +329,7 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    _log(f"카메라 노드 시작: {[f'{r}:{w.serial}' for r, w in workers.items()]}"
+    _log(f"카메라 노드 시작: {sorted(workers)}"
          f" pub={args.pub_port} ctl={args.ctl_port}"
          + (" [FAKE]" if args.fake else ""))
 
@@ -347,7 +352,8 @@ def main() -> None:
             ctl.send(json.dumps({"ok": True, "cams": {
                 r: w.status() for r, w in workers.items()}}).encode())
         elif cmd == "aligned":
-            w = workers.get(req.get("role", ""))
+            # role 은 옛 이름 -- 노드는 역할을 모른다.
+            w = workers.get(req.get("serial") or req.get("role", ""))
             res = w.request_aligned() if w else None
             if res is None:
                 ctl.send_multipart([json.dumps(

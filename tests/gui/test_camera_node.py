@@ -19,7 +19,7 @@ PUB, CTL = 16021, 16022  # 실제 기본 포트와 겹치지 않게
 
 node = subprocess.Popen(
     [sys.executable, "-m", "gello.comm.camera_node",
-     "--cam", "agent:FAKE-A", "--cam", "wrist:FAKE-W",
+     "--cam", "FAKE-A", "--cam", "FAKE-W",
      "--pub-port", str(PUB), "--ctl-port", str(CTL), "--fake"],
     cwd=WT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 try:
@@ -31,12 +31,15 @@ try:
             break
         time.sleep(0.2)
     assert info and info["ok"], info
-    assert info["cams"]["agent"]["serial"] == "FAKE-A"
-    assert info["cams"]["wrist"]["alive"] is True
+    # 노드의 신원은 시리얼이다 -- 역할(agent/wrist)은 데이터세트 계층의
+    # 이름이라 전송 계층이 알지 않는다 (2026-09-05 3층 분리).
+    assert info["cams"]["FAKE-A"]["serial"] == "FAKE-A"
+    assert info["cams"]["FAKE-W"]["alive"] is True
+    assert "agent" not in info["cams"], "노드가 역할을 알면 안 된다"
     print("1. ping/상태 OK")
 
     # ---- 2. connect + read_latest (RGB, 갱신 확인) ----
-    cam = NodeCamera("agent", serial="FAKE-A", pub_port=PUB, ctl_port=CTL)
+    cam = NodeCamera("FAKE-A", pub_port=PUB, ctl_port=CTL)
     cam.connect()
     f1 = cam.read_latest(max_age_ms=500)
     assert f1.shape == (480, 640, 3) and f1.dtype == np.uint8
@@ -51,25 +54,17 @@ try:
     assert 700 < int(d[0, 0, 0]) < 1000
     print("3. depth 의미론 OK")
 
-    # ---- 4. 시리얼 불일치 -> ConnectionError ----
-    bad = NodeCamera("agent", serial="OTHER", pub_port=PUB, ctl_port=CTL)
-    try:
-        bad.connect()
-        raise AssertionError("시리얼 불일치를 거부하지 않음")
-    except ConnectionError as e:
-        assert "노드" in str(e) and "OTHER" in str(e)
-    print("4. 시리얼 불일치 거부 OK")
-
-    # ---- 5. 없는 role -> ConnectionError ----
-    try:
-        NodeCamera("side", pub_port=PUB, ctl_port=CTL).connect()
-        raise AssertionError("없는 role 을 거부하지 않음")
-    except ConnectionError:
-        pass
-    print("5. 없는 role 거부 OK")
+    # ---- 4~5. 노드가 안 여는 시리얼 -> ConnectionError ----
+    for missing in ("OTHER", "agent"):
+        try:
+            NodeCamera(missing, pub_port=PUB, ctl_port=CTL).connect()
+            raise AssertionError(f"없는 카메라({missing})를 거부하지 않음")
+        except ConnectionError as e:
+            assert missing in str(e), str(e)
+    print("4~5. 안 여는 시리얼 거부 OK (역할 이름도 시리얼이 아니라 거부)")
 
     # ---- 6. 정렬 요청 (포인트클라우드 경로) ----
-    al = fetch_aligned("agent", ctl_port=CTL)
+    al = fetch_aligned("FAKE-A", ctl_port=CTL)
     assert al is not None
     assert al["z"].shape == (480, 640) and al["z"].dtype == np.float32
     assert 0.7 < float(al["z"][0, 0]) < 1.0        # 800mm * 0.001

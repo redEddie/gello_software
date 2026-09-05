@@ -1349,7 +1349,7 @@ class CollectionWorker(QThread):
         # 기록하는 것보다 낫다). NodeCamera.read_latest[_depth] 는 lerobot
         # 카메라와 같은 계약이라 아래 관측 루프는 무수정이다.
         self._robot.cameras = {
-            role: NodeCamera(role, serial=serial)
+            role: NodeCamera(serial)
             for role, serial in (
                 ("agent", self.cfg.agent_camera_serial),
                 ("wrist", self.cfg.wrist_camera_serial),

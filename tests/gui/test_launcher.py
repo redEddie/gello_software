@@ -153,15 +153,20 @@ from apps.workspace.shared.camera_node_proc import (  # noqa: E402
     spec_key,
 )
 
-assert node_specs("A1", "B2") == ["agent:A1", "wrist:B2"]
-assert node_specs("A1", "") == ["agent:A1"]       # 빈 시리얼은 빠진다
-assert spec_key(node_specs("A1", "B2")) == "agent:A1,wrist:B2"
+# 노드에 넘어가는 것은 시리얼뿐이다 -- 역할이 붙으면 역할만 바꿔도 노드가
+# 재시작한다 (2026-09-05 3층 분리).
+assert node_specs(["A1", "B2"]) == ["A1", "B2"]
+assert node_specs(["A1", ""]) == ["A1"]            # 빈 시리얼은 빠진다
+assert node_specs(["A1", "A1"]) == ["A1"]          # 같은 장치를 두 번 열지 않는다
+assert spec_key(node_specs(["A1", "B2"])) == "A1,B2"
+assert all(":" not in x for x in node_specs(["A1", "B2"])), \
+    "spec 에 역할이 섞이면 안 된다"
 
 hw = wiz.page(PAGE_HW)
 fake = QProcess()                                  # start() 하지 않는다
-hw._node, hw._node_key = fake, "agent:A1,wrist:B2"
+hw._node, hw._node_key = fake, "A1,B2"
 proc, key = hw.take_node()
-assert proc is fake and key == "agent:A1,wrist:B2"
+assert proc is fake and key == "A1,B2"
 assert hw._node is None and hw._node_key == "", "넘긴 뒤에는 페이지가 손을 뗀다"
 proc2, key2 = hw.take_node()
 assert proc2 is None and key2 == "", "두 번 넘기지 않는다"
