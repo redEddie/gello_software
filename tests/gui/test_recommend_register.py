@@ -162,6 +162,53 @@ assert "Configure" in cb.text(), f"어떻게 해야 하는지 안 적혀 있다:
 assert cb.toolTip(), "왜 못 하는지 설명이 없다"
 print("계획 미선택 시 등록 불가 이유를 보여준다 OK")
 
+# ---- 7. 워크플로 ②: 물체는 사람이 고르고 배치만 추천 (2026-09-06) ----
+nd4 = NewSceneDialog(None, "S103")
+assert not nd4.layout_btn.isEnabled(), "아무것도 안 골랐는데 눌린다"
+assert "이상 체크" in nd4.layout_btn.toolTip(), nd4.layout_btn.toolTip()
+picked_ids = ["OBJ-CUP-WHT-01", "OBJ-CUP-BLU-01",
+              "OBJ-BOWLS-WHT-01", "OBJ-DRAWER-01"]
+nd4.prop_list.blockSignals(True)
+for i in range(nd4.prop_list.count()):
+    it = nd4.prop_list.item(i)
+    if it.data(cw.Qt.ItemDataRole.UserRole) in set(picked_ids):
+        it.setCheckState(cw.Qt.CheckState.Checked)
+nd4.prop_list.blockSignals(False)
+nd4._refresh()
+assert nd4.layout_btn.isEnabled(), "4개를 골랐는데 못 누른다"
+
+ldlg = RecommendDialog(None, [base], props, "S997", plan_path=plan_copy,
+                       objects=picked_ids)
+_wait_recs(ldlg)
+assert len(ldlg._radios) == 3, len(ldlg._radios)
+layouts = []
+for rec in ldlg._recs:
+    md = rec["md"]
+    assert sorted(md.objects) == sorted(picked_ids), md.objects   # 조합 불변
+    layouts.append(tuple(sorted(
+        (o, tuple(v["zone"])) for o, v in md.layout["placements"].items())))
+assert len(set(layouts)) == 3, "배치안 3개가 서로 달라야 한다"
+# 문장은 배치와 무관하므로 세 안이 같은 체크리스트를 공유한다
+assert ldlg._sentence_checks[0] is ldlg._sentence_checks[1]
+assert len(ldlg._sentence_checks[0]) >= 1
+# 채택하면 배치가 NewSceneDialog 에 반영된다
+ldlg._radios[1].setChecked(True)
+ldlg._accept()
+nd4._apply_recommendation(ldlg.picked)
+assert sorted(nd4._checked_ids()) == sorted(picked_ids)
+assert {o: tuple(z) for o, z in nd4._placements.items()} == {
+    o: z for o, z in layouts[1]}
+print(f"7 통과: 배치만 추천 3안 (조합 불변·배치 상이·문장 공유) + 폼 반영")
+
+# ---- 8. 배치로 고칠 수 없는 위반은 경고로 말한다 ----
+lone = RecommendDialog(None, [base], props, "S996",
+                       objects=["OBJ-CUP-BLU-01", "OBJ-BOWLS-WHT-01"])
+_wait_recs(lone)
+warn = lone._compose_warning()
+assert any("pair_if_present" in w for w in warn), warn
+assert len(lone._radios) == 3, "구성 규칙 위반이어도 배치는 추천해야 한다"
+print("8 통과: compose 위반 조합도 배치는 추천하되 경고를 보여준다")
+
 import os  # noqa: E402
 
 # os._exit 는 버퍼를 비우지 않는다 -- 먼저 비운다.

@@ -60,8 +60,17 @@ class SceneInfoView(QWidget):
         # 소품 ID(ASCII)뿐이라 한글 폭은 여기서는 상관없다.
         self._grid.setStyleSheet(
             f"font-family: {MONO_STACK}; color:#888; font-size: 10px;")
+        # 세로는 Minimum -- 자리가 모자랄 때 줄어드는 대신 바깥 스크롤이
+        # 생겨야 한다. Preferred 로 두면 카드가 여럿인 다이얼로그에서 격자
+        # 지도가 위아래로 잘려 "추천된 배치를 볼 수 없는" 화면이 된다
+        # (2026-09-06 실측). 가로는 그대로 Ignored -- 좁은 패널에서 격자가
+        # 폭을 강제하지 않게 하는 기존 의도다.
         self._grid.setSizePolicy(QSizePolicy.Policy.Ignored,
-                                 QSizePolicy.Policy.Preferred)
+                                 QSizePolicy.Policy.Minimum)
+        tp = self._text.sizePolicy()
+        tp.setVerticalPolicy(QSizePolicy.Policy.Minimum)
+        tp.setHeightForWidth(True)
+        self._text.setSizePolicy(tp)
         col.addWidget(self._text)
         col.addWidget(self._grid)
 
@@ -73,6 +82,9 @@ class SceneInfoView(QWidget):
         self._text.setText("\n".join(text_lines))
         self._grid.setText("\n".join(grid_lines))
         self._grid.setVisible(bool(grid_lines))
+        # 줄바꿈이 없는 라벨이라 sizeHint 높이가 곧 필요한 높이다.
+        self._grid.setMinimumHeight(
+            self._grid.sizeHint().height() if grid_lines else 0)
 
     def text(self) -> str:
         return "\n".join(x for x in (self._text.text(), self._grid.text()) if x)

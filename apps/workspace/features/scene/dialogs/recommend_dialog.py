@@ -28,8 +28,9 @@ from PyQt6.QtWidgets import (
 from apps.workspace.shared.widgets import SceneInfoView
 from gello.gui.i18n import tr
 from gello.scene.collection_plan import load_plan
-from gello.scene.scene_diversity import AXES, recommend_detailed
+from gello.scene.scene_diversity import AXES, recommend_detailed, recommend_placement
 from gello.scene.scene_format import INSTRUCTION_ID_RE, SceneMetadata, describe_scene
+from gello.scene.scene_rules import violations_by_section
 from gello.scene.skill_stats import (
     collected_skill_counts,
     format_skill_counts,
@@ -48,7 +49,8 @@ class RecommendWorker(QThread):
 
     def __init__(self, existing: list, props: dict, k: int,
                  seed: int, scene_id: str,
-                 data_root: "Path | None" = None) -> None:
+                 data_root: "Path | None" = None,
+                 objects: "list | None" = None) -> None:
         super().__init__()
         self._existing = existing
         self._props = props
@@ -56,14 +58,22 @@ class RecommendWorker(QThread):
         self._seed = seed
         self._scene_id = scene_id
         self._data_root = data_root
+        self._objects = objects
 
     def run(self) -> None:
         try:
             # 스킬별 누적 수집량 -- 지시문 랭킹용. HDF5 IO 라 워커에서 센다.
             counts = collected_skill_counts(self._data_root)
-            recs = recommend_detailed(self._existing, self._props, k=self._k,
-                                      seed=self._seed,
-                                      scene_id=self._scene_id)
+            if self._objects:
+                # 물체는 사람이 골랐다 -- 배치만 추천한다. 후보는 무작위
+                # 표본이 아니라 규칙을 만족하는 배치 전부다.
+                recs = recommend_placement(
+                    self._objects, self._existing, self._props, k=self._k,
+                    seed=self._seed, scene_id=self._scene_id)
+            else:
+                recs = recommend_detailed(self._existing, self._props,
+                                          k=self._k, seed=self._seed,
+                                          scene_id=self._scene_id)
             self.recs_ready.emit(recs, counts)
         except Exception as e:  # noqa: BLE001
             self.error.emit(f"{type(e).__name__}: {e}")
@@ -74,10 +84,19 @@ class RecommendDialog(QDialog):
 
     def __init__(self, parent, existing: list, props: dict,
                  scene_id: str, plan_path: "Path | None" = None,
-                 data_root: "Path | None" = None) -> None:
+                 data_root: "Path | None" = None,
+                 objects: "list | None" = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("scene 추천 — 기존 {n}개 기준 (거리 버킷 + 커버리지)")
-                            .format(n=len(existing)))
+        # objects 가 주어지면 조합은 사람이 고른 것이고 배치만 추천한다.
+        self._objects = list(objects) if objects else None
+        if self._objects:
+            self.setWindowTitle(
+                tr("배치 추천 — 물체 {m}개 고정, 기존 {n}개 기준")
+                .format(m=len(self._objects), n=len(existing)))
+        else:
+            self.setWindowTitle(
+                tr("scene 추천 — 기존 {n}개 기준 (거리 버킷 + 커버리지)")
+                .format(n=len(existing)))
         self.setMinimumSize(620, 720)
         self._existing = existing
         self._props = props
@@ -110,6 +129,16 @@ class RecommendDialog(QDialog):
         top.addWidget(self.status_label, 1)
         top.addStretch(1)
         col.addLayout(top)
+
+        # 배치로는 고칠 수 없는 위반은 여기서 말해 준다 -- 배치안만 보여주고
+        # 침묵하면 조작자는 규칙에 맞는 조합인 줄 안다.
+        warn = self._compose_warning()
+        if warn:
+            wl = QLabel(tr("물체 구성 경고 (배치로는 고칠 수 없습니다): {v}")
+                        .format(v="; ".join(warn)))
+            wl.setWordWrap(True)
+            wl.setStyleSheet("color:#e67e22;")
+            col.addWidget(wl)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -147,6 +176,20 @@ class RecommendDialog(QDialog):
         col.addWidget(buttons)
         self._fill()
 
+    def _compose_warning(self) -> list:
+        """사람이 고른 조합의 구성 규칙 위반 (배치와 무관한 것들)."""
+        if not self._objects:
+            return []
+        probe = SceneMetadata(
+            scene_id=self._scene_id, objects=list(self._objects),
+            layout={"grid": [3, 3],
+                    "placements": {o: {"zone": [i // 3, i % 3]}
+                                   for i, o in enumerate(self._objects)}})
+        try:
+            return violations_by_section(probe, self._props)["compose"]
+        except Exception:  # noqa: BLE001 -- 경고를 못 만들어도 추천은 보여준다
+            return []
+
     def _clear_cards(self) -> None:
         while self._cards_col.count():
             it = self._cards_col.takeAt(0)
@@ -154,6 +197,7 @@ class RecommendDialog(QDialog):
                 it.widget().deleteLater()
         self._radios = []
         self._sentence_checks = []
+        self._cards.setMinimumHeight(0)
 
     def _fill(self) -> None:
         if self._worker is not None and self._worker.isRunning():
@@ -166,7 +210,7 @@ class RecommendDialog(QDialog):
         w = RecommendWorker(
             self._existing, self._props, k=3,
             seed=self.seed_spin.value(), scene_id=self._scene_id,
-            data_root=self._data_root)
+            data_root=self._data_root, objects=self._objects)
         self._worker = w
         w.recs_ready.connect(
             lambda recs, counts, w=w: self._on_recs_ready(w, recs, counts))
@@ -230,25 +274,30 @@ class RecommendDialog(QDialog):
             view.setText(describe_scene(md))
             bc.addWidget(view)
 
-            ranked = rank_instructions(md, self._props, counts or {})
-            checks: list[QCheckBox] = []
-            if ranked:
-                bc.addWidget(QLabel(
-                    tr("추천 문장 — 수집이 적은 스킬 우선 (채택 시 등록됨):")))
-                for s, sk, n in ranked:
-                    cb = QCheckBox(s)
-                    cb.setChecked(True)
-                    cb.setEnabled(self._plan_path is not None)
-                    cb.setToolTip(tr("스킬 {sk} · 지금까지 {n} 에피소드 수집")
-                                  .format(sk=sk, n=n))
-                    checks.append(cb)
-                    bc.addWidget(cb)
-            else:
-                note = QLabel(tr("(문법상 생성 가능한 문장이 없음)"))
-                note.setStyleSheet("color:#888;")
-                bc.addWidget(note)
-            self._sentence_checks.append(checks)
+            # 배치만 추천할 때 문장은 세 안이 모두 같다 (지시문은 존을 보지
+            # 않는다) -- 카드마다 같은 목록을 세 번 보여주지 않고 아래에 한 번
+            # 두고 세 안이 공유한다.
+            if self._objects is None:
+                self._sentence_checks.append(
+                    self._build_sentence_checks(md, counts, bc))
             self._cards_col.addWidget(box)
+        if not self._recs:
+            note = QLabel(
+                tr("규칙을 만족하는 배치를 찾지 못했습니다 — 소품 조합을 바꿔 "
+                   "보세요 (키 큰 소품은 열을 통째로 비웁니다).")
+                if self._objects else
+                tr("추천 후보를 만들지 못했습니다 — 인벤토리와 규칙을 "
+                   "확인하세요."))
+            note.setWordWrap(True)
+            note.setStyleSheet("color:#e67e22;")
+            self._cards_col.addWidget(note)
+        elif self._objects is not None:
+            shared = QGroupBox()
+            sc = QVBoxLayout(shared)
+            checks = self._build_sentence_checks(
+                self._recs[0]["md"], counts, sc)
+            self._cards_col.addWidget(shared)
+            self._sentence_checks = [checks for _ in self._recs]
         if counts:
             summary = QLabel(tr("스킬별 누적 수집 (적은 순): {s}")
                              .format(s=format_skill_counts(counts)))
@@ -256,6 +305,33 @@ class RecommendDialog(QDialog):
             summary.setWordWrap(True)
             self._cards_col.addWidget(summary)
         self._cards_col.addStretch(1)
+        # 스크롤 영역이 내부 위젯을 minimumSizeHint 아래로 눌러 카드가 잘리는
+        # 것을 막는다 (2026-09-06 실측: 필요 1374px 인데 747px 로 눌려 격자
+        # 지도가 반쯤 잘리고 문장 체크박스가 높이 1px 이 됐다). 필요한 높이를
+        # 명시하면 대신 세로 스크롤이 생긴다 -- shared/sizing.py 의 "길어질 수
+        # 있는 화면은 스크롤에 넣는다"와 같은 규칙이다.
+        self._cards.setMinimumHeight(self._cards_col.sizeHint().height())
+
+    def _build_sentence_checks(self, md, counts, into) -> list:
+        """문장 체크리스트를 into 레이아웃에 만들고 체크박스 목록을 준다."""
+        ranked = rank_instructions(md, self._props, counts or {})
+        checks: list[QCheckBox] = []
+        if ranked:
+            into.addWidget(QLabel(
+                tr("추천 문장 — 수집이 적은 스킬 우선 (채택 시 등록됨):")))
+            for s, sk, n in ranked:
+                cb = QCheckBox(s)
+                cb.setChecked(True)
+                cb.setEnabled(self._plan_path is not None)
+                cb.setToolTip(tr("스킬 {sk} · 지금까지 {n} 에피소드 수집")
+                              .format(sk=sk, n=n))
+                checks.append(cb)
+                into.addWidget(cb)
+        else:
+            note = QLabel(tr("(문법상 생성 가능한 문장이 없음)"))
+            note.setStyleSheet("color:#888;")
+            into.addWidget(note)
+        return checks
 
     def _selected_sentences(self, idx: int) -> list[str]:
         return [cb.text() for cb in self._sentence_checks[idx] if cb.isChecked()]

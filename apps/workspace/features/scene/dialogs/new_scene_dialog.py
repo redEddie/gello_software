@@ -31,7 +31,7 @@ from gello.scene.scene_format import (
     iter_scene_files,
     read_scene_metadata,
 )
-from gello.scene.scene_rules import check
+from gello.scene.scene_rules import check, object_count_range
 
 
 class NewSceneDialog(QDialog):
@@ -60,12 +60,17 @@ class NewSceneDialog(QDialog):
             "③ 오른쪽 격자 칸을 눌러 그 존에 배치  ([0,0]=왼쪽 위)"))
         hint.setWordWrap(True)
         hrow.addWidget(hint, 1)
-        rec_btn = QPushButton(tr("추천 받기..."))
+        # Action 계층은 영어 (i18n.py 정책) -- 두 버튼이 나란히 있어 한쪽만
+        # 영어면 오히려 섞여 보인다.
+        rec_btn = QPushButton(tr("Recommend scene..."))
         rec_btn.setToolTip(tr(
             "기존 scene 들과 가장 다른 소품 조합·배치 3안을 추천받아\n"
             "체크·배치를 자동으로 채웁니다 (#33, 다양성 최대화)."))
         rec_btn.clicked.connect(self._on_recommend)
         hrow.addWidget(rec_btn)
+        self.layout_btn = QPushButton(tr("Recommend layout..."))
+        self.layout_btn.clicked.connect(self._on_recommend_layout)
+        hrow.addWidget(self.layout_btn)
         layout.addLayout(hrow)
 
         mid = QHBoxLayout()
@@ -121,7 +126,7 @@ class NewSceneDialog(QDialog):
                 for i in range(self.prop_list.count())
                 if self.prop_list.item(i).checkState() == Qt.CheckState.Checked]
 
-    def _on_recommend(self) -> None:
+    def _existing_scenes(self) -> tuple:
         existing = []
         skipped = 0
         if self._data_root is not None:
@@ -130,14 +135,25 @@ class NewSceneDialog(QDialog):
                     existing.append(read_scene_metadata(p))
                 except Exception:  # noqa: BLE001 -- 세션이 쥔 파일 등
                     skipped += 1
+        return existing, skipped
+
+    def _open_recommend(self, objects: "list | None") -> None:
+        existing, skipped = self._existing_scenes()
         dlg = RecommendDialog(self, existing, props_by_id(), self._scene_id,
                               plan_path=self._plan_path,
-                              data_root=self._data_root)
+                              data_root=self._data_root, objects=objects)
         if skipped:
             dlg.setWindowTitle(dlg.windowTitle()
                                + tr(" (읽지 못한 파일 {n}개 제외)").format(n=skipped))
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.picked is not None:
             self._apply_recommendation(dlg.picked)
+
+    def _on_recommend(self) -> None:
+        self._open_recommend(None)
+
+    def _on_recommend_layout(self) -> None:
+        """체크한 물체는 그대로 두고 배치만 추천받는다."""
+        self._open_recommend(self._checked_ids())
 
     def _apply_recommendation(self, md) -> None:
         """추천안을 체크박스·배치에 반영한다. 이후 손으로 고칠 수 있다."""
@@ -176,6 +192,7 @@ class NewSceneDialog(QDialog):
 
     def _refresh(self, *_args) -> None:
         checked = set(self._checked_ids())
+        self._update_layout_btn(len(checked))
         self._placements = {k: v for k, v in self._placements.items()
                             if k in checked}
         for (r, c), b in self.zone_buttons.items():
@@ -199,6 +216,25 @@ class NewSceneDialog(QDialog):
                 self.lint_label.setText("")
         except Exception as e:  # noqa: BLE001
             self.lint_label.setText(tr("규칙 검사 오류: {e}").format(e=e))
+
+    def _update_layout_btn(self, n: int) -> None:
+        """왜 못 누르는지를 그 자리에서 말한다 (숨기지 않는다)."""
+        lo, _hi = object_count_range()
+        cap = 3 * 3
+        ok = lo <= n <= cap
+        self.layout_btn.setEnabled(ok)
+        if ok:
+            self.layout_btn.setToolTip(tr(
+                "체크한 물체 {n}개는 그대로 두고, 규칙을 만족하는 배치 전부에서\n"
+                "기존 scene 들과 가장 다른 배치 3안을 추천받습니다.").format(n=n))
+        elif n < lo:
+            self.layout_btn.setToolTip(tr(
+                "물체를 {lo}개 이상 체크해야 배치를 추천할 수 있습니다 "
+                "(지금 {n}개).").format(lo=lo, n=n))
+        else:
+            self.layout_btn.setToolTip(tr(
+                "물체 {n}개는 3×3 격자 {cap}칸보다 많습니다.")
+                .format(n=n, cap=cap))
 
     def _accept(self) -> None:
         md = self._build()
