@@ -67,3 +67,11 @@ Keep this invariant when adding files; a module's folder must announce its role.
 - This checkout shares its git repo with the `gello_software-deploy` worktree
   (branch `feat/waypoint-client`); prefer cherry-picks over merges across the
   2026-08-31 layout change.
+- Release flow: develop on `dev` here, then
+  `git -C ../gello_software-scene merge --ff-only dev` (that worktree holds
+  `main`, the branch the collection icon runs), re-run the suite **there**, and
+  push both branches. `main` is never developed on directly — but it is what the
+  operator is running, so nothing lands there unverified.
+- Other agents may be editing the same files concurrently. Check
+  `git status` before committing and stage your own paths explicitly rather
+  than `git add -A`.
