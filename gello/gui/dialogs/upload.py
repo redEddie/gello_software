@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 
 from gello.gui.dialogs.hf_account import HfAccountDialog, hf_account
 from gello.gui.widgets import Recents
+from gello.gui.fonts import MONO_STACK
 from gello.gui.i18n import tr
 from gello.gui.text_utils import repo_id_error
 
@@ -67,7 +68,7 @@ class HdfUploadDialog(QDialog):
         # be replaced are written as **** so a copy-paste of the example alone
         # can never be mistaken for a working value.
         ex = QLabel(tr("예)  knu-physical-ai/****"))
-        ex.setStyleSheet("color: #888; font-family: monospace;")
+        ex.setStyleSheet(f"color: #888; font-family: {MONO_STACK};")
         grid.addWidget(QLabel(tr("Repo ID:")), 0, 0)
         grid.addWidget(ex, 0, 3)
         self.repo_id_edit = QComboBox()
@@ -80,7 +81,7 @@ class HdfUploadDialog(QDialog):
         grid.addWidget(self.repo_id_edit, 0, 1)
 
         ex_name = QLabel(tr("예)  ****_demo.hdf5"))
-        ex_name.setStyleSheet("color: #888; font-family: monospace;")
+        ex_name.setStyleSheet(f"color: #888; font-family: {MONO_STACK};")
         self.path_in_repo_label = QLabel(tr("Repo 안 파일 이름:"))
         grid.addWidget(self.path_in_repo_label, 1, 0)
         grid.addWidget(ex_name, 1, 2)

@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from gello.gui.dialogs.hf_account import HfAccountDialog, hf_account
 from gello.gui.widgets import Recents
+from gello.gui.fonts import MONO_STACK
 from gello.gui.i18n import tr
 from gello.gui.text_utils import repo_id_error
 
@@ -79,7 +80,7 @@ class LerobotConvertDialog(QDialog):
         # be replaced are written as **** so a copy-paste of the example alone
         # can never be mistaken for a working value.
         ex = QLabel(tr("예)  knu-physical-ai/****"))
-        ex.setStyleSheet("color: #888; font-family: monospace;")
+        ex.setStyleSheet(f"color: #888; font-family: {MONO_STACK};")
         grid.addWidget(QLabel(tr("Repo ID:")), 0, 0)
         grid.addWidget(ex, 0, 3)
         # Editable combo, not a plain edit: the previous repo IDs are right
@@ -95,7 +96,7 @@ class LerobotConvertDialog(QDialog):
         grid.addWidget(self.repo_id_edit, 0, 1, 1, 2)
 
         ex_root = QLabel(tr("예)  /home/franka/****"))
-        ex_root.setStyleSheet("color: #888; font-family: monospace;")
+        ex_root.setStyleSheet(f"color: #888; font-family: {MONO_STACK};")
         grid.addWidget(QLabel(tr("로컬 출력 경로:")), 1, 0)
         grid.addWidget(ex_root, 1, 3)
         self.out_root_edit = QComboBox()

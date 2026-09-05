@@ -13,6 +13,10 @@ export GELLO_NO_CAMERA_NODE=1
 # 같은 이유로 로봇 노드도 막는다 -- 데이터세트 버전 [확인] 이 노드를 직접
 # 띄우므로, 여기서 막지 않으면 테스트가 FCI 를 잡는다 (2026-09-05).
 export GELLO_NO_ROBOT_NODE=1
+# 이 스위트는 네트워크 없이도 돌아야 한다. 앱 글꼴(D2Coding)은 캐시가 비어
+# 있으면 21MB 를 받는데, 그 대기와 실패가 테스트 결과에 섞이면 안 된다.
+# 캐시가 이미 있으면 그건 그대로 쓴다 -- 막는 것은 네트워크지 글꼴이 아니다.
+export GELLO_NO_FONT_DOWNLOAD=1
 cd "$(dirname "$0")"
 fail=0
 for t in test_phase4a test_grid_replay test_plan_form test_right_scene \

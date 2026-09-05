@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.gui.widgets import np_to_pixmap
+from gello.gui.fonts import MONO_STACK
 from gello.gui.i18n import tr
 
 from apps.workspace.shared.image_utils import depth_colormap
@@ -56,7 +57,7 @@ class Hdf5TreeDialog(QDialog):
         self.detail = QPlainTextEdit()
         self.detail.setReadOnly(True)
         self.detail.setStyleSheet(
-            "font-family: 'DejaVu Sans Mono', monospace; font-size: 12px;")
+            f"font-family: {MONO_STACK}; font-size: 12px;")
         rcol.addWidget(self.detail, 1)
         split.addWidget(right)
         split.setSizes([420, 540])

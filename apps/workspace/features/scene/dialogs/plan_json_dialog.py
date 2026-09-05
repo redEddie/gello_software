@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 
+from gello.gui.fonts import MONO_STACK
 from gello.gui.i18n import tr
 from gello.scene.collection_plan import load_plan
 
@@ -39,7 +40,7 @@ class PlanJsonDialog(QDialog):
         col.addWidget(hint)
         self.editor = QPlainTextEdit()
         self.editor.setStyleSheet(
-            "font-family: 'DejaVu Sans Mono', monospace; font-size: 12px;")
+            f"font-family: {MONO_STACK}; font-size: 12px;")
         try:
             self.editor.setPlainText(self._path.read_text(encoding="utf-8"))
         except OSError as e:

@@ -77,6 +77,7 @@ from gello.data.dataset_schema import (  # noqa: E402
 from gello.scene.dataset_meta import load_identity  # noqa: E402
 from gello.gui.dialogs import DatasetSchemaDialog, hf_account  # noqa: E402
 from gello.gui.constants import PLAYBACK_FPS  # noqa: E402
+from gello.gui.fonts import ensure_font  # noqa: E402
 from gello.gui.widgets import Recents  # noqa: E402
 from gello.gui.workers import CameraPreviewWorker  # noqa: E402
 from gello.gui.text_utils import clean_stream_lines, is_progress_line, repo_id_error  # noqa: E402
@@ -834,8 +835,11 @@ def main(app: "QApplication | None" = None, camera_node=None,
     window_ref: dict = {}
     _install_excepthook(log_path, window_ref)
     if app is None:
+        # 런처를 거쳐 왔으면 app 은 이미 글꼴까지 끝난 상태로 넘어온다.
+        # 이 가지는 마법사를 건너뛰고 이 파일을 직접 실행한 경우다.
         app = QApplication(sys.argv)
         app.setStyle("Fusion")
+        ensure_font(app)
     win = WorkspaceWindow(log_path, camera_node=camera_node,
                           camera_node_spec=camera_node_spec,
                           robot_node=robot_node,

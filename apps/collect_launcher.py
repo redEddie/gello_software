@@ -30,6 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PyQt6.QtWidgets import QApplication, QDialog  # noqa: E402
 
+from gello.gui.fonts import ensure_font  # noqa: E402
+
 
 def apply_result(result, recents=None) -> None:
     """마법사 결과를 환경에 반영한다 — station env + recents pre-write.
@@ -57,6 +59,7 @@ def apply_result(result, recents=None) -> None:
 def main() -> None:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    ensure_font(app)
 
     from apps.workspace.launcher import LauncherWizard  # noqa: E402
 

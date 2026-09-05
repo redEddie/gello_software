@@ -12,9 +12,9 @@
 모듈은 위젯만 만들고, 채우는 것은 그쪽이다.
 """
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from gello.gui.fonts import set_bold
 from gello.gui.i18n import tr
 
 #: 상태별 띠 배경. 기록 중만 눈에 띄게 -- 나머지는 조용히.
@@ -39,7 +39,7 @@ def build_collect_header(win) -> QWidget:
     left = QVBoxLayout()
     left.setSpacing(2)
     win.hud_instruction = QLabel(tr("(수집 세션 없음)"))
-    win.hud_instruction.setFont(QFont("", 20, QFont.Weight.Bold))
+    set_bold(win.hud_instruction, 20)
     win.hud_instruction.setWordWrap(True)
     win.hud_instruction.setStyleSheet("color:#fff;")
     left.addWidget(win.hud_instruction)
@@ -50,7 +50,7 @@ def build_collect_header(win) -> QWidget:
 
     # 수집량 -- 이 띠에서 가장 큰 글자. 1m 거리에서 읽혀야 한다.
     win.hud_counter = QLabel("—")
-    win.hud_counter.setFont(QFont("", 30, QFont.Weight.Bold))
+    set_bold(win.hud_counter, 30)
     win.hud_counter.setStyleSheet("color:#fff;")
     win.hud_counter.setAlignment(Qt.AlignmentFlag.AlignRight
                                  | Qt.AlignmentFlag.AlignVCenter)
@@ -58,7 +58,7 @@ def build_collect_header(win) -> QWidget:
     row.addWidget(win.hud_counter)
 
     win.hud_state = QLabel(tr("대기"))
-    win.hud_state.setFont(QFont("", 13, QFont.Weight.Bold))
+    set_bold(win.hud_state, 13)
     win.hud_state.setStyleSheet("color:#fff;")
     win.hud_state.setAlignment(Qt.AlignmentFlag.AlignRight
                                | Qt.AlignmentFlag.AlignVCenter)

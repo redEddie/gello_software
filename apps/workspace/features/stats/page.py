@@ -1,6 +1,5 @@
 """Stats page builder for WorkspaceWindow."""
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QFormLayout,
     QGridLayout,
@@ -11,6 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from gello.gui.fonts import set_bold
 from gello.gui.i18n import tr
 
 
@@ -42,7 +42,7 @@ def build_stats(win) -> QWidget:
             lab.setAlignment(Qt.AlignmentFlag.AlignRight)
             # 이번 task 쪽만 굵게. 수집 중에 눈이 가야 할 것은 이쪽이다.
             if c == 1:
-                lab.setFont(QFont("", 10, QFont.Weight.Bold))
+                set_bold(lab, 10)
             else:
                 lab.setStyleSheet("color:#888;")
             grid.addWidget(lab, row, c)

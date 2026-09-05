@@ -1,5 +1,4 @@
 """Collect page builder for WorkspaceWindow."""
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -16,6 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.gui.widgets import DeltaBar
+from gello.gui.fonts import MONO_STACK, set_bold
 from gello.gui.i18n import tr
 
 from apps.workspace.shared.sizing import shrinkable_combo
@@ -117,7 +117,7 @@ def build_collect(win) -> QWidget:
     # 하므로 주변 라벨보다 크게. 갱신은 CollectionOps.refresh_slot_counter 가
     # 전담 -- 프레임마다 부르지 않는다 (HDF5 를 연다).
     win.slot_counter = QLabel(tr("—"))
-    win.slot_counter.setFont(QFont("", 16, QFont.Weight.Bold))
+    set_bold(win.slot_counter, 16)
     win.slot_counter.setStyleSheet("color:#888;")
     pcol.addWidget(win.slot_counter)
     # 데이터셋 전체 진행률 (계획 × scene 파일 실측) -- 수집 중에 보는 정보는
@@ -146,7 +146,7 @@ def build_collect(win) -> QWidget:
     win.ep_progress.setFormat("%v / %m frames")
     pcol.addWidget(win.ep_progress)
     win.state_label = QLabel(tr("대기"))
-    win.state_label.setFont(QFont("", 11, QFont.Weight.Bold))
+    set_bold(win.state_label, 11)
     pcol.addWidget(win.state_label)
     win.save_status_label = QLabel("")
     win.save_status_label.setStyleSheet("color:#888;")
@@ -156,7 +156,7 @@ def build_collect(win) -> QWidget:
     pcol.addWidget(win.verdict_label)
     win.shortcut_hint = QLabel("")
     win.shortcut_hint.setStyleSheet(
-        "color:#2ecc71; font-family:monospace; font-weight:bold;")
+        f"color:#2ecc71; font-family: {MONO_STACK}; font-weight:bold;")
     win.shortcut_hint.setWordWrap(True)
     pcol.addWidget(win.shortcut_hint)
     col.addWidget(prog)

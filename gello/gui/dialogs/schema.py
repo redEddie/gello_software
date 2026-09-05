@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -18,6 +17,7 @@ from PyQt6.QtWidgets import (
 
 from gello.data.dataset_schema import DatasetSchemaConfig
 from gello.data.schema_description import describe_schema
+from gello.gui.fonts import MONO_STACK
 from gello.gui.i18n import tr
 
 
@@ -171,7 +171,7 @@ class DatasetSchemaDialog(QDialog):
         layout = QVBoxLayout(dlg)
         view = QPlainTextEdit(text)
         view.setReadOnly(True)
-        view.setFont(QFont("monospace"))
+        view.setStyleSheet(f"font-family: {MONO_STACK};")
         view.setMinimumSize(480, 360)
         layout.addWidget(view)
         close_btn = QPushButton(tr("닫기"))

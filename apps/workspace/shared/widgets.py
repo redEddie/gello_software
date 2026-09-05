@@ -2,6 +2,7 @@
 
 from PyQt6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
+from gello.gui.fonts import MONO_STACK
 from gello.gui.constants import TODO_MARK
 from gello.gui.i18n import tr
 
@@ -51,9 +52,14 @@ class SceneInfoView(QWidget):
         self._grid = QLabel("")
         # 'monospace' 별칭은 한국어 로케일에서 CJK 모노 폰트로 풀리는데, 그
         # 폰트는 격자 선문자(│─┌)를 2칸 폭으로 그려 격자가 어긋난다.
+        #
+        # D2Coding 은 그 예외라 스택 맨 앞에 둔다 (2026-09-05 실측): CJK
+        # 글꼴이면서도 선문자를 1칸으로 그려 격자가 맞는다. Noto Sans Mono
+        # CJK KR 은 같은 자리에서 2칸이라 여전히 어긋난다 -- "CJK 는 다
+        # 위험"이 아니라 글꼴마다 다르다는 뜻이다. 격자 칸에 들어가는 것은
+        # 소품 ID(ASCII)뿐이라 한글 폭은 여기서는 상관없다.
         self._grid.setStyleSheet(
-            "font-family: 'DejaVu Sans Mono', 'Liberation Mono', monospace; "
-            "color:#888; font-size: 10px;")
+            f"font-family: {MONO_STACK}; color:#888; font-size: 10px;")
         self._grid.setSizePolicy(QSizePolicy.Policy.Ignored,
                                  QSizePolicy.Policy.Preferred)
         col.addWidget(self._text)

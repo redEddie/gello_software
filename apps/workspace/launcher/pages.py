@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from PyQt6.QtCore import QProcess, Qt
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -28,6 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.comm.camera_client import set_cams
+from gello.gui.fonts import set_bold
 from gello.gui.workers import CameraPreviewWorker
 from apps.workspace.launcher.camera_panel import CameraPreviewColumn
 from apps.workspace.launcher.form import roomy, tidy_form
@@ -99,14 +99,13 @@ class ModePage(QWizardPage):
         self.setTitle(tr("데이터 수집 시작"))
         col = QVBoxLayout(self)
         col.addStretch()
-        big = QFont("", 14, QFont.Weight.Bold)
         self.continue_btn = QPushButton(tr("이어서 하기"))
         self.new_btn = QPushButton(tr("새 데이터세트"))
         for b, tip in ((self.continue_btn,
                         tr("기존 데이터셋을 골라 바로 수집을 시작합니다")),
                        (self.new_btn,
                         tr("이름·컨셉·저장 위치를 정해 새 데이터셋을 만듭니다"))):
-            b.setFont(big)
+            set_bold(b, 14)
             b.setMinimumHeight(80)
             b.setToolTip(tip)
             col.addWidget(b)
