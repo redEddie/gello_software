@@ -724,6 +724,18 @@ class WorkspaceWindow(QMainWindow):
                 return False
         if (
             event.type() == QEvent.Type.KeyPress
+            # 키를 누르고 있는 것은 결정을 여러 번 내리는 것이 아니다. 이
+            # 기계는 500ms 뒤부터 33Hz 로 반복분을 보내는데(xset q), 같은 키가
+            # 상태마다 뜻이 달라서(Space: gate=시작 / recording=저장) 그 반복이
+            # 상태 경계를 넘으면 방금 시작한 에피소드를 즉시 끝낸다.
+            # 2026-09-05 에 그렇게 2프레임짜리가 저장됐다: 자동정렬 직후라
+            # approach 램프가 400ms 로 짧아져, 시작용 Space 의 첫 반복(500ms)이
+            # 기록 100ms 지점에 떨어졌다.
+            #
+            # isAutoRepeat 는 최초 KeyPress 에는 False 라, 눌러 둔 시간과
+            # 무관하게 동작은 정확히 한 번이 된다. 사람이 초당 33번 누를 수는
+            # 없으므로 정상 조작에서 이 줄이 발동할 일은 없다.
+            and not event.isAutoRepeat()
             and self.worker is not None
             and QApplication.activeModalWidget() is None
         ):
