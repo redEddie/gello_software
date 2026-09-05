@@ -39,11 +39,18 @@ from gello.config.station import CameraSpec, load_station
 from apps.workspace.constants import WT_ROOT
 from apps.workspace.shared.sizing import shrinkable_combo
 from apps.workspace.launcher.station_editor import StationEditor
-from gello.data.dataset_schema import SCHEMA_VERSION
+import numpy as np
+
+from gello.comm.zmq_core.robot_node import probe_observation
+from gello.data.dataset_schema import (
+    SCHEMA_FIELDS,
+    SCHEMA_VERSION,
+    schema_required_fields,
+)
 from gello.scene.dataset_meta import (
     DEFAULT_DATASETS_PARENT,
-    dataset_schema_version,
     DatasetEntry,
+    schema_version_spans,
     discover_datasets,
     load_identity,
     plan_progress,
@@ -59,6 +66,14 @@ PAGE_NEW = 2
 PAGE_HW = 3
 
 _NO_CAMERA = ""      # "(선택 안함)" 항목의 data
+
+#: 버전이 요구하는 **로봇 관측 키**. HDF5 필드명과 같지만 층이 다르다 --
+#: 이쪽은 "로봇이 줘야 하는 값" 이고, 확인 버튼이 이것으로 검사한다.
+#: 포스·토크는 FR3 펌웨어가 노출할 때만 오므로 장비마다 다를 수 있다.
+_ROBOT_OBS_FIELDS = {
+    "knu-1.0.0": (),
+    "knu-1.1.0": ("joint_torques", "ext_joint_torques", "ee_wrench"),
+}
 
 # 카메라 역할은 더 이상 여기 고정돼 있지 않다 -- 스테이션이 정한다
 # (cam id -> role). 3층 분리: 하드웨어=시리얼 / 데이터세트=역할 /
@@ -302,12 +317,35 @@ class HardwarePage(QWizardPage):
         self.station_editor.cams_changed.connect(self._rebuild_cam_rows)
         # 커밋 안 된 스테이션 파일이 있으면 아이콘의 자동 git pull 이 건너뛰어진다.
         # 막지는 않고 알리기만 한다 (2026-09-05 사용자 결정).
-        # 이 세션이 어떤 스키마 버전으로 기록하는지. 이어 찍을 때는 이미 있는
-        # 파일과 같아야 하므로 데이터셋이 정하고, 워크스페이스는 그대로 쓴다.
+        # 데이터세트 버전. 한 데이터셋에 여러 버전이 섞이는 것을 허용하되
+        # (2026-09-05 결정), **기본값은 최신**이다 -- 새 필드를 쓰기 시작했으면
+        # 버전이 따라 올라가는 것이 맞고, 옛 버전으로 이어 찍고 싶으면 여기서
+        # 명시적으로 내린다. 언제 바뀌었는지는 파일에서 파생해 보여준다.
+        ds_box = QGroupBox(tr("데이터세트"))
+        ds_col = QVBoxLayout(ds_box)
+        ver_row = QHBoxLayout()
+        ver_row.addWidget(QLabel(tr("스키마 버전")))
+        self.schema_combo = QComboBox()
+        for v in sorted(SCHEMA_FIELDS):
+            self.schema_combo.addItem(v, v)
+        self.schema_combo.currentIndexChanged.connect(self._refresh_schema_label)
+        ver_row.addWidget(self.schema_combo, 1)
+        self.schema_test_btn = QPushButton(tr("확인"))
+        self.schema_test_btn.setToolTip(tr(
+            "로봇 노드에 관측을 한 번 요청해, 이 버전이 요구하는 필드가 실제로 "
+            "오는지 확인합니다. 노드가 떠 있어야 합니다."))
+        self.schema_test_btn.clicked.connect(self._on_schema_selftest)
+        ver_row.addWidget(self.schema_test_btn)
+        ds_col.addLayout(ver_row)
         self.schema_label = QLabel("")
         self.schema_label.setWordWrap(True)
         self.schema_label.setStyleSheet("color:#888;")
-        outer.addWidget(self.schema_label)
+        ds_col.addWidget(self.schema_label)
+        self.schema_test_label = QLabel("")
+        self.schema_test_label.setWordWrap(True)
+        self.schema_test_label.setStyleSheet("color:#888;")
+        ds_col.addWidget(self.schema_test_label)
+        outer.addWidget(ds_box)
         self.git_warn = QLabel("")
         self.git_warn.setWordWrap(True)
         self.git_warn.setStyleSheet("color:#e67e22;")
@@ -374,6 +412,9 @@ class HardwarePage(QWizardPage):
             if want:
                 self.station_editor.reload(select=want)
             self._refresh_git_warning()
+            # 기본은 최신 버전 -- 옛 버전으로 이어 찍으려면 명시적으로 내린다.
+            i = self.schema_combo.findData(SCHEMA_VERSION)
+            self.schema_combo.setCurrentIndex(max(0, i))
             self._refresh_schema_label()
             # 목록부터 만들고(모델명 포함) 그 안에서 기억된 것을 고른다. 버튼을
             # 눌러야만 모델명이 보이면 아무도 안 누른다.
@@ -657,33 +698,92 @@ class HardwarePage(QWizardPage):
         if self.station_editor.save_new(cams):
             self._refresh_git_warning()
 
-    def _refresh_schema_label(self) -> None:
-        """이 데이터셋이 쓰는 스키마 버전을 보여준다.
+    def schema_version(self) -> str:
+        return str(self.schema_combo.currentData() or SCHEMA_VERSION)
 
-        이어 찍기면 이미 있는 scene 파일이 정본이다 -- 그 모양대로 써야
-        같은 데이터셋 안에서 필드가 갈라지지 않는다. 새 데이터셋이면 지금
-        기록기의 버전이다.
-        """
+    def _dataset_root(self) -> "Path | None":
         wiz = self.wizard()
-        root = None
         if wiz is not None and getattr(wiz, "mode", "") == "continue":
-            root = wiz.page(PAGE_CONTINUE).selected_path()
-        if root is None:
-            self.schema_label.setText(tr("스키마 {v} (새 데이터셋)")
-                                      .format(v=SCHEMA_VERSION))
-            self.schema_label.setStyleSheet("color:#888;")
-            return
-        v = dataset_schema_version(root)
-        if v == SCHEMA_VERSION:
-            self.schema_label.setText(tr("스키마 {v}").format(v=v))
-            self.schema_label.setStyleSheet("color:#888;")
+            return wiz.page(PAGE_CONTINUE).selected_path()
+        return None
+
+    def _refresh_schema_label(self, *_a) -> None:
+        """고른 버전과, 이 데이터셋에 이미 있는 버전 이력을 보여준다.
+
+        한 데이터셋에 여러 버전이 섞이는 것은 허용한다 (2026-09-05 결정) --
+        새 필드를 쓰기 시작하면 그 시점부터 버전이 올라가는 것이 자연스럽고,
+        "언제부터 바뀌었나" 는 파일에서 그대로 읽어 보여준다. 별도 이력을
+        적어 두지 않는 이유는 그것이 두 번째 진실이 되기 때문이다.
+        """
+        picked = self.schema_version()
+        root = self._dataset_root()
+        lines = []
+        if root is not None:
+            spans = schema_version_spans(root)
+            if spans:
+                lines.append(tr("이미 있는 파일: ") + "   ".join(
+                    f"{v} ({a})" if a == b else f"{v} ({a}~{b})"
+                    for v, a, b in spans))
+                newest = max(s[0] for s in spans)
+                if picked != newest:
+                    lines.append(tr("고른 버전이 마지막으로 쓴 것과 다릅니다 "
+                                    "— 이 시점부터 {v} 로 기록됩니다.")
+                                 .format(v=picked))
         else:
-            # 기록기는 더 새 버전을 쓸 수 있지만, 이어 찍는 파일에 맞춘다.
-            self.schema_label.setText(tr(
-                "스키마 {v} — 이 데이터셋에 이미 있는 파일에 맞춥니다 "
-                "(기록기 기본값은 {cur}). 새 필드는 기록되지 않습니다.")
-                .format(v=v, cur=SCHEMA_VERSION))
-            self.schema_label.setStyleSheet("color:#e67e22;")
+            lines.append(tr("새 데이터셋입니다."))
+        req = schema_required_fields(picked)
+        if req:
+            extra = [f for f in req["obs_datasets"]
+                     if f not in (schema_required_fields("knu-1.0.0") or
+                                  {"obs_datasets": ()})["obs_datasets"]]
+            if extra:
+                lines.append(tr("{v} 추가 관측: {f}")
+                             .format(v=picked, f=", ".join(extra)))
+        self.schema_label.setText("\n".join(lines))
+        self.schema_label.setStyleSheet("color:#888;")
+        self.schema_test_label.setText("")
+
+    def _on_schema_selftest(self) -> None:
+        """로봇 노드에 관측을 한 번 요청해, 고른 버전의 필드가 실제로 오는지 본다.
+
+        포스·토크는 FR3 펌웨어가 그 필드를 노출할 때만 온다 -- 안 오는 장비에서
+        1.1.0 을 고르면 필수 필드가 빠진 파일이 된다. 찍기 전에 알아야 한다.
+        """
+        picked = self.schema_version()
+        req = schema_required_fields(picked)
+        if req is None:
+            self.schema_test_label.setText(tr("모르는 버전입니다: {v}").format(v=picked))
+            self.schema_test_label.setStyleSheet("color:#e74c3c;")
+            return
+        self.schema_test_label.setText(tr("로봇 노드에 물어보는 중..."))
+        self.schema_test_label.setStyleSheet("color:#888;")
+        QApplication.processEvents()
+        try:
+            cfg = load_station(self.station_editor.current_name() or None)
+            obs = probe_observation(cfg.node.host, int(cfg.node.port))
+        except Exception as e:  # noqa: BLE001
+            self.schema_test_label.setText(tr(
+                "로봇 노드에 닿지 못했습니다 ({e}). Process 메뉴에서 로봇 노드를 "
+                "먼저 띄우세요 — 확인 없이 진행해도 되지만, 필드가 없으면 그 "
+                "버전으로 찍힌 파일이 검증을 통과하지 못합니다.").format(e=e))
+            self.schema_test_label.setStyleSheet("color:#e67e22;")
+            return
+        missing = [f for f in _ROBOT_OBS_FIELDS.get(picked, ())
+                   if f not in obs]
+        if missing:
+            self.schema_test_label.setText(tr(
+                "{v} 가 요구하는 값이 로봇에서 오지 않습니다: {m}\n"
+                "이 장비로는 낮은 버전을 고르세요.")
+                .format(v=picked, m=", ".join(missing)))
+            self.schema_test_label.setStyleSheet("color:#e74c3c;")
+            return
+        shapes = ", ".join(
+            f"{f}{tuple(np.shape(obs[f]))}" for f in _ROBOT_OBS_FIELDS.get(picked, ())
+        ) or tr("(추가 필드 없음)")
+        self.schema_test_label.setText(
+            tr("확인됨 — {v} 의 값이 로봇에서 옵니다.  {s}")
+            .format(v=picked, s=shapes))
+        self.schema_test_label.setStyleSheet("color:#27ae60;")
 
     def _refresh_git_warning(self) -> None:
         """커밋 안 된 스테이션 파일이 있으면 알린다.

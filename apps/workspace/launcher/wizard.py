@@ -30,7 +30,6 @@ from PyQt6.QtWidgets import QMessageBox, QWizard
 from gello.data.dataset_schema import SCHEMA_VERSION
 from gello.scene.dataset_meta import (
     DatasetIdentity,
-    dataset_schema_version,
     load_identity,
     plan_path,
     save_identity,
@@ -163,9 +162,11 @@ class LauncherWizard(QWizard):
                 ident = replace(ident, station=station or ident.station,
                                 cameras=dict(serials))
                 save_identity(root, ident)
-        # 이어 찍을 때는 이미 있는 파일과 같은 모양으로 써야 한다 -- 파일이
-        # 정본이고, 새 데이터셋이면 지금 기록기의 버전이다.
-        schema = dataset_schema_version(root)
+        # 하드웨어 페이지에서 고른 값. 기본값은 **최신**이다 -- 새 필드를 쓰기
+        # 시작했으면 버전이 따라 올라가는 것이 맞고, 한 데이터셋에 여러 버전이
+        # 섞이는 것도 허용한다 (2026-09-05 결정). 언제부터 바뀌었는지는
+        # scene 파일에서 파생한다 (schema_version_spans).
+        schema = hw.schema_version()
         if ident.schema_version != schema:
             ident = replace(ident, schema_version=schema)
             save_identity(root, ident)

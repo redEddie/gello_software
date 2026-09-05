@@ -313,6 +313,42 @@ ed._on_del_cam()                                # 마지막 한 대는 못 지�
 assert list(ed.cam_roles()) == ["cam1"], ed.cam_roles()
 print("10 통과: +/- 로 카메라 개수 조절, 최소 한 대 보장, 줄이 함께 따라옴")
 
+# ---- 11. 데이터세트 스키마 버전: 기본은 최신, 이력은 파일에서 파생 ----
+# 새 필드를 쓰기 시작하면 버전이 따라 올라가는 것이 기본이어야 한다
+# (2026-09-05). 한 데이터셋에 여러 버전이 섞이는 것은 허용하고, "언제부터
+# 바뀌었나" 는 scene 파일에서 읽는다 -- 별도 이력을 적으면 두 번째 진실이 된다.
+from gello.data.dataset_schema import (  # noqa: E402
+    SCHEMA_FIELDS,
+    SCHEMA_VERSION,
+)
+from gello.scene.dataset_meta import schema_version_spans  # noqa: E402
+
+hwp.initializePage()
+assert hwp.schema_version() == SCHEMA_VERSION, \
+    f"기본값은 최신이어야 한다: {hwp.schema_version()} != {SCHEMA_VERSION}"
+assert {hwp.schema_combo.itemData(i) for i in range(hwp.schema_combo.count())} \
+    == set(SCHEMA_FIELDS), "정의된 버전이 모두 고를 수 있어야 한다"
+# 옛 버전으로 내려 찍는 것도 가능해야 한다 (섞임 허용)
+_i = hwp.schema_combo.findData("knu-1.0.0")
+hwp.schema_combo.setCurrentIndex(_i)
+assert hwp.schema_version() == "knu-1.0.0"
+hwp.schema_combo.setCurrentIndex(hwp.schema_combo.findData(SCHEMA_VERSION))
+
+# 이력은 파일에서 파생한다 -- 섞인 폴더를 만들어 구간이 갈리는지 본다
+_MIX = TMP / "mixed"
+_MIX.mkdir()
+import h5py  # noqa: E402
+for _sid, _v in (("S000", "knu-1.0.0"), ("S001", "knu-1.0.0"),
+                 ("S002", "knu-1.1.0")):
+    with h5py.File(_MIX / f"scene_{_sid[1:]}.hdf5", "w") as _f:
+        _m = _f.create_group("metadata")
+        _m.attrs["scene_id"] = _sid
+        _m.attrs["schema_version"] = _v
+assert schema_version_spans(_MIX) == [
+    ("knu-1.0.0", "S000", "S001"), ("knu-1.1.0", "S002", "S002")], \
+    schema_version_spans(_MIX)
+print("11 통과: 스키마 버전 기본=최신 / 내려 찍기 가능 / 이력은 파일에서 파생")
+
 print("\n런처 마법사 검증 통과")
 _cleanup()
 os._exit(0)

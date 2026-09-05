@@ -158,3 +158,28 @@ class ZMQClientRobot(Robot):
         """Close the ZMQ socket and context."""
         self._socket.close()
         self._context.term()
+
+
+def probe_observation(host: str = "127.0.0.1", port: int = DEFAULT_ROBOT_PORT,
+                      timeout_ms: int = 3000) -> "Dict[str, np.ndarray]":
+    """로봇 노드에 관측을 한 번만 물어보고 소켓을 닫는다.
+
+    "이 장비가 이 스키마 버전이 요구하는 값을 실제로 주는가" 를 찍기 전에
+    확인하기 위한 것이다 (런처 하드웨어 페이지의 '확인' 버튼). 포스·토크는
+    FR3 펌웨어가 그 필드를 노출할 때만 오므로, 안 오는 장비에서 그 버전을
+    고르면 필수 필드가 빠진 파일이 된다 -- 수집을 시작하기 전에 알아야 한다.
+
+    노드가 없으면 예외를 던진다. 부르는 쪽이 안내로 바꿔 보여준다.
+    """
+    ctx = zmq.Context()
+    s = ctx.socket(zmq.REQ)
+    s.setsockopt(zmq.RCVTIMEO, timeout_ms)
+    s.setsockopt(zmq.SNDTIMEO, timeout_ms)
+    s.setsockopt(zmq.LINGER, 0)
+    try:
+        s.connect(f"tcp://{host}:{port}")
+        s.send(pickle.dumps({"method": "get_observations"}))
+        return pickle.loads(s.recv())
+    finally:
+        s.close(linger=0)
+        ctx.term()

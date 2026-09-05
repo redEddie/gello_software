@@ -189,6 +189,47 @@ def discover_datasets(candidate_roots: Iterable[Path]) -> list[DatasetEntry]:
     return entries
 
 
+def scene_schema_versions(root: Path) -> "dict[str, str]":
+    """scene_id -> 그 파일에 찍힌 스키마 버전.
+
+    데이터셋 안에 여러 버전이 섞이는 것을 허용하되 (2026-09-05 결정),
+    **언제부터 바뀌었는지는 파일에서 그대로 읽는다.** 별도 이력을 identity 에
+    적지 않는 이유는 그것이 두 번째 진실이 되기 때문이다 -- 파일이 정본이고,
+    이력은 언제나 파일에서 파생한다.
+    """
+    import h5py
+
+    from gello.data.dataset_schema import normalize_schema_version
+
+    out: dict[str, str] = {}
+    for p in iter_scene_files(root):
+        try:
+            with h5py.File(p, "r") as f:
+                meta = f["metadata"].attrs
+                sid = meta.get("scene_id") or p.stem
+                v = meta.get("schema_version", "")
+        except Exception:  # noqa: BLE001 -- 잠긴/깨진 파일은 건너뛴다
+            continue
+        sid = sid.decode() if isinstance(sid, bytes) else str(sid)
+        v = v.decode() if isinstance(v, bytes) else str(v)
+        out[sid] = normalize_schema_version(v)
+    return out
+
+
+def schema_version_spans(root: Path) -> list:
+    """[(버전, 첫 scene_id, 마지막 scene_id), ...] -- scene 순서대로 묶는다.
+
+    "S000~S014 는 1.0.0, S015 부터 1.1.0" 을 화면에 한 줄로 보여주기 위한 것.
+    """
+    spans: list = []
+    for sid, v in sorted(scene_schema_versions(root).items()):
+        if spans and spans[-1][0] == v:
+            spans[-1][2] = sid
+        else:
+            spans.append([v, sid, sid])
+    return [tuple(x) for x in spans]
+
+
 def dataset_schema_version(root: Path) -> str:
     """이 데이터셋이 쓰는 스키마 버전. **파일이 정본이다.**
 
