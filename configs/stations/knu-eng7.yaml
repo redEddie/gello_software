@@ -34,13 +34,18 @@ leader:
   port: null
 
 cameras:
-  agent:
+  # 키는 cam id (화면에서 부르는 이름), role 은 기록에 남는 이름이다.
+  # serial 은 폴백일 뿐 -- 실제 바인딩의 정본은 데이터셋의
+  # dataset-identity.json 이다 (2026-09-05 3층 분리).
+  cam1:
+    role: agent
     serial: "338122300664"
     model: D455
     width: 640
     height: 480
     fps: 30
-  wrist:
+  cam2:
+    role: wrist
     serial: "230422272249"
     model: D405
     width: 640

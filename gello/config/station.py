@@ -49,10 +49,24 @@ STATIONS_DIR = Path(__file__).resolve().parents[2] / "configs" / "stations"
 class CameraSpec:
     """한 대의 RealSense. width/height/fps 는 librealsense 가 실제로 지원하는
     조합이어야 한다 -- D405 는 640x480 에서 30fps 가 상한이고, 60 을 넣으면
-    스트림 설정이 거부되면서 "device busy" 라는 엉뚱한 에러로 나온다."""
+    스트림 설정이 거부되면서 "device busy" 라는 엉뚱한 에러로 나온다.
+
+    카메라는 세 층으로 나뉜다 (2026-09-05 결정):
+
+        하드웨어   시리얼 번호      -- 실물이 무엇인가
+        데이터세트 role            -- 기록에 어떤 이름으로 남는가
+        인터페이스 cam1/cam2/...   -- 사람이 화면에서 부르는 이름
+
+    이 dataclass 는 스테이션(= 물리 셋업)이 아는 것만 담는다: 그 자리에
+    어떤 역할의 카메라가 있고 어떤 포맷으로 도는가. **어느 실물이 꽂혔는지
+    (serial)는 데이터셋이 정본**이다 (dataset-identity.json 의 cameras) --
+    카메라를 교체해도 스테이션은 그대로이고, 데이터셋에는 그 데이터가 실제로
+    어떤 장비로 찍혔는지가 남는다. 여기 serial 은 폴백일 뿐이다.
+    """
 
     serial: str = ""
     model: str = ""
+    role: str = ""
     width: int = 640
     height: int = 480
     fps: int = 30
@@ -96,7 +110,9 @@ class StationConfig:
     node: NodeSpec = field(default_factory=NodeSpec)
     leader: LeaderSpec = field(default_factory=LeaderSpec)
     cameras: Dict[str, CameraSpec] = field(
-        default_factory=lambda: {"agent": CameraSpec(), "wrist": CameraSpec()}
+        # 키는 cam id, 역할은 안에. 설정 파일이 없을 때의 기본 셋업이다.
+        default_factory=lambda: {"cam1": CameraSpec(role="agent"),
+                                 "cam2": CameraSpec(role="wrist")}
     )
     # 역할별 정사각 크롭 초기값. 실제 사용값은 crop_params.json 이 이긴다.
     crop: Dict[str, Dict[str, float]] = field(
@@ -112,7 +128,19 @@ class StationConfig:
     loaded_from: Optional[str] = None
 
     def camera(self, role: str) -> CameraSpec:
+        """역할로 찾는다. cameras 의 키는 cam id(cam1/cam2)이고 역할은 안에
+        들어 있다 -- 옛 파일은 역할이 곧 키였으므로 그쪽도 받아준다."""
+        for spec in self.cameras.values():
+            if spec.role == role:
+                return spec
         return self.cameras.get(role, CameraSpec())
+
+    def cam_ids(self) -> list:
+        """cam1, cam2, ... 순서대로. 화면에 줄을 만드는 순서가 이것이다."""
+        def key(name: str):
+            digits = "".join(ch for ch in name if ch.isdigit())
+            return (int(digits) if digits else 0, name)
+        return sorted(self.cameras, key=key)
 
     def crop_params(self) -> Dict[str, Dict[str, float]]:
         """libero_format.default_crop_params() 가 기대하는 모양의 사본."""
@@ -125,12 +153,20 @@ def _station_path(name_or_path: str) -> Path:
     return STATIONS_DIR / f"{name_or_path}.yaml"
 
 
-def _camera_from(raw: Any, fallback: CameraSpec) -> CameraSpec:
+CAM_ID_RE = re.compile(r"^cam[0-9]+$")
+
+
+def _camera_from(raw: Any, fallback: CameraSpec, key: str = "") -> CameraSpec:
     if not isinstance(raw, dict):
         return fallback
+    # 옛 형식은 역할이 곧 키였다 (cameras: {agent: {...}}). 새 형식은 키가
+    # cam id 이고 역할이 안에 있다. 둘 다 읽는다 -- 기존 스테이션 파일을
+    # 고치지 않아도 돌아가야 한다.
+    role = str(raw.get("role", "")) or ("" if CAM_ID_RE.match(key) else key)
     return CameraSpec(
         serial=str(raw.get("serial", fallback.serial)),
         model=str(raw.get("model", fallback.model)),
+        role=role or fallback.role,
         width=int(raw.get("width", fallback.width)),
         height=int(raw.get("height", fallback.height)),
         fps=int(raw.get("fps", fallback.fps)),
@@ -159,10 +195,11 @@ def _parse(raw: dict, path: Path) -> StationConfig:
             python=str(node.get("python", base.node.python)),
         ),
         leader=LeaderSpec(port=leader.get("port") or None),
-        cameras={
-            role: _camera_from(cams.get(role), base.camera(role))
-            for role in set(base.cameras) | set(cams if isinstance(cams, dict) else {})
-        },
+        # 파일에 cameras 가 있으면 그것이 전부다 -- 기본값과 합치지 않는다.
+        # 합치면 스테이션에서 카메라를 지워도 기본 agent/wrist 가 되살아난다.
+        cameras=({k: _camera_from(v, CameraSpec(), key=str(k))
+                  for k, v in cams.items()} if isinstance(cams, dict) and cams
+                 else dict(base.cameras)),
         crop={
             role: {
                 "zoom": float((crop.get(role) or {}).get("zoom", vals["zoom"])),
@@ -261,9 +298,12 @@ def save_station(cfg: StationConfig) -> Path:
         "node": {"host": cfg.node.host, "port": int(cfg.node.port),
                  "python": cfg.node.python},
         "leader": ({"port": cfg.leader.port} if cfg.leader.port else {}),
-        "cameras": {role: {"serial": c.serial, "model": c.model,
-                           "width": c.width, "height": c.height, "fps": c.fps}
-                    for role, c in cfg.cameras.items()},
+        # 키는 cam id, 역할은 안에. serial 은 쓰지 않는다 -- 어느 실물이
+        # 꽂혔는지는 데이터셋(dataset-identity.json)이 정본이고, 여기에도
+        # 적으면 둘이 갈라진다.
+        "cameras": {cam: {"role": c.role, "width": c.width,
+                          "height": c.height, "fps": c.fps}
+                    for cam, c in cfg.cameras.items()},
     }
     path = station_path(cfg.name)
     path.parent.mkdir(parents=True, exist_ok=True)

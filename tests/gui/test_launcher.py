@@ -205,12 +205,16 @@ ed.ip_edit.setText("10.0.0.9")
 ed.port_spin.setValue(6099)
 assert ed.save_btn.isEnabled()
 try:
-    assert ed.save_new({"agent": CameraSpec(serial="AAA"),
-                        "wrist": CameraSpec(serial="BBB")}) == TEST_ST
+    assert ed.save_new() == TEST_ST
     assert station_path(TEST_ST).is_file()
     cfg = load_station(TEST_ST)
     assert cfg.robot.ip == "10.0.0.9" and cfg.node.port == 6099
-    assert cfg.camera("agent").serial == "AAA"
+    # 스테이션은 cam id -> 역할만 안다. 어느 실물이 꽂혔는지(시리얼)는
+    # 데이터셋이 정본이라 여기 저장하지 않는다 -- 두 곳에 적으면 갈라진다.
+    assert cfg.cam_ids() == ["cam1", "cam2"], cfg.cam_ids()
+    assert [cfg.cameras[c].role for c in cfg.cam_ids()] == ["agent", "wrist"]
+    assert all(cfg.cameras[c].serial == "" for c in cfg.cam_ids()), \
+        "스테이션 YAML 에 시리얼을 적으면 데이터셋과 갈라진다"
     # 저장 직후: 드롭다운이 그 이름으로 옮겨가도 이번 세션 것이라 삭제 가능
     assert ed.combo.currentData() == TEST_ST
     assert ed.del_btn.isEnabled(), "방금 만든 것은 지울 수 있어야 한다"
@@ -221,9 +225,12 @@ finally:
     station_path(TEST_ST).unlink(missing_ok=True)
 
 # identity 에 station 이 붙는다 (이어서 하기의 기본 선택 근거)
-ident_st = DatasetIdentity(name="x", station="knu-eng7")
-assert DatasetIdentity.from_dict(ident_st.to_dict()).station == "knu-eng7"
-assert DatasetIdentity.from_dict({"name": "old"}).station == "", "옛 데이터셋은 빈 값"
+ident_st = DatasetIdentity(name="x", station="knu-eng7",
+                           cameras={"cam1": "AAA", "cam2": "BBB"})
+_rt = DatasetIdentity.from_dict(ident_st.to_dict())
+assert _rt.station == "knu-eng7" and _rt.cameras == {"cam1": "AAA", "cam2": "BBB"}
+_old = DatasetIdentity.from_dict({"name": "old"})
+assert _old.station == "" and _old.cameras == {}, "옛 데이터셋은 빈 값"
 print("7 통과: 스테이션 편집기 -- 기존 읽기전용 / 새 것 생성·삭제 / identity.station")
 
 # ---- 8. 미리보기가 부모 밖으로 잘리지 않는다 ----
@@ -232,11 +239,13 @@ print("7 통과: 스테이션 편집기 -- 기존 읽기전용 / 새 것 생성�
 # 고정폭 미리보기가 x=605 에 놓였고 부모(614)를 넘어 **9px 세로줄**로만
 # 보였다. 고르는 곳과 보는 곳을 나눠서 고쳤다. 위젯 크기만 보면 160x120 로
 # 멀쩡해 보이므로, 부모 안에 들어오는지를 봐야 잡힌다.
-from apps.workspace.launcher.pages import CAMERA_ROLES  # noqa: E402
-
 hwp = wiz.page(PAGE_HW)
-assert set(hwp.previews) == {r for r, _ in CAMERA_ROLES}, "역할마다 미리보기가 있어야"
-assert set(hwp.combos) == {r for r, _ in CAMERA_ROLES}, "역할마다 콤보가 있어야"
+# 줄 목록은 스테이션이 정한다 (cam id -> 역할). 콤보·미리보기가 같은
+# 목록을 따라야 한 쪽만 빠지는 일이 없다.
+_cams = set(hwp.station_editor.cam_roles())
+assert _cams, "스테이션이 카메라를 하나는 정해야 한다"
+assert set(hwp.previews) == _cams, "cam 마다 미리보기가 있어야"
+assert set(hwp.combos) == _cams, "cam 마다 시리얼 콤보가 있어야"
 wiz.resize(760, 780)
 app.processEvents()
 app.processEvents()
@@ -262,6 +271,35 @@ for _role, _cell in hwp.preview_column.cells.items():
         f"{_role} 캡션이 그림 밖에 있다: 캡션={cr} 그림={vr}")
 print("8 통과: 설정/미리보기 2단 분리 -- 잘림 없음, 콤보가 폭을 강요하지 않음, "
       "캡션은 그림 위 오버레이")
+
+# ---- 9. 3층 분리: cam id / 역할 / 시리얼 ----
+# 같은 카메라가 두 cam 에 붙으면 노드가 같은 장치를 두 번 열려다 실패하고,
+# 어느 쪽이 이겼는지 화면에도 안 보인다. 방금 고른 쪽을 남기고 다른 쪽을
+# (선택 안함) 으로 내린다.
+ed.combo.setCurrentIndex(ed.combo.findData(NEW_STATION))
+hwp._entries = [("S-AAA", "Model X (S-AAA)"), ("S-BBB", "Model X (S-BBB)")]
+hwp._fill_camera_combos({})
+c1, c2 = hwp.combos["cam1"], hwp.combos["cam2"]
+c1.setCurrentIndex(c1.findData("S-AAA"))
+c2.setCurrentIndex(c2.findData("S-BBB"))
+assert hwp.serials() == {"cam1": "S-AAA", "cam2": "S-BBB"}
+c2.setCurrentIndex(c2.findData("S-AAA"))       # cam2 가 cam1 것을 가져간다
+hwp._dedup("cam2")
+assert hwp.serials() == {"cam1": "", "cam2": "S-AAA"}, hwp.serials()
+print("9 통과: 같은 카메라를 두 cam 에 못 붙인다 (앞선 쪽이 선택 안함으로)")
+
+# ---- 10. 스테이션에서 +/- 로 카메라 개수 조절 ----
+before = list(ed.cam_roles())
+ed._on_add_cam()
+assert list(ed.cam_roles()) == before + ["cam3"], ed.cam_roles()
+assert set(hwp.combos) == set(ed.cam_roles()), "시리얼 줄이 따라와야"
+assert set(hwp.previews) == set(ed.cam_roles()), "미리보기도 따라와야"
+ed._on_del_cam()
+assert list(ed.cam_roles()) == before
+ed._set_cams([("cam1", "agent")])
+ed._on_del_cam()                                # 마지막 한 대는 못 지운다
+assert list(ed.cam_roles()) == ["cam1"], ed.cam_roles()
+print("10 통과: +/- 로 카메라 개수 조절, 최소 한 대 보장, 줄이 함께 따라옴")
 
 print("\n런처 마법사 검증 통과")
 _cleanup()

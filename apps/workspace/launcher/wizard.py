@@ -53,8 +53,10 @@ class LaunchResult:
     mode: str                     # "continue" | "new"
     dataset_root: Path
     station: str
-    agent_serial: str
-    wrist_serial: str
+    # cam id -> 시리얼 / cam id -> 역할. 역할이 agent/wrist 로 고정돼 있지
+    # 않으므로 (스테이션이 정한다) 둘을 표로 들고 다닌다.
+    cameras: dict
+    cam_roles: dict
     identity: DatasetIdentity
     # 하드웨어 페이지가 미리보기를 위해 띄운 카메라 노드. 워크스페이스가
     # 이어서 쓴다 -- 여기서 죽였다가 창이 다시 띄우면 카메라를 두 번 여는
@@ -121,7 +123,8 @@ class LauncherWizard(QWizard):
 
     def _build_result(self) -> LaunchResult:
         hw: HardwarePage = self.page(PAGE_HW)  # type: ignore[assignment]
-        agent, wrist = hw.cameras()
+        serials = hw.serials()
+        cam_roles = hw.station_editor.cam_roles()
         station = hw.station()
         today = time.strftime("%Y-%m-%d")
         if self.mode == "new":
@@ -130,7 +133,7 @@ class LauncherWizard(QWizard):
             ident = DatasetIdentity(
                 name=pg.name_edit.text().strip(),
                 concept=pg.concept_edit.toPlainText().strip(),
-                created=today, station=station)
+                created=today, station=station, cameras=dict(serials))
             root.mkdir(parents=True, exist_ok=False)
             save_identity(root, ident)
             src = pg.copy_source()
@@ -145,19 +148,21 @@ class LauncherWizard(QWizard):
             if ident is None:
                 # 메타 없는 legacy 폴더 -- 폴더명으로 identity 를 만들어 준다
                 ident = DatasetIdentity(name=root.name, created=today,
-                                        station=station)
+                                        station=station, cameras=dict(serials))
                 save_identity(root, ident)
-            elif station and ident.station != station:
-                # 스테이션을 바꿔 이어 찍는다 -- 다음에 열 때도 이 선택이
-                # 기본이 되도록 기록해 둔다.
-                ident = replace(ident, station=station)
+            elif (station and ident.station != station) or ident.cameras != serials:
+                # 스테이션이나 카메라 바인딩이 바뀌었다 -- 다음에 열 때도 이
+                # 선택이 기본이 되도록, 그리고 "이 데이터가 무엇으로 찍혔는가"가
+                # 남도록 기록한다.
+                ident = replace(ident, station=station or ident.station,
+                                cameras=dict(serials))
                 save_identity(root, ident)
         node, node_key = hw.take_node()
         return LaunchResult(mode=self.mode or "continue",
                             dataset_root=root,
                             station=station,
-                            agent_serial=agent,
-                            wrist_serial=wrist,
+                            cameras=dict(serials),
+                            cam_roles=dict(cam_roles),
                             identity=ident,
                             camera_node=node,
                             camera_node_spec=node_key)

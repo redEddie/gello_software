@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.config.station import (
+    CameraSpec,
     LeaderSpec,
     NodeSpec,
     RobotSpec,
@@ -52,8 +53,10 @@ class StationEditor(QGroupBox):
     """스테이션 드롭다운 + 속성 칸 + 복제/삭제/저장."""
 
     #: 저장 버튼. 카메라 시리얼을 아는 하드웨어 페이지가 받아
-    #: save_new(cameras) 를 부른다.
+    #: save_new() 를 부른다.
     save_requested = pyqtSignal()
+    #: 카메라 줄이 바뀌었다 -- 하드웨어 페이지가 시리얼 줄을 맞춘다.
+    cams_changed = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(tr("스테이션"), parent)
@@ -107,6 +110,27 @@ class StationEditor(QGroupBox):
         form.addRow(tr("리더암 포트"), self.leader_edit)
         col.addLayout(form)
 
+        # cam id -> 역할. 스테이션이 아는 것은 "그 자리에 어떤 역할의 카메라가
+        # 있는가"뿐이다. 어느 실물이 꽂혔는지(시리얼)는 데이터셋이 정본이라
+        # 여기 없다. 역할 이름은 기록에 그대로 남는 키워드를 쓴다 -- 화면에만
+        # 예쁜 이름을 두면 조작자가 데이터에 뭐가 적히는지 알 수 없다.
+        cam_head = QHBoxLayout()
+        cam_head.addWidget(QLabel(tr("카메라 (cam id → 역할)")), 1)
+        self.cam_add_btn = QPushButton("+")
+        self.cam_add_btn.setMaximumWidth(32)
+        self.cam_add_btn.setToolTip(tr("카메라 한 대 추가"))
+        self.cam_add_btn.clicked.connect(self._on_add_cam)
+        self.cam_del_btn = QPushButton("−")
+        self.cam_del_btn.setMaximumWidth(32)
+        self.cam_del_btn.setToolTip(tr("마지막 카메라 제거"))
+        self.cam_del_btn.clicked.connect(self._on_del_cam)
+        cam_head.addWidget(self.cam_add_btn)
+        cam_head.addWidget(self.cam_del_btn)
+        col.addLayout(cam_head)
+        self.cam_form = QFormLayout()
+        self.role_edits: dict[str, QLineEdit] = {}
+        col.addLayout(self.cam_form)
+
         self.msg = QLabel("")
         self.msg.setWordWrap(True)
         col.addWidget(self.msg)
@@ -147,6 +171,12 @@ class StationEditor(QGroupBox):
         self.port_spin.setEnabled(True)
         self.copy_btn.setEnabled(creating)
         self.save_btn.setEnabled(creating)
+        # 역할은 기록에 남는 이름이라 기존 스테이션에서는 못 고친다 -- 바꾸면
+        # 같은 데이터셋 안에서 같은 역할이 두 카메라를 가리키게 된다.
+        for e in self.role_edits.values():
+            e.setReadOnly(not creating)
+        self.cam_add_btn.setEnabled(creating)
+        self.cam_del_btn.setEnabled(creating)
         name = self.current_name()
         # 삭제는 '이번 세션에서 만든 것'에만 듣는다. 저장하면 드롭다운이 그
         # 이름으로 옮겨가 creating 이 꺼지는데, 거기서도 지울 수 있어야 한다
@@ -181,6 +211,43 @@ class StationEditor(QGroupBox):
         self.port_spin.setValue(int(cfg.node.port))
         self.python_edit.setText(cfg.node.python)
         self.leader_edit.setText(cfg.leader.port or "")
+        self._set_cams([(cam, cfg.cameras[cam].role) for cam in cfg.cam_ids()])
+
+    # ------------------------------------------------------------- 카메라
+    def _set_cams(self, pairs) -> None:
+        """cam id -> 역할 줄을 다시 그린다. 화면이 곧 목록이다."""
+        while self.cam_form.count():
+            it = self.cam_form.takeAt(0)
+            if it.widget() is not None:
+                it.widget().deleteLater()
+        self.role_edits = {}
+        for cam, role in pairs:
+            e = QLineEdit(role)
+            e.setPlaceholderText(tr("기록에 남을 이름 (예: agent, wrist)"))
+            e.setReadOnly(not self.is_creating())
+            self.role_edits[cam] = e
+            self.cam_form.addRow(cam, e)
+        self.cams_changed.emit()
+
+    def cam_roles(self) -> "dict[str, str]":
+        """cam id -> 역할 (지금 화면 그대로)."""
+        return {cam: e.text().strip() for cam, e in self.role_edits.items()}
+
+    def _on_add_cam(self) -> None:
+        pairs = list(self.cam_roles().items())
+        n = len(pairs) + 1
+        while f"cam{n}" in self.role_edits:
+            n += 1
+        pairs.append((f"cam{n}", ""))
+        self._set_cams(pairs)
+
+    def _on_del_cam(self) -> None:
+        pairs = list(self.cam_roles().items())
+        if len(pairs) <= 1:
+            self.msg.setText(tr("카메라는 최소 한 대는 있어야 합니다."))
+            self.msg.setStyleSheet("color:#e67e22;")
+            return
+        self._set_cams(pairs[:-1])
 
     def _update_save_enabled(self, *_a) -> None:
         if not self.is_creating():
@@ -245,8 +312,14 @@ class StationEditor(QGroupBox):
         self.msg.setStyleSheet("color:#888;")
         self._update_save_enabled()
 
-    def build_config(self, cameras: dict) -> StationConfig:
-        """현재 칸 + 마법사가 고른 카메라로 StationConfig 를 만든다."""
+    def build_config(self, cameras: "dict | None" = None) -> StationConfig:
+        """현재 칸으로 StationConfig 를 만든다.
+
+        cameras 를 주지 않으면 화면의 cam id -> 역할 표를 그대로 쓴다.
+        시리얼은 여기 넣지 않는다 -- 데이터셋이 정본이다."""
+        if cameras is None:
+            cameras = {cam: CameraSpec(role=role)
+                       for cam, role in self.cam_roles().items()}
         return StationConfig(
             name=self.name_edit.text().strip(),
             description=self.desc_edit.text().strip(),
@@ -259,7 +332,7 @@ class StationEditor(QGroupBox):
             cameras=cameras,
         )
 
-    def save_new(self, cameras: dict) -> "str | None":
+    def save_new(self, cameras: "dict | None" = None) -> "str | None":
         """저장 성공이면 이름을, 실패면 None (사유는 msg 에)."""
         try:
             cfg = self.build_config(cameras)
@@ -277,6 +350,6 @@ class StationEditor(QGroupBox):
         return cfg.name
 
     def _on_save(self) -> None:
-        # 카메라 시리얼은 하드웨어 페이지가 안다 -- 그쪽이 이 신호를 받아
-        # save_new(cameras) 를 부른다.
+        # 하드웨어 페이지가 받아 save_new() 를 부르고 그 결과로 화면을
+        # 맞춘다 (시리얼 줄, git 경고).
         self.save_requested.emit()

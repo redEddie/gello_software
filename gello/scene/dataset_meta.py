@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -62,6 +62,12 @@ class DatasetIdentity:
     # "이어서 하기" 때 기본 선택으로 되살린다 -- 스테이션이 여럿인 곳에서
     # 엉뚱한 로봇 IP 로 붙는 것을 막는다. 옛 데이터셋에는 없으므로 빈 문자열.
     station: str = ""
+    # cam id -> 시리얼. 이 데이터셋이 **어떤 실물 카메라로 찍혔는가**의
+    # 정본이다 (2026-09-05 3층 분리: 하드웨어=시리얼 / 데이터세트=역할 /
+    # 인터페이스=cam id). 스테이션은 "그 자리에 어떤 역할이 있는가"만 알고,
+    # 실물 바인딩은 데이터셋마다 다를 수 있다 -- 카메라를 교체해도 스테이션은
+    # 그대로이고, 지난 데이터가 무엇으로 찍혔는지는 그 데이터셋에 남는다.
+    cameras: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.hf_repo:
@@ -79,6 +85,7 @@ class DatasetIdentity:
             created=str(d.get("created") or ""),
             schema_version=str(d.get("schema_version") or SCHEMA_VERSION),
             station=str(d.get("station") or ""),
+            cameras={str(k): str(v) for k, v in (d.get("cameras") or {}).items()},
         )
 
 

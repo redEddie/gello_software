@@ -44,17 +44,32 @@ class PreviewCell(QWidget):
 
 
 class CameraPreviewColumn(QGroupBox):
-    """역할별 미리보기를 세로로 쌓은 칼럼."""
+    """cam 별 미리보기를 세로로 쌓은 칼럼.
 
-    def __init__(self, roles, parent=None) -> None:
+    줄 목록은 스테이션이 정한다 (cam1, cam2, ...). set_cams 로 다시 그린다 --
+    스테이션에서 +/- 로 카메라를 늘리고 줄이면 여기가 따라간다.
+    """
+
+    def __init__(self, cams: "dict[str, str] | None" = None, parent=None) -> None:
         super().__init__(tr("미리보기"), parent)
-        col = QVBoxLayout(self)
+        self._col = QVBoxLayout(self)
         self.cells: dict[str, PreviewCell] = {}
-        for role, title in roles:
-            cell = PreviewCell(title)
-            col.addWidget(cell, 1)
-            self.cells[role] = cell
+        self.set_cams(cams or {})
+
+    def set_cams(self, cams: "dict[str, str]") -> None:
+        """cam id -> 역할. 오버레이에 둘 다 보여준다 -- cam id 는 사람이
+        부르는 이름이고 역할은 기록에 남는 이름이라, 둘이 같이 있어야
+        "cam1 이 agent 로 저장된다"가 한눈에 읽힌다."""
+        while self._col.count():
+            it = self._col.takeAt(0)
+            if it.widget() is not None:
+                it.widget().deleteLater()
+        self.cells = {}
+        for cam, role in cams.items():
+            cell = PreviewCell(f"{cam} · {role}" if role else cam)
+            self._col.addWidget(cell, 1)
+            self.cells[cam] = cell
 
     def views(self) -> "dict[str, VideoView]":
-        """role -> VideoView. 프레임을 넣는 쪽은 셀 구조를 몰라도 된다."""
-        return {role: cell.view for role, cell in self.cells.items()}
+        """cam id -> VideoView. 프레임을 넣는 쪽은 셀 구조를 몰라도 된다."""
+        return {cam: cell.view for cam, cell in self.cells.items()}

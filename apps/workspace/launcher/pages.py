@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -28,11 +29,7 @@ from PyQt6.QtWidgets import (
 
 from gello.gui.workers import CameraPreviewWorker
 from apps.workspace.launcher.camera_panel import CameraPreviewColumn
-from apps.workspace.shared.camera_node_proc import (
-    node_specs,
-    spawn_node,
-    spec_key,
-)
+from apps.workspace.shared.camera_node_proc import spawn_node, spec_key
 from gello.config.station import CameraSpec, load_station
 from apps.workspace.constants import WT_ROOT
 from apps.workspace.shared.sizing import shrinkable_combo
@@ -56,9 +53,9 @@ PAGE_HW = 3
 
 _NO_CAMERA = ""      # "(선택 안함)" 항목의 data
 
-# 카메라 역할. 여기에 한 줄 더하면 콤보와 미리보기가 함께 늘어난다 --
-# 둘을 같은 목록에서 만들기 때문에 한쪽만 빠뜨릴 수 없다.
-CAMERA_ROLES = (("agent", "Agent (정면)"), ("wrist", "Wrist (손목)"))
+# 카메라 역할은 더 이상 여기 고정돼 있지 않다 -- 스테이션이 정한다
+# (cam id -> role). 3층 분리: 하드웨어=시리얼 / 데이터세트=역할 /
+# 인터페이스=cam id (2026-09-05).
 
 
 class ModePage(QWizardPage):
@@ -286,7 +283,7 @@ class HardwarePage(QWizardPage):
         # 값이 길어질 때(경로·설명) 오른쪽이 자유롭게 넓어지는 것이 자연스럽다.
         # 그래서 늘어나는 몫(stretch)도 설정 쪽이 크다.
         two_col = QHBoxLayout(self)
-        self.preview_column = CameraPreviewColumn(CAMERA_ROLES)
+        self.preview_column = CameraPreviewColumn()
         two_col.addWidget(self.preview_column, 2)
         right = QWidget()
         outer = QVBoxLayout(right)
@@ -295,31 +292,23 @@ class HardwarePage(QWizardPage):
         self.station_editor = StationEditor()
         self.station_editor.save_requested.connect(self._on_save_station)
         outer.addWidget(self.station_editor)
-        form = QFormLayout()
-        outer.addLayout(form)
+        self.station_editor.cams_changed.connect(self._rebuild_cam_rows)
         # 커밋 안 된 스테이션 파일이 있으면 아이콘의 자동 git pull 이 건너뛰어진다.
         # 막지는 않고 알리기만 한다 (2026-09-05 사용자 결정).
         self.git_warn = QLabel("")
         self.git_warn.setWordWrap(True)
         self.git_warn.setStyleSheet("color:#e67e22;")
-        outer.addWidget(self.git_warn)
-        outer.addStretch(1)
+        # cam id -> 시리얼. 스테이션이 정한 cam 줄을 따라간다 (역할은 저쪽,
+        # 실물 바인딩은 여기). 이쪽은 언제나 편집 가능하다 -- 카메라를 바꿔
+        # 꽂는 것은 흔한 일이고, 그 기록은 데이터셋에 남는다.
         self.combos: dict[str, QComboBox] = {}
+        self.previews: dict = {}
+        self._entries: list[tuple[str, str]] = []   # (serial, label)
         self._preview_workers: dict[str, CameraPreviewWorker] = {}
-        for role, title in CAMERA_ROLES:
-            combo = QComboBox()
-            combo.setEditable(True)
-            # 항목 문자열("Intel RealSense D405 (2304...)")이 콤보의 최소 폭을
-            # 정하게 두면 옆칸을 밀어낸다 -- 줄여서 말줄임하게 한다.
-            shrinkable_combo(combo)
-            # currentIndexChanged 가 아니라 activated 다. 전자는 목록을 다시
-            # 채우기만 해도 터진다 -- clear() 로 -1, 첫 addItem 으로 0, 마지막
-            # setCurrentIndex 로 또 한 번. 그때마다 "조작자가 카메라를 바꿨다"로
-            # 읽혀 노드를 죽였다 띄웠고(각 3~5초), 그것이 페이지 진입이 3~8초
-            # 걸린 원인이었다. activated 는 사람이 고른 경우에만 온다.
-            combo.activated.connect(self._on_camera_pick)
-            self.combos[role] = combo
-            form.addRow(title, combo)
+        cam_box = QGroupBox(tr("카메라 (cam id → 실물)"))
+        cam_col = QVBoxLayout(cam_box)
+        self.cam_form = QFormLayout()
+        cam_col.addLayout(self.cam_form)
         row = QHBoxLayout()
         detect = QPushButton(tr("카메라 감지"))
         detect.clicked.connect(self.detect_cameras)
@@ -327,12 +316,18 @@ class HardwarePage(QWizardPage):
         self.cam_hint = QLabel("")
         self.cam_hint.setStyleSheet("color:#888;")
         row.addWidget(self.cam_hint, 1)
-        form.addRow(row)
+        cam_col.addLayout(row)
+        outer.addWidget(cam_box)
+        # StationEditor 는 생성 중에 이미 cams_changed 를 냈다 (reload ->
+        # _on_pick -> _fill_from). 그 신호는 연결 전이라 놓쳤으므로 여기서
+        # 한 번 직접 그린다 -- 안 그러면 두 박스가 빈 채로 뜬다.
+        self._rebuild_cam_rows()
+        outer.addWidget(self.git_warn)
+        outer.addStretch(1)
 
         # 시리얼도 모델명도 "어느 쪽이 손목인지"는 안 알려준다. 특히 같은
         # 모델이 두 대면 구별할 방법이 없다. 그림이면 즉시 갈린다 -- 이걸
         # 위해 이 페이지에서 카메라 노드를 띄운다(_on_camera_pick).
-        self.previews = self.preview_column.views()
         self.station_editor.combo.currentIndexChanged.connect(
             self._apply_station_defaults)
         # 이 페이지가 띄운 노드. 마법사가 끝나면 워크스페이스가 물려받는다
@@ -385,10 +380,47 @@ class HardwarePage(QWizardPage):
             for c in self.combos.values():
                 c.blockSignals(False)
 
+    # ----------------------------------------------------------- cam 줄
+    def cam_ids(self) -> list:
+        """스테이션이 정한 cam 순서. 시리얼 줄과 미리보기가 이것을 따른다."""
+        return list(self.station_editor.cam_roles())
+
+    def _rebuild_cam_rows(self) -> None:
+        """스테이션의 cam 목록이 바뀌면 시리얼 줄과 미리보기를 맞춘다."""
+        keep = self.serials()
+        while self.cam_form.count():
+            it = self.cam_form.takeAt(0)
+            if it.widget() is not None:
+                it.widget().deleteLater()
+        self.combos = {}
+        roles = self.station_editor.cam_roles()
+        for cam in roles:
+            combo = QComboBox()
+            combo.setEditable(True)
+            # 항목 문자열("Intel RealSense D405 (2304...)")이 콤보의 최소 폭을
+            # 정하게 두면 옆칸을 밀어낸다 -- 줄여서 말줄임하게 한다.
+            shrinkable_combo(combo)
+            # currentIndexChanged 가 아니라 activated 다. 전자는 목록을 다시
+            # 채우기만 해도 터진다 -- clear() 로 -1, 첫 addItem 으로 0, 마지막
+            # setCurrentIndex 로 또 한 번. 그때마다 "조작자가 카메라를 바꿨다"로
+            # 읽혀 노드를 죽였다 띄웠고(각 3~5초), 그것이 페이지 진입이 3~8초
+            # 걸린 원인이었다. activated 는 사람이 고른 경우에만 온다.
+            combo.activated.connect(lambda _i, c=cam: self._on_camera_pick(c))
+            self.combos[cam] = combo
+            self.cam_form.addRow(cam, combo)
+        self._fill_camera_combos(keep)
+        self.preview_column.set_cams(roles)
+        self.previews = self.preview_column.views()
+
     # ------------------------------------------------------------ 미리보기
-    def cameras(self) -> tuple[str, str]:
-        # 지금은 두 역할뿐이라 튜플이다. 역할이 늘면 serials() 로 바꾼다.
-        return tuple(self._serial(self.combos[r]) for r, _ in CAMERA_ROLES)
+    def serials(self) -> "dict[str, str]":
+        """cam id -> 시리얼 (지금 화면 그대로)."""
+        return {cam: self._serial(c) for cam, c in self.combos.items()}
+
+    def cameras(self) -> tuple:
+        """역할 순서가 아니라 cam 순서의 시리얼 튜플 (마법사 결과용)."""
+        s = self.serials()
+        return tuple(s[cam] for cam in self.cam_ids() if cam in s)
 
     @staticmethod
     def _serial(combo: QComboBox) -> str:
@@ -398,10 +430,35 @@ class HardwarePage(QWizardPage):
         text = combo.currentText().strip()
         return "" if text.startswith("(") else text
 
-    def _on_camera_pick(self, *_a) -> None:
+    def _dedup(self, picked_cam: str) -> None:
+        """한 카메라가 두 cam 에 붙지 못하게 한다.
+
+        방금 고른 쪽을 남기고, 같은 시리얼을 쥐고 있던 다른 cam 을 (선택
+        안함) 으로 내린다 -- 둘 다 살려두면 노드가 같은 장치를 두 번 열려다
+        실패하고, 어느 쪽이 이겼는지도 화면에 안 보인다.
+        """
+        want = self._serial(self.combos[picked_cam])
+        if not want:
+            return
+        for cam, combo in self.combos.items():
+            if cam == picked_cam or self._serial(combo) != want:
+                continue
+            combo.blockSignals(True)
+            combo.setCurrentIndex(max(0, combo.findData(_NO_CAMERA)))
+            combo.blockSignals(False)
+
+    def _on_camera_pick(self, picked_cam: "str | None" = None, *_a) -> None:
         """선택이 바뀌면 노드를 그 구성으로 맞추고 미리보기를 다시 건다."""
-        agent, wrist = self.cameras()
-        specs = node_specs(agent, wrist)
+        if picked_cam:
+            self._dedup(picked_cam)
+        serials = self.serials()
+        roles = self.station_editor.cam_roles()
+        # 노드 토픽은 아직 **역할** 기준이다 (agent/color). 그래서 여기서도
+        # role:serial 로 띄워야 워크스페이스가 이 노드를 그대로 이어받는다.
+        # 노드를 하드웨어(시리얼) 기준으로 바꾸면 이 변환이 사라지고, 역할만
+        # 바꿀 때 노드를 재시작할 이유도 없어진다 -- 설계 중.
+        specs = [f"{roles[cam]}:{s}" for cam, s in serials.items()
+                 if s and roles.get(cam)]
         key = spec_key(specs)
         if key == self._node_key and self._node is not None:
             return
@@ -413,17 +470,23 @@ class HardwarePage(QWizardPage):
             for v in self.previews.values():
                 v.clear_frame(tr("카메라를 고르세요"))
             return
-        for role, serial in (("agent", agent), ("wrist", wrist)):
-            view = self.previews[role]
+        for cam, serial in serials.items():
+            view = self.previews.get(cam)
+            if view is None:
+                continue
             if not serial:
                 view.clear_frame(tr("(선택 안함)"))
+                continue
+            role = roles.get(cam)
+            if not role:
+                view.clear_frame(tr("역할이 없습니다"))
                 continue
             view.clear_frame(tr("연결 중..."))
             w = CameraPreviewWorker(role, serial)
             w.frame_ready.connect(lambda f, v=view: v.set_frame(f))
             w.error.connect(lambda m, v=view: v.clear_frame(m[:40]))
             w.start()
-            self._preview_workers[role] = w
+            self._preview_workers[cam] = w
 
     def _stop_previews(self) -> None:
         for w in self._preview_workers.values():
@@ -463,25 +526,29 @@ class HardwarePage(QWizardPage):
         self._stop_node()
 
     def _apply_station_defaults(self) -> None:
-        """어느 카메라를 고를지만 정한다 -- 목록은 detect_cameras 가 만든다.
+        """어느 카메라를 고를지 정한다 -- 목록은 detect_cameras 가 만든다.
 
-        예전에는 여기서 목록을 지우고 시리얼만 넣어서, "카메라 감지"를 누르기
-        전까지 230422272249 같은 숫자만 보였다. 어느 게 손목인지 알 수 없다.
-        recents 가 우선 (마지막으로 실제 쓴 조합이 가장 그럴듯하다).
+        정본은 **데이터셋**이다 (dataset-identity.json 의 cameras: cam id ->
+        시리얼). 그 데이터가 실제로 어떤 실물로 찍혔는지가 거기 남기 때문이다.
+        없으면 스테이션 폴백, 그것도 없으면 비운다 -- recents 는 쓰지 않는다.
+        데이터셋을 바꿨는데 직전 데이터셋의 카메라가 기본값으로 붙는 것이
+        정확히 이 층위를 섞은 결과였다.
         """
-        recents = Recents()
+        wiz = self.wizard()
+        root = None
+        if wiz is not None and getattr(wiz, "mode", "") == "continue":
+            root = wiz.page(PAGE_CONTINUE).selected_path()
+        ident = load_identity(root) if root is not None else None
+        bound = dict(ident.cameras) if ident is not None else {}
         try:
             cfg = load_station(self.station_editor.current_name() or None)
         except Exception:  # noqa: BLE001
             cfg = None
-        for role, _title in CAMERA_ROLES:
-            combo, key = self.combos[role], f"{role}_serial"
-            serial = recents.most_recent(key, "")
+        for cam, combo in self.combos.items():
+            serial = bound.get(cam, "")
             if not serial and cfg is not None:
-                try:
-                    serial = cfg.camera(role).serial
-                except Exception:  # noqa: BLE001
-                    serial = ""
+                spec = cfg.cameras.get(cam)
+                serial = spec.serial if spec is not None else ""
             if not serial:
                 continue
             i = combo.findData(serial)
@@ -506,17 +573,24 @@ class HardwarePage(QWizardPage):
             name = str(c.get("name") or "RealSense")
             if serial:
                 entries.append((serial, f"{name} ({serial})"))
-        for combo in self.combos.values():
+        self._entries = entries
+        self._fill_camera_combos(self.serials())
+        self.cam_hint.setText(tr("{n}대 감지됨").format(n=len(entries)))
+
+    def _fill_camera_combos(self, keep: "dict[str, str]") -> None:
+        """감지 결과로 모든 cam 콤보를 채우고 keep 의 선택을 되살린다."""
+        for cam, combo in self.combos.items():
             # 선택은 시리얼(itemData)로 기억한다. 표시 문자열로 맞추면
             # 라벨에 모델명이 붙는 순간 못 찾는다.
-            cur = combo.currentData()
+            combo.blockSignals(True)
             combo.clear()
             combo.addItem(tr("(선택 안함)"), _NO_CAMERA)
-            for serial, label in entries:
+            for serial, label in self._entries:
                 combo.addItem(label, serial)
-            i = combo.findData(cur) if cur else -1
+            want = keep.get(cam, "")
+            i = combo.findData(want) if want else -1
             combo.setCurrentIndex(max(0, i))
-        self.cam_hint.setText(tr("{n}대 감지됨").format(n=len(entries)))
+            combo.blockSignals(False)
 
     def station(self) -> str:
         return self.station_editor.current_name()

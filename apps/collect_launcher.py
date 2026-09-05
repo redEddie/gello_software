@@ -45,10 +45,13 @@ def apply_result(result, recents=None) -> None:
 
         recents = Recents()
     recents.add("data_root", str(result.dataset_root))
-    if result.agent_serial:
-        recents.add("agent_serial", result.agent_serial)
-    if result.wrist_serial:
-        recents.add("wrist_serial", result.wrist_serial)
+    # 워크스페이스는 아직 역할 이름으로 카메라를 찾는다 (agent_serial /
+    # wrist_serial). cam id -> 역할 -> 시리얼 로 옮겨 적어 다리를 놓는다.
+    # 노드를 시리얼 기준으로 바꾸면(설계 중) 이 다리는 없어진다.
+    for cam, serial in (result.cameras or {}).items():
+        role = (result.cam_roles or {}).get(cam, "")
+        if role and serial:
+            recents.add(f"{role}_serial", serial)
 
 
 def main() -> None:
