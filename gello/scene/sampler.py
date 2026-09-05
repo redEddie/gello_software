@@ -16,8 +16,17 @@ from __future__ import annotations
 import random
 
 from gello.scene.scene_format import SceneMetadata
-from gello.scene.scene_rules import check, violations_by_section
-from gello.scene.signature import GRID, MAX_OBJECTS, MIN_OBJECTS
+from gello.scene.scene_rules import (
+    check,
+    object_count_range,
+    violations_by_section,
+)
+from gello.scene.signature import GRID
+
+#: 씬의 물체 개수 범위. 정본은 scene_rules.yaml 의 object_count 규칙이고,
+#: count 커버리지 축의 서포트와 같은 값을 본다. 규칙 yaml 을 고치면
+#: 프로세스 재시작이 필요하다 (_default_rules 캐시와 같은 정책).
+MIN_OBJECTS, MAX_OBJECTS = object_count_range()
 
 __all__ = ["MIN_OBJECTS", "MAX_OBJECTS", "generate_candidate", "place_objects"]
 

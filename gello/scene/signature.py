@@ -22,17 +22,9 @@ from gello.scene.scene_format import STANDARD_GRID
 
 W_OBJ, W_PLACE, W_REL = 0.5, 0.35, 0.15
 
-# ---- scene 모양 상수 -----------------------------------------------------
-# 후보 생성(sampler)과 커버리지 서포트(axes)가 반드시 같은 값을 봐야 하는
-# 것들이라 두 모듈이 함께 의존하는 여기에 둔다.
-
 #: 격자 크기. 정본은 scene_format.STANDARD_GRID 다 -- 여기서 다시 적으면
 #: 표준 격자를 바꿀 때 한쪽만 바뀐다.
 GRID = tuple(STANDARD_GRID)
-
-#: 씬의 물체 개수 범위. 후보 생성 범위이자 count 축의 서포트다.
-#: (recommender-v3-plan.md D8: 다음 단계에서 scene_rules.yaml 로 옮긴다.)
-MIN_OBJECTS, MAX_OBJECTS = 2, 5
 
 
 @dataclass(frozen=True)

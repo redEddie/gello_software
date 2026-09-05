@@ -25,12 +25,30 @@ compose:
   - rule: pair_if_present
     categories: [cup, small_bowl, bowl, large_bowl]
     min_count: 2
+  # 물체 개수 범위 (2026-09-06 설정으로 이관). 후보 생성 범위이자 count
+  # 커버리지 축의 서포트라, 코드 상수로 두면 두 곳이 어긋난다.
+  # 5 -> 6 으로 올릴지는 현장에서 6개를 실제로 놓아 보고 정한다. 6물체 씬에는
+  # 서랍이 들어갈 수 없다 -- 서랍이 있으면 열 하나가 통째로 비어 남는 칸이 6개다.
+  - rule: object_count
+    min: 2
+    max: 5
 placement:
   - rule: ban_zones                    # 해당 category 를 이 존에 두지 않는다
     category: drawer
     zones: [[1, 1], [2, 1]]            # 중앙 + 앞줄 중앙 (2026-08-26 사용자 확정)
-  # 가림 방지 (2026-08-26 사용자 확정): 키 큰 서랍이 있는 열에는 다른
-  # 물체를 두지 않는다 -- agentview 에서 서랍 뒤(같은 열)에 물체가 서면
-  # 가려진다. 기존 수집분에는 소급 적용하지 않는다.
-  - rule: exclusive_column
-    category: drawer
+  # 가림 방지 + 팔 경로 확보 (2026-09-06 사용자 확정 -- 2026-08-26 의
+  # exclusive_column 을 대체한다). 그 규칙은 방향이 반대인 두 물리 사실을
+  # "열 전체 비우기" 하나로 근사한 것이라, 주석이 근거를 가림으로만 적고 있었다.
+  #
+  # 격자 기하: row 2 가 카메라(agentview) 쪽, row 0 이 로봇(FR3) 쪽.
+  # 키 큰 소품(props.yaml 의 tall)을 기준으로 그 열이 양분된다:
+  #   - 카메라에서 더 먼 칸은 그 소품에 가려진다        -> occludes_behind
+  #   - 로봇에서 더 먼 칸은 팔이 그 소품을 넘어가야 한다 -> robot_clearance
+  # 둘의 합집합은 소품 칸을 뺀 열 전체라 막는 칸은 예전과 같다. 달라지는 것은
+  # 위반 사유가 정확해지는 것과, 대상이 category 하드코딩이 아니라 tall 물성에서
+  # 파생되어 키 큰 소품이 늘어도 규칙을 안 고쳐도 되는 것이다.
+  # 기존 수집분에는 소급 적용하지 않는다.
+  - rule: occludes_behind
+    camera_row: 2
+  - rule: robot_clearance
+    robot_row: 0

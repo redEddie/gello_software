@@ -31,6 +31,12 @@ class Prop:
     color: str
     material: str
     retired: bool = False  # 교체로 은퇴한 ID. 새 scene 에는 못 쓰지만 기존 metadata 해석용으로 남는다.
+    # 뒤 물체를 가리고 팔 경로를 막는 키 큰 소품인가 (2026-09-06). 배치 규칙
+    # occludes_behind / robot_clearance 가 이 플래그로 대상을 고른다 -- 규칙에
+    # category 를 하드코딩하지 않기 위한 물성 표시다. 높이를 cm 로 적지 않는
+    # 이유: "몇 cm 부터 가리는가"라는 두 번째 임계값을 정할 근거가 없고,
+    # 필요한 사실은 "가리는가" 하나뿐이다.
+    tall: bool = False
 
 
 #: (해석된 경로) -> (stat 지문, 파싱 결과). props.yaml 은 정적 설정인데
@@ -63,6 +69,7 @@ def load_props(path: Path = PROPS_PATH) -> list[Prop]:
             color=str(e["color"]),
             material=str(e["material"]),
             retired=bool(e.get("retired", False)),
+            tall=bool(e.get("tall", False)),
         )
         if not PROP_ID_RE.match(p.id):
             raise ValueError(f"{path}: 잘못된 prop ID 형식: {p.id!r}")

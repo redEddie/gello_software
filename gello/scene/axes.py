@@ -24,10 +24,9 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from gello.scene.scene_rules import object_count_range
 from gello.scene.signature import (
     GRID,
-    MAX_OBJECTS,
-    MIN_OBJECTS,
     Signature,
     jaccard_multiset,
     placement_distance,
@@ -73,6 +72,13 @@ def _active(props: dict) -> list:
     return [p for p in props.values() if not p.retired]
 
 
+def _count_support(_props: dict) -> set:
+    """개수 축의 bin -- 정본은 scene_rules.yaml 의 object_count 다.
+    후보 생성 범위와 반드시 같아야 하므로 둘 다 규칙에서 읽는다."""
+    lo, hi = object_count_range()
+    return set(range(lo, hi + 1))
+
+
 #: 등록부. 순서가 곧 표시 순서이고, AXES/COVERAGE_AXES 가 여기서 파생된다.
 REGISTRY: tuple = (
     Axis("category",
@@ -95,7 +101,7 @@ REGISTRY: tuple = (
     # 섞인 큰 씬을 항상 이겼다).
     Axis("count",
          extract=lambda s: [len(s.triples)],
-         support=lambda _props: set(range(MIN_OBJECTS, MAX_OBJECTS + 1))),
+         support=_count_support),
 )
 
 BY_NAME: dict = {ax.name: ax for ax in REGISTRY}
