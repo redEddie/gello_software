@@ -125,5 +125,42 @@ assert "too many values to unpack" in _text, _text
 assert "Traceback" in _text, _text
 print("4 통과: 마법사 예외가 로그 파일에 남는다 (오류 창은 안 띄운다)")
 
+# --- 5) 카메라를 늘려도 상자가 최소 높이 아래로 눌리지 않는다 -------------
+# QVBoxLayout 은 자리가 모자라면 위젯을 minimumSizeHint **아래로까지** 줄인다.
+# 그러면 입력 칸들이 서로 겹쳐 보인다 -- 4대에서 스테이션 상자가 최소 485px
+# 인데 390px 로 눌렸다 (2026-09-05 보고). 스크롤 영역이 그것을 막는다.
+from PyQt6.QtWidgets import QGroupBox, QScrollArea  # noqa: E402
+
+wiz, hw = _hardware_page()
+se = hw.station_editor
+se.combo.setCurrentIndex(se.combo.findData(NEW_STATION))
+for _ in range(5):
+    app.processEvents()
+assert hw.findChildren(QScrollArea), "스크롤 영역이 없다 -- 늘어나면 겹친다"
+for n in (2, 4, 6, 8):
+    while len(se.cam_roles()) < n:
+        se.cam_add_btn.click()
+        for _ in range(4):
+            app.processEvents()
+    for _ in range(6):
+        app.processEvents()
+    for gb in hw.findChildren(QGroupBox):
+        assert gb.height() >= gb.minimumSizeHint().height(), (
+            f"{n}대: {gb.title()!r} 이 최소({gb.minimumSizeHint().height()}) 아래로 "
+            f"눌렸다 ({gb.height()}) -- 칸이 겹친다")
+    # 줄 수도 실제로 따라와야 한다 (겹친 채 남은 옛 줄이 없어야 한다)
+    assert len(hw.combos) == n, (n, list(hw.combos))
+    assert len(hw.preview_column.cells) == n, (n, list(hw.preview_column.cells))
+    print(f"5-{n} 통과: 카메라 {n}대에서 눌린 상자 없음")
+wiz.page(PAGE_HW).cleanup()
+
+# --- 6) 부제가 데이터세트 버저닝을 언급한다 -------------------------------
+# 이 화면에서 정하는 것이 셋(스테이션·카메라·스키마 버전)인데 부제가 둘만
+# 말하면, 버전 칸은 있어도 "정해야 하는 것"으로 안 읽힌다.
+sub = hw.subTitle()
+assert "버전" in sub, sub
+assert "**" not in sub, f"부제는 서식 없는 텍스트다 -- 별표가 그대로 보인다: {sub}"
+print("6 통과: 부제가 스키마 버전을 언급한다")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n스테이션 저장 검증 통과")

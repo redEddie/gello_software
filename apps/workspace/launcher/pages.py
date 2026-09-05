@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -21,6 +22,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
     QWizardPage,
@@ -71,6 +73,21 @@ PAGE_NEW = 2
 PAGE_HW = 3
 
 _NO_CAMERA = ""      # "(선택 안함)" 항목의 data
+
+
+def _scrollable(inner: QWidget) -> QScrollArea:
+    """내용이 창보다 길어지면 세로 스크롤이 생기게 감싼다.
+
+    가로 스크롤은 끈다 -- 폭이 모자라면 콤보가 말줄임으로 줄어드는 편이
+    (shrinkable_combo) 옆으로 미는 것보다 낫다. 테두리도 끈다: 상자들이 이미
+    자기 테두리를 갖고 있어 한 겹 더 그리면 중첩돼 보인다.
+    """
+    area = QScrollArea()
+    area.setWidgetResizable(True)      # 내용이 짧으면 뷰포트를 채운다
+    area.setWidget(inner)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    return area
 
 #: [확인] 이 로봇 노드를 직접 띄웠을 때 기다려 주는 시간(초). FCI 연결 +
 #: 첫 read_once 까지가 대략 3~5초라 그보다 넉넉히 둔다. 넘기면 포기하고
@@ -302,7 +319,10 @@ class HardwarePage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
         self.setTitle(tr("하드웨어"))
-        self.setSubTitle(tr("수집 스테이션과 카메라를 선택하세요."))
+        self.setSubTitle(tr(
+            "수집 스테이션 · 카메라 · 데이터세트 스키마 버전을 정합니다. "
+            "버전은 이 세션이 기록할 관측 필드를 결정해 scene 파일에 찍히므로, "
+            "[확인] 으로 로봇이 그 값을 주는지 먼저 보세요."))
         # 왼쪽은 미리보기, 오른쪽은 설정. 아래로 쌓지 않는 이유는 둘이다:
         # 모니터가 16:9 라 세로가 아쉽고, 무엇보다 칼럼이 갈려 있어야 "여기는
         # 보는 곳, 저기는 설정하는 곳"이 한눈에 읽힌다 (2026-09-05 사용자 결정).
@@ -318,12 +338,18 @@ class HardwarePage(QWizardPage):
         # 9px 은 마법사 헤더가 이미 두는 여백과 겹쳐 부제와 첫 상자 사이가
         # 뜬다 -- 상자는 자기 테두리 여백을 따로 갖고 있다 (2026-09-05 보고).
         two_col.setContentsMargins(0, 0, 0, 0)
+        # 두 칼럼 모두 스크롤 안에 둔다. 카메라를 늘리면 세로가 창을 넘는데
+        # (cam 한 대당 설정 두 줄 + 미리보기 한 칸), 그때 QVBoxLayout 은
+        # 위젯을 **최소 높이 아래로까지** 눌러 버려 입력 칸들이 서로 겹쳐
+        # 보인다 -- 4대에서 스테이션 상자가 최소 485px 인데 390px 로 눌렸다
+        # (2026-09-05 보고). 창을 더 키우는 것으로는 못 막는다: 카메라 수에
+        # 상한이 없다.
         self.preview_column = CameraPreviewColumn()
-        two_col.addWidget(self.preview_column, 2)
+        two_col.addWidget(_scrollable(self.preview_column), 2)
         right = QWidget()
         outer = QVBoxLayout(right)
         outer.setContentsMargins(0, 0, 0, 0)
-        two_col.addWidget(right, 3)
+        two_col.addWidget(_scrollable(right), 3)
         self.station_editor = StationEditor()
         self.station_editor.save_requested.connect(self._on_save_station)
         outer.addWidget(self.station_editor)
@@ -468,8 +494,13 @@ class HardwarePage(QWizardPage):
         keep = self.serials()
         while self.cam_form.count():
             it = self.cam_form.takeAt(0)
-            if it.widget() is not None:
-                it.widget().deleteLater()
+            w = it.widget()
+            if w is not None:
+                # setParent(None) 먼저: deleteLater 는 DeferredDelete 이벤트가
+                # 돌 때까지 위젯을 부모에 붙여 둬, 새 줄 위에 옛 줄이 겹쳐
+                # 보인다. 부모에서 떼면 그 순간 화면에서 사라진다.
+                w.setParent(None)
+                w.deleteLater()
         self.combos = {}
         roles = self.station_editor.cam_roles()
         for cam in roles:

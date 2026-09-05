@@ -225,8 +225,13 @@ class StationEditor(QGroupBox):
         """cam id -> 역할 줄을 다시 그린다. 화면이 곧 목록이다."""
         while self.cam_form.count():
             it = self.cam_form.takeAt(0)
-            if it.widget() is not None:
-                it.widget().deleteLater()
+            w = it.widget()
+            if w is not None:
+                # setParent(None) 먼저: deleteLater 는 DeferredDelete 이벤트가
+                # 돌 때까지 위젯을 부모에 붙여 둬, 새 줄 위에 옛 줄이 겹쳐
+                # 보인다. 부모에서 떼면 그 순간 화면에서 사라진다.
+                w.setParent(None)
+                w.deleteLater()
         self.role_edits = {}
         for cam, role in pairs:
             e = QLineEdit(role)

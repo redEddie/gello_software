@@ -62,8 +62,11 @@ class CameraPreviewColumn(QGroupBox):
         "cam1 이 agent 로 저장된다"가 한눈에 읽힌다."""
         while self._col.count():
             it = self._col.takeAt(0)
-            if it.widget() is not None:
-                it.widget().deleteLater()
+            w = it.widget()
+            if w is not None:
+                # setParent(None) 먼저 -- station_editor._set_cams 참조.
+                w.setParent(None)
+                w.deleteLater()
         self.cells = {}
         for cam, role in cams.items():
             cell = PreviewCell(f"{cam} · {role}" if role else cam)
