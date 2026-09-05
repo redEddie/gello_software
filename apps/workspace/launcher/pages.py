@@ -7,7 +7,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QProcess, Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QWizardPage,
 )
 
+from gello.comm.camera_client import set_cams
 from gello.gui.workers import CameraPreviewWorker
 from apps.workspace.launcher.camera_panel import CameraPreviewColumn
 from apps.workspace.shared.camera_node_proc import (
@@ -309,6 +310,9 @@ class HardwarePage(QWizardPage):
         self.previews: dict = {}
         self._entries: list[tuple[str, str]] = []   # (serial, label)
         self._preview_workers: dict[str, CameraPreviewWorker] = {}
+        # cam id -> 지금 그 화면이 붙어 있는 시리얼. 바뀐 것만
+        # 다시 걸기 위해 필요하다.
+        self._preview_serial: dict[str, str] = {}
         cam_box = QGroupBox(tr("카메라 (cam id → 실물)"))
         cam_col = QVBoxLayout(cam_box)
         self.cam_form = QFormLayout()
@@ -452,30 +456,48 @@ class HardwarePage(QWizardPage):
             combo.blockSignals(False)
 
     def _on_camera_pick(self, picked_cam: "str | None" = None, *_a) -> None:
-        """선택이 바뀌면 노드를 그 구성으로 맞추고 미리보기를 다시 건다."""
+        """선택이 바뀌면 노드 구성을 맞추고, **바뀐 cam 의 미리보기만** 다시 건다.
+
+        예전에는 카메라를 하나만 바꿔도 노드 프로세스를 죽이고 새로 띄웠다.
+        그러면 바꾸지 않은 카메라까지 닫혔다 열려서 옆 화면도 "연결 중..." 으로
+        깜빡였고, 프로세스 정리에만 1.8초가 들었다 (2026-09-05 실측).
+        도는 노드가 있으면 set_cams 로 **바뀐 장치만** 여닫는다.
+        """
         if picked_cam:
             self._dedup(picked_cam)
         serials = self.serials()
         # 노드는 시리얼만 안다. 역할을 바꿔도 여는 장치가 같으면 spec 이
-        # 그대로라 재시작하지 않는다 (3층 분리의 실질적 이득).
+        # 그대로라 아무 일도 일어나지 않는다 (3층 분리의 실질적 이득).
         specs = node_specs(serials.values())
         key = spec_key(specs)
         if key == self._node_key and self._node is not None:
             return
-        self._stop_previews()
-        self._stop_node()
-        self._node = spawn_node(specs)
+        before = dict(self._preview_serial)
+        alive = (self._node is not None
+                 and self._node.state() != QProcess.ProcessState.NotRunning)
+        if alive and specs and set_cams(specs) is not None:
+            pass                      # 프로세스 유지 -- 바뀐 장치만 여닫았다
+        else:
+            self._stop_previews()
+            self._stop_node()
+            self._node = spawn_node(specs)
+            before = {}               # 새 프로세스라 전부 다시 걸어야 한다
         self._node_key = key if self._node is not None else ""
         if self._node is None:
             for v in self.previews.values():
                 v.clear_frame(tr("카메라를 고르세요"))
+            self._preview_serial = {}
             return
         for cam, serial in serials.items():
             view = self.previews.get(cam)
             if view is None:
                 continue
+            if before.get(cam) == serial:
+                continue              # 이 화면은 그대로다 -- 건드리지 않는다
+            self._release_preview(cam)
             if not serial:
                 view.clear_frame(tr("(선택 안함)"))
+                self._preview_serial.pop(cam, None)
                 continue
             view.clear_frame(tr("연결 중..."))
             # 라벨은 cam id, 전송은 시리얼.
@@ -484,6 +506,20 @@ class HardwarePage(QWizardPage):
             w.error.connect(lambda m, v=view: v.clear_frame(m[:40]))
             w.start()
             self._preview_workers[cam] = w
+            self._preview_serial[cam] = serial
+
+    def _release_preview(self, cam: str) -> None:
+        w = self._preview_workers.pop(cam, None)
+        if w is None:
+            return
+        for sig in (w.frame_ready, w.error):
+            try:
+                sig.disconnect()
+            except TypeError:
+                pass
+        w.stop()
+        w.wait(3000)
+        self._preview_serial.pop(cam, None)
 
     def _stop_previews(self) -> None:
         for w in self._preview_workers.values():
@@ -495,6 +531,7 @@ class HardwarePage(QWizardPage):
             w.stop()
             w.wait(3000)
         self._preview_workers.clear()
+        self._preview_serial.clear()
 
     def _stop_node(self) -> None:
         if self._node is None:

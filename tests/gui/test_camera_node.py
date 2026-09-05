@@ -13,7 +13,12 @@ import numpy as np
 WT = str(Path(__file__).resolve().parents[2])  # 리포 루트
 sys.path.insert(0, WT)
 
-from gello.comm.camera_client import NodeCamera, fetch_aligned, node_ping  # noqa: E402
+from gello.comm.camera_client import (  # noqa: E402
+    NodeCamera,
+    fetch_aligned,
+    node_ping,
+    set_cams,
+)
 
 PUB, CTL = 16021, 16022  # 실제 기본 포트와 겹치지 않게
 
@@ -62,6 +67,25 @@ try:
         except ConnectionError as e:
             assert missing in str(e), str(e)
     print("4~5. 안 여는 시리얼 거부 OK (역할 이름도 시리얼이 아니라 거부)")
+
+    # ---- 5b. set_cams: 바꾼 것만 여닫고 나머지는 그대로 ----
+    # 예전에는 카메라를 하나 바꾸면 GUI 가 노드째 죽이고 새로 띄웠다. 그러면
+    # 바꾸지 않은 카메라까지 닫혔다 열려 옆 화면이 깜빡였다 (2026-09-05).
+    keep = NodeCamera("FAKE-W", pub_port=PUB, ctl_port=CTL)
+    keep.connect()
+    keep.read_latest(max_age_ms=1000)
+    r = set_cams(["FAKE-W"], ctl_port=CTL)
+    assert r and r["ok"] and r["removed"] == ["FAKE-A"] and r["added"] == []
+    assert r["cams"] == ["FAKE-W"], r
+    # 남긴 카메라는 끊기지 않았다 -- 재연결 없이 바로 읽힌다
+    time.sleep(0.2)
+    keep.read_latest(max_age_ms=1000)
+    r = set_cams(["FAKE-A", "FAKE-W"], ctl_port=CTL)
+    assert r and r["added"] == ["FAKE-A"] and r["removed"] == []
+    time.sleep(0.3)
+    keep.read_latest(max_age_ms=1000)
+    keep.disconnect()
+    print("5b. set_cams -- 바뀐 장치만 여닫고 나머지는 스트림 유지 OK")
 
     # ---- 6. 정렬 요청 (포인트클라우드 경로) ----
     al = fetch_aligned("FAKE-A", ctl_port=CTL)

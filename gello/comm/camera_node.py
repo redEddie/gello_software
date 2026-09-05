@@ -337,6 +337,36 @@ def main() -> None:
         workers[serial] = cls(serial, pub, args.width, args.height, args.fps)
         workers[serial].start()
 
+    # 종료를 기다리는 옛 워커들. set_cams 로 뺀 카메라의 스레드는 여기서
+    # 배경으로 정리한다 -- ctl 응답을 pipe.stop() 만큼 붙잡아 두지 않으려고
+    # join 을 미룬다. 프로세스가 끝날 때 마지막으로 한 번 거둔다.
+    dying: list = []
+
+    def _set_cams(want: list) -> dict:
+        """열려 있는 카메라를 want 와 맞춘다 -- 바뀐 것만 건드린다.
+
+        예전에는 카메라를 바꾸면 GUI 가 노드 프로세스를 죽이고 새로 띄웠다.
+        그러면 **바꾸지 않은 카메라까지** 닫혔다 열려서 화면이 깜빡였고,
+        프로세스 정리에만 1.8초가 들었다 (2026-09-05 실측).
+        """
+        want = [x for x in want if x]
+        added, removed = [], []
+        for serial in list(workers):
+            if serial not in want:
+                w = workers.pop(serial)
+                w.running = False
+                dying.append(w)
+                removed.append(serial)
+        for serial in want:
+            if serial not in workers:
+                workers[serial] = cls(serial, pub, args.width, args.height,
+                                      args.fps)
+                workers[serial].start()
+                added.append(serial)
+        if added or removed:
+            _log(f"카메라 구성 변경: +{added} -{removed} -> {sorted(workers)}")
+        return {"added": added, "removed": removed, "cams": sorted(workers)}
+
     running = True
 
     def _stop(*_a) -> None:
@@ -367,6 +397,13 @@ def main() -> None:
         if cmd == "ping":
             ctl.send(json.dumps({"ok": True, "cams": {
                 r: w.status() for r, w in workers.items()}}).encode())
+        elif cmd == "set_cams":
+            try:
+                info = _set_cams([str(x) for x in (req.get("serials") or [])])
+                ctl.send(json.dumps({"ok": True, **info}).encode())
+            except Exception as e:  # noqa: BLE001 -- 요청 하나가 노드를 죽이면 안 된다
+                ctl.send(json.dumps({"ok": False,
+                                     "error": f"{type(e).__name__}: {e}"}).encode())
         elif cmd == "aligned":
             # role 은 옛 이름 -- 노드는 역할을 모른다.
             w = workers.get(req.get("serial") or req.get("role", ""))
@@ -388,7 +425,7 @@ def main() -> None:
     _log("종료 중...")
     for w in workers.values():
         w.running = False
-    for w in workers.values():
+    for w in list(workers.values()) + dying:
         w.join(timeout=3)
     ctl.close(linger=0)
     pub._sock.close(linger=0)  # 닫지 않으면 ctx.term() 이 영원히 기다린다

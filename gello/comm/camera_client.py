@@ -48,6 +48,33 @@ def node_ping(host: str = "127.0.0.1", ctl_port: int = DEFAULT_CTL_PORT,
         s.close(linger=0)
 
 
+def set_cams(serials, host: str = "127.0.0.1",
+             ctl_port: int = DEFAULT_CTL_PORT,
+             timeout_ms: int = 8000) -> dict | None:
+    """도는 노드에게 "이 카메라들만 열어라" 라고 시킨다. 응답 없으면 None.
+
+    프로세스를 죽이고 다시 띄우는 것과 결과는 같지만, **바꾸지 않은 카메라는
+    건드리지 않는다.** 예전에는 카메라를 하나 바꿔도 노드째 재시작해서 옆
+    카메라 화면까지 깜빡였고 프로세스 정리에만 1.8초가 들었다 (2026-09-05).
+
+    타임아웃이 넉넉한 이유: 새로 여는 카메라의 스트림 시작을 기다린다.
+    """
+    ctx = zmq.Context.instance()
+    s = ctx.socket(zmq.REQ)
+    s.setsockopt(zmq.RCVTIMEO, timeout_ms)
+    s.setsockopt(zmq.SNDTIMEO, timeout_ms)
+    s.setsockopt(zmq.LINGER, 0)
+    try:
+        s.connect(f"tcp://{host}:{ctl_port}")
+        s.send(json.dumps({"cmd": "set_cams",
+                           "serials": list(serials)}).encode())
+        return json.loads(s.recv())
+    except zmq.error.Again:
+        return None
+    finally:
+        s.close(linger=0)
+
+
 def fetch_aligned(serial: str, host: str = "127.0.0.1",
                   ctl_port: int = DEFAULT_CTL_PORT,
                   timeout_ms: int = 2500) -> dict | None:
