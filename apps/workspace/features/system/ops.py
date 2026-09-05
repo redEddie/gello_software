@@ -10,16 +10,13 @@ from pathlib import Path
 
 from PyQt6.QtCore import QProcess
 
-from apps.workspace.constants import CHECK_CAMERAS, RESET_PROTECTION, RUNME_SCRIPT, WT_ROOT
+from apps.workspace.constants import CHECK_CAMERAS, RESET_PROTECTION, RUNME_SCRIPT
+from apps.workspace.shared.robot_node_proc import spawn_node
 from gello.config.station import load_station
 from gello.gui.i18n import tr
 
 STATION = load_station()
 PYLIBFRANKA_PYTHON = STATION.node.python_path
-# 저장소 루트는 constants.WT_ROOT 하나로 정한다. __file__ 에서 .parent 를
-# 세는 방식은 파일이 폴더 하나만 깊어져도 조용히 어긋난다 (2026-09-03 에
-# 카메라 노드와 이 스크립트가 그렇게 깨졌다).
-LAUNCH_NODES_SCRIPT = str(WT_ROOT / "scripts" / "launch" / "launch_nodes.py")
 
 
 def _read(path: Path) -> str:
@@ -185,24 +182,13 @@ class SystemOps:
                 self.win.procs.node_process.state() != QProcess.ProcessState.NotRunning:
             self.win.log("[노드] 이미 실행 중입니다.")
             return
-        proc = QProcess(self.win)
-        proc.setProgram(PYLIBFRANKA_PYTHON)
-        # --die-with-parent: closeEvent가 노드를 정리하지만 그건 정상 종료일
-        # 때뿐이다. GUI가 갑자기 죽으면 노드가 FCI 연결을 쥔 채 남아 다음 실행이
-        # 노드를 못 띄운다. 커널이 대신 정리하게 한다.
-        # 주소를 명시적으로 넘긴다. 노드는 다른 venv 에서 도는 별도
-        # 프로세스라 스테이션 설정을 자기가 다시 읽는데, GELLO_STATION 이
-        # 전달되지 않거나 그 사이 파일이 바뀌면 GUI 가 붙을 곳과 노드가 여는
-        # 곳이 조용히 어긋난다. 여기서 넘기면 둘은 항상 같은 값을 본다.
-        proc.setArguments([
-            LAUNCH_NODES_SCRIPT,
-            "--robot", STATION.robot.kind,
-            "--robot-ip", STATION.robot.ip,
-            "--robot-port", str(STATION.node.port),
-            "--hostname", STATION.node.host,
-            "--die-with-parent",
-        ])
-        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        # 마법사도 같은 노드를 띄운다 (버전 [확인] 이 로봇에 물어봐야 한다).
+        # 인자 구성이 갈라지면 "확인은 됐는데 수집에서 다른 곳에 붙는" 일이
+        # 생기므로 spawn_node 하나만 쓴다.
+        proc = spawn_node(STATION, self.win)
+        if proc is None:
+            self.win.log("[노드] 노드 실행이 꺼져 있습니다 (GELLO_NO_ROBOT_NODE=1).")
+            return
         proc.readyReadStandardOutput.connect(self.on_node_output)
         proc.finished.connect(self.on_node_finished)
         self.win.procs.node_process = proc
@@ -212,7 +198,6 @@ class SystemOps:
         # GUI 가 켠 시점/종료 시점에도 갱신한다.
         self.win.lights["node"].set("busy", tr("시작 중"))
         self.win.right_fields["node"].setText(tr("시작 중"))
-        proc.start()
 
     def on_node_finished(self, code: int, _status) -> None:
         self.win.log(f"[노드] 종료 (exit={code})")

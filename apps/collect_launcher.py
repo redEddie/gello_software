@@ -71,6 +71,7 @@ def main() -> None:
     res = wiz.result()
     collect_workspace.main(app=app, camera_node=res.camera_node,
                            camera_node_spec=res.camera_node_spec,
+                           robot_node=res.robot_node,
                            schema_version=res.schema_version)
 
 

@@ -30,6 +30,9 @@ from PyQt6.QtWidgets import (
 from gello.comm.camera_client import set_cams
 from gello.gui.workers import CameraPreviewWorker
 from apps.workspace.launcher.camera_panel import CameraPreviewColumn
+from apps.workspace.shared.robot_node_proc import (
+    spawn_node as spawn_robot_node,
+)
 from apps.workspace.shared.camera_node_proc import (
     node_specs,
     spawn_node,
@@ -43,6 +46,7 @@ import numpy as np
 
 from gello.comm.zmq_core.robot_node import probe_observation
 from gello.data.dataset_schema import (
+    FT_OBS_KEYS,
     SCHEMA_FIELDS,
     SCHEMA_VERSION,
     schema_required_fields,
@@ -70,9 +74,14 @@ _NO_CAMERA = ""      # "(선택 안함)" 항목의 data
 #: 버전이 요구하는 **로봇 관측 키**. HDF5 필드명과 같지만 층이 다르다 --
 #: 이쪽은 "로봇이 줘야 하는 값" 이고, 확인 버튼이 이것으로 검사한다.
 #: 포스·토크는 FR3 펌웨어가 노출할 때만 오므로 장비마다 다를 수 있다.
+#: [확인] 이 로봇 노드를 직접 띄웠을 때 기다려 주는 시간(초). FCI 연결 +
+#: 첫 read_once 까지가 대략 3~5초라 그보다 넉넉히 둔다. 넘기면 포기하고
+#: 경고만 남긴다 -- 확인은 선택이지 진행 조건이 아니다.
+_ROBOT_NODE_WAIT_S = 15.0
+
 _ROBOT_OBS_FIELDS = {
     "knu-1.0.0": (),
-    "knu-1.1.0": ("joint_torques", "ext_joint_torques", "ee_wrench"),
+    "knu-1.1.0": FT_OBS_KEYS,
 }
 
 # 카메라 역할은 더 이상 여기 고정돼 있지 않다 -- 스테이션이 정한다
@@ -333,7 +342,7 @@ class HardwarePage(QWizardPage):
         self.schema_test_btn = QPushButton(tr("확인"))
         self.schema_test_btn.setToolTip(tr(
             "로봇 노드에 관측을 한 번 요청해, 이 버전이 요구하는 필드가 실제로 "
-            "오는지 확인합니다. 노드가 떠 있어야 합니다."))
+            "오는지 확인합니다. 노드가 안 떠 있으면 여기서 띄웁니다 (FCI 필요)."))
         self.schema_test_btn.clicked.connect(self._on_schema_selftest)
         ver_row.addWidget(self.schema_test_btn)
         ds_col.addLayout(ver_row)
@@ -389,6 +398,10 @@ class HardwarePage(QWizardPage):
         # 포트 6021 충돌로 죽는다.
         self._node = None
         self._node_key = ""
+        #: 버전 [확인] 이 띄운 로봇 노드. 워크스페이스가 이어받는다 -- FCI 는
+        #: 클라이언트 하나만 받으므로, 확인용으로 띄우고 두면 창에서 다시
+        #: 띄울 때 실패한다.
+        self._robot_node = None
 
     def initializePage(self) -> None:  # noqa: N802 - Qt override
         import os
@@ -592,6 +605,10 @@ class HardwarePage(QWizardPage):
             self._node.waitForFinished(2000)
         self._node = None
         self._node_key = ""
+        #: 버전 [확인] 이 띄운 로봇 노드. 워크스페이스가 이어받는다 -- FCI 는
+        #: 클라이언트 하나만 받으므로, 확인용으로 띄우고 두면 창에서 다시
+        #: 띄울 때 실패한다.
+        self._robot_node = None
 
     def take_node(self):
         """(QProcess, spec key) 를 넘기고 이 페이지는 손을 뗀다.
@@ -608,6 +625,12 @@ class HardwarePage(QWizardPage):
         """마법사를 취소하고 나갈 때 -- 넘기지 않은 노드는 정리한다."""
         self._stop_previews()
         self._stop_node()
+        if self._robot_node is not None:
+            self._robot_node.terminate()
+            if not self._robot_node.waitForFinished(3000):
+                self._robot_node.kill()
+                self._robot_node.waitForFinished(2000)
+            self._robot_node = None
 
     def _apply_station_defaults(self) -> None:
         """어느 카메라를 고를지 정한다 -- 목록은 detect_cameras 가 만든다.
@@ -755,18 +778,19 @@ class HardwarePage(QWizardPage):
             self.schema_test_label.setText(tr("모르는 버전입니다: {v}").format(v=picked))
             self.schema_test_label.setStyleSheet("color:#e74c3c;")
             return
-        self.schema_test_label.setText(tr("로봇 노드에 물어보는 중..."))
-        self.schema_test_label.setStyleSheet("color:#888;")
-        QApplication.processEvents()
         try:
             cfg = load_station(self.station_editor.current_name() or None)
-            obs = probe_observation(cfg.node.host, int(cfg.node.port))
         except Exception as e:  # noqa: BLE001
-            self.schema_test_label.setText(tr(
-                "로봇 노드에 닿지 못했습니다 ({e}). Process 메뉴에서 로봇 노드를 "
-                "먼저 띄우세요 — 확인 없이 진행해도 되지만, 필드가 없으면 그 "
-                "버전으로 찍힌 파일이 검증을 통과하지 못합니다.").format(e=e))
-            self.schema_test_label.setStyleSheet("color:#e67e22;")
+            self.schema_test_label.setText(tr("스테이션 설정을 읽지 못했습니다: {e}")
+                                           .format(e=e))
+            self.schema_test_label.setStyleSheet("color:#e74c3c;")
+            return
+        self.schema_test_btn.setEnabled(False)
+        try:
+            obs = self._probe_robot(cfg)
+        finally:
+            self.schema_test_btn.setEnabled(True)
+        if obs is None:
             return
         missing = [f for f in _ROBOT_OBS_FIELDS.get(picked, ())
                    if f not in obs]
@@ -784,6 +808,62 @@ class HardwarePage(QWizardPage):
             tr("확인됨 — {v} 의 값이 로봇에서 옵니다.  {s}")
             .format(v=picked, s=shapes))
         self.schema_test_label.setStyleSheet("color:#27ae60;")
+
+    def _probe_robot(self, cfg):
+        """관측을 한 번 받아 온다. 노드가 없으면 띄워 보고, 실패하면 None.
+
+        노드를 여기서 띄우는 이유: 확인은 이 화면에서 끝나야 한다. "다른 데서
+        노드를 띄우고 오세요" 는 대부분 그냥 확인을 건너뛰게 만든다.
+        """
+        self.schema_test_label.setText(tr("로봇 노드에 물어보는 중..."))
+        self.schema_test_label.setStyleSheet("color:#888;")
+        QApplication.processEvents()
+        try:
+            return probe_observation(cfg.node.host, int(cfg.node.port))
+        except Exception:  # noqa: BLE001 -- 안 떠 있는 것이 정상 경로다
+            pass
+        if self._robot_node is not None:
+            # 우리가 띄웠는데도 안 붙는다 -- FCI 쪽 문제다. 노드 자체의 로그가
+            # 원인을 갖고 있으므로 그리로 보낸다.
+            self.schema_test_label.setText(tr(
+                "로봇 노드를 띄웠지만 응답이 없습니다. FR3 Desk 에서 FCI 가 "
+                "켜져 있고 다른 프로그램이 잡고 있지 않은지 확인하세요."))
+            self.schema_test_label.setStyleSheet("color:#e74c3c;")
+            return None
+        self.schema_test_label.setText(tr("로봇 노드를 띄우는 중..."))
+        QApplication.processEvents()
+        self._robot_node = spawn_robot_node(cfg, self)
+        if self._robot_node is None:
+            self.schema_test_label.setText(tr("노드 실행이 꺼져 있습니다 "
+                                              "(GELLO_NO_ROBOT_NODE=1)."))
+            self.schema_test_label.setStyleSheet("color:#e67e22;")
+            return None
+        # FCI 연결 + 첫 read_once 까지 몇 초 걸린다. 붙을 때까지 짧게 되묻는다.
+        deadline = time.monotonic() + _ROBOT_NODE_WAIT_S
+        while time.monotonic() < deadline:
+            QApplication.processEvents()
+            if self._robot_node.state() == QProcess.ProcessState.NotRunning:
+                self.schema_test_label.setText(tr(
+                    "로봇 노드가 곧바로 종료했습니다. 워크스페이스의 로그에서 "
+                    "원인을 볼 수 있습니다 (FCI 미활성, IP 오류 등)."))
+                self.schema_test_label.setStyleSheet("color:#e74c3c;")
+                self._robot_node = None
+                return None
+            try:
+                return probe_observation(cfg.node.host, int(cfg.node.port))
+            except Exception:  # noqa: BLE001
+                time.sleep(0.3)
+        self.schema_test_label.setText(tr(
+            "로봇 노드가 {s}초 안에 응답하지 않았습니다. 확인 없이 진행해도 "
+            "되지만, 필드가 없으면 그 버전으로 찍힌 파일이 검증을 통과하지 "
+            "못합니다.").format(s=int(_ROBOT_NODE_WAIT_S)))
+        self.schema_test_label.setStyleSheet("color:#e67e22;")
+        return None
+
+    def take_robot_node(self):
+        """[확인] 이 띄운 로봇 노드를 넘기고 이 페이지는 손을 뗀다."""
+        proc, self._robot_node = self._robot_node, None
+        return proc
 
     def _refresh_git_warning(self) -> None:
         """커밋 안 된 스테이션 파일이 있으면 알린다.

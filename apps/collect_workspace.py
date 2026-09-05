@@ -97,6 +97,9 @@ from apps.workspace.models import (  # noqa: E402
     SessionState,
 )
 from apps.workspace.shared.camera_node_proc import adopt_node  # noqa: E402
+from apps.workspace.shared.robot_node_proc import (  # noqa: E402
+    adopt_node as adopt_robot_node,
+)
 from apps.workspace.shell import (  # noqa: E402
     build_bottom,
     build_center,
@@ -176,6 +179,7 @@ SHORTCUT_HINTS = {
 class WorkspaceWindow(QMainWindow):
     def __init__(self, log_path: Path | None,
                  camera_node=None, camera_node_spec: str = "",
+                 robot_node=None,
                  schema_version: str = SCHEMA_VERSION) -> None:
         super().__init__()
         self.setWindowTitle(tr("FR3 GELLO 데이터 수집 워크스페이스"))
@@ -269,6 +273,17 @@ class WorkspaceWindow(QMainWindow):
             self.procs.camera_node_process = camera_node
             self.cameras.camera_node_spec = camera_node_spec
             self.log(f"[카메라노드] 마법사에서 이어받음: {camera_node_spec}")
+
+        # 마법사의 데이터세트 버전 [확인] 이 로봇 노드를 띄웠으면 그것도
+        # 이어받는다. FCI 는 클라이언트 하나만 받으므로, 안 이어받으면
+        # Process 메뉴의 '노드 시작' 이 조용히 실패한다.
+        if robot_node is not None:
+            adopt_robot_node(robot_node, self)
+            robot_node.readyReadStandardOutput.connect(self.system.on_node_output)
+            robot_node.finished.connect(self.system.on_node_finished)
+            self.procs.node_process = robot_node
+            self.lights["node"].set("busy", tr("시작 중"))
+            self.log("[노드] 마법사에서 이어받음")
 
         self._set_activity("configure")
         self.collection.set_running(False)
@@ -812,7 +827,7 @@ def _install_excepthook(log_path: Path, window_ref: dict) -> None:
 
 
 def main(app: "QApplication | None" = None, camera_node=None,
-         camera_node_spec: str = "",
+         camera_node_spec: str = "", robot_node=None,
          schema_version: str = SCHEMA_VERSION) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"workspace_{time.strftime('%Y%m%d_%H%M%S')}.log"
@@ -823,6 +838,7 @@ def main(app: "QApplication | None" = None, camera_node=None,
         app.setStyle("Fusion")
     win = WorkspaceWindow(log_path, camera_node=camera_node,
                           camera_node_spec=camera_node_spec,
+                          robot_node=robot_node,
                           schema_version=schema_version)
     window_ref["win"] = win
     win.show()

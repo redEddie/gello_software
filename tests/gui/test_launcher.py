@@ -318,6 +318,7 @@ print("10 통과: +/- 로 카메라 개수 조절, 최소 한 대 보장, 줄이
 # (2026-09-05). 한 데이터셋에 여러 버전이 섞이는 것은 허용하고, "언제부터
 # 바뀌었나" 는 scene 파일에서 읽는다 -- 별도 이력을 적으면 두 번째 진실이 된다.
 from gello.data.dataset_schema import (  # noqa: E402
+    FT_OBS_KEYS,
     SCHEMA_FIELDS,
     SCHEMA_VERSION,
 )
@@ -348,6 +349,43 @@ assert schema_version_spans(_MIX) == [
     ("knu-1.0.0", "S000", "S001"), ("knu-1.1.0", "S002", "S002")], \
     schema_version_spans(_MIX)
 print("11 통과: 스키마 버전 기본=최신 / 내려 찍기 가능 / 이력은 파일에서 파생")
+
+# --- 12) [확인] 이 검사하는 필드 == 그 버전이 실제로 요구하는 필드 -------------
+# 두 목록이 갈라지면 확인은 통과했는데 검증기는 떨어뜨리는 파일이 나온다.
+from apps.workspace.launcher.pages import _ROBOT_OBS_FIELDS  # noqa: E402
+
+for _v, _fields in _ROBOT_OBS_FIELDS.items():
+    _req = SCHEMA_FIELDS[_v]["obs_datasets"]
+    _extra = [f for f in _fields if f not in _req]
+    assert not _extra, f"{_v}: 확인만 하고 스키마엔 없는 필드 {_extra}"
+_base = set(SCHEMA_FIELDS["knu-1.0.0"]["obs_datasets"])
+_added = [f for f in SCHEMA_FIELDS["knu-1.1.0"]["obs_datasets"] if f not in _base]
+assert set(_ROBOT_OBS_FIELDS["knu-1.1.0"]) == set(_added), \
+    f"1.1.0 이 더한 필드와 확인 대상이 다르다: {_added}"
+assert set(_added) == set(FT_OBS_KEYS)
+print("12 통과: 버전 [확인] 대상 == 그 버전이 더한 관측 필드")
+
+# --- 13) 로봇 노드 인계 ------------------------------------------------------
+# [확인] 이 노드를 띄웠는데 창이 이어받지 못하면, FCI 를 쥔 프로세스가 둘이 되어
+# 창의 '노드 시작' 이 조용히 실패한다.
+assert hwp.take_robot_node() is None      # 띄운 적 없으면 None
+from apps.workspace.launcher.wizard import LaunchResult  # noqa: E402
+
+_lr = LaunchResult(mode="new", dataset_root=TMP, station="", cameras={},
+                   cam_roles={}, identity=DatasetIdentity(name="x", created="d"))
+assert _lr.robot_node is None
+# 창 쪽은 임포트가 무거워(numpy/cv2/h5py) 소스만 읽어 확인한다 -- 인자 이름이
+# 갈리면 인계가 조용히 끊기므로 이름까지 본다.
+import ast as _ast  # noqa: E402
+
+_src = _ast.parse((Path(WT) / "apps" / "collect_workspace.py").read_text())
+_fns = {n.name: n for n in _ast.walk(_src)
+        if isinstance(n, (_ast.FunctionDef,))}
+for _name in ("main", "__init__"):
+    _args = {a.arg for a in _fns[_name].args.args
+             + _fns[_name].args.kwonlyargs}
+    assert "robot_node" in _args, f"{_name}() 에 robot_node 자리가 없다"
+print("13 통과: 로봇 노드 인계 경로 (마법사 -> LaunchResult -> 워크스페이스)")
 
 print("\n런처 마법사 검증 통과")
 _cleanup()

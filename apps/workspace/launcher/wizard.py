@@ -68,6 +68,9 @@ class LaunchResult:
     # 셈이라 느리고, 겹치면 포트 6021 충돌로 죽는다.
     camera_node: object = None
     camera_node_spec: str = ""
+    # 데이터세트 버전 [확인] 이 띄운 로봇 노드. 같은 이유로 넘긴다 -- FCI 는
+    # 클라이언트 하나만 받으므로 확인용으로 띄운 것을 두면 창이 못 띄운다.
+    robot_node: object = None
 
 
 class LauncherWizard(QWizard):
@@ -171,6 +174,7 @@ class LauncherWizard(QWizard):
             ident = replace(ident, schema_version=schema)
             save_identity(root, ident)
         node, node_key = hw.take_node()
+        robot_node = hw.take_robot_node()
         return LaunchResult(mode=self.mode or "continue",
                             dataset_root=root,
                             station=station,
@@ -179,4 +183,5 @@ class LauncherWizard(QWizard):
                             identity=ident,
                             camera_node=node,
                             camera_node_spec=node_key,
+                            robot_node=robot_node,
                             schema_version=schema)

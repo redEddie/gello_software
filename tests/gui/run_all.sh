@@ -10,6 +10,9 @@ export GELLO_NO_PRIVILEGED=1
 # 위해 카메라 노드를 띄우므로, 여기서 막지 않으면 테스트가 실제 카메라를
 # 붙잡아 조작자의 GUI 를 방해한다 (2026-09-05).
 export GELLO_NO_CAMERA_NODE=1
+# 같은 이유로 로봇 노드도 막는다 -- 데이터세트 버전 [확인] 이 노드를 직접
+# 띄우므로, 여기서 막지 않으면 테스트가 FCI 를 잡는다 (2026-09-05).
+export GELLO_NO_ROBOT_NODE=1
 cd "$(dirname "$0")"
 fail=0
 for t in test_phase4a test_grid_replay test_plan_form test_right_scene \
