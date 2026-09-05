@@ -78,7 +78,7 @@ class LauncherWizard(QWizard):
         self.setStartId(PAGE_MODE)
         self.currentIdChanged.connect(self._on_page)
         self._on_page(PAGE_MODE)
-        self.resize(760, 780)
+        self.resize(1180, 720)   # 16:9 화면에 맞춘 2단 구성
         # lerobot.cameras.realsense 첫 임포트가 ~1초다. 하드웨어 페이지에서
         # 그걸 물면 페이지가 그 시간만큼 늦게 뜬다. 조작자가 첫 화면과 데이터셋
         # 목록을 보는 동안 미리 물어 둔다 -- 임포트는 멱등이라 나중에 다시

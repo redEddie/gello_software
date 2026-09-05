@@ -14,7 +14,6 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -23,11 +22,12 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
+    QWidget,
     QWizardPage,
 )
 
-from gello.gui.widgets import VideoView
 from gello.gui.workers import CameraPreviewWorker
+from apps.workspace.launcher.camera_panel import CameraPreviewColumn
 from apps.workspace.shared.camera_node_proc import (
     node_specs,
     spawn_node,
@@ -275,7 +275,17 @@ class HardwarePage(QWizardPage):
         super().__init__()
         self.setTitle(tr("하드웨어"))
         self.setSubTitle(tr("수집 스테이션과 카메라를 선택하세요."))
-        outer = QVBoxLayout(self)
+        # 왼쪽은 설정, 오른쪽은 미리보기. 아래로 쌓지 않는 이유는 둘이다:
+        # 모니터가 16:9 라 세로가 아쉽고, 무엇보다 칼럼이 갈려 있어야 "여기는
+        # 설정하는 곳, 저기는 보는 곳"이 한눈에 읽힌다 (2026-09-05 사용자 결정).
+        # 예전엔 한 줄에 [콤보][미리보기] 를 짝지어 두었는데, 역할이 셋만 되어도
+        # 둘이 번갈아 나와 못 읽고, 긴 콤보에 밀려 미리보기가 9px 세로줄로
+        # 잘리기까지 했다.
+        two_col = QHBoxLayout(self)
+        left = QWidget()
+        outer = QVBoxLayout(left)
+        outer.setContentsMargins(0, 0, 0, 0)
+        two_col.addWidget(left, 3)
         self.station_editor = StationEditor()
         self.station_editor.save_requested.connect(self._on_save_station)
         outer.addWidget(self.station_editor)
@@ -287,13 +297,8 @@ class HardwarePage(QWizardPage):
         self.git_warn.setWordWrap(True)
         self.git_warn.setStyleSheet("color:#e67e22;")
         outer.addWidget(self.git_warn)
-        # 고르는 곳과 보는 곳을 아예 나눈다. 한 줄에 [콤보][미리보기] 로 짝지어
-        # 두면 역할이 셋 이상이 되는 순간 둘이 번갈아 나와 못 읽고, 실제로
-        # 고정폭 미리보기가 긴 콤보에 밀려 9px 짜리 세로줄로 잘렸다
-        # (2026-09-05, 콤보가 폭 511 을 가져가 미리보기가 x=605 에 놓였다).
-        # 위: 역할별 콤보만. 아래: 미리보기만 나란히.
+        outer.addStretch(1)
         self.combos: dict[str, QComboBox] = {}
-        self.previews: dict[str, VideoView] = {}
         self._preview_workers: dict[str, CameraPreviewWorker] = {}
         for role, title in CAMERA_ROLES:
             combo = QComboBox()
@@ -321,25 +326,9 @@ class HardwarePage(QWizardPage):
         # 시리얼도 모델명도 "어느 쪽이 손목인지"는 안 알려준다. 특히 같은
         # 모델이 두 대면 구별할 방법이 없다. 그림이면 즉시 갈린다 -- 이걸
         # 위해 이 페이지에서 카메라 노드를 띄운다(_on_camera_pick).
-        prev_box = QGroupBox(tr("미리보기"))
-        prow = QHBoxLayout(prev_box)
-        for role, title in CAMERA_ROLES:
-            cell = QVBoxLayout()
-            cap = QLabel(title)
-            cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            cap.setStyleSheet("color:#888;")
-            view = VideoView()
-            view.setMinimumSize(160, 120)
-            # 정사각 크롭 가이드는 끈다. 여기서 볼 것은 "어느 쪽이 손목인가"
-            # 하나뿐이라, 좌우를 어둡게 덮으면 판별만 어려워진다. 프레이밍은
-            # 워크스페이스 Layout 패널에서 맞춘다.
-            view.set_square_guide(False)
-            view.setText(tr("대기"))
-            self.previews[role] = view
-            cell.addWidget(view, 1)
-            cell.addWidget(cap)
-            prow.addLayout(cell, 1)
-        outer.addWidget(prev_box, 1)
+        self.preview_column = CameraPreviewColumn(CAMERA_ROLES)
+        two_col.addWidget(self.preview_column, 2)
+        self.previews = self.preview_column.views()
         self.station_editor.combo.currentIndexChanged.connect(
             self._apply_station_defaults)
         # 이 페이지가 띄운 노드. 마법사가 끝나면 워크스페이스가 물려받는다

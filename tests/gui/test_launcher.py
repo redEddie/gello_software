@@ -250,7 +250,18 @@ for _role, _c in hwp.combos.items():
     assert _c.minimumSizeHint().width() <= 160, (
         f"{_role} 콤보가 항목 문자열만큼 폭을 요구한다 "
         f"({_c.minimumSizeHint().width()}px) -- shrinkable_combo 가 빠졌다")
-print("8 통과: 콤보/미리보기 영역 분리 -- 잘림 없음, 콤보가 폭을 강요하지 않음")
+# 역할 이름은 그림 **위 오버레이**다. 아래 별도 라벨로 두면 폭이 어긋나는
+# 순간 어느 캡션이 어느 그림 것인지 애매해진다 (실제로 그림이 셀 안에서
+# 왼쪽으로 치우쳐 그렇게 됐다). 겹쳐 있으면 어긋날 수가 없다.
+for _role, _cell in hwp.preview_column.cells.items():
+    cap, view = _cell.caption, _cell.view
+    assert cap.parent() is _cell and view.parent() is _cell
+    cr = cap.geometry()
+    vr = view.geometry()
+    assert vr.contains(cr.topLeft()), (
+        f"{_role} 캡션이 그림 밖에 있다: 캡션={cr} 그림={vr}")
+print("8 통과: 설정/미리보기 2단 분리 -- 잘림 없음, 콤보가 폭을 강요하지 않음, "
+      "캡션은 그림 위 오버레이")
 
 print("\n런처 마법사 검증 통과")
 _cleanup()
