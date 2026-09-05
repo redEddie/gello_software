@@ -193,6 +193,36 @@ def _selftest() -> None:
     for s, _sk, _n in ranked:
         assert lint(s, md_d, props) is None, s           # 유일 지칭 게이트
     print("8 통과: 부족 스킬 우선 랭킹 + 유일 지칭 lint")
+
+    # 9. 배치만 추천 (워크플로 ②): 물체 집합은 고정, 배치만 달라진다
+    from gello.scene.scene_diversity import recommend_placement
+    from gello.scene.scene_rules import violations_by_section
+    objs = ["OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01", "OBJ-BOWLS-YEL-01",
+            "OBJ-DRAWER-01"]
+    pl_a = recommend_placement(objs, [base], props, k=3, seed=11)
+    pl_b = recommend_placement(objs, [base], props, k=3, seed=11)
+    assert len(pl_a) == 3, len(pl_a)
+    assert [r["md"].layout for r in pl_a] == [r["md"].layout for r in pl_b]
+    zones = []
+    for r in pl_a:
+        md = r["md"]
+        assert sorted(md.objects) == sorted(objs), md.objects   # 조합 불변
+        assert set(r["axes"]) == set(AXES)                      # 카드 모양 동일
+        # 배치 규칙 준수 (서랍 열 비우기 포함)
+        assert not violations_by_section(md, props)["placement"], md.layout
+        zones.append(tuple(sorted(
+            tuple(v["zone"]) for v in md.layout["placements"].values())))
+    assert len(set(zones)) == 3, zones                          # 서로 다른 배치
+    # 물체 구성 자체가 규칙 위반이어도(컵 1개) 배치는 나온다 -- 조용히 거부하지
+    # 않고, compose 위반은 호출자가 읽어 사용자에게 보여준다.
+    lone = ["OBJ-CUP-BLU-01", "OBJ-BOWLS-YEL-01"]
+    pl_c = recommend_placement(lone, [base], props, k=2, seed=3)
+    assert pl_c, "compose 위반 조합에서 배치 추천이 비었다"
+    assert any("pair_if_present" in v for v in
+               violations_by_section(pl_c[0]["md"], props)["compose"])
+    print("9 통과: 배치만 추천 (조합 불변 + 배치 3종 + 규칙 준수, "
+          "compose 위반 조합도 배치는 제공)")
+
     print("\nselftest 통과")
 
 

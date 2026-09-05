@@ -75,6 +75,37 @@ def _default_rules() -> dict:
     return load_rules()
 
 
+def rule_names(section: str, rules_data: Optional[dict] = None) -> set:
+    """yaml 의 한 섹션(compose/placement)에 선언된 rule 이름 집합.
+
+    위반 문자열은 ``"<rule>: 설명"`` 이라 이 목록으로 위반을 섹션별로 나눌
+    수 있다 -- 목록을 코드에 중복시키지 않기 위한 조회다.
+    """
+    data = rules_data if rules_data is not None else _default_rules()
+    return {e.get("rule") for e in (data.get(section) or []) if e.get("rule")}
+
+
+def violations_by_section(md: SceneMetadata, props: dict[str, Prop],
+                          rules_data: Optional[dict] = None) -> dict:
+    """:func:`check` 결과를 compose / placement / other 로 나눈다.
+
+    배치만 바꿔서는 고칠 수 없는 위반(compose: 물체 구성 자체의 문제)과
+    배치로 고칠 수 있는 위반(placement)을 구분해야 하는 곳에서 쓴다 --
+    사람이 소품을 직접 고른 뒤 배치만 추천받는 워크플로가 그런 경우다.
+    other 는 섹션에 없는 rule 이름으로, 있어서는 안 되지만 조용히 삼키지
+    않는다.
+    """
+    out: dict = {"compose": [], "placement": [], "other": []}
+    compose = rule_names("compose", rules_data)
+    placement = rule_names("placement", rules_data)
+    for v in check(md, props, rules_data):
+        name = v.split(":", 1)[0]
+        key = ("compose" if name in compose
+               else "placement" if name in placement else "other")
+        out[key].append(v)
+    return out
+
+
 def _prop_for(oid: str, props: dict[str, Prop]) -> Optional[Prop]:
     return props.get(oid)
 
