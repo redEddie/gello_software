@@ -29,6 +29,7 @@ from gello.data.dataset_schema import (
     ACTION_SPACE_EE_DELTA,
     ACTION_SPACE_JOINT_ABSOLUTE,
     ACTION_SPACE_JOINT_DELTA,
+    FT_OBS_FIELDS,
     SCHEMA_FIELDS,
     SCHEMA_VERSION,
     DatasetSchemaConfig,
@@ -57,9 +58,7 @@ def _make_frame(seed=0, gripper_closed=False):
         # 포스·토크 (knu-1.1.0 에서 추가). FR3 의 robot state 에서 오고,
         # 그 필드가 없는 장비에서는 기록되지 않는다 -- 그래서 아래 5번이
         # "안 주면 안 쓴다" 를 따로 본다.
-        "joint_torques": rng.random(7).astype(np.float32),
-        "ext_joint_torques": rng.random(7).astype(np.float32),
-        "ee_wrench": rng.random(6).astype(np.float32),
+        "ft": {k: rng.random(n).astype(np.float32) for k, n in FT_OBS_FIELDS},
     }
 
 
@@ -114,10 +113,9 @@ def test_round_trip():
                 assert obs["eye_in_hand_rgb"].shape == (5, 480, 640, 3)
                 assert obs["eye_in_hand_rgb"].dtype == np.uint8
                 assert obs["joint_states"].shape == (5, 7)
-                # knu-1.1.0 에서 들어온 포스·토크 (모양까지 고정)
-                assert obs["joint_torques"].shape == (5, 7)
-                assert obs["ext_joint_torques"].shape == (5, 7)
-                assert obs["ee_wrench"].shape == (5, 6)
+                # knu-1.1.0 에서 들어온 포스·토크·접촉 (모양까지 고정)
+                for key, width in FT_OBS_FIELDS:
+                    assert obs[key].shape == (5, width), key
                 assert obs["joint_states"].dtype == np.float32
                 assert obs["gripper_states"].shape == (5, 1)
                 assert obs["gripper_states"].dtype == np.float32

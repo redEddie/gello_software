@@ -110,30 +110,61 @@ schema** — the same version can be stored either way.
   driver in use (lerobot 0.5.0 `RealSenseCamera`) has no `read_latest_depth`.
   No recorded file contains depth. When the driver supports it, depth is a
   field **addition** → `knu-1.1.0`.
-- **Joint torques / external forces** (`tau_J`, `tau_ext_hat_filtered`,
-  `O_F_ext_hat_K`) — issue #16. Added in `knu-1.1.0` below.
+- **Joint torques / external forces / contact** — issue #16. Added in
+  `knu-1.1.0` below.
 
 ## `knu-1.1.0` — frozen 2026-09-05
 
-Adds three observation datasets. Everything else is identical to `knu-1.0.0`.
+Adds seven observation datasets. Everything else is identical to `knu-1.0.0`.
 
 ```
-episode_NNN/obs/joint_torques       (T, 7) float32   tau_J
-episode_NNN/obs/ext_joint_torques   (T, 7) float32   tau_ext_hat_filtered
-episode_NNN/obs/ee_wrench           (T, 6) float32   O_F_ext_hat_K
+episode_NNN/obs/joint_torques          (T, 7) float32   tau_J
+episode_NNN/obs/ext_joint_torques      (T, 7) float32   tau_ext_hat_filtered
+episode_NNN/obs/desired_joint_torques  (T, 7) float32   tau_J_d
+episode_NNN/obs/ee_wrench              (T, 6) float32   O_F_ext_hat_K
+episode_NNN/obs/ee_wrench_ee           (T, 6) float32   K_F_ext_hat_K
+episode_NNN/obs/joint_contact          (T, 7) float32   joint_contact
+episode_NNN/obs/cartesian_contact      (T, 6) float32   cartesian_contact
 ```
 
-They come straight from the FR3 robot state. A firmware without those fields
-makes the node log a warning and skip them — a file written on such a rig has
-`knu-1.0.0`'s field set and must be stamped `knu-1.0.0`, not `1.1.0`.
+The single source for this list is `FT_OBS_FIELDS` in
+`gello/data/dataset_schema.py`; `FT_STATE_ATTRS` in `gello/robots/franka_fr3.py`
+maps each name to its `RobotState` field. Adding a field means editing those two
+tables — the buffer, the writer and the wizard's check all iterate them.
+
+Why these seven and not the three we started with:
+
+- `tau_J` is the torque actually measured at the joints; `tau_J_d` is what the
+  controller asked for. Their difference is the tracking error, which is the
+  cleanest cheap signal that something resisted the motion.
+- `tau_ext_hat_filtered` is franka's own estimate of the external part, i.e.
+  what the model could not explain.
+- `O_F_ext_hat_K` and `K_F_ext_hat_K` are the same external wrench in two
+  frames: the robot base `O`, and the stiffness frame `K` (which defaults to the
+  EE frame). Manipulation policies want the EE frame; keeping both saves every
+  consumer from re-deriving one from `O_T_EE`.
+- `joint_contact` / `cartesian_contact` are franka's own 0/1 contact flags,
+  computed against the `set_collision_behavior` lower thresholds. They are free
+  contact-event labels — the closest thing to ground truth for "when did it
+  touch something" that we get without annotating by hand.
+
+All seven come straight from the FR3 robot state at 1 kHz, so capturing them
+costs nothing beyond the 46 floats per frame we store. A firmware or
+`pylibfranka` build without those fields makes the node log a warning and skip
+them — a file written on such a rig has `knu-1.0.0`'s field set and must be
+stamped `knu-1.0.0`, not `1.1.0`. The wizard's dataset-version [확인] button
+checks exactly this against the live robot before collection starts.
 
 **Why the bump was needed, in hindsight.** The torque fields started being
 written with `scene_015` (2026-09-04) while the version string stayed
 `knu-1.0.0`. That produced two files both claiming `knu-1.0.0` with different
-observation sets — exactly what versioning exists to prevent. `scene_015` was
-stamped `knu-1.1.0` in place on 2026-09-05 (two attributes; no episode
-touched). `scene_000` … `scene_014` genuinely lack the fields and stay
-`knu-1.0.0`.
+observation sets — exactly what versioning exists to prevent. `scene_000` …
+`scene_014` genuinely lack the fields and stay `knu-1.0.0`.
+
+`scene_015` was briefly stamped `knu-1.1.0` in place while that version meant
+only the first three fields. It is being **re-collected** with the full seven,
+so the definition above was widened before any `knu-1.1.0` file was final —
+there is no released `knu-1.1.0` data with the narrow field set.
 
 Nothing downstream of the HDF5 changes: the LeRobot converter never consumed
 these keys (`_CONSUMED_OBS_KEYS`), so the published `-lerobot` dataset is

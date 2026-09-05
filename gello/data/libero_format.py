@@ -74,9 +74,17 @@ HDF5-original only; the LeRobot converter does not consume them
     obs/joint_torques             (T, 7) float32  -- tau_J, measured joint torque (N*m)
     obs/ext_joint_torques         (T, 7) float32  -- tau_ext_hat_filtered,
                                                      estimated external joint torque (N*m)
+    obs/desired_joint_torques     (T, 7) float32  -- tau_J_d, commanded joint torque
+                                                     (N*m); measured - desired is the
+                                                     tracking error
     obs/ee_wrench                 (T, 6) float32  -- O_F_ext_hat_K, estimated external
-                                                     wrench on the EE in base frame
+                                                     wrench on the EE in base frame O
                                                      [Fx Fy Fz Tx Ty Tz] (N, N*m)
+    obs/ee_wrench_ee              (T, 6) float32  -- K_F_ext_hat_K, the same wrench in
+                                                     the stiffness frame K (defaults to
+                                                     the EE frame)
+    obs/joint_contact             (T, 7) float32  -- franka's own contact flag per joint
+    obs/cartesian_contact         (T, 6) float32  -- ditto per Cartesian dimension
 
 ``scripts/derive_commanded_ee_actions.py`` turns these into commanded EE
 delta actions (``actions_ee`` / ``actions_world_cmd``) offline via FR3
@@ -98,6 +106,7 @@ from gello.data.dataset_schema import (
     ACTION_SPACE_EE_DELTA,
     ACTION_SPACE_JOINT_ABSOLUTE,
     ACTION_SPACE_JOINT_DELTA,
+    FT_OBS_KEYS,
     OBS_AGENTVIEW_RGB,
     OBS_COMMANDED_GRIPPER_STATES,
     OBS_COMMANDED_JOINT_STATES,
@@ -194,9 +203,9 @@ class LiberoEpisodeBuffer:
         self.eye_in_hand_depth: list[np.ndarray] = []
         self.commanded_joint_positions: list[np.ndarray] = []
         self.commanded_gripper: list[float] = []
-        self.joint_torques: list[np.ndarray] = []
-        self.ext_joint_torques: list[np.ndarray] = []
-        self.ee_wrench: list[np.ndarray] = []
+        # 포스·토크·접촉. 키는 FT_OBS_KEYS -- 개별 속성으로 두면 필드가 늘 때마다
+        # 버퍼/시그니처/기록 3곳을 같이 고쳐야 한다.
+        self.ft: dict[str, list[np.ndarray]] = {k: [] for k in FT_OBS_KEYS}
 
     def __len__(self) -> int:
         return len(self.joint_states)
@@ -215,9 +224,7 @@ class LiberoEpisodeBuffer:
         commanded_gripper: Optional[float] = None,
         agentview_depth: Optional[np.ndarray] = None,
         eye_in_hand_depth: Optional[np.ndarray] = None,
-        joint_torques: Optional[np.ndarray] = None,
-        ext_joint_torques: Optional[np.ndarray] = None,
-        ee_wrench: Optional[np.ndarray] = None,
+        ft: Optional[dict] = None,
     ) -> None:
         self.joint_states.append(np.asarray(joint_positions, dtype=np.float32))
         self.gripper_states.append(np.array([gripper_position], dtype=np.float32))
@@ -231,12 +238,10 @@ class LiberoEpisodeBuffer:
             self.commanded_gripper.append(float(commanded_gripper))
         # 포스·토크는 commanded_* 와 같은 규칙: 호출자가 주면 스키마와 무관하게
         # 버퍼링한다 (모듈 docstring 참조).
-        if joint_torques is not None:
-            self.joint_torques.append(np.asarray(joint_torques, dtype=np.float32))
-        if ext_joint_torques is not None:
-            self.ext_joint_torques.append(np.asarray(ext_joint_torques, dtype=np.float32))
-        if ee_wrench is not None:
-            self.ee_wrench.append(np.asarray(ee_wrench, dtype=np.float32))
+        for key in FT_OBS_KEYS:
+            v = (ft or {}).get(key)
+            if v is not None:
+                self.ft[key].append(np.asarray(v, dtype=np.float32))
         if self.schema.save_agentview_rgb:
             self.agentview_rgb.append(self._process_image(agentview_rgb))
         if self.schema.save_eye_in_hand_rgb:
@@ -479,12 +484,9 @@ def write_episode_payload(
     # commanded_* 와 같은 원칙 -- 작고, 실현 궤적이 숨기는 접촉을 담은 유일한
     # 기록이라 스키마 토글 없이 있으면 항상 쓴다. hdf5 원본 전용 (변환기의
     # _CONSUMED_OBS_KEYS 밖 -- LeRobot 산출물에는 들어가지 않는다).
-    if len(buf.joint_torques) == n:
-        obs.create_dataset("joint_torques", data=np.stack(buf.joint_torques))
-    if len(buf.ext_joint_torques) == n:
-        obs.create_dataset("ext_joint_torques", data=np.stack(buf.ext_joint_torques))
-    if len(buf.ee_wrench) == n:
-        obs.create_dataset("ee_wrench", data=np.stack(buf.ee_wrench))
+    for key in FT_OBS_KEYS:
+        if len(buf.ft[key]) == n:
+            obs.create_dataset(key, data=np.stack(buf.ft[key]))
 
     grp.create_dataset("actions", data=actions)
     grp.create_dataset("rewards", data=np.zeros(n, dtype=np.float32))

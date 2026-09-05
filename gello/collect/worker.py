@@ -24,6 +24,7 @@ import zmq
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from gello.data.dataset_schema import (
+    FT_OBS_KEYS,
     ROBOT_EE_POS_QUAT,
     ROBOT_JOINT_POSITIONS,
     ROBOT_JOINT_VELOCITIES,
@@ -477,12 +478,8 @@ class CollectionWorker(QThread):
         # 포스·토크 (hdf5 원본 전용 기록): 노드가 필드를 제공할 때만 키가 있다.
         # 없으면 add_frame 에 None 이 넘어가 그 에피소드는 해당 데이터셋을
         # 만들지 않는다 -- 0 으로 채워 "무접촉 측정"처럼 보이게 하지 않는다.
-        for src, dst in (("joint_torques", "_joint_torques"),
-                         ("ext_joint_torques", "_ext_joint_torques"),
-                         ("ee_wrench", "_ee_wrench")):
-            v = raw.get(src)
-            if v is not None:
-                out[dst] = np.asarray(v, dtype=float)
+        out["_ft"] = {k: np.asarray(raw[k], dtype=float)
+                      for k in FT_OBS_KEYS if raw.get(k) is not None}
         if not with_cameras:
             return out
         for cam_key, cam in self._robot.cameras.items():
@@ -1085,9 +1082,7 @@ class CollectionWorker(QThread):
                     commanded_gripper=float(action["gripper.pos"]),
                     agentview_depth=obs.get("_agent_depth"),
                     eye_in_hand_depth=obs.get("_wrist_depth"),
-                    joint_torques=obs.get("_joint_torques"),
-                    ext_joint_torques=obs.get("_ext_joint_torques"),
-                    ee_wrench=obs.get("_ee_wrench"),
+                    ft=obs.get("_ft"),
                 )
                 self._emit_frames(obs)
                 n = i + 1

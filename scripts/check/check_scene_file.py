@@ -29,6 +29,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gello.data.dataset_schema import (  # noqa: E402
+    FT_OBS_FIELDS,
     OBS_AGENTVIEW_RGB,
     OBS_EE_POS_QUAT,
     OBS_EYE_IN_HAND_RGB,
@@ -250,9 +251,8 @@ def _dummy_frames(writer, n: int = 5, seed: int = 0) -> None:
             gripper_closed=bool(rng.random() > 0.5),
             commanded_joint_positions=rng.standard_normal(7).astype(np.float32),
             commanded_gripper=float(rng.random() > 0.5),
-            joint_torques=rng.standard_normal(7).astype(np.float32),
-            ext_joint_torques=rng.standard_normal(7).astype(np.float32),
-            ee_wrench=rng.standard_normal(6).astype(np.float32),
+            ft={k: rng.standard_normal(n).astype(np.float32)
+                for k, n in FT_OBS_FIELDS},
         )
 
 
@@ -369,10 +369,9 @@ def selftest(keep: Path | None) -> None:
         assert g[f"obs/{OBS_JOINT_STATES}"].shape == (5, 7)
         assert g[f"obs/{OBS_AGENTVIEW_RGB}"].shape == (5, 48, 64, 3)
         # 포스·토크: 호출자가 주면 스키마 토글 없이 기록된다 (2026-08-23)
-        assert g["obs/joint_torques"].shape == (5, 7)
-        assert g["obs/joint_torques"].dtype == np.float32
-        assert g["obs/ext_joint_torques"].shape == (5, 7)
-        assert g["obs/ee_wrench"].shape == (5, 6)
+        for key, width in FT_OBS_FIELDS:
+            assert g[f"obs/{key}"].shape == (5, width), key
+            assert g[f"obs/{key}"].dtype == np.float32, key
         assert str(g.attrs["instruction"]) == I0  # 따옴표 없이 그대로
     assert read_reference_image(path) is not None
     assert next_scene_id(root) == "S001"

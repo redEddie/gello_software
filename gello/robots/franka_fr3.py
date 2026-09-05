@@ -77,10 +77,39 @@ import numpy as np
 
 from gello.core.robot import Robot
 from gello.data.dataset_schema import (
+    OBS_CARTESIAN_CONTACT,
+    OBS_DESIRED_JOINT_TORQUES,
+    OBS_EE_WRENCH,
+    OBS_EE_WRENCH_EE,
+    OBS_EXT_JOINT_TORQUES,
+    OBS_JOINT_CONTACT,
+    OBS_JOINT_TORQUES,
     ROBOT_EE_POS_QUAT,
     ROBOT_GRIPPER_POSITION,
     ROBOT_JOINT_POSITIONS,
     ROBOT_JOINT_VELOCITIES,
+)
+
+#: 관측 키 -> libfranka ``RobotState`` 필드. 로봇이 1kHz 로 이미 계산해 두는
+#: 값이라 캡처는 공짜다. 셋 다 (관측 키, 상태 속성) 한 줄로 두는 이유는 필드를
+#: 늘릴 때 고칠 자리를 하나로 묶기 위해서다 -- 읽기 루프 2곳, 관측 조립 1곳이
+#: 전부 이 표를 돈다.
+FT_STATE_ATTRS = (
+    # 측정 관절토크 (N*m). 링크 사이 실제 토크 센서 값.
+    (OBS_JOINT_TORQUES, "tau_J"),
+    # 외력으로 추정된 관절토크 (N*m). 모델이 예측한 토크를 뺀 나머지.
+    (OBS_EXT_JOINT_TORQUES, "tau_ext_hat_filtered"),
+    # 제어기가 '내보낸' 관절토크 (N*m). 측정값과 짝지으면 추종 오차가 나온다.
+    (OBS_DESIRED_JOINT_TORQUES, "tau_J_d"),
+    # 외력 렌치 [Fx Fy Fz Tx Ty Tz]. 베이스 좌표 O.
+    (OBS_EE_WRENCH, "O_F_ext_hat_K"),
+    # 같은 렌치를 강성 좌표 K(기본값 = EE 좌표)로. 조작은 손끝 기준이라
+    # 베이스 좌표보다 이쪽이 바로 쓰인다.
+    (OBS_EE_WRENCH_EE, "K_F_ext_hat_K"),
+    # franka 자체 접촉 판정 (0/1). set_collision_behavior 의 lower 문턱을
+    # 넘으면 1 -- 접촉 구간 라벨이 공짜로 따라온다.
+    (OBS_JOINT_CONTACT, "joint_contact"),
+    (OBS_CARTESIAN_CONTACT, "cartesian_contact"),
 )
 
 # FR3 gripper stroke (m).  Franka Hand opens to ~0.08 m.
@@ -272,16 +301,14 @@ class FrankaFR3Robot(Robot):
         # 한 번만 확인하고, 없으면 관측에서 키를 빼서 상류(add_frame)가
         # 기록을 생략하게 한다 -- 0 으로 채워 "측정된 무접촉"처럼 보이게
         # 하는 것이 최악이므로 조용한 0 채움은 하지 않는다.
-        self._ft_fields = ("tau_J", "tau_ext_hat_filtered", "O_F_ext_hat_K")
-        self._has_ft = all(hasattr(st, a) for a in self._ft_fields)
+        self._has_ft = all(hasattr(st, a) for _, a in FT_STATE_ATTRS)
+        self._ft: Dict[str, np.ndarray] = {}
         if self._has_ft:
-            self._tau_J = np.asarray(st.tau_J, dtype=float)
-            self._tau_ext = np.asarray(st.tau_ext_hat_filtered, dtype=float)
-            self._ext_wrench = np.asarray(st.O_F_ext_hat_K, dtype=float)
+            self._read_ft(st)
         else:
-            missing = [a for a in self._ft_fields if not hasattr(st, a)]
+            missing = [a for _, a in FT_STATE_ATTRS if not hasattr(st, a)]
             print(f"[FR3] robot state 에 포스·토크 필드가 없습니다: {missing} "
-                  "-- joint_torques/ext_joint_torques/ee_wrench 는 기록되지 않습니다")
+                  "-- 포스·토크·접촉 관측은 기록되지 않습니다 (knu-1.0.0 로 기록됨)")
         self._success_rate = 1.0
         self._control_error: Optional[str] = None
         self._stop = threading.Event()
@@ -369,10 +396,7 @@ class FrankaFR3Robot(Robot):
             dq = self._dq.copy()
             pose = self._ee_pose.copy()
             gripper_norm = 1.0 - self._gripper_state_width / MAX_GRIPPER_WIDTH
-            ft = None
-            if self._has_ft:
-                ft = (self._tau_J.copy(), self._tau_ext.copy(),
-                      self._ext_wrench.copy())
+            ft = {k: v.copy() for k, v in self._ft.items()}
         if self._use_gripper:
             pos = np.append(q, gripper_norm)
             vel = np.append(dq, 0.0)
@@ -387,11 +411,13 @@ class FrankaFR3Robot(Robot):
         # 포스·토크: 필드를 노출하는 pylibfranka 빌드에서만 키가 존재한다.
         # 소비자(gello.collect.worker._get_obs)는 .get() 으로 읽으므로 키 부재는
         # "기록 안 함"이지 오류가 아니다.
-        if ft is not None:
-            out["joint_torques"] = ft[0]        # tau_J, 측정 관절토크 (N*m)
-            out["ext_joint_torques"] = ft[1]    # tau_ext_hat_filtered, 외력 추정 (N*m)
-            out["ee_wrench"] = ft[2]            # O_F_ext_hat_K, 베이스 좌표 외력 렌치 (N, N*m)
+        out.update(ft)
         return out
+
+    def _read_ft(self, st) -> None:
+        """``self._ft`` 를 갱신한다. 호출자가 ``self._lock`` 을 쥐고 있어야 한다."""
+        for key, attr in FT_STATE_ATTRS:
+            self._ft[key] = np.asarray(getattr(st, attr), dtype=float)
 
     # ---------------------------------------------------------------- helpers
     @staticmethod
@@ -439,9 +465,7 @@ class FrankaFR3Robot(Robot):
                     self._ee_pose = np.asarray(st.O_T_EE, dtype=float)
                     self._success_rate = float(st.control_command_success_rate)
                     if self._has_ft:
-                        self._tau_J = np.asarray(st.tau_J, dtype=float)
-                        self._tau_ext = np.asarray(st.tau_ext_hat_filtered, dtype=float)
-                        self._ext_wrench = np.asarray(st.O_F_ext_hat_K, dtype=float)
+                        self._read_ft(st)
             except Exception as e:  # noqa: BLE001
                 self._control_error = str(e)
                 print(f"[FR3] read-only loop error: {e}")
@@ -499,9 +523,7 @@ class FrankaFR3Robot(Robot):
                     self._ee_pose = np.asarray(state.O_T_EE, dtype=float)
                     self._success_rate = float(state.control_command_success_rate)
                     if self._has_ft:
-                        self._tau_J = np.asarray(state.tau_J, dtype=float)
-                        self._tau_ext = np.asarray(state.tau_ext_hat_filtered, dtype=float)
-                        self._ext_wrench = np.asarray(state.O_F_ext_hat_K, dtype=float)
+                        self._read_ft(state)
 
                 # Critically-damped second-order reference filter, saturated in
                 # jerk, acceleration and velocity -> smooth, bounded command.

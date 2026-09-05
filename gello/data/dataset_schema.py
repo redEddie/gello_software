@@ -69,11 +69,29 @@ OBS_EE_STATES = "ee_states"
 OBS_EE_POS = "ee_pos"
 OBS_EE_ORI = "ee_ori"
 OBS_JOINT_VELOCITIES = "joint_velocities"
-# 포스·토크 (knu-1.1.0 에서 추가). FR3 의 robot state 에서 온다 -- 그 필드가
-# 없는 펌웨어에서는 기록되지 않으므로, 이 셋이 있으면 1.1.0, 없으면 1.0.0 이다.
+# 포스·토크·접촉 (knu-1.1.0 에서 추가). FR3 의 robot state 에서 그대로 온다 --
+# 그 필드가 없는 펌웨어/바인딩에서는 기록되지 않으므로, 이것들이 있으면
+# 1.1.0, 없으면 1.0.0 이다.
 OBS_JOINT_TORQUES = "joint_torques"
 OBS_EXT_JOINT_TORQUES = "ext_joint_torques"
+OBS_DESIRED_JOINT_TORQUES = "desired_joint_torques"
 OBS_EE_WRENCH = "ee_wrench"
+OBS_EE_WRENCH_EE = "ee_wrench_ee"
+OBS_JOINT_CONTACT = "joint_contact"
+OBS_CARTESIAN_CONTACT = "cartesian_contact"
+
+#: 위 7종을 한 묶음으로. 로봇 -> 수집 워커 -> 기록기가 모두 이 순서로 돌며,
+#: 필드를 늘릴 때 고칠 곳이 여기 하나가 되도록 한다. 값은 (키, 원소 수).
+FT_OBS_FIELDS = (
+    (OBS_JOINT_TORQUES, 7),
+    (OBS_EXT_JOINT_TORQUES, 7),
+    (OBS_DESIRED_JOINT_TORQUES, 7),
+    (OBS_EE_WRENCH, 6),
+    (OBS_EE_WRENCH_EE, 6),
+    (OBS_JOINT_CONTACT, 7),
+    (OBS_CARTESIAN_CONTACT, 6),
+)
+FT_OBS_KEYS = tuple(k for k, _ in FT_OBS_FIELDS)
 
 # HDF5 repack markers (used by libero_format.py, dataset_sync.py, repack_hdf5.py).
 REPACK_MARKER_ATTR = "repacked"
@@ -122,7 +140,7 @@ SCHEMA_FIELDS = {
     },
 }
 
-#: knu-1.1.0 = knu-1.0.0 + 포스·토크 3종 (2026-09-05).
+#: knu-1.1.0 = knu-1.0.0 + 포스·토크·접촉 7종 (2026-09-05).
 #:
 #: 왜 버전을 올렸나: S015 를 찍을 때부터 obs/joint_torques,
 #: ext_joint_torques, ee_wrench 가 들어가기 시작했는데 버전 문자열은 그대로
@@ -130,13 +148,16 @@ SCHEMA_FIELDS = {
 #: 그 문자열을 믿고 필드 구성을 가정하는 소비자는 틀리게 된다 -- 버저닝이
 #: 막으려던 바로 그 상황이다.
 #:
+#: 처음 정의는 3종(측정 토크·외력 토크·베이스 렌치)이었으나, 이 버전으로 찍은
+#: 파일이 아직 하나도 확정되지 않은 동안(S015 재수집 예정) 나머지 4종을 함께
+#: 넣었다 -- 로봇이 1kHz 로 이미 계산해 두는 값이라 캡처 비용이 사실상 0 이고,
+#: 나중에 넣으면 또 한 번 MINOR 를 올려 "1.1 파일이 두 종류"가 된다.
+#:
 #: MINOR 는 추가만 한다는 규칙대로, 1.0.0 항목은 손대지 않고 새 키를 만든다.
 #: 옛 파일(scene_000~014)은 계속 1.0.0 규칙으로 검사된다.
 SCHEMA_FIELDS["knu-1.1.0"] = {
     **SCHEMA_FIELDS["knu-1.0.0"],
-    "obs_datasets": SCHEMA_FIELDS["knu-1.0.0"]["obs_datasets"] + (
-        OBS_JOINT_TORQUES, OBS_EXT_JOINT_TORQUES, OBS_EE_WRENCH,
-    ),
+    "obs_datasets": SCHEMA_FIELDS["knu-1.0.0"]["obs_datasets"] + FT_OBS_KEYS,
 }
 
 
@@ -332,11 +353,13 @@ def selftest() -> None:
     assert "save_agentview_depth" in DatasetSchemaConfig._FIXED
     # 포스·토크는 1.1.0 에서 들어왔다. 1.0.0 은 그대로 없어야 한다 --
     # MINOR 는 추가만 하므로 옛 규칙을 고치면 옛 파일 검사가 틀어진다.
-    assert all(f in cur["obs_datasets"] for f in
-               (OBS_JOINT_TORQUES, OBS_EXT_JOINT_TORQUES, OBS_EE_WRENCH))
+    assert all(f in cur["obs_datasets"] for f in FT_OBS_KEYS)
     old = schema_required_fields("knu-1.0.0")
-    assert not any("torque" in f or "wrench" in f for f in old["obs_datasets"])
-    assert len(cur["obs_datasets"]) == len(old["obs_datasets"]) + 3
+    assert not any("torque" in f or "wrench" in f or "contact" in f
+                   for f in old["obs_datasets"])
+    assert len(cur["obs_datasets"]) == len(old["obs_datasets"]) + len(FT_OBS_KEYS)
+    # 키가 겹치면 뒤엣것이 앞엣것을 덮어써 조용히 한 필드가 사라진다
+    assert len(set(FT_OBS_KEYS)) == len(FT_OBS_KEYS)
 
     # 모르는 버전은 필드 목록이 없다 -> 검증기가 "모르는 스키마 버전" 으로 잡는다
     assert schema_required_fields("knu-9.9.9") is None

@@ -17,7 +17,10 @@ sys.path.insert(0, WT + "/apps")
 sys.path.insert(0, WT + "/scripts/check")
 sys.argv = ["t"]
 
-from gello.data.dataset_schema import OBS_AGENTVIEW_RGB  # noqa: E402
+from gello.data.dataset_schema import (  # noqa: E402
+    FT_OBS_FIELDS,
+    OBS_AGENTVIEW_RGB,
+)
 from gello.scene.scene_format import (  # noqa: E402
     QUALITY_SUCCESS,
     SceneWriter, delete_scene_episodes, list_scene_episodes, read_scene_metadata,
@@ -73,9 +76,8 @@ for _ in range(5):
         commanded_gripper=0.0,
         # knu-1.1.0 필수 -- 이 파일은 그 버전으로 찍혀 있으므로 이어 붙이는
         # 에피소드에도 있어야 한다 (없으면 검증기가 잡는다).
-        joint_torques=r.standard_normal(7).astype(np.float32),
-        ext_joint_torques=r.standard_normal(7).astype(np.float32),
-        ee_wrench=r.standard_normal(6).astype(np.float32))
+        ft={k: r.standard_normal(n).astype(np.float32)
+            for k, n in FT_OBS_FIELDS})
 new_name = w.save_buffer(w.detach_buffer(), instruction=victim["instruction"],
                          instruction_id=iid, success=True, collector="t")
 w.close()
@@ -114,9 +116,8 @@ for _ in range(40):
         commanded_gripper=0.0,
         # knu-1.1.0 필수 -- 이 파일은 그 버전으로 찍혀 있으므로 이어 붙이는
         # 에피소드에도 있어야 한다 (없으면 검증기가 잡는다).
-        joint_torques=r.standard_normal(7).astype(np.float32),
-        ext_joint_torques=r.standard_normal(7).astype(np.float32),
-        ee_wrench=r.standard_normal(6).astype(np.float32))
+        ft={k: r.standard_normal(n).astype(np.float32)
+            for k, n in FT_OBS_FIELDS})
 long_name = w3.save_buffer(w3.detach_buffer(), instruction=victim["instruction"],
                            instruction_id=iid, success=True, collector="t")
 w3.close()
