@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from apps.workspace.launcher.form import roomy, tidy_form
+from apps.workspace.shared.sizing import roomy, tidy_form
 from gello.config.station import (
     CameraSpec,
     LeaderSpec,

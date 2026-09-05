@@ -13,7 +13,6 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
-    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -22,7 +21,6 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
     QWizardPage,
@@ -32,7 +30,6 @@ from gello.comm.camera_client import set_cams
 from gello.gui.fonts import set_bold
 from gello.gui.workers import CameraPreviewWorker
 from apps.workspace.launcher.camera_panel import CameraPreviewColumn
-from apps.workspace.launcher.form import roomy, tidy_form
 from apps.workspace.shared.robot_node_proc import (
     spawn_node as spawn_robot_node,
 )
@@ -43,7 +40,12 @@ from apps.workspace.shared.camera_node_proc import (
 )
 from gello.config.station import load_station
 from apps.workspace.constants import WT_ROOT
-from apps.workspace.shared.sizing import shrinkable_combo
+from apps.workspace.shared.sizing import (
+    roomy,
+    scrollable,
+    shrinkable_combo,
+    tidy_form,
+)
 from apps.workspace.launcher.station_editor import StationEditor
 import numpy as np
 
@@ -74,20 +76,6 @@ PAGE_HW = 3
 
 _NO_CAMERA = ""      # "(선택 안함)" 항목의 data
 
-
-def _scrollable(inner: QWidget) -> QScrollArea:
-    """내용이 창보다 길어지면 세로 스크롤이 생기게 감싼다.
-
-    가로 스크롤은 끈다 -- 폭이 모자라면 콤보가 말줄임으로 줄어드는 편이
-    (shrinkable_combo) 옆으로 미는 것보다 낫다. 테두리도 끈다: 상자들이 이미
-    자기 테두리를 갖고 있어 한 겹 더 그리면 중첩돼 보인다.
-    """
-    area = QScrollArea()
-    area.setWidgetResizable(True)      # 내용이 짧으면 뷰포트를 채운다
-    area.setWidget(inner)
-    area.setFrameShape(QFrame.Shape.NoFrame)
-    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    return area
 
 #: [확인] 이 로봇 노드를 직접 띄웠을 때 기다려 주는 시간(초). FCI 연결 +
 #: 첫 read_once 까지가 대략 3~5초라 그보다 넉넉히 둔다. 넘기면 포기하고
@@ -345,11 +333,11 @@ class HardwarePage(QWizardPage):
         # (2026-09-05 보고). 창을 더 키우는 것으로는 못 막는다: 카메라 수에
         # 상한이 없다.
         self.preview_column = CameraPreviewColumn()
-        two_col.addWidget(_scrollable(self.preview_column), 2)
+        two_col.addWidget(scrollable(self.preview_column), 2)
         right = QWidget()
         outer = QVBoxLayout(right)
         outer.setContentsMargins(0, 0, 0, 0)
-        two_col.addWidget(_scrollable(right), 3)
+        two_col.addWidget(scrollable(right), 3)
         self.station_editor = StationEditor()
         self.station_editor.save_requested.connect(self._on_save_station)
         outer.addWidget(self.station_editor)

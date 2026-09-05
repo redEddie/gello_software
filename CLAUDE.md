@@ -43,14 +43,25 @@ Keep this invariant when adding files; a module's folder must announce its role.
 - Full GUI acceptance suite (offscreen, no hardware):
   `bash tests/gui/run_all.sh /home/franka/lerobot-venv/bin/python`
 - The collector is launched by desktop icon via `run_scene_collector.sh`
-  (auto `git pull --ff-only`, then `apps/collect_workspace.py`) — keep the
-  working tree clean/committed or the pull is skipped.
+  (auto `git pull --ff-only`, then `apps/collect_launcher.py` — the wizard,
+  which opens `collect_workspace` when it finishes) — keep the working tree
+  clean/committed or the pull is skipped. Two icons exist: `SceneCollector`
+  points at the `gello_software-scene` worktree (main, real collection) and
+  `SceneCollectorDev` at `gello_software-dev`.
 
 ## Conventions
 
-- New user-facing GUI strings: Korean call site + English entry in
-  `gello/gui/i18n.py` `_EN` (byte-exact key). New comments/docs/issues in
-  English (issue #42, for international students).
+- User-facing GUI strings: **no language toggle** (removed 2026-09-05; `tr()`
+  is identity). Fix the language per string instead, by tier — Action / Status /
+  Identity in English (`Save`, `RECORDING`, `cam1`, `S015`), Guide / Log in
+  Korean. The full rationale is the `gello/gui/i18n.py` docstring; read it
+  before adding strings. New comments/docs/issues in English (issue #42).
+- GUI layout rules live in `apps/workspace/shared/sizing.py` — field heights
+  derived from the font (`roomy`), anything that can grow wrapped in
+  `scrollable`, no horizontal scrolling. Wheel-over-combo is neutralised
+  app-wide by `gello/gui/wheel_guard.py`, so screens need not handle it.
+  These came from real breakage in the launcher (2026-09-05~06); apply them
+  when touching workspace screens rather than re-deriving them.
 - Prop/scene decisions are recorded on GitHub issues (e.g. #36); props.yaml
   color tokens must be lowercase (the grammar parser lowercases phrases).
 - This checkout shares its git repo with the `gello_software-deploy` worktree
