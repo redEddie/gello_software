@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections import Counter
 from dataclasses import dataclass
@@ -72,6 +73,50 @@ def _active(props: dict) -> list:
     return [p for p in props.values() if not p.retired]
 
 
+def _grid_cells() -> list:
+    return [(r, c) for r in range(GRID[0]) for c in range(GRID[1])]
+
+
+def _pair_offsets(sig: Signature) -> list:
+    """물체 쌍의 상대 변위 (|Δ행|, |Δ열|).
+
+    절댓값이라 쌍의 순서와 무관하다 -- "누가 왼쪽인가"가 아니라 "얼마나
+    떨어져 어떤 방향으로 놓였는가"를 센다. (0,1)=바로 옆, (1,1)=대각,
+    (2,2)=반대편 모서리. 칸별 사용 빈도(position)만 보면 놓치는 축이다:
+    아홉 칸을 고르게 써도 매번 같은 대각 패턴이면 이 축이 쏠린다.
+    """
+    zs = [z for _, z in sig.placements]
+    return [(abs(a[0] - b[0]), abs(a[1] - b[1]))
+            for i, a in enumerate(zs) for b in zs[i + 1:]]
+
+
+def _pair_offset_support(_props: dict) -> set:
+    grid = _grid_cells()
+    return {(abs(a[0] - b[0]), abs(a[1] - b[1]))
+            for a in grid for b in grid if a != b}
+
+
+def _spread(sig: Signature) -> list:
+    """씬 전체의 퍼짐 (쓰인 행 수, 쓰인 열 수). (1,3)=한 줄로 늘어놓기,
+    (3,3)=격자 전체, (2,2)=한쪽에 뭉치기."""
+    zs = [z for _, z in sig.placements]
+    if not zs:
+        return []
+    return [(len({r for r, _ in zs}), len({c for _, c in zs}))]
+
+
+def _spread_support(_props: dict) -> set:
+    """도달 가능한 (행 수, 열 수) 조합만. 물체 수로 불가능한 bin 을 서포트에
+    넣으면 균등성이 영원히 1 에 못 미쳐 이 축의 가중치가 부당하게 커진다."""
+    lo, hi = object_count_range()
+    grid = _grid_cells()
+    out = set()
+    for n in range(lo, min(hi, len(grid)) + 1):
+        for combo in itertools.combinations(grid, n):
+            out.add((len({r for r, _ in combo}), len({c for _, c in combo})))
+    return out
+
+
 def _count_support(_props: dict) -> set:
     """개수 축의 bin -- 정본은 scene_rules.yaml 의 object_count 다.
     후보 생성 범위와 반드시 같아야 하므로 둘 다 규칙에서 읽는다."""
@@ -102,6 +147,10 @@ REGISTRY: tuple = (
     Axis("count",
          extract=lambda s: [len(s.triples)],
          support=_count_support),
+    # 배치 구조 축 (2026-09-06). 커버리지 전용 -- 합산 거리의 배치 성분은
+    # 여전히 같은 category 끼리의 존 거리(position)가 정본이다.
+    Axis("pair_offset", extract=_pair_offsets, support=_pair_offset_support),
+    Axis("spread", extract=_spread, support=_spread_support),
 )
 
 BY_NAME: dict = {ax.name: ax for ax in REGISTRY}

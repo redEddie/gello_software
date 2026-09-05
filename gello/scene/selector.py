@@ -31,15 +31,71 @@ from gello.scene.axes import (
     coverage_gain,
     coverage_uniformity,
 )
+from gello.scene.placement_solver import enumerate_placements
 from gello.scene.sampler import MIN_OBJECTS, all_placements, generate_candidate
-from gello.scene.signature import scene_distance, signature
+from gello.scene.scene_format import SceneMetadata
+from gello.scene.signature import Signature, _prop_triple, scene_distance, signature
+
+#: 배치 정련에서 채점할 배치 수 상한. 5물체·서랍 없음이면 실행 가능 배치가
+#: 9P5 = 15,120 개까지 간다 -- 전부 채점해도 되지만 추천 3개마다 반복하면
+#: 체감이 는다. 넘으면 seed 로 균등 추출한다 (모집단은 여전히 규칙을
+#: 만족하는 배치 전체라 놓치는 패턴이 없다).
+REFINE_LIMIT = 3000
 
 #: 버킷 순환 순서. 첫 추천은 여전히 가장 새로운(원거리) 것이 되도록
 #: 원거리부터 돈다.
 BUCKETS = ("원거리", "중간", "근거리")
 
 
-def _select(cands: list, ex_sigs: list, props: dict, k: int) -> list:
+def _sig_for(objects: list, zones: dict, props: dict) -> Signature:
+    """물체 집합이 고정된 채 배치만 바꿀 때의 Signature -- SceneMetadata 를
+    만들지 않고 바로 만든다 (배치 수천 개를 채점하는 경로다)."""
+    cats = {o: _prop_triple(o, props)[0] for o in objects}
+    return Signature(
+        triples=tuple(sorted(_prop_triple(o, props) for o in objects)),
+        placements=tuple(sorted((cats[o], zones[o]) for o in objects)),
+        relations=frozenset())
+
+
+def refine_placement(md, props: dict, hist: dict, weights: dict,
+                     seed: int = 0, limit: int = REFINE_LIMIT):
+    """물체는 그대로 두고 **배치만** 커버리지 최적으로 바꾼다.
+
+    실행 가능한 배치를 CP-SAT 으로 전부 받아 :func:`coverage_gain` 으로
+    채점한다 -- 선형화 근사가 아니라 정확하고, 선택 단계가 쓰는 점수와
+    같은 함수다. 반환: (SceneMetadata, Signature).
+
+    이 정련을 후보 400개 전부가 아니라 **뽑힌 추천에만** 하는 이유: 커버리지
+    목적을 CP-SAT 안에서 풀면 5물체 기준 193ms 로 후보 전체에는 못 쓰고,
+    무엇보다 뽑히지 않을 후보의 배치를 최적화하는 것은 낭비다. 뽑힌 뒤에
+    정련하면 **직전 픽까지 반영된** 히스토그램을 보고 배치를 정할 수 있어
+    오히려 더 정확하다.
+    """
+    objects = list(md.objects)
+    zs = enumerate_placements(objects, props)
+    if not zs:
+        return md, signature(md, props)
+    if len(zs) > limit:
+        zs = random.Random(seed).sample(zs, limit)
+    best_sig = None
+    best_zones = None
+    best_gain = None
+    for zones in zs:
+        sig = _sig_for(objects, zones, props)
+        g = coverage_gain(sig, hist, weights)
+        if best_gain is None or g > best_gain:
+            best_gain, best_sig, best_zones = g, sig, zones
+    new_md = SceneMetadata(
+        scene_id=md.scene_id, objects=objects,
+        layout={"grid": list(md.layout["grid"]),
+                "placements": {o: {"zone": list(best_zones[o])}
+                               for o in objects}},
+        description=md.description)
+    return new_md, best_sig
+
+
+def _select(cands: list, ex_sigs: list, props: dict, k: int,
+            refine: bool = False) -> list:
     """후보 [(md, sig, 기존최소거리), ...] 에서 k 개를 고른다.
 
     절차: 거리 3분위로 버킷을 만들고(분위 기반이라 버킷이 비지 않는다),
@@ -94,6 +150,14 @@ def _select(cands: list, ex_sigs: list, props: dict, k: int) -> list:
         best = max(pool, key=_score)
         md, sig, dmin = best
         cands.remove(best)
+        if refine:
+            # 배치는 여기서 정해진다 -- 직전 픽까지 반영된 hist/weights 로.
+            r_md, r_sig = refine_placement(md, props, hist, weights,
+                                           seed=len(picked))
+            if all(scene_distance(r_sig, s) > 0.0 for s in picked_sigs):
+                md, sig = r_md, r_sig
+                dmin = min((scene_distance(sig, e) for e in ex_sigs),
+                           default=1.0)
         axes = {}
         for ax in AXES:
             vals = [axis_distances(sig, e)[ax] for e in ex_sigs]
@@ -154,7 +218,7 @@ def recommend_detailed(existing: list, props: dict, k: int = 3,
         (generate_candidate(props, rng, scene_id=scene_id)
          for _ in range(n_candidates)),
         props, ex_sigs, keep=lambda md: len(md.objects) >= min_objects)
-    return _select(cands, ex_sigs, props, k)
+    return _select(cands, ex_sigs, props, k, refine=True)
 
 
 def recommend_placement(objects: list, existing: list, props: dict,

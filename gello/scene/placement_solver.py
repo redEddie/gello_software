@@ -26,8 +26,11 @@ import random
 from typing import Optional
 
 from gello.scene.props import Prop
-from gello.scene.scene_rules import _default_rules, rule_names
+from gello.scene.scene_rules import _default_rules
 from gello.scene.signature import GRID
+
+#: 난수 목적함수의 계수 범위. 값 자체에 의미는 없고 해를 흩는 용도다.
+_RANDOM_MAX = 10 ** 3
 
 #: 결정성: 같은 seed 는 같은 배치여야 한다 (scene provenance). 다중 워커는
 #: 탐색 순서가 비결정적이고, 해 열거는 애초에 단일 워커를 요구한다.
@@ -135,16 +138,23 @@ def solve_placement(objects: list, props: "dict[str, Prop]",
                     rules_data: Optional[dict] = None) -> "dict | None":
     """실행 가능한 배치 하나 {물체: (행, 열)}. 불가능하면 None.
 
-    목적함수는 seed 로 만든 난수 계수의 합이다. 목적함수가 없으면 CP-SAT 은
-    사전순 첫 해를 주므로(9칸 중 3칸 → 0,1,2번) 배치가 한쪽으로 쏠린다 --
-    난수 목적은 그것을 흩는다. 커버리지 목적함수는 다음 단계에서 이 자리에
-    들어간다 (recommender-v3-plan.md D2).
+    목적함수는 seed 난수뿐이다. 목적함수가 아예 없으면 CP-SAT 은 사전순 첫
+    해를 주고(3물체를 풀면 셋 다 카메라 쪽 행에 몰린다), 그러면 후보 자체가
+    한쪽으로 쏠린다.
+
+    커버리지 최적화는 **여기서 하지 않는다** (2026-09-06 결정). 커버리지
+    이득을 CP-SAT 목적함수로 선형화해 재 봤더니 5물체 기준 배치 하나에
+    193ms 였고(대부분 물체 쌍 상대변위 항), 후보 400개면 못 쓴다. 대신
+    :func:`enumerate_placements` 로 실행 가능한 배치를 전부 받아 파이썬에서
+    :func:`gello.scene.axes.coverage_gain` 으로 채점한다 -- 선형화 근사가
+    아니라 정확하고, 솔버가 최적화하는 식과 선택 단계가 점수 매기는 식이
+    같은 하나라서 어긋날 수 없다. 비싼 채점은 뽑힌 추천에만 적용한다.
     """
     from ortools.sat.python import cp_model
 
     model, x = compile_placement_model(objects, props, rules_data)
     rng = random.Random(seed)
-    model.Maximize(sum(rng.randint(0, 10_000) * x[o][z]
+    model.Maximize(sum(rng.randint(0, _RANDOM_MAX) * x[o][z]
                        for o in objects for z in cells()))
     solver = cp_model.CpSolver()
     solver.parameters.random_seed = seed

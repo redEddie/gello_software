@@ -153,7 +153,10 @@ def _selftest() -> None:
     assert len(set(buckets)) >= 2, buckets    # 원거리 독점 금지 (거리 구간 쿼터)
     for r in det_a:
         assert set(r["axes"]) == set(AXES)
-        assert r["weak_axis"] in ("category", "color", "position", "count")
+        # 축 목록은 등록부가 정본이다 -- 여기 하드코딩하면 축을 늘릴 때마다
+        # 테스트가 먼저 깨진다 (2026-09-06 실제로 그랬다).
+        from gello.scene.scene_diversity import COVERAGE_AXES as _CA
+        assert r["weak_axis"] in _CA
         assert 0 < r["min_dist"] <= 1
     # count 커버리지: 기존이 전부 2물체 씬이면 count 축이 최약이 되고,
     # 추천이 2물체만 반복하지 않는다 (물체 개수도 측정되는 축 -- 함정 1)
@@ -283,6 +286,60 @@ def _selftest() -> None:
         enumerate_placements(objs4, props)
     print(f"10 통과: 규칙 엔진 동등성 전수 {checked}배치 (솔버 == check), "
           "미지원 rule 예외 + 결정성")
+
+    # 11. 배치 특징 축 + 배치 정련 (인수 조건 4)
+    from gello.scene.axes import COVERAGE_AXES, coverage_gain
+    from gello.scene.scene_diversity import (
+        axis_coverage,
+        axis_support,
+        coverage_uniformity,
+    )
+    from gello.scene.selector import refine_placement
+
+    assert "pair_offset" in COVERAGE_AXES and "spread" in COVERAGE_AXES
+    sup = axis_support(props)
+    assert len(sup["pair_offset"]) == 8, sup["pair_offset"]   # (0,0) 제외 전부
+    assert (1, 1) not in sup["spread"], sup["spread"]         # 물체 2개 이상이라 불가능
+    # 추출이 뜻대로: 같은 행 옆칸 = (0,1), 한 줄 배치 = (1,2)
+    row_md = SceneMetadata(
+        scene_id="S901",
+        objects=["OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01"],
+        layout={"grid": [3, 3], "placements": {
+            "OBJ-CUP-BLU-01": {"zone": [1, 0]},
+            "OBJ-CUP-WHT-01": {"zone": [1, 1]}}})
+    row_sig = signature(row_md, props)
+    from gello.scene.axes import BY_NAME
+    assert BY_NAME["pair_offset"].extract(row_sig) == [(0, 1)]
+    assert BY_NAME["spread"].extract(row_sig) == [(1, 2)]
+
+    # 정련: 배치만 바뀌고, 커버리지 이득이 나빠지지 않으며, 결정적이다
+    hist = axis_coverage([signature(base, props)])
+    uni = coverage_uniformity(hist, sup)
+    weights = {a: (1.0 - uni[a]) + 0.05 for a in COVERAGE_AXES}
+    md_r = SceneMetadata(
+        scene_id="S902",
+        objects=["OBJ-CUP-BLU-01", "OBJ-CUP-WHT-01", "OBJ-BOWLS-YEL-01",
+                 "OBJ-BOWLS-GRN-01", "OBJ-DRAWER-01"],
+        layout={"grid": [3, 3], "placements": {
+            "OBJ-CUP-BLU-01": {"zone": [0, 0]},
+            "OBJ-CUP-WHT-01": {"zone": [1, 0]},
+            "OBJ-BOWLS-YEL-01": {"zone": [2, 0]},
+            "OBJ-BOWLS-GRN-01": {"zone": [0, 1]},
+            "OBJ-DRAWER-01": {"zone": [0, 2]}}})
+    ref_md, ref_sig = refine_placement(md_r, props, hist, weights)
+    ref2, _ = refine_placement(md_r, props, hist, weights)
+    assert ref_md.layout == ref2.layout                       # 결정적
+    assert ref_md.objects == md_r.objects                     # 조합 불변
+    assert not check(ref_md, props), check(ref_md, props)     # 규칙 준수
+    assert coverage_gain(ref_sig, hist, weights) >= \
+        coverage_gain(signature(md_r, props), hist, weights)
+
+    # 정련이 붙어도 추천은 결정적이다
+    d1 = recommend_detailed([base], props, k=2, seed=3)
+    d2 = recommend_detailed([base], props, k=2, seed=3)
+    assert [r["md"].layout for r in d1] == [r["md"].layout for r in d2]
+    print("11 통과: 배치 특징 축(pair_offset/spread) + 배치 정련 "
+          "(결정적·규칙 준수·커버리지 비악화)")
 
     print("\nselftest 통과")
 
