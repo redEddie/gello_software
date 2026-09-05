@@ -39,7 +39,7 @@ from apps.workspace.shared.camera_node_proc import (
     spawn_node,
     spec_key,
 )
-from gello.config.station import CameraSpec, load_station
+from gello.config.station import load_station
 from apps.workspace.constants import WT_ROOT
 from apps.workspace.shared.sizing import shrinkable_combo
 from apps.workspace.launcher.station_editor import StationEditor
@@ -72,14 +72,14 @@ PAGE_HW = 3
 
 _NO_CAMERA = ""      # "(선택 안함)" 항목의 data
 
-#: 버전이 요구하는 **로봇 관측 키**. HDF5 필드명과 같지만 층이 다르다 --
-#: 이쪽은 "로봇이 줘야 하는 값" 이고, 확인 버튼이 이것으로 검사한다.
-#: 포스·토크는 FR3 펌웨어가 노출할 때만 오므로 장비마다 다를 수 있다.
 #: [확인] 이 로봇 노드를 직접 띄웠을 때 기다려 주는 시간(초). FCI 연결 +
 #: 첫 read_once 까지가 대략 3~5초라 그보다 넉넉히 둔다. 넘기면 포기하고
 #: 경고만 남긴다 -- 확인은 선택이지 진행 조건이 아니다.
 _ROBOT_NODE_WAIT_S = 15.0
 
+#: 버전이 요구하는 **로봇 관측 키**. HDF5 필드명과 같지만 층이 다르다 --
+#: 이쪽은 "로봇이 줘야 하는 값" 이고, 확인 버튼이 이것으로 검사한다.
+#: 포스·토크는 FR3 펌웨어가 노출할 때만 오므로 장비마다 다를 수 있다.
 _ROBOT_OBS_FIELDS = {
     "knu-1.0.0": (),
     "knu-1.1.0": FT_OBS_KEYS,
@@ -722,11 +722,20 @@ class HardwarePage(QWizardPage):
         return ident.station if ident is not None else ""
 
     def _on_save_station(self) -> None:
-        """편집기의 저장 버튼 -- 카메라 시리얼은 이 페이지가 안다."""
-        agent, wrist = self.cameras()
-        cams = {"agent": CameraSpec(serial=agent),
-                "wrist": CameraSpec(serial=wrist)}
-        if self.station_editor.save_new(cams):
+        """편집기의 저장 버튼.
+
+        카메라는 **넘기지 않는다**. 편집기의 build_config 가 화면의
+        cam id -> 역할 표를 그대로 쓰는 것이 맞고, 시리얼은 스테이션에
+        들어가지 않는다 -- 어느 실물이 꽂혔는지는 데이터셋이 정본이다
+        (save_station 참조).
+
+        예전에는 여기서 ``agent, wrist = self.cameras()`` 로 2대를 못 박고
+        ``{"agent": CameraSpec(serial=...)}`` 를 넘겼다. 3층 분리(2026-09-05)
+        전의 잔재라 세 가지가 한꺼번에 어긋났다: 키가 cam id 가 아니라 역할,
+        role 은 빈 문자열, 게다가 시리얼이 스테이션에 적혔다. 카메라를 3대로
+        늘리면 언팩이 터져 마법사가 통째로 죽기까지 했다.
+        """
+        if self.station_editor.save_new():
             self._refresh_git_warning()
 
     def schema_version(self) -> str:
