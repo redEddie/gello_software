@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PyQt6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from gello.gui.fonts import ensure_font  # noqa: E402
+from gello.gui.wheel_guard import install_wheel_guard  # noqa: E402
 
 
 def apply_result(result, recents=None) -> None:
@@ -94,6 +95,8 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     ensure_font(app)
+    # 반환값을 잡아 둔다 -- 가비지로 사라지면 필터도 같이 사라진다.
+    app._wheel_guard = install_wheel_guard(app)
 
     from apps.workspace.launcher import LauncherWizard  # noqa: E402
 

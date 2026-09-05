@@ -77,7 +77,8 @@ from gello.data.dataset_schema import (  # noqa: E402
 from gello.scene.dataset_meta import load_identity  # noqa: E402
 from gello.gui.dialogs import DatasetSchemaDialog, hf_account  # noqa: E402
 from gello.gui.constants import PLAYBACK_FPS  # noqa: E402
-from gello.gui.fonts import ensure_font  # noqa: E402
+from gello.gui.fonts import ensure_font
+from gello.gui.wheel_guard import install_wheel_guard  # noqa: E402
 from gello.gui.widgets import Recents  # noqa: E402
 from gello.gui.workers import CameraPreviewWorker  # noqa: E402
 from gello.gui.text_utils import clean_stream_lines, is_progress_line, repo_id_error  # noqa: E402
@@ -852,6 +853,7 @@ def main(app: "QApplication | None" = None, camera_node=None,
         app = QApplication(sys.argv)
         app.setStyle("Fusion")
         ensure_font(app)
+        app._wheel_guard = install_wheel_guard(app)
     win = WorkspaceWindow(log_path, camera_node=camera_node,
                           camera_node_spec=camera_node_spec,
                           robot_node=robot_node,
