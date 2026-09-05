@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from apps.workspace.launcher.form import roomy, tidy_form
 from gello.config.station import (
     CameraSpec,
     LeaderSpec,
@@ -108,6 +109,11 @@ class StationEditor(QGroupBox):
         form.addRow(tr("노드 host / port"), node_row)
         form.addRow(tr("노드 python"), self.python_edit)
         form.addRow(tr("리더암 포트"), self.leader_edit)
+        tidy_form(form)
+        roomy(self.combo, self.copy_btn, self.del_btn, self.save_btn,
+              self.name_edit, self.desc_edit, self.ip_edit, self.pose_edit,
+              self.host_edit, self.port_spin, self.python_edit,
+              self.leader_edit)
         col.addLayout(form)
 
         # cam id -> 역할. 스테이션이 아는 것은 "그 자리에 어떤 역할의 카메라가
@@ -128,6 +134,7 @@ class StationEditor(QGroupBox):
         cam_head.addWidget(self.cam_del_btn)
         col.addLayout(cam_head)
         self.cam_form = QFormLayout()
+        tidy_form(self.cam_form)
         self.role_edits: dict[str, QLineEdit] = {}
         col.addLayout(self.cam_form)
 
@@ -223,6 +230,7 @@ class StationEditor(QGroupBox):
         self.role_edits = {}
         for cam, role in pairs:
             e = QLineEdit(role)
+            roomy(e)
             e.setPlaceholderText(tr("기록에 남을 이름 (예: agent, wrist)"))
             e.setReadOnly(not self.is_creating())
             self.role_edits[cam] = e

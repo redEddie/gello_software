@@ -88,7 +88,11 @@ class LauncherWizard(QWizard):
         self.setStartId(PAGE_MODE)
         self.currentIdChanged.connect(self._on_page)
         self._on_page(PAGE_MODE)
-        self.resize(1180, 720)   # 16:9 화면에 맞춘 2단 구성
+        # 2단 구성이 세로로 눌리지 않을 만큼. 720 이었을 때는 오른쪽 칼럼의
+        # 최소 높이 합이 창보다 커서 Qt 가 입력 칸들을 sizeHint 아래로 눌렀고,
+        # 한글 글자의 위아래가 잘려 보였다 (2026-09-05 보고). 1080p 화면에
+        # 패널·제목표시줄까지 두고도 들어가는 크기다.
+        self.resize(1240, 870)
         # lerobot.cameras.realsense 첫 임포트가 ~1초다. 하드웨어 페이지에서
         # 그걸 물면 페이지가 그 시간만큼 늦게 뜬다. 조작자가 첫 화면과 데이터셋
         # 목록을 보는 동안 미리 물어 둔다 -- 임포트는 멱등이라 나중에 다시

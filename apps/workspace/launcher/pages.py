@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 from gello.comm.camera_client import set_cams
 from gello.gui.workers import CameraPreviewWorker
 from apps.workspace.launcher.camera_panel import CameraPreviewColumn
+from apps.workspace.launcher.form import roomy, tidy_form
 from apps.workspace.shared.robot_node_proc import (
     spawn_node as spawn_robot_node,
 )
@@ -314,6 +315,10 @@ class HardwarePage(QWizardPage):
         # 값이 길어질 때(경로·설명) 오른쪽이 자유롭게 넓어지는 것이 자연스럽다.
         # 그래서 늘어나는 몫(stretch)도 설정 쪽이 크다.
         two_col = QHBoxLayout(self)
+        # 부제("수집 스테이션과 카메라를 선택하세요") 바로 아래 여백. 기본
+        # 9px 은 마법사 헤더가 이미 두는 여백과 겹쳐 부제와 첫 상자 사이가
+        # 뜬다 -- 상자는 자기 테두리 여백을 따로 갖고 있다 (2026-09-05 보고).
+        two_col.setContentsMargins(0, 0, 0, 0)
         self.preview_column = CameraPreviewColumn()
         two_col.addWidget(self.preview_column, 2)
         right = QWidget()
@@ -345,6 +350,7 @@ class HardwarePage(QWizardPage):
             "오는지 확인합니다. 노드가 안 떠 있으면 여기서 띄웁니다 (FCI 필요)."))
         self.schema_test_btn.clicked.connect(self._on_schema_selftest)
         ver_row.addWidget(self.schema_test_btn)
+        roomy(self.schema_combo, self.schema_test_btn)
         ds_col.addLayout(ver_row)
         self.schema_label = QLabel("")
         self.schema_label.setWordWrap(True)
@@ -371,9 +377,11 @@ class HardwarePage(QWizardPage):
         cam_box = QGroupBox(tr("카메라 (cam id → 실물)"))
         cam_col = QVBoxLayout(cam_box)
         self.cam_form = QFormLayout()
+        tidy_form(self.cam_form)
         cam_col.addLayout(self.cam_form)
         row = QHBoxLayout()
         detect = QPushButton(tr("카메라 감지"))
+        roomy(detect)
         detect.clicked.connect(self.detect_cameras)
         row.addWidget(detect)
         self.cam_hint = QLabel("")
@@ -471,6 +479,7 @@ class HardwarePage(QWizardPage):
             # 항목 문자열("Intel RealSense D405 (2304...)")이 콤보의 최소 폭을
             # 정하게 두면 옆칸을 밀어낸다 -- 줄여서 말줄임하게 한다.
             shrinkable_combo(combo)
+            roomy(combo)
             # currentIndexChanged 가 아니라 activated 다. 전자는 목록을 다시
             # 채우기만 해도 터진다 -- clear() 로 -1, 첫 addItem 으로 0, 마지막
             # setCurrentIndex 로 또 한 번. 그때마다 "조작자가 카메라를 바꿨다"로
