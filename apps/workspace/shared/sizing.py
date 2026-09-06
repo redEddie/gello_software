@@ -11,6 +11,11 @@
   서로 겹쳐 보인다. 창을 키우는 것으로는 못 막는다 -- 항목 수에 상한이 없다.
 * **가로 스크롤은 쓰지 않는다.** 폭이 모자라면 줄어들고 말줄임한다
   (``relax_min_widths``, ``shrinkable_combo``).
+* **줄 수가 정해진 상자는 세로로 늘어나지 않는다** (``keep_height``). 안
+  그러면 패널에서 무언가를 감췄을 때 남은 상자들이 그 자리를 나눠 먹어서,
+  줄인 효과가 화면에 보이지 않는다 (2026-09-06 실측: 카메라 상자가 165px 를
+  원하는데 357px 로 늘어나 있었다). 안이 접히거나 자라는 상자(줄바꿈 라벨,
+  트리)는 예외다 -- 거기 걸면 내용이 잘린다.
 
 휠로 콤보·스핀 값이 바뀌지 않게 하는 것은 앱 전역 필터가 맡는다
 (``gello.gui.wheel_guard``) -- 화면마다 챙길 필요가 없다.
@@ -48,6 +53,18 @@ def tidy_form(*forms) -> None:
     for f in forms:
         f.setVerticalSpacing(ROW_SPACING)
         f.setHorizontalSpacing(10)
+
+
+def keep_height(*widgets) -> None:
+    """세로로는 sizeHint 만큼만 차지하게 한다 (가로 정책은 그대로).
+
+    남는 세로 공간은 레이아웃 끝의 stretch 가 가져가고, 상자는 제 크기를
+    지킨다. 내용이 늘어날 수 있는 상자에는 쓰지 않는다.
+    """
+    for w in widgets:
+        sp = w.sizePolicy()
+        sp.setVerticalPolicy(QSizePolicy.Policy.Fixed)
+        w.setSizePolicy(sp)
 
 
 def scrollable(inner: QWidget) -> QScrollArea:

@@ -80,6 +80,14 @@ class CollectionOps:
             b.setEnabled(savable)
         self.win.no_dataset_check.setEnabled(not running)
         self.win.task_box.setEnabled(not running and not self.win.no_dataset_check.isChecked())
+        # Configure 는 "세션 전 준비" 화면이다 (2026-09-06). 세션이 시작되면
+        # 준비 상자들은 어차피 전부 비활성이라 손댈 수 없으므로 감춘다 --
+        # 회색으로 남겨 두면 읽을 것만 늘고 아래 것들이 스크롤 밖으로 밀린다.
+        # 세션 중에도 손댈 수 있는 것(로봇 노드·카메라)은 그대로 둔다.
+        self.win.task_box.setVisible(not running)
+        self.win.session_box.setVisible(not running)
+        if not running:
+            self.win.gate_box.setVisible(False)
         for w in (self.win.lang_edit, self.win.root_edit, self.win.agent_combo,
                   self.win.wrist_combo, self.win.layout_agent_combo,
                   self.win.layout_wrist_combo, self.win.reset_pose_combo,
@@ -383,6 +391,9 @@ class CollectionOps:
         self.win.state_label.setText(self.win.STATE_LABELS.get(state, state))
         set_header_state(self.win, state)
         self.win.shortcut_hint.setText(self.win.SHORTCUT_HINTS.get(state, ""))
+        # 델타 바가 살아 있는 상태에서만 보여 준다 -- 그 밖에서는 갱신되지
+        # 않아 낡은 값이 남는다.
+        self.win.gate_box.setVisible(state == "gate")
         # 단계와 기록 여부는 헤더 띠가 말한다 (배경색 + 상태 글자). 상태바와
         # 우측 패널에 같은 것을 또 적지 않는다 (2026-09-06).
 

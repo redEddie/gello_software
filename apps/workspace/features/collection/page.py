@@ -18,7 +18,7 @@ from gello.gui.widgets import DeltaBar
 from gello.gui.fonts import MONO_STACK, set_bold
 from gello.gui.i18n import tr
 
-from apps.workspace.shared.sizing import shrinkable_combo
+from apps.workspace.shared.sizing import keep_height, shrinkable_combo
 
 
 def build_collect(win) -> QWidget:
@@ -59,7 +59,12 @@ def build_collect(win) -> QWidget:
     slot.setVisible(False)
     col.addWidget(slot)
 
+    # 자세 정렬 중에만 보인다. 델타 바는 gate 루프에서만 갱신되므로
+    # (worker._emit_gate_status), 그 밖의 상태에서는 낡은 값을 띄우고 있는
+    # 셈이었다 -- 안 쓰는 정보가 아니라 틀린 정보였다.
     gate = QGroupBox(tr("Pose gate"))
+    win.gate_box = gate
+    gate.setVisible(False)
     gcol = QVBoxLayout(gate)
     win.delta_bars = []
     for i in range(8):
@@ -160,5 +165,8 @@ def build_collect(win) -> QWidget:
     win.shortcut_hint.setWordWrap(True)
     pcol.addWidget(win.shortcut_hint)
     col.addWidget(prog)
+    # 줄 수가 정해진 상자만 -- Scene slot(문장 라벨이 접힌다)과 Progress
+    # (트리가 자란다)는 늘어나야 한다.
+    keep_height(gate, ctl)
     col.addStretch()
     return w

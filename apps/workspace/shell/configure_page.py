@@ -15,10 +15,11 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.gui.i18n import tr
+
 from gello.robots.franka_fr3 import FR3_RESET_POSES
 
 from apps.workspace.shared.widgets import SceneInfoView
-from apps.workspace.shared.sizing import shrinkable_combo
+from apps.workspace.shared.sizing import keep_height, shrinkable_combo
 
 
 def build_configure(win) -> QWidget:
@@ -151,6 +152,7 @@ def build_configure(win) -> QWidget:
     # 적용되는 수집 방식이다. 연습 모드도 그중 하나라 별도 "모드" 그룹을
     # 두지 않고 여기에 둔다.
     sess = QGroupBox(tr("수집 설정"))
+    win.session_box = sess          # 세션 중에는 감춘다 (set_running)
     sform = QFormLayout(sess)
     win.no_dataset_check = QCheckBox(tr("데이터셋 없이 조작만 (연습 / 씬 세팅)"))
     win.no_dataset_check.setToolTip(tr(
@@ -185,6 +187,9 @@ def build_configure(win) -> QWidget:
     win.match_check.setChecked(True)
     sform.addRow(win.match_check)
     col.addWidget(sess)
+    # 줄 수가 정해진 상자는 세로로 안 늘어나게 (sizing.keep_height 참고).
+    # Scene 수집은 예외 -- 계획 설명 라벨이 접히면서 높이가 는다.
+    keep_height(node, cam, sess)
     col.addStretch()
     win.scene_ops.refresh_scene_combo()
     return w
