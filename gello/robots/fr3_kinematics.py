@@ -132,6 +132,33 @@ def ik(target: np.ndarray, q_seed: np.ndarray, iters: int = 30,
     return q
 
 
+# waypoint(②) 액션 프리스케일 — 학습(waypoint_actions.py)과 반드시 동일값.
+POS_MAX_WP = 0.30
+ROT_MAX_WP = 1.5
+
+
+def ee_waypoint_step_to_joint(w7: np.ndarray, q_anchor: np.ndarray, q_seed: np.ndarray,
+                              pos_max: float = POS_MAX_WP, rot_max: float = ROT_MAX_WP) -> np.ndarray:
+    """One waypoint (7,) anchored at the OBSERVATION pose -> joint target (8,).
+
+    ② convention: the whole chunk is expressed in the frame of the pose at the
+    observation that produced it (q_anchor, fixed for the chunk). Unlike
+    ee_step_to_joint, the anchor does NOT move between steps — waypoints are
+    absolute targets, so skipped/late steps lose nothing.
+    q_seed: IK warm start (current measured joints)."""
+    w = np.asarray(w7, dtype=np.float64)
+    T0 = fk(np.asarray(q_anchor, dtype=np.float64))
+    R0, p0 = T0[:3, :3], T0[:3, 3]
+    T_tgt = np.eye(4)
+    T_tgt[:3, 3] = p0 + R0 @ (w[:3] * pos_max)
+    T_tgt[:3, :3] = axis_angle_to_rot(R0 @ (w[3:6] * rot_max)) @ R0
+    q = ik(T_tgt, np.asarray(q_seed, dtype=np.float64))
+    out = np.zeros(8)
+    out[:7] = q
+    out[7] = float(np.clip((w[6] + 1.0) / 2.0, 0.0, 1.0))
+    return out
+
+
 def ee_step_to_joint(delta7: np.ndarray, q_meas: np.ndarray,
                      pos_max: float = 0.05, rot_max: float = 0.5) -> np.ndarray:
     """One normalized EE-frame delta (7,) + measured joints (7,) -> joint target (8,).

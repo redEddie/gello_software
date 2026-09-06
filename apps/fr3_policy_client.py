@@ -31,10 +31,13 @@ Prerequisites:
   * policy server running on the GPU machine (see SERVER_URL)
 
 Comm test WITHOUT the robot (synthetic obs, checks server round-trip + latency):
-  python experiments/fr3_policy_client.py --dry-run
+  python apps/fr3_policy_client.py --dry-run
 
 Real run:
-  python experiments/fr3_policy_client.py [--instruction "..."] [--max-seconds 30]
+  python apps/fr3_policy_client.py [--instruction "..."] [--max-seconds 30]
+
+waypoint ckpt (chunk anchored at the observation pose, not per-step):
+  python apps/fr3_policy_client.py --waypoint
 """
 
 from __future__ import annotations
@@ -50,7 +53,14 @@ import numpy as np
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gello.robots.fr3_kinematics import ee_step_to_joint, fk, compute_proprio_single  # noqa: E402  (mamba real_deploy copy)
+from gello.robots.fr3_kinematics import (  # noqa: E402  (mamba real_deploy copy)
+    POS_MAX_WP,
+    ROT_MAX_WP,
+    compute_proprio_single,
+    ee_chunk_to_joint_chunk,
+    ee_step_to_joint,
+    fk,
+)
 
 from gello.config.station import load_station
 
@@ -152,6 +162,9 @@ def main() -> None:
     ap.add_argument("--lead-ticks", type=int, default=CHUNK_LEAD, metavar="K",
                     help="청크 끝 K틱 전에 미리 추론하고 도착 청크의 앞 K개를 버린다 "
                          "(0=예전 순차 동작, 경계 정지 발생)")
+    ap.add_argument("--waypoint", action="store_true",
+                    help="waypoint ckpt: 청크를 관측 시점 pose 를 앵커로 관절 청크로 "
+                         "한 번에 변환한다 (이후 타임스탬프 인덱싱으로 절대 목표 추종).")
     ap.add_argument("--proprio", action="store_true",
                     help="UMI proprioception을 계산해 /predict에 첨부 (use_eef_proprio 모델).")
     args = ap.parse_args()
@@ -238,7 +251,17 @@ def main() -> None:
         r = session.post(f"{args.server}/predict", json=payload, timeout=60)
         r.raise_for_status()
         predict_ms.append((time.perf_counter() - t0) * 1000)
-        return np.asarray(r.json()["actions"], dtype=float)  # [10, dim] raw
+        chunk = np.asarray(r.json()["actions"], dtype=float)  # [K, dim] raw
+        if args.waypoint and chunk.shape[1] == 7:
+            # waypoint 규약: 청크 전체가 **이 관측의 pose** 를 기준으로 표현돼
+            # 있다. 앵커가 스텝마다 움직이지 않으므로 여기(워커 스레드)서 한 번만
+            # IK 로 [K,8] joint-absolute 로 바꿔 두면 된다 -- 그 뒤 제어 루프는
+            # passthrough 가 되고(아래 ee_mode 가 False), 지연으로 스텝을 건너뛰어도
+            # 절대 목표라 변위가 유실되지 않는다.
+            q_anchor = np.array([float(obs[k]) for k in JOINT_KEYS[:7]])
+            chunk = ee_chunk_to_joint_chunk(chunk, q_anchor,
+                                            pos_max=POS_MAX_WP, rot_max=ROT_MAX_WP)
+        return chunk
 
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="predict")
 
