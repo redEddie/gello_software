@@ -11,11 +11,26 @@ from apps.workspace.constants import ACTIVITIES, LOG_DIR
 
 
 def build_toolbar(win) -> None:
+    """툴바는 **수집 흐름 고정 구획 + 현재 화면의 자주 쓰는 것**이다
+    (2026-09-06 사용자 결정).
+
+    메뉴바(전량 색인)와 역할이 다르다. 여기 있는 항목이 다른 화면에도 있는
+    것은 중복이 아니라 거울이다 -- 어딘가 한 곳에서 동작을 훑을 수 있어야
+    하고, 좌측 패널이 스크롤돼도 툴바로는 손이 닿아야 한다.
+
+    고정 구획이 필요한 이유가 구체적으로 있다: 수집 도중에 파일을 미리 보러
+    Dataset 화면으로 건너가는 워크플로가 실제로 있다. 그때 화면을 따라 툴바가
+    통째로 바뀌면 진행 중인 에피소드를 끝낼 수단이 사라진다. 그래서 에피소드
+    한 바퀴(Start → 정렬 → Save/Discard → Reset done)는 어느 화면에서든 그대로
+    남는다.
+    """
     tb = QToolBar(tr("주요 작업"))
     tb.setMovable(False)
     tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
     win.addToolBar(tb)
+    win.tool_bar = tb
     win.tb_actions = {}
+    win._tb_context = []          # 화면 따라 갈리는 부분 (지웠다 다시 만든다)
 
     def add(key: str, text: str, slot, tip: str = "") -> QAction:
         act = QAction(text, win)
@@ -25,10 +40,22 @@ def build_toolbar(win) -> None:
         win.tb_actions[key] = act
         return act
 
+    # ---- 고정: 세션 ----
     add("connect", tr("▶ Connect"), win.collection.on_connect, tr("로봇에 연결하고 세션 시작"))
     add("disconnect", tr("■ Disconnect"), win.collection.on_disconnect, tr("세션 종료"))
     tb.addSeparator()
-    add("record", tr("● Record"), lambda: win.collection.cmd("cmd_start_teleop"), tr("기록 시작"))
+    # ---- 고정: 에피소드 한 바퀴 ----
+    # 이름은 좌측 패널 버튼과 같게 쓴다 -- 다른 이름을 붙이면 같은 것인지
+    # 알 수 없다 (메뉴 색인과 같은 규칙).
+    add("record", tr("● Start Teleop"),
+        lambda: win.collection.cmd("cmd_start_teleop"), tr("기록 시작"))
+    add("match", tr("⇔ Auto-align"),
+        lambda: win.collection.cmd("cmd_auto_match_pose"),
+        tr("리더 자세로 로봇을 맞춥니다 (Enter)"))
+    add("skip", tr("↩ Reset done"),
+        lambda: win.collection.cmd("cmd_skip_reset_wait"),
+        tr("리셋을 마쳤으니 다음 에피소드로 (Enter)"))
+    tb.addSeparator()
     # save, not cmd -- the success flag has to be recorded for the stats
     # panel, and a toolbar button that counts differently from the side
     # panel button next to it is a bug waiting to be blamed on the stats.
@@ -38,10 +65,61 @@ def build_toolbar(win) -> None:
     add("discard", tr("🗑 Discard"), lambda: win.collection.cmd("cmd_discard_episode"))
     tb.addSeparator()
     add("home", tr("⌂ Home"), lambda: win.collection.cmd("cmd_go_home"))
-    add("refresh_cam", tr("⟳ Camera"), win.camera_ops.refresh_cameras)
-    tb.addSeparator()
-    add("upload", tr("☁ Upload"), lambda: win._set_activity("upload"))
+    # 여기서부터 화면별 구획이 붙는다.
+    win._tb_context_anchor = tb.addSeparator()
 
+
+def toolbar_context(win, key: str) -> list:
+    """화면 ``key`` 에서 자주 쓰는 동작 [(라벨, 슬롯, 툴팁), ...].
+
+    "자주"의 기준은 그 화면에 들어온 목적이다 -- 화면마다 한두 개면 충분하고,
+    나머지는 화면 안 버튼과 메뉴 색인에 있다. 여기 많이 넣으면 고정 구획이
+    묻혀서 고정으로 둔 뜻이 없어진다.
+    """
+    return {
+        "configure": [
+            (tr("새 Scene 구성..."), win.scene_ops.on_new_scene,
+             tr("소품 조합과 3×3 배치를 정합니다")),
+            (tr("카메라 새로고침"), win.camera_ops.refresh_cameras, ""),
+        ],
+        "collect": [
+            (tr("다음 미수집 slot 제시"), win.scene_planning.on_next_slot,
+             tr("계획에서 아직 목표를 못 채운 문장을 고릅니다")),
+        ],
+        "dataset": [
+            (tr("새로고침"), win.dataset_ops.refresh_dataset_tree, ""),
+            (tr("실패만 선택"), win.dataset_ops.on_select_failed, ""),
+        ],
+        "upload": [
+            (tr("전체 처리"), win.upload.on_pipeline,
+             tr("재압축 → 변환 → 업로드를 한 번에")),
+        ],
+        "stats": [
+            (tr("다시 분석"), lambda: win.stats_ops.refresh_analysis(force=True), ""),
+        ],
+        "layout": [
+            (tr("카메라 새로고침"), win.camera_ops.refresh_cameras, ""),
+            (tr("3×3 격자 편집..."), win.layout_ref.on_edit_grid, ""),
+        ],
+        "settings": [],
+    }.get(key, [])
+
+
+def set_toolbar_context(win, key: str) -> None:
+    """툴바의 화면별 구획을 ``key`` 의 것으로 갈아 끼운다. 고정 구획은 건드리지
+    않는다 -- 다른 화면에 가 있어도 에피소드를 끝낼 수 있어야 한다."""
+    tb = getattr(win, "tool_bar", None)
+    if tb is None:
+        return
+    for act in getattr(win, "_tb_context", []):
+        tb.removeAction(act)
+    win._tb_context = []
+    for text, slot, tip in toolbar_context(win, key):
+        act = QAction(text, win)
+        act.setToolTip(tip or text)
+        act.triggered.connect(slot)
+        tb.addAction(act)
+        win._tb_context.append(act)
 
 
 def build_menu(win) -> None:

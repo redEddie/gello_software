@@ -59,7 +59,9 @@ class CollectionOps:
     # --------------------------------------------------------------- session UI
     def set_running(self, running: bool) -> None:
         savable = running and not self.win.session.no_dataset_session
-        for key in ("discard", "home"):
+        # match/skip 은 2026-09-06 에 툴바 고정 구획으로 올라왔다 -- 좌측
+        # 버튼(match_btn/skip_btn)과 같은 조건으로 열고 닫는다.
+        for key in ("discard", "home", "match", "skip"):
             self.win.tb_actions[key].setEnabled(running)
         for key in ("save", "savefail"):
             self.win.tb_actions[key].setEnabled(savable)

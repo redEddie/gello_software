@@ -90,12 +90,36 @@
     "discard",
     "disconnect",
     "home",
+    "match",
     "record",
-    "refresh_cam",
     "save",
     "savefail",
-    "upload"
+    "skip"
   ],
+  "toolbar_context": {
+    "configure": [
+      "새 Scene 구성...",
+      "카메라 새로고침"
+    ],
+    "collect": [
+      "다음 미수집 slot 제시"
+    ],
+    "dataset": [
+      "새로고침",
+      "실패만 선택"
+    ],
+    "upload": [
+      "전체 처리"
+    ],
+    "stats": [
+      "다시 분석"
+    ],
+    "layout": [
+      "카메라 새로고침",
+      "3×3 격자 편집..."
+    ],
+    "settings": []
+  },
   "status_lights": [
     "camera",
     "node",

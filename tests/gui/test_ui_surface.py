@@ -32,6 +32,7 @@ from apps.workspace.shell import (  # noqa: E402
     build_statusbar,
     build_toolbar,
 )
+from apps.workspace.shell.toolbar import toolbar_context  # noqa: E402
 from apps.workspace.constants import ACTIVITIES  # noqa: E402
 
 
@@ -103,6 +104,10 @@ def surface() -> dict:
     return {
         "menus": menus,
         "toolbar": sorted(win.tb_actions),
+        # 툴바의 화면별 구획도 기준선이 지킨다 -- 고정 구획만 세면 화면
+        # 하나의 자주 쓰는 버튼이 조용히 사라져도 통과한다 (2026-09-06).
+        "toolbar_context": {k: [t for t, _s, _tip in toolbar_context(win, k)]
+                            for k, *_ in ACTIVITIES},
         "status_lights": sorted(win.lights),
         "shortcuts": sorted(keys),
         "scripts": scripts,

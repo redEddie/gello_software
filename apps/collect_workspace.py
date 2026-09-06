@@ -111,6 +111,7 @@ from apps.workspace.shell import (  # noqa: E402
     build_right,
     build_statusbar,
     build_toolbar,
+    set_toolbar_context,
 )
 from apps.workspace.features.scene.dialogs.grid_editor_dialog import GridEditorDialog  # noqa: E402
 from apps.workspace.features.dataset.hdf5_tree_dialog import Hdf5TreeDialog  # noqa: E402
@@ -468,6 +469,9 @@ class WorkspaceWindow(QMainWindow):
         """Switch the LEFT panel only. The center camera is untouched -- that
         is the whole point of this layout, so nothing here may touch it."""
         self.left_stack.setCurrentIndex(self.left_pages[key])
+        # 툴바의 화면별 구획도 같이 간다 (고정 구획은 그대로 -- 다른 화면에
+        # 가 있어도 진행 중인 에피소드를 끝낼 수 있어야 한다).
+        set_toolbar_context(self, key)
         act = self._activity_actions.get(key)
         if act is not None and not act.isChecked():
             act.setChecked(True)
