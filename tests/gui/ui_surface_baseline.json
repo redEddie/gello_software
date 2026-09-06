@@ -123,7 +123,6 @@
   "status_lights": [
     "camera",
     "node",
-    "recording",
     "robot"
   ],
   "shortcuts": [

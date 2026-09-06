@@ -218,12 +218,14 @@ def build_right(win) -> None:
     col = QVBoxLayout(win.right_panel)
     col.setContentsMargins(6, 6, 6, 6)
 
+    # 여기 두는 것은 "지금 쌓이는 데이터의 값"이다 (2026-09-06 결정).
+    # 장치가 살아 있는가는 상태바가(별도 프로세스의 생사), 지금 어느 단계인가는
+    # 헤더가 맡는다. 그래서 Robot 그룹(연결·노드·상태)과 Recording 의 '기록'
+    # 줄이 빠졌다 -- 셋 다 다른 자리에서 이미 말하고 있었다.
     win.right_fields = {}
     for title, keys in (
-        ("Robot", (("robot", "연결"), ("node", "노드"), ("state", "상태"))),
         ("Camera", (("cam_agent", "Agent"), ("cam_wrist", "Wrist"), ("fps", "FPS"))),
-        ("Recording", (("recording", "기록"), ("episode", "마지막 에피소드"),
-                       ("frames", "프레임"))),
+        ("Recording", (("episode", "마지막 에피소드"), ("frames", "프레임"))),
         # 파일과 스키마가 한 칸에 같이 있어야 "지금 어디에, 어떤 형식으로
         # 쌓이는가"가 한눈에 잡힌다. 세션 중에는 그 세션의 값이, 아닐 때는
         # 트리에서 고른 파일의 값이 뜬다.
@@ -261,6 +263,14 @@ def build_right(win) -> None:
             else:
                 form.addRow(tr(label), lab)
             win.right_fields[key] = lab
+        # 줄 수가 고정된 상자는 세로로 늘어나지 않게 못박는다. 안 그러면
+        # 패널에서 무언가를 뺐을 때 남은 상자들이 그 자리를 나눠 먹어서,
+        # 줄인 효과가 화면에 보이지 않는다 (2026-09-06 실측: Camera 가
+        # 95px 를 원하는데 136px 로 늘어나 있었다). Dataset 은 예외 --
+        # 파일명·지시문이 접히면서 높이가 늘어야 한다.
+        if title != "Dataset":
+            box.setSizePolicy(QSizePolicy.Policy.Preferred,
+                              QSizePolicy.Policy.Fixed)
         col.addWidget(box)
 
     # 지금 수집 중인 scene 의 물체 배치(3×3)를 세션 내내 보여준다 --

@@ -197,12 +197,10 @@ class SystemOps:
         # 노드가 잘 떠 있어도 '노드 -' 로 남았다 (실화면에서 확인된 혼란).
         # GUI 가 켠 시점/종료 시점에도 갱신한다.
         self.win.lights["node"].set("busy", tr("시작 중"))
-        self.win.right_fields["node"].setText(tr("시작 중"))
 
     def on_node_finished(self, code: int, _status) -> None:
         self.win.log(f"[노드] 종료 (exit={code})")
         self.win.lights["node"].set("off", "-")
-        self.win.right_fields["node"].setText("-")
 
     def on_node_output(self) -> None:
         if self.win.procs.node_process is None:

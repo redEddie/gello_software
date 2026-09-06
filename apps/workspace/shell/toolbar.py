@@ -284,10 +284,17 @@ def build_menu(win) -> None:
 
 
 def build_statusbar(win) -> None:
+    """상태바는 **GUI 밖에서 도는 것들의 생사**만 본다 (2026-09-06 결정).
+
+    로봇 노드와 카메라 노드는 별도 프로세스라 GUI 와 무관하게 죽을 수 있고,
+    죽은 줄 모르고 조작하는 것이 이 화면에서 가장 비싼 실수다. 반면 '기록
+    중'은 세션 상태이지 프로세스의 생사가 아니라 여기서 뺐다 -- 헤더 띠가
+    배경색과 글자로 이미 말하고 있고, 그쪽이 훨씬 크다.
+    """
     sb = win.statusBar()
     win.lights = {}
     for key, label in (("robot", "Robot"), ("camera", "Camera"),
-                       ("recording", "Recording"), ("node", "Node")):
+                       ("node", "Node")):
         light = StatusLight(label)
         sb.addWidget(light)
         win.lights[key] = light
