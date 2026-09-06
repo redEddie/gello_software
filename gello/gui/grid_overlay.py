@@ -28,8 +28,10 @@ from pathlib import Path
 
 import numpy as np
 
-GRID_DIR = Path.home() / "libero_gui_logs" / "grids"
-LEGACY_GRID_STORE_PATH = Path.home() / "libero_gui_logs" / "workspace_grids.json"
+from gello.config.paths import state_dir
+
+GRID_DIR = state_dir() / "grids"
+LEGACY_GRID_STORE_PATH = state_dir() / "workspace_grids.json"
 # 화면 가운데쯤의 사다리꼴 -- 위가 멀고 아래가 가까운 일반적인 카메라 각도.
 DEFAULT_CORNERS = [[0.30, 0.30], [0.70, 0.30], [0.80, 0.80], [0.20, 0.80]]
 GRID_COLOR = (80, 255, 140)   # RGB

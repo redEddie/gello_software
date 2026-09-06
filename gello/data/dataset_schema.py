@@ -12,6 +12,8 @@ import warnings
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from gello.config.paths import state_dir
+
 ACTION_SPACE_EE_DELTA = "ee_delta"
 ACTION_SPACE_EE_ABSOLUTE = "ee_absolute"
 ACTION_SPACE_JOINT_DELTA = "joint_delta"
@@ -30,7 +32,7 @@ ACTION_SPACE_LABELS = {
     ACTION_SPACE_JOINT_ABSOLUTE: "Joint-angle absolute (리더 명령, ACT 규약)",
 }
 
-DEFAULT_CONFIG_PATH = Path.home() / "libero_gui_logs" / "dataset_schema.json"
+DEFAULT_CONFIG_PATH = state_dir() / "dataset_schema.json"
 
 
 # --------------------------------------------------------- dataset schema 버전

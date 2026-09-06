@@ -27,7 +27,9 @@ import json
 import time
 from pathlib import Path
 
-STATE_PATH = Path.home() / "libero_gui_logs" / "hub_upload_state.json"
+from gello.config.paths import state_dir
+
+STATE_PATH = state_dir() / "hub_upload_state.json"
 
 
 def _load(state_path: Path | None = None) -> dict:

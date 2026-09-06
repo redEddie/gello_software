@@ -29,6 +29,7 @@ from pathlib import Path  # noqa: E402
 import cv2  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from gello.config.paths import state_dir  # noqa: E402
 from gello.config.station import load_station  # noqa: E402
 
 # The OMP/OPENBLAS/MKL env vars above only cap numpy's BLAS backend --
@@ -47,7 +48,7 @@ REPACK_SCRIPT = str(Path(__file__).resolve().parents[2] / "scripts" / "convert" 
 
 # Repo IDs and output paths get retyped every session otherwise, and a typo in
 # a repo ID silently creates a *new* Hub dataset rather than failing.
-RECENTS_PATH = Path.home() / "libero_gui_logs" / "recent_inputs.json"
+RECENTS_PATH = state_dir() / "recent_inputs.json"
 # Episodes are recorded at 20 Hz, so playing them back at 20 fps shows the
 # motion at the speed it actually happened -- which is the point of reviewing.
 PLAYBACK_FPS = 20

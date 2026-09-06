@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from gello.config.paths import state_dir
+
 import numpy as np
 
 from gello.config.station import load_station
@@ -42,7 +44,7 @@ EYE_IN_HAND_CROP_X_SHIFT = 31
 # 스테이션이 바뀌면 통째로 달라진다. 예전에는 전역 파일 하나였고, 그 탓에
 # 스테이션을 바꿔도 이전 스테이션에서 맞춘 값이 그대로 이겨서 -- yaml 에 새 값을
 # 적어 두어도 -- 조용히 옛 프레이밍으로 찍혔다.
-CROP_PARAMS_DIR = Path.home() / "libero_gui_logs"
+CROP_PARAMS_DIR = state_dir()
 # 스테이션이 하나뿐이던 시절의 파일. 기본 스테이션에 한해 한 번 물려받는다.
 LEGACY_CROP_PARAMS_PATH = CROP_PARAMS_DIR / "crop_params.json"
 

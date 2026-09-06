@@ -2,7 +2,9 @@
 builders/pages need without creating circular imports."""
 from pathlib import Path
 
-LOG_DIR = Path.home() / "libero_gui_logs"
+from gello.config.paths import state_dir
+
+LOG_DIR = state_dir()
 
 # Child-process scripts used by both WorkspaceWindow and its domain modules.
 # Kept here so domains can import them without creating a circular dependency

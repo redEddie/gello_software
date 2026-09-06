@@ -20,10 +20,11 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from gello.config.paths import state_dir
 from gello.data.dataset_schema import OBS_AGENTVIEW_RGB
 from gello.scene.scene_format import EPISODE_GROUP_RE, list_scene_episodes
 
-THUMBS_DIR = Path.home() / "libero_gui_logs" / "thumbs"
+THUMBS_DIR = state_dir() / "thumbs"
 THUMB_WIDTH = 240
 
 

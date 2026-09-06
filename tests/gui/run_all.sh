@@ -17,6 +17,15 @@ export GELLO_NO_ROBOT_NODE=1
 # 있으면 21MB 를 받는데, 그 대기와 실패가 테스트 결과에 섞이면 안 된다.
 # 캐시가 이미 있으면 그건 그대로 쓴다 -- 막는 것은 네트워크지 글꼴이 아니다.
 export GELLO_NO_FONT_DOWNLOAD=1
+# 테스트는 조작자의 상태 파일(격자·크롭·recents·업로드 장부·스키마 설정)을
+# 절대 건드리면 안 된다. 2026-09-06 에 실제로 덮어썼다 -- 격자 테스트가
+# collect_workspace.save_grid_store 를 패치했지만 features/camera/ops.py 가
+# 같은 함수를 직접 임포트해 들고 있어서, 그 이름을 통한 호출이 진짜 파일로
+# 갔고 조작자가 맞춰 둔 3×3 격자가 스위트를 돌릴 때마다 초기화됐다.
+# 호출 하나를 패치하는 방식은 임포트 방식에 따라 새므로, 뿌리를 옮긴다.
+GELLO_STATE_DIR="$(mktemp -d -t gello-test-state-XXXXXX)"
+export GELLO_STATE_DIR
+trap 'rm -rf "$GELLO_STATE_DIR"' EXIT
 cd "$(dirname "$0")"
 fail=0
 for t in test_phase4a test_grid_replay test_plan_form test_right_scene \
@@ -27,7 +36,8 @@ for t in test_phase4a test_grid_replay test_plan_form test_right_scene \
          test_app_structure test_ui_surface test_domain_attrs \
          test_episode_io test_layer_rules test_signal_slots test_slot_counter \
          test_dataset_meta test_launcher test_key_autorepeat \
-         test_station_save test_wheel_guard test_waypoint_kinematics; do
+         test_station_save test_wheel_guard test_waypoint_kinematics \
+         test_state_isolation; do
   if QT_QPA_PLATFORM=offscreen timeout 240 "$PY" -u "$t.py" >"/tmp/$t.out" 2>&1; then
     echo "$t OK"
   else
