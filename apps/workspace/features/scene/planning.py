@@ -192,23 +192,12 @@ class ScenePlanningOps:
             label.setStyleSheet("color:#888;")
 
     def on_new_plan(self) -> None:
-        """이 데이터셋에 빈 계획(instructions.json)을 만들고 바로 편집."""
-        path = self.dataset_plan_path()
-        if path.exists():
-            QMessageBox.information(self.win, tr("이미 있음"), tr(
-                "이 데이터셋에는 이미 계획이 있습니다. ✎ 로 편집하세요."))
-            return
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"plan_version": 1, "scenes": []},
-                                       ensure_ascii=False, indent=2) + "\n",
-                            encoding="utf-8")
-        except OSError as e:
-            QMessageBox.warning(self.win, tr("생성 실패"), str(e))
-            return
-        self.win.log(f"[계획] 새 계획 생성: {path}")
-        self.on_plan_changed()
-        self.on_edit_plan()    # 빈 계획은 쓸모없으니 바로 편집으로
+        """메뉴 색인의 "새 계획" -- 이제는 편집과 같은 동작이다.
+
+        화면 버튼은 없앴고(편집이 알아서 만든다), 색인에는 이름이 남아 있어
+        찾는 사람이 있을 수 있으므로 같은 곳으로 보낸다.
+        """
+        self.on_edit_plan()
 
     def on_delete_plan(self) -> None:
         path = self.dataset_plan_path()
@@ -231,11 +220,25 @@ class ScenePlanningOps:
         self.on_plan_changed()
 
     def on_edit_plan(self) -> None:
+        """계획을 편집한다. **없으면 만들고 연다** (2026-09-06).
+
+        계획이 필수가 된 뒤로 "없으니 + 로 먼저 만드세요" 는 한 단계를 더
+        시키는 안내일 뿐이었다 -- 누른 사람의 뜻은 어느 쪽이든 "계획을
+        손보겠다"이므로, 없으면 만들고 바로 편집으로 간다. 그래서 [새 계획]
+        버튼도 화면에서 뺐다 (메뉴 색인에는 남는다).
+        """
         path = self.dataset_plan_path()
         if not path.exists():
-            QMessageBox.information(self.win, tr("계획 없음"), tr(
-                "이 데이터셋에는 계획 파일이 없습니다. + 로 먼저 만드세요."))
-            return
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({"plan_version": 1, "scenes": []},
+                                           ensure_ascii=False, indent=2) + "\n",
+                                encoding="utf-8")
+            except OSError as e:
+                QMessageBox.warning(self.win, tr("생성 실패"), str(e))
+                return
+            self.win.log(f"[계획] 새 계획 생성: {path}")
+            self.on_plan_changed()
         dlg = PlanEditDialog(self.win, path)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             for w in getattr(dlg, "warnings", []):

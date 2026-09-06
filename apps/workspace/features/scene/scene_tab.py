@@ -25,10 +25,11 @@ def build_scene_tab(win) -> QWidget:
     win.scene_compose_hint.setStyleSheet("color:#888;")
     win.scene_compose_hint.setWordWrap(True)
     row.addWidget(win.scene_compose_hint, 1)
-    apply_btn = QPushButton(tr("이 구성으로 시작"))
+    apply_btn = QPushButton(tr("이 구성으로 만들기"))
     apply_btn.setToolTip(tr(
-        "이 배치를 다음 Connect 에 쓸 scene 으로 얹습니다. 파일은 Connect 할 때 "
-        "만들어집니다 — 지금은 아무것도 쓰지 않습니다."))
+        "누르는 즉시 scene 파일이 만들어집니다 (에피소드 0개).\n"
+        "여러 개를 미리 만들어 두고 나중에 골라 찍을 수 있습니다.\n"
+        "잘못 만들었으면 Dataset 의 [파일 삭제] 로 지웁니다."))
     apply_btn.clicked.connect(win.scene_ops.on_compose_done)
     row.addWidget(apply_btn)
     col.addLayout(row)

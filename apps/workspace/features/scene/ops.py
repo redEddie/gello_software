@@ -10,8 +10,10 @@ from gello.config.station import load_station
 from gello.scene.dataset_meta import plan_path as dataset_plan_path
 from apps.workspace.shared.tabs import show_center_tab
 from gello.gui.i18n import tr
+from gello.scene.props import active_prop_ids
 from gello.scene.scene_format import (
     INSTRUCTION_ID_RE,
+    SceneWriter,
     count_by_slot,
     describe_scene,
     iter_scene_files,
@@ -63,13 +65,9 @@ class SceneOps:
         self.win.collection.refresh_instruction()
         sid = self.win.scene_combo.currentData()
         if sid is None:
-            if self.win._pending_scene_meta is not None:
-                self.win.scene_info.setText(
-                    describe_scene(self.win._pending_scene_meta)
-                    + "\n" + tr("(연결하면 이 구성으로 새 scene 파일이 만들어집니다)"))
-            else:
-                self.win.scene_info.setText(
-                    tr("Scene 탭에서 물체 배치를 정하세요."))
+            self.win.scene_info.setText(tr(
+                "Scene 탭에서 배치를 짜고 [이 구성으로 만들기] 를 누르면 "
+                "여기 목록에 생깁니다. 여러 개를 미리 만들어 둘 수 있습니다."))
             return
         root = Path(self.win.root_edit.text().strip() or ".")
         try:
@@ -133,23 +131,64 @@ class SceneOps:
             sid, root, pp if pp.is_file() else None,
             STATION.name, self.win.schema_version)
         self.win.scene_compose_hint.setText(tr(
-            "물체를 고르고 격자에 배치한 뒤 [이 구성으로 시작] 을 누르세요."))
+            "물체를 고르고 격자에 배치한 뒤 [이 구성으로 만들기] 를 누르면 "
+            "{f} 가 생깁니다.").format(f=scene_filename(sid)))
         show_center_tab(self.win, "scene")
 
     def on_compose_done(self) -> None:
-        """Scene 탭의 [이 구성으로 시작] -- 규칙을 통과하면 대기 scene 으로."""
+        """Scene 탭의 [이 구성으로 만들기] -- **그 자리에서 파일을 만든다**.
+
+        2026-09-06 사용자 결정. 전에는 구성을 메모리에 하나 얹어 두고
+        Connect 때 파일을 만들었는데, 화면이 그 사실을 말하지 않아 "지금
+        파일이 생긴 건가? 여러 개 미리 짤 수 있나?" 를 알 수 없었다 (둘 다
+        아니었다 -- 대기는 하나였고 다시 구성하면 조용히 덮였다).
+
+        이제는 누르는 순간 ``scene_002.hdf5`` 가 생긴다 (에피소드 0개). 그래서
+        S002·S003·S004 를 미리 짜 두고 나중에 골라 찍을 수 있다. 대가는 알고
+        택한 것이다: 구성만 하고 안 찍은 빈 scene 이 데이터셋에 남아 진행률에
+        0/N 으로 섬긴다. 지우는 수단은 Dataset 의 [파일 삭제] 다.
+        """
         md = self.win.scene_composer.build_valid()
         if md is None:
             return
-        self.win._pending_scene_meta = md
-        # 드롭다운을 "— 새 Scene —" 로 돌려 놓는다 (그것이 이 구성의 자리다).
-        if self.win.scene_combo.currentData() is not None:
-            self.win.scene_combo.setCurrentIndex(0)
-        self.on_scene_selected()
+        root = Path(self.win.root_edit.text().strip() or ".")
+        try:
+            # metadata 만 있는 파일. SceneWriter 는 생성 시점에 파일을 쓰므로
+            # 여기서 닫으면 그대로 빈 scene 이 된다 -- Connect 는 resume 으로
+            # 이어 쓴다 (기존 scene 을 고르는 것과 완전히 같은 경로).
+            writer = SceneWriter(root, metadata=md,
+                                 known_prop_ids=active_prop_ids(),
+                                 session_version=self.win.schema_version)
+            writer.close()
+        except FileExistsError:
+            QMessageBox.warning(self.win, tr("이미 있음"), tr(
+                "{s} 파일이 이미 있습니다. 목록을 새로고침한 뒤 다시 "
+                "만드세요.").format(s=md.scene_id))
+            self.refresh_scene_combo()
+            return
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self.win, tr("Scene 만들기 실패"),
+                                f"{type(e).__name__}: {e}")
+            return
+        self.win.log(f"[Scene] {md.scene_id} 생성 (물체 {len(md.objects)}개, "
+                     f"에피소드 0개) — {scene_filename(md.scene_id)}")
+        self.refresh_scene_combo()
+        for i in range(self.win.scene_combo.count()):
+            if self.win.scene_combo.itemData(i) == md.scene_id:
+                self.win.scene_combo.setCurrentIndex(i)
+                break
         self.win.scene_compose_hint.setText(tr(
-            "{sid} 구성을 얹었습니다 — Connect 하면 이 배치로 파일이 만들어집니다."
-        ).format(sid=md.scene_id))
-        self.win.log(f"[Scene] {md.scene_id} 구성 준비 (물체 {len(md.objects)}개)")
+            "{f} 를 만들었습니다 (에피소드 0개). 이어서 다른 배치를 더 짜 두거나, "
+            "Connect 해서 찍으세요.").format(f=scene_filename(md.scene_id)))
+        # 다음 번호로 갈아 끼워 둔다 -- 연달아 여러 개를 짜는 것이 이 화면의
+        # 새 용도다.
+        self.win.scene_composer.set_context(
+            next_scene_id(root), root, self.dataset_plan_path_or_none(root),
+            STATION.name, self.win.schema_version)
+
+    def dataset_plan_path_or_none(self, root: Path):
+        pp = dataset_plan_path(root)
+        return pp if pp.is_file() else None
 
     def scene_config_from_ui(self):
         """Connect 시점의 scene 설정 검증. (meta, scene_id, resume, error) --
@@ -157,6 +196,14 @@ class SceneOps:
         lang = self.win.lang_edit.text().strip()
         iid = self.win.scene_iid_edit.text().strip()
         collector = self.win.collector_edit.text().strip()
+        # **계획을 맨 먼저 본다** -- 계획이 없으면 시작 지시문도 있을 수
+        # 없으므로, 빈 칸을 나무라기 전에 진짜 원인을 말해야 한다.
+        plan = self.win.scene_planning.current_plan()
+        if plan is None:
+            return None, None, False, tr(
+                "이 데이터셋에는 수집 계획이 없습니다.\n\n"
+                "Instruction 탭의 [계획 편집] 으로 scene 과 지시문을 적으세요. "
+                "지시문은 계획에서만 옵니다.")
         if not lang:
             return None, None, False, tr(
                 "시작 지시문이 없습니다 — Instruction 탭에서 줄을 눌러 고르세요.")
@@ -166,16 +213,10 @@ class SceneOps:
             return None, None, False, tr("시작 지시문 ID 형식이 틀렸습니다 (예: I000).")
         if not collector:
             return None, None, False, tr("수집자 식별자를 입력하세요 (에피소드 필수 attr).")
-        # **계획은 필수다** (2026-09-06 사용자 결정). 지시문은 데이터셋의
-        # instructions.json 에서만 온다 -- 자유 입력이 계획 밖 지시문을
-        # 실데이터에 만든 적이 있고(ID-문장 갈라짐), 그 길을 아예 없앴다.
-        # 계획 없이 찍은 파일은 나중에 무엇을 얼마나 모았는지 셀 수가 없다.
-        plan = self.win.scene_planning.current_plan()
-        if plan is None:
-            return None, None, False, tr(
-                "이 데이터셋에는 수집 계획이 없습니다.\n\n"
-                "Instruction 탭의 [새 계획] 으로 만든 뒤 [계획 편집] 에서 "
-                "scene 과 지시문을 적으세요. 지시문은 계획에서만 옵니다.")
+        # 지시문은 데이터셋의 instructions.json 에서만 온다 (2026-09-06) --
+        # 자유 입력이 계획 밖 지시문을 실데이터에 만든 적이 있고(ID-문장
+        # 갈라짐), 그 길을 아예 없앴다. 계획 없이 찍은 파일은 나중에 무엇을
+        # 얼마나 모았는지 셀 수가 없다.
         psid = self.configure_scene_id()
         slots = plan.slots_for(psid) if psid else ()
         if not slots:
@@ -190,21 +231,23 @@ class SceneOps:
                 "Instruction 탭에서 줄을 눌러 고르세요.").format(i=iid, t=lang[:40])
         sid = self.win.scene_combo.currentData()
         if sid is None:
-            if self.win._pending_scene_meta is None:
-                return None, None, False, tr(
-                    "Scene 탭에서 배치를 먼저 정하거나, 드롭다운에서 기존 "
-                    "scene 을 고르세요.")
-            return self.win._pending_scene_meta, None, False, None
+            # 새 scene 은 Scene 탭에서 **만들어진 뒤** 목록에 뜬다 -- 연결
+            # 시점에 만드는 경로는 없어졌다 (2026-09-06).
+            return None, None, False, tr(
+                "찍을 scene 을 드롭다운에서 고르세요.\n\n"
+                "없으면 Scene 탭에서 배치를 짜고 [이 구성으로 만들기] 를 "
+                "누르면 목록에 생깁니다.")
         return None, sid, True, None
 
     def configure_scene_id(self):
-        """Configure 가 가리키는 scene ID -- 기존 선택이면 그것, 새 scene 이면
-        구성해 둔 metadata 의 ID, 그것도 없으면 다음 발번 예정 ID."""
+        """Configure 가 가리키는 scene ID -- 고른 것이 없으면 다음 발번 예정 ID.
+
+        "대기 구성" 은 없어졌다 (2026-09-06): 새 scene 은 Scene 탭에서 만드는
+        순간 파일이 되고 목록에 뜬다.
+        """
         sid = self.win.scene_combo.currentData()
         if sid is not None:
             return sid
-        if self.win._pending_scene_meta is not None:
-            return self.win._pending_scene_meta.scene_id
         try:
             return next_scene_id(Path(self.win.root_edit.text().strip() or "."))
         except Exception:  # noqa: BLE001

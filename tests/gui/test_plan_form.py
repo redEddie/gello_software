@@ -151,13 +151,31 @@ print("6b 통과: 계획 없이는 수집할 수 없다 (연결 거부 + 화면 
 # ---- 7. 계획 파일 새로 만들기 / 삭제 (데이터셋 폴더 안 instructions.json) ----
 cw.QMessageBox.question = staticmethod(
     lambda *a, **k: cw.QMessageBox.StandardButton.Yes)
-win.scene_planning.on_edit_plan = lambda: None        # 모달 편집 열림 방지
+# 모달 편집이 뜨지 않게 대화상자만 갈아 끼운다 -- on_edit_plan 자체를
+# 가짜로 두면 안 된다: 계획을 **만드는** 것이 이제 그 안에 있다 (2026-09-06).
+from apps.workspace.features.scene import planning as _planning  # noqa: E402
+
+
+class _NoDialog:
+    warnings: list = []
+
+    def __init__(self, *a, **k) -> None:
+        pass
+
+    def exec(self):
+        from PyQt6.QtWidgets import QDialog
+
+        return QDialog.DialogCode.Rejected
+
+
+_planning.PlanEditDialog = _NoDialog
 DS2 = Path(tempfile.mkdtemp(prefix="planform_ds2_"))
 win.root_edit.setText(str(DS2))
 win.scene_ops.refresh_scene_combo()
 new_path = DS2 / "instructions.json"
 try:
-    win.scene_planning.on_new_plan()
+    # [새 계획] 버튼은 없어졌다 -- 편집이 없으면 만든다 (같은 동작).
+    win.scene_planning.on_edit_plan()
     assert new_path.exists()
     assert json.loads(new_path.read_text())["scenes"] == []
     # Configure 의 계획 라벨은 없어졌다 (2026-09-06) -- 지시문이

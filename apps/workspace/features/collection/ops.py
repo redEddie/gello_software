@@ -721,8 +721,6 @@ class CollectionOps:
         # 새 세션의 첫 목록 갱신이 엉뚱한 무효화를 하지 않게.
         self.win._pending_scene_deletes = 0
         if self.win.session.scene_session:
-            # scene 파일이 실제로 만들어졌으니 보관해 둔 새 scene 구성은 소진.
-            self.win._pending_scene_meta = None
             self.win.scene_planning.refresh_instruction_list()
         self.win.dataset_ops.update_dataset_panel()
         self.win.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")

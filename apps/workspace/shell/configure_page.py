@@ -125,7 +125,6 @@ def build_configure(win) -> QWidget:
     # 고친다). 지금 어디에 쌓이는지는 상태바가 늘 비추고 있다.
     win.scene_info = SceneInfoView()
     sc_form.addRow(win.scene_info)
-    win._pending_scene_meta = None
     win.session.scene_session = False
     col.addWidget(scene)
 

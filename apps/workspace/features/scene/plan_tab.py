@@ -60,17 +60,14 @@ def build_plan_tab(win) -> QWidget:
     # "이 지시문의 목표를 올려야겠다" 고 생각하는 자리가 바로 여기다.
     edit = QPushButton(tr("계획 편집..."))
     edit.setToolTip(tr("이 데이터셋의 지시문과 목표 개수를 고칩니다 "
-                       "(저장할 때 규칙을 검사합니다)."))
+                       "(저장할 때 규칙을 검사합니다).\n"
+                       "계획이 없으면 만들고 엽니다."))
     edit.clicked.connect(win.scene_planning.on_edit_plan)
     row.addWidget(edit)
-    new = QPushButton(tr("새 계획"))
-    new.setToolTip(tr("이 데이터셋에 빈 계획을 만듭니다 (만들면 바로 편집이 열립니다)."))
-    new.clicked.connect(win.scene_planning.on_new_plan)
-    row.addWidget(new)
-    delete = QPushButton(tr("계획 삭제"))
-    delete.setToolTip(tr("계획 파일만 지웁니다 (수집한 파일에는 영향 없음)."))
-    delete.clicked.connect(win.scene_planning.on_delete_plan)
-    row.addWidget(delete)
+    # [새 계획]·[계획 삭제] 는 뺐다 (2026-09-06 사용자). 편집이 없으면
+    # 만들어 주므로 "새 계획" 은 같은 버튼이 됐고, 삭제는 계획이 필수가 된
+    # 뒤로 데이터셋을 수집 불가로 만드는 버튼이라 자주 쓰는 자리에 둘 것이
+    # 아니다 -- 메뉴 색인(Scene)에는 그대로 있다.
     row.addStretch(1)
     refresh = QPushButton(tr("새로고침"))
     refresh.setToolTip(tr(

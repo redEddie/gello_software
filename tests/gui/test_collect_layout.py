@@ -30,6 +30,7 @@ sys.path.insert(0, str(WT))
 sys.path.insert(0, str(WT / "apps"))
 
 import numpy as np  # noqa: E402
+from PyQt6.QtCore import Qt  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication,
     QCheckBox,
@@ -47,7 +48,11 @@ from apps.workspace.features.collection.page import (  # noqa: E402
     set_live_keys,
 )
 from apps.workspace.shared.tabs import center_tab_key  # noqa: E402
-from gello.scene.scene_format import SceneMetadata, SceneWriter  # noqa: E402
+from gello.scene.scene_format import (  # noqa: E402
+    SceneMetadata,
+    SceneWriter,
+    list_scene_episodes,
+)
 
 CUP, BOWL = "OBJ-CUP-BLU-01", "OBJ-BOWLS-WHT-01"
 SENT = {"I000": "pick up the blue cup and place it on the white bowl",
@@ -285,7 +290,10 @@ finally:
     plan_file.write_text(saved, encoding="utf-8")
 # 손으로 시작 지시문을 칠 수 없다
 assert win.lang_edit.isReadOnly() and win.scene_iid_edit.isReadOnly()
-print("12b. 계획 필수 + 안전 토글 툴바 이동 OK")
+# 계획 버튼은 [계획 편집] 하나뿐이다 (새 계획·삭제는 메뉴 색인에만)
+plan_btns = [b.text() for b in win.center_tab_widgets["instruction"].findChildren(QPushButton)]
+assert plan_btns == ["계획 편집...", "새로고침"], plan_btns
+print("12b. 계획 필수 + 안전 토글 툴바 이동 + 계획 버튼 하나 OK")
 
 # ------------------------------- 13. Instruction 탭 줄 = scene + 지시문 설정
 win._set_activity("configure")
@@ -308,17 +316,44 @@ assert win.scene_iid_edit.text() == "I000", "세션 중에 시작 설정이 바�
 win.worker = None
 print("13. Instruction 탭 줄 클릭 = scene + 지시문 OK (세션 중엔 잠김)")
 
-# ------------------------------------------ 14. 새 Scene 은 탭이다 (대화상자 X)
+# ---------------------- 14. 새 Scene = 탭 + **누르는 즉시 파일** (여러 개)
 import importlib.util  # noqa: E402
 
 assert importlib.util.find_spec(
     "apps.workspace.features.scene.dialogs.new_scene_dialog") is None, \
     "새 Scene 대화상자가 아직 있다 (탭으로 옮겼다)"
+assert not hasattr(win, "_pending_scene_meta"), \
+    "'대기 구성' 이 아직 있다 -- 만들면 곧바로 파일이어야 한다"
 win.scene_ops.on_new_scene()
 assert center_tab_key(win) == "scene", center_tab_key(win)
 assert "S001" in win.scene_composer.title_label.text(), \
     win.scene_composer.title_label.text()
-print("14. 새 Scene = Scene 탭 OK:", win.scene_composer.title_label.text())
+
+
+def _compose(objs, zones):
+    comp = win.scene_composer
+    for i in range(comp.prop_list.count()):
+        it = comp.prop_list.item(i)
+        it.setCheckState(Qt.CheckState.Checked
+                         if it.data(Qt.ItemDataRole.UserRole) in objs
+                         else Qt.CheckState.Unchecked)
+    comp._placements = dict(zones)
+    comp._refresh()
+    win.scene_ops.on_compose_done()
+
+
+RED = "OBJ-CUP-RED-01"
+_compose([CUP, BOWL], {CUP: [0, 1], BOWL: [2, 0]})
+assert (root / "scene_001.hdf5").exists(), "만들었는데 파일이 없다"
+assert len(list_scene_episodes(root / "scene_001.hdf5")) == 0, "빈 scene 이어야 한다"
+assert win.scene_combo.currentData() == "S001", win.scene_combo.currentData()
+# 연달아 또 하나 -- 미리 여러 개를 짜 두는 것이 이 화면의 용도다
+assert "S002" in win.scene_composer.title_label.text(), \
+    win.scene_composer.title_label.text()
+_compose([CUP, BOWL, RED], {CUP: [0, 2], BOWL: [2, 1], RED: [1, 1]})
+made = sorted(p.name for p in root.glob("scene_*.hdf5"))
+assert made == ["scene_000.hdf5", "scene_001.hdf5", "scene_002.hdf5"], made
+print("14. 새 Scene = Scene 탭, 누르는 즉시 파일, 여러 개 OK:", made)
 
 # -------------------------------------------- 15. 데이터 저장 경로는 하나다
 assert not hasattr(win, "dataset_root_edit"), "경로 칸이 아직 둘이다"
