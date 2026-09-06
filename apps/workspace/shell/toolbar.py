@@ -1,7 +1,7 @@
 """Toolbar, menu bar, and status bar builders for WorkspaceWindow."""
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import QLabel, QMessageBox, QToolBar
+from PyQt6.QtWidgets import QLabel, QMessageBox, QToolBar, QWidgetAction
 
 from gello.data.episode_stats import TASK_DEV_LIMIT
 from gello.gui.i18n import tr
@@ -127,6 +127,44 @@ def set_toolbar_context(win, key: str) -> None:
         win._tb_context.append(act)
 
 
+def _lifecycle_header(win, menu, keys) -> None:
+    """메뉴 맨 위에 그 대상의 생사를 한 줄로 띄운다 (2026-09-06).
+
+    설명이 아니라 **상태**를 적는다. 설명은 한 번 읽으면 끝이라 매번 자리를
+    차지하기만 하지만, 상태는 메뉴를 여는 이유(뭔가 이상하다) 바로 그것에
+    답한다. 정상이면 회색으로 조용히 있다가 문제일 때만 붉게 튄다.
+
+    값의 정본은 상태바의 StatusLight 다 -- 여기서 따로 계산하면 상태바와
+    다른 말을 하는 순간이 온다. 메뉴는 거울이다.
+    """
+    lab = QLabel()
+    lab.setContentsMargins(24, 4, 12, 4)
+    act = QWidgetAction(menu)
+    act.setDefaultWidget(lab)
+    menu.addAction(act)
+    menu.addSeparator()
+
+    def refresh() -> None:
+        # 메뉴가 상태바보다 먼저 만들어진다 -- 처음엔 비어 있고, 메뉴를 열 때
+        # (aboutToShow) 채워진다.
+        lights = getattr(win, "lights", {})
+        # 라벨(Node/Robot/Leader/Camera)까지 그대로 비춘다 -- Robot 메뉴처럼
+        # 값이 둘이면 어느 쪽이 무엇인지 라벨 없이는 못 읽는다.
+        here = [lights[k] for k in keys if k in lights]
+        lab.setText(" · ".join(x.text() for x in here))
+        # 정상이면 회색으로 조용히, 문제면 줄 전체가 붉게. 점만 물들이면
+        # 눈에 안 들어온다 -- 메뉴를 여는 이유가 대개 그 문제다.
+        worst = ("bad" if any(x.state == "bad" for x in here)
+                 else "busy" if any(x.state == "busy" for x in here) else "off")
+        color = {"bad": "#e74c3c", "busy": "#f39c12"}.get(worst, "#888")
+        weight = "bold" if worst == "bad" else "normal"
+        lab.setStyleSheet(
+            f"color:{color}; font-size:11px; font-weight:{weight};")
+
+    menu.aboutToShow.connect(refresh)
+    refresh()
+
+
 def build_menu(win) -> None:
     """메뉴바는 **동작의 전량 색인**이다 (2026-09-06 사용자 결정).
 
@@ -155,6 +193,7 @@ def build_menu(win) -> None:
 
     # 로봇 노드 관리 -- 팔과 그 프로세스에 관한 모든 것.
     m = mb.addMenu(tr("Robot"))
+    _lifecycle_header(win, m, ("node", "robot"))
     m.addAction(tr("Connect"), win.collection.on_connect)
     m.addAction(tr("Disconnect"), win.collection.on_disconnect)
     m.addAction(tr("Home"), lambda: win.collection.cmd("cmd_go_home"))
@@ -172,11 +211,27 @@ def build_menu(win) -> None:
     # (노드는 재시작, 서보는 리부트). Robot 안에 섞어 두면 "노드를 재시작하면
     # 리더암도 낫나?" 라는 오해가 생긴다 (이슈 #37 C).
     m = mb.addMenu(tr("Leader"))
+    _lifecycle_header(win, m, ("leader",))
     m.addAction(tr("토크 과부하 잠금 해제 (서보 리부트)"),
                 win.system.on_reset_leader_protection)
 
     # 데이터 수집 상태 관리 -- 에피소드 하나가 도는 동안의 모든 동작.
     # 다른 화면(예: 파일 미리보기)에 가 있어도 여기서 닿을 수 있어야 한다.
+    m = mb.addMenu(tr("Camera"))
+    _lifecycle_header(win, m, ("camera",))
+    m.addAction(tr("카메라 새로고침"), win.camera_ops.refresh_cameras)
+    # 화면 버튼이 토글이라 색인도 토글을 가리킨다 (옛 "미리보기 중지"를 대체).
+    m.addAction(tr("미리보기 시작/중지"), win.camera_ops.on_toggle_previews)
+    m.addSeparator()
+    m.addAction(tr("카메라 노드 재시작"),
+                win.camera_ops.on_restart_camera_node)
+    m.addAction(tr("카메라 노드 종료 (카메라 해제)"),
+                win.camera_ops.on_stop_camera_node_manual)
+    m.addSeparator()
+    m.addAction(tr("카메라 점검 (USB 속도·프레임)"), win.system.on_check_cameras)
+    m.addAction(tr("카메라 레이아웃 확인 (LIBERO 초기 배치와 비교)"),
+                lambda: show_center_tab(win, "layout"))
+
     m = mb.addMenu(tr("Collect"))
     m.addAction(tr("다음 미수집 slot 제시"), win.scene_planning.on_next_slot)
     m.addAction(tr("slot 적용 (다음 에피소드부터)"),
@@ -246,20 +301,6 @@ def build_menu(win) -> None:
     m.addAction(tr("전체 task 다시 업로드..."), win.upload.on_lerobot_reupload)
     m.addSeparator()
     m.addAction(tr("계정 확인 / 전환..."), win.upload.on_hf_accounts)
-
-    m = mb.addMenu(tr("Camera"))
-    m.addAction(tr("카메라 새로고침"), win.camera_ops.refresh_cameras)
-    # 화면 버튼이 토글이라 색인도 토글을 가리킨다 (옛 "미리보기 중지"를 대체).
-    m.addAction(tr("미리보기 시작/중지"), win.camera_ops.on_toggle_previews)
-    m.addSeparator()
-    m.addAction(tr("카메라 노드 재시작"),
-                win.camera_ops.on_restart_camera_node)
-    m.addAction(tr("카메라 노드 종료 (카메라 해제)"),
-                win.camera_ops.on_stop_camera_node_manual)
-    m.addSeparator()
-    m.addAction(tr("카메라 점검 (USB 속도·프레임)"), win.system.on_check_cameras)
-    m.addAction(tr("카메라 레이아웃 확인 (LIBERO 초기 배치와 비교)"),
-                lambda: show_center_tab(win, "layout"))
 
     m = mb.addMenu(tr("View"))
     for key, _icon, title, _tip in ACTIVITIES:

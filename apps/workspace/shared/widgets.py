@@ -83,12 +83,26 @@ class SceneInfoView(QWidget):
 
 
 class StatusLight(QLabel):
-    """One status-bar indicator: a colored dot plus a short label."""
+    """One status-bar indicator: a colored dot plus a short label.
+
+    마지막 값을 들고 있는다 (``state``/``value``). 메뉴가 같은 사실을 거울로
+    비추는데, 정본은 여기 하나여야 하기 때문이다 -- 메뉴가 따로 상태를
+    계산하면 상태바와 다른 말을 하는 순간이 온다.
+    """
 
     def __init__(self, label: str) -> None:
         super().__init__()
         self._label = label
+        self.state = "off"
+        self.value = "-"
         self.set("off", "-")
 
     def set(self, state: str, text: str) -> None:
-        self.setText(_dot(state, f"{self._label} {text}"))
+        self.state, self.value = state, text
+        # 값이 없을 때는 라벨만 남긴다. 회색 점이 이미 "모름/꺼짐"을 말하고
+        # 있어 "-" 는 같은 말을 글자로 한 번 더 적는 것이고, 라벨에 붙으면
+        # ("Camera -") 오히려 "있어야 할 값이 빈 것"처럼 읽힌다
+        # (2026-09-06 사용자 지적. 우측 패널의 "-" 20개를 걷어낸 것과 같은 건).
+        body = self._label if text.strip() in ("", "-") else f"{self._label} {text}"
+        self.setText(_dot(state, body))
+
