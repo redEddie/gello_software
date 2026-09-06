@@ -615,6 +615,7 @@ class WorkspaceWindow(QMainWindow):
         w.state_changed.connect(self.collection.on_state)
         w.frames_ready.connect(self.camera_ops.on_frames)
         w.gate_status.connect(self.collection.on_gate)
+        w.leader_state.connect(self.collection.on_leader_state)
         w.pose_match_status.connect(self.collection.on_pose_match)
         w.episode_progress.connect(self.collection.on_progress)
         w.episode_saved.connect(self.collection.on_saved)

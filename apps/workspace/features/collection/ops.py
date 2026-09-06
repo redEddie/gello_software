@@ -104,6 +104,9 @@ class CollectionOps:
         self.win.slot_box.setVisible(running and self.win.session.scene_session)
         self.win.lights["robot"].set("ok" if running else "off",
                                  tr("연결됨") if running else tr("끊김"))
+        if not running:
+            # 세션이 끝나면 리더 상태를 알 수 없다 (벽이 세션과 함께 산다).
+            self.win.lights["leader"].set("off", "-")
 
     def update_start_controls(self, running: "bool | None" = None) -> None:
         """Start Teleop 버튼/툴바는 게이트 상태에선 자세가 맞아야만 열린다.
@@ -397,6 +400,21 @@ class CollectionOps:
         self.win.gate_box.setVisible(state == "gate")
         # 단계와 기록 여부는 헤더 띠가 말한다 (배경색 + 상태 글자). 상태바와
         # 우측 패널에 같은 것을 또 적지 않는다 (2026-09-06).
+
+    #: 리더암 벽의 match_state -> (표시등 색, 문구). 정렬 보조가 과부하로
+    #: 포기한 blocked 만 빨강이다 -- 나머지는 정상 진행 단계다.
+    LEADER_LIGHTS = {
+        "idle": ("ok", "대기"),
+        "armed": ("ok", "정렬 준비"),
+        "pulling": ("busy", "정렬 중"),
+        "done": ("ok", "정렬됨"),
+        "blocked": ("bad", "과부하로 정렬 포기"),
+    }
+
+    def on_leader_state(self, state: str) -> None:
+        """리더암 벽 상태를 상태바에 옮긴다 (worker.leader_state)."""
+        color, text = self.LEADER_LIGHTS.get(state, ("off", state or "-"))
+        self.win.lights["leader"].set(color, tr(text))
 
     def on_gate(self, leader, follower, all_ok) -> None:
         if leader is None or follower is None:

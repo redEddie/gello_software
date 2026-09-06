@@ -247,6 +247,9 @@ class CollectionWorker(QThread):
     state_changed = pyqtSignal(str)
     frames_ready = pyqtSignal(object, object)  # agentview_rgb, eye_in_hand_rgb (np.ndarray)
     gate_status = pyqtSignal(object, object, bool)  # leader(8,), follower(8,), all_ok
+    # 리더암 벽의 상태 (idle/armed/pulling/blocked/done). 바뀔 때만 보낸다 --
+    # 상태바 표시등 하나를 그리는 데 15Hz 신호가 또 필요하지는 않다.
+    leader_state = pyqtSignal(str)
     pose_match_status = pyqtSignal(float, bool)  # max joint error (rad), done
     episode_progress = pyqtSignal(int, float)  # n_frames, seconds
     episode_saved = pyqtSignal(str, int)  # demo_name, n_frames
@@ -270,6 +273,7 @@ class CollectionWorker(QThread):
         self._reset_q = FR3_RESET_POSES[self.cfg.reset_pose]
         self._episode_count = 0
         self._last_gate_emit = 0.0
+        self._last_leader_state = ""
         # scene 모드 slot 상태. cmd_set_slot 으로 바뀌고, 에피소드에는
         # "기록 시작 시점의 slot"(_episode_slot 캡처본)이 찍힌다 -- 저장이
         # 백그라운드라 저장 시점의 현재 slot 을 읽으면 안 된다.
@@ -836,7 +840,22 @@ class CollectionWorker(QThread):
         if now - self._last_gate_emit >= _GATE_EMIT_PERIOD_S:
             self._last_gate_emit = now
             self.gate_status.emit(self._joint_vec(act), self._joint_vec(obs), all_ok)
+            # 리더암 상태도 여기서 같이 본다. 이 루프가 정렬 구간에서 도는
+            # 유일한 곳이고, 정렬 보조가 과부하로 포기하는(blocked) 것이
+            # 사람이 알아야 할 유일한 "죽기 전" 신호다 -- 벽이 실제로 죽으면
+            # teleop 이 같이 죽어 세션 종료로 드러난다.
+            state = str(self._leader_status().get("match_state", ""))
+            if state and state != self._last_leader_state:
+                self._last_leader_state = state
+                self.leader_state.emit(state)
         return delta, all_ok
+
+    def _leader_status(self) -> dict:
+        get = getattr(self._teleop, "leader_status", None)
+        try:
+            return get() if get is not None else {}
+        except Exception:      # noqa: BLE001 -- 표시용이라 조회 실패로 죽지 않는다
+            return {}
 
     def _pose_gate(self, timeout: float = 3600.0) -> str:
         """Blocks (emitting live deltas + frames) until leader matches reset_q.

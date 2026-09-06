@@ -321,6 +321,15 @@ class GelloAgent(Agent):
         elif enable_wall:
             print("[wall] no joint_limits for this port; leader wall disabled")
 
+    def leader_status(self) -> Dict:
+        """리더암 벽(JointLimitWall)의 최신 스냅샷. 벽이 없으면 빈 dict.
+
+        GUI 상태바가 리더암 상태를 그리는 유일한 통로다 -- 벽이 죽으면
+        teleop 도 죽어 세션이 끝나므로, 사람이 볼 수 있는 것은 "죽기 전"의
+        이 값뿐이다 (특히 정렬 보조가 과부하로 포기한 blocked).
+        """
+        return self._wall.status() if self._wall is not None else {}
+
     def act(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
         if self._wall is not None:
             self._wall.poll()  # re-raises if the wall thread died -> teleop dies

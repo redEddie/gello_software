@@ -208,6 +208,10 @@ class GelloFR3Teleop(Teleoperator):
     def is_connected(self) -> bool:
         return self._agent is not None
 
+    def leader_status(self) -> dict:
+        """리더암 벽의 스냅샷 (GelloAgent.leader_status 전달)."""
+        return self._agent.leader_status() if self._agent is not None else {}
+
     def connect(self, calibrate: bool = True) -> None:
         from gello.agents.gello_agent import GelloAgent
 

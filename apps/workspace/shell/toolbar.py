@@ -166,7 +166,13 @@ def build_menu(win) -> None:
     m.addAction(tr("노드 종료"), win.system.on_stop_node)
     m.addSeparator()
     m.addAction(tr("시스템 튜닝 실행 (runme.sh)"), win.system.run_runme)
-    m.addAction(tr("리더암 토크 과부하 잠금 해제"),
+
+    # 리더암은 로봇 노드와 다른 종류의 것이다 -- 별도 프로세스가 아니라 GUI
+    # 안의 스레드 + USB 장치(Dynamixel)라, 죽었을 때 되살리는 방법도 다르다
+    # (노드는 재시작, 서보는 리부트). Robot 안에 섞어 두면 "노드를 재시작하면
+    # 리더암도 낫나?" 라는 오해가 생긴다 (이슈 #37 C).
+    m = mb.addMenu(tr("Leader"))
+    m.addAction(tr("토크 과부하 잠금 해제 (서보 리부트)"),
                 win.system.on_reset_leader_protection)
 
     # 데이터 수집 상태 관리 -- 에피소드 하나가 도는 동안의 모든 동작.
@@ -307,8 +313,12 @@ def build_statusbar(win) -> None:
     """
     sb = win.statusBar()
     win.lights = {}
-    for key, label in (("robot", "Robot"), ("camera", "Camera"),
-                       ("node", "Node")):
+    # 리더암은 별도 프로세스가 아니라 GUI 안의 스레드 + USB 장치다
+    # (joint-limit-wall). 그래도 여기 두는 이유는 같다 -- GUI 밖의 물건이라
+    # 혼자 죽을 수 있고, 죽은 줄 모르고 조작하는 것이 비싸다. 특히 정렬
+    # 보조가 과부하로 포기하면(blocked) 지금까지는 화면에 아무 표시가 없었다.
+    for key, label in (("robot", "Robot"), ("leader", "Leader"),
+                       ("camera", "Camera"), ("node", "Node")):
         light = StatusLight(label)
         sb.addWidget(light)
         win.lights[key] = light
