@@ -33,7 +33,6 @@ from gello.data.collection_history import (  # noqa: E402
 from apps.workspace.constants import (  # noqa: E402
     ACTIVITIES,
     WORKFLOW,
-    next_workflow,
     workflow_step,
 )
 from apps.workspace.features.stats import build_stats  # noqa: E402
@@ -46,9 +45,9 @@ assert keys[:4] == ["layout", "configure", "collect", "dataset"], keys
 assert [k for k, _m, _l in WORKFLOW] == keys[:4], WORKFLOW
 assert workflow_step("layout")[0] == "①"
 assert workflow_step("upload") is None, "도구에는 번호를 붙이지 않는다"
-assert next_workflow("layout")[0] == "configure"
-assert next_workflow("dataset") is None, "마지막 단계 뒤에는 '다음'이 없다"
-assert next_workflow("settings") is None
+# "다음 단계" 버튼은 뺐다 (2026-09-06) -- 활동 바 아이콘과 Ctrl+1~7 이
+# 이미 그 일을 한다. 번호는 남는다: 순서가 순서라는 것을 말해 주는 것은
+# 아이콘 바만으로는 안 되기 때문이다.
 print("5. 활동 바가 수집 한 바퀴 순서 OK:", " → ".join(k for k, _m, _l in WORKFLOW))
 
 

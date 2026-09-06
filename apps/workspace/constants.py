@@ -61,20 +61,12 @@ def workflow_step(key: str):
     return None
 
 
-def next_workflow(key: str):
-    """다음 단계 -- (키, 번호, 하는 일). 마지막 단계거나 단계가 아니면 None."""
-    keys = [k for k, _m, _l in WORKFLOW]
-    if key not in keys:
-        return None
-    i = keys.index(key)
-    return WORKFLOW[i + 1] if i + 1 < len(WORKFLOW) else None
-
-
 #: 중앙 탭 -- (키, 제목). 키가 정본이다: 코드는 인덱스가 아니라 키로 탭을
 #: 가리킨다 (인덱스는 탭이 늘거나 줄면 밀린다). 순서가 곧 표시 순서다.
 CENTER_TABS = (
     ("live", "Live"),
-    ("plan", "Plan"),
+    ("instruction", "Instruction"),
+    ("scene", "Scene"),
     ("playback", "Playback"),
     ("analysis", "Analysis"),
     ("trim", "Trim"),
@@ -99,10 +91,11 @@ CENTER_TABS = (
 #: 유지된다"는 설계 의도이기도 하다.
 CENTER_TABS_BY_ACTIVITY = {
     "layout": ("live", "layout"),
-    # Plan 이 앞이다 -- scene 배치를 정하는 데 카메라는 필요 없고, 필요한 것은
-    # "어느 지시문이 몇 개 남았나"다 (2026-09-06 사용자 지적). live 는 남긴다:
-    # 어느 활동에서든 카메라를 잃지 않는다는 것이 이 창의 설계 전제다.
-    "configure": ("plan", "live"),
+    # Instruction 이 앞이다 -- scene 배치를 정하는 데 카메라는 필요 없고,
+    # 필요한 것은 "어느 지시문이 몇 개 남았나"다 (2026-09-06 사용자 지적).
+    # Scene 은 새 배치를 짜는 자리(옛 '새 Scene 구성' 대화상자). live 는
+    # 남긴다: 어느 활동에서든 카메라를 잃지 않는다는 것이 이 창의 전제다.
+    "configure": ("instruction", "scene", "live"),
     "collect": ("live",),
     "dataset": ("live", "playback", "analysis", "trim", "gallery"),
     "stats": ("live", "playback", "analysis", "trim", "gallery"),

@@ -57,28 +57,28 @@ class DatasetOps:
 
     # -------------------------------------------------------------------- root
     def dataset_root(self) -> Path:
-        """Dataset 페이지의 폴더 -- 전용 입력이 있으면 그것, 없으면 수집 경로.
-        (빌드 순서상 어느 쪽도 아직 없을 수 있다 -- 기본 경로로 폰백.)"""
-        edit = (getattr(self.win, "dataset_root_edit", None)
-                or getattr(self.win, "root_edit", None))
+        """데이터 저장 경로 -- 수집도 조회도 같은 폴더다 (2026-09-06 통일).
+
+        (빌드 순서상 아직 위젯이 없을 수 있다 -- 기본 경로로 폴백.)
+        """
+        edit = getattr(self.win, "root_edit", None)
         if edit is None:
             return Path.home() / "libero_datasets"
         return Path(edit.text().strip()).expanduser()
 
-    def browse_dataset_root(self) -> None:
-        d = QFileDialog.getExistingDirectory(self.win, tr("데이터 폴더"),
-                                             self.win.dataset_root_edit.text())
-        if d:
-            self.win.dataset_root_edit.setText(d)
-            self.win.stats_ops.mark_stats_stale()
-            self.refresh_dataset_tree()
+    def on_root_changed(self) -> None:
+        """경로가 바뀌면 그 폴더에 딸린 것들을 전부 다시 읽는다 -- scene 목록,
+        계획, 에피소드 트리, 분석. 한 곳에서 바뀌므로 한 곳에서 갱신한다."""
+        self.win.stats_ops.mark_stats_stale()
+        self.win.scene_ops.refresh_scene_combo()
+        self.refresh_dataset_tree()
 
     def browse_root(self) -> None:
-        d = QFileDialog.getExistingDirectory(self.win, tr("데이터 저장 경로"), self.win.root_edit.text())
+        d = QFileDialog.getExistingDirectory(
+            self.win, tr("데이터 저장 경로"), self.win.root_edit.text())
         if d:
             self.win.root_edit.setText(d)
-            self.win.stats_ops.mark_stats_stale()
-            self.refresh_dataset_tree()
+            self.on_root_changed()
 
     # -------------------------------------------------------------------- tree
     def refresh_dataset_tree(self) -> None:

@@ -9,6 +9,14 @@ from gello.gui.constants import RECENTS_PATH
 
 _RECENTS_MAX = 8
 
+#: 수집자 이름은 몇 명까지 기억하나. 화면(Configure 의 수집자 칸)이 이 값을
+#: 읽어 "max 10" 이라고 적으므로, 바꾸면 화면 문구도 함께 따라온다 -- 저장
+#: 개수와 표시가 갈라질 수 없다 (2026-09-06 사용자 요청).
+COLLECTOR_MAX = 10
+
+#: 키별 상한. 없으면 _RECENTS_MAX.
+_MAX_BY_KEY = {"collector": COLLECTOR_MAX}
+
 
 class Recents:
     """Most-recently-used values per field key, persisted as JSON.
@@ -44,7 +52,8 @@ class Recents:
         if not value:
             return
         cur = [v for v in self.get(key) if v != value]
-        self._data[key] = [value] + cur[: _RECENTS_MAX - 1]
+        cap = _MAX_BY_KEY.get(key, _RECENTS_MAX)
+        self._data[key] = [value] + cur[: cap - 1]
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._path.write_text(

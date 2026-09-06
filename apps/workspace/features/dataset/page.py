@@ -1,5 +1,4 @@
 """Dataset page builder for WorkspaceWindow."""
-from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -7,7 +6,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QPushButton,
     QTreeWidget,
     QVBoxLayout,
@@ -23,17 +21,18 @@ def build_dataset(win) -> QWidget:
     w = QWidget()
     col = QVBoxLayout(w)
     col.setContentsMargins(0, 0, 0, 0)
-    # 이 페이지 전용 폴더 선택 -- 수집 저장 경로(root_edit)와 독립적으로
-    # 다른 폴더(예: old_data/)를 훑어볼 수 있다. 초기값은 수집 경로.
+    # 데이터 저장 경로를 **화면에서 고치는 유일한 자리**다 (2026-09-06).
+    # 전에는 이 페이지 전용 칸이 따로 있어서 수집 경로와 둘로 갈라져 있었고,
+    # "어느 쪽을 고쳐야 수집이 그리로 가나"가 매번 헷갈렸다. 이제 같은
+    # 위젯(win.root_edit, 창이 소유)을 여기 놓는다 -- 상태바가 늘 그 값을
+    # 비추고 있으므로 어느 화면에 있어도 지금 어디에 쌓이는지는 보인다.
     dr = QHBoxLayout()
-    win.dataset_root_edit = QLineEdit(
-        win.root_edit.text() if hasattr(win, "root_edit")
-        else str(Path.home() / "libero_datasets"))
-    win.dataset_root_edit.editingFinished.connect(win.dataset_ops.refresh_dataset_tree)
-    dr.addWidget(win.dataset_root_edit, 1)
+    dr.addWidget(QLabel(tr("데이터 경로")))
+    win.root_edit.editingFinished.connect(win.dataset_ops.on_root_changed)
+    dr.addWidget(win.root_edit, 1)
     dbrowse = QPushButton(tr("..."))
     dbrowse.setMaximumWidth(36)
-    dbrowse.clicked.connect(win.dataset_ops.browse_dataset_root)
+    dbrowse.clicked.connect(win.dataset_ops.browse_root)
     dr.addWidget(dbrowse)
     col.addLayout(dr)
     # 비활성 '에피소드 검색' 입력칸을 뺐다 (2026-09-06). 검색/필터는 아직

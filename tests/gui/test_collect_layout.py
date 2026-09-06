@@ -10,8 +10,13 @@
 4. 반드시 남아야 하는 것: Pose gate, 프레임 진행바, 한국어 안내문.
 5. 상자 순서는 "확정적인 것 · 자주 보는 것" 부터.
 6. ② Configure 에는 카메라가 없고(① 에서 끝난다), 연습 모드는 로봇 노드 바로
-   밑이며, 중앙 탭은 Plan 이다.
+   밑이며, 중앙 탭은 Instruction 이다.
 7. 화면에 "slot" 이라는 낱말이 없다.
+8. "다음 단계" 버튼은 없다 -- 활동 바를 누른다.
+9. 수집자는 태그로 고른다 (max N, 부분 일치, 클릭하면 입력이 지워진다).
+10. Instruction 탭의 줄을 누르면 scene 과 지시문이 함께 정해진다.
+11. 새 Scene 은 대화상자가 아니라 Scene 탭이다.
+12. 데이터 저장 경로 칸은 화면에 하나뿐이다.
 
 로봇도 카메라도 필요 없다 (offscreen).
 """
@@ -101,9 +106,9 @@ print("1. 좌측 Control·상태글자 제거, 툴바에는 그대로 OK")
 collect_page = win.left_stack.widget(win.left_pages["collect"])
 assert win.plan_progress_tree not in collect_page.findChildren(
     type(win.plan_progress_tree)), "진행률 표가 아직 Collect 왼쪽에 있다"
-assert win.plan_progress_tree in win.center_tab_widgets["plan"].findChildren(
-    type(win.plan_progress_tree)), "진행률 표가 Plan 탭에 없다"
-print("2. 데이터셋 전체 진행률 표는 Plan 탭으로 이동 OK")
+assert win.plan_progress_tree in win.center_tab_widgets["instruction"].findChildren(
+    type(win.plan_progress_tree)), "진행률 표가 Instruction 탭에 없다"
+print("2. 데이터셋 전체 진행률 표는 Instruction 탭으로 이동 OK")
 
 # ------------------------------------------------------- 3. 반드시 남는 것
 for name in ("gate_box", "delta_bars", "ep_progress", "now_hint"):
@@ -191,21 +196,11 @@ assert win.no_dataset_check in node_box.findChildren(QCheckBox), \
     "연습 모드가 로봇 노드 바로 밑이 아니다"
 print("7. ② 에서 카메라 제거, 연습 모드는 로봇 노드 바로 밑 OK")
 
-# 다음 단계 버튼은 페이지 머리줄 바로 아래 (스크롤 밖, 맨 위).
-for key in ("layout", "configure", "collect"):
-    wrapper = win.left_stack.widget(win.left_pages[key])
-    lay = wrapper.layout()
-    labels = [lay.itemAt(i).widget() for i in range(lay.count())]
-    assert isinstance(labels[0], QLabel), key
-    assert isinstance(labels[1], QPushButton), f"{key}: 다음 버튼이 맨 위가 아니다"
-    assert labels[1].text().startswith("다음:"), labels[1].text()
-print("8. '다음 단계' 버튼이 각 페이지 맨 위 OK")
-
-# ② 의 중앙 탭은 Plan 이 먼저다.
-assert CENTER_TABS_BY_ACTIVITY["configure"][0] == "plan"
+# ② 의 중앙 탭은 Instruction 이 먼저다.
+assert CENTER_TABS_BY_ACTIVITY["configure"][0] == "instruction"
 win._set_activity("configure")
-assert center_tab_key(win) == "plan", center_tab_key(win)
-print("9. ② Configure 의 중앙 탭이 Plan OK")
+assert center_tab_key(win) == "instruction", center_tab_key(win)
+print("9. ② Configure 의 중앙 탭이 Instruction OK")
 
 # --------------------------------------------- 10. 화면에 "slot" 이 없다
 bad = []
@@ -219,5 +214,86 @@ for key in win.left_pages:
 assert not bad, ("화면에 'slot' 이라는 낱말이 남아 있다 (지시문/Instruction 으로 "
                  f"통일): {bad}")
 print("10. 화면에 'slot' 없음 OK")
+
+
+# ------------------------------------------------ 11. "다음 단계" 버튼은 없다
+nxt = [b.text() for key in win.left_pages
+       for b in win.left_stack.widget(win.left_pages[key]).findChildren(QPushButton)
+       if b.text().startswith("다음:")]
+assert not nxt, f"'다음 단계' 버튼이 남아 있다: {nxt} (활동 바를 누르면 된다)"
+print("11. '다음 단계' 버튼 없음 OK")
+
+# ------------------------------------------------------- 12. 수집자 태그 칸
+from gello.gui.widgets.recents import COLLECTOR_MAX  # noqa: E402
+
+picker = win.collector_edit
+for name in ("gibeom", "jeonchanwook"):
+    win._recents.add("collector", name)
+picker.refresh()
+
+
+def _tags():
+    return [b.text() for b in picker.findChildren(QPushButton)]
+
+
+assert set(_tags()) == {"gibeom", "jeonchanwook"}, _tags()
+# 부분 일치 -- 성을 뺀 이름을 쳐도 걸린다
+picker._on_typed("chanwook")
+assert _tags() == ["jeonchanwook"], _tags()
+# 태그를 누르면 확정되고 치던 글자는 사라진다
+picker._pick("jeonchanwook")
+assert picker.text() == "jeonchanwook", picker.text()
+# 상한은 저장하는 파일의 상수 하나가 정한다
+for i in range(COLLECTOR_MAX + 3):
+    win._recents.add("collector", f"person{i:02d}")
+assert len(win._recents.get("collector")) == COLLECTOR_MAX, \
+    f"{COLLECTOR_MAX}명까지만 기억해야 한다: {win._recents.get('collector')}"
+assert "gibeom" not in win._recents.get("collector"), "오래된 이름이 안 밀렸다"
+caps = [lab.text() for lab in picker.findChildren(QLabel)
+        if lab.text().startswith("max")]
+assert caps == [f"max {COLLECTOR_MAX}"], caps
+print(f"12. 수집자 태그 OK (부분 일치 · 클릭 확정 · max {COLLECTOR_MAX})")
+
+# ------------------------------- 13. Instruction 탭 줄 = scene + 지시문 설정
+win._set_activity("configure")
+win.scene_planning.refresh_plan_progress()
+tree = win.plan_progress_tree
+top = tree.topLevelItem(0)
+assert top is not None and top.childCount() >= 2, "계획 표가 비었다"
+win.scene_planning.on_plan_row_picked(top.child(1))     # I001
+assert win.scene_combo.currentData() == "S000", win.scene_combo.currentData()
+assert win.scene_iid_edit.text() == "I001", win.scene_iid_edit.text()
+assert win.lang_edit.text() == SENT["I001"], win.lang_edit.text()
+# 머리줄(scene)은 고를 것이 없다 -- 아무 일도 일어나지 않는다
+win.scene_iid_edit.setText("I000")
+win.scene_planning.on_plan_row_picked(top)
+assert win.scene_iid_edit.text() == "I000"
+# 수집 중에는 시작 설정을 바꾸지 않는다
+win.worker = fw
+win.scene_planning.on_plan_row_picked(top.child(1))
+assert win.scene_iid_edit.text() == "I000", "세션 중에 시작 설정이 바뀌었다"
+win.worker = None
+print("13. Instruction 탭 줄 클릭 = scene + 지시문 OK (세션 중엔 잠김)")
+
+# ------------------------------------------ 14. 새 Scene 은 탭이다 (대화상자 X)
+import importlib.util  # noqa: E402
+
+assert importlib.util.find_spec(
+    "apps.workspace.features.scene.dialogs.new_scene_dialog") is None, \
+    "새 Scene 대화상자가 아직 있다 (탭으로 옮겼다)"
+win.scene_ops.on_new_scene()
+assert center_tab_key(win) == "scene", center_tab_key(win)
+assert "S001" in win.scene_composer.title_label.text(), \
+    win.scene_composer.title_label.text()
+print("14. 새 Scene = Scene 탭 OK:", win.scene_composer.title_label.text())
+
+# -------------------------------------------- 15. 데이터 저장 경로는 하나다
+assert not hasattr(win, "dataset_root_edit"), "경로 칸이 아직 둘이다"
+conf_edits = [e for e in conf.findChildren(type(win.root_edit))]
+assert win.root_edit not in conf_edits, "② 에 저장 경로 칸이 남아 있다"
+ds_page = win.left_stack.widget(win.left_pages["dataset"])
+assert win.root_edit in ds_page.findChildren(type(win.root_edit)), \
+    "저장 경로 칸이 Dataset 페이지에 없다"
+print("15. 데이터 저장 경로 칸은 화면에 하나 OK")
 
 print("\n수집 워크플로 화면 개편 인수 통과")

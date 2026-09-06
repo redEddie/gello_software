@@ -202,7 +202,7 @@ def build_menu(win) -> None:
     mb = win.menuBar()
 
     m = mb.addMenu(tr("File"))
-    m.addAction(tr("데이터 저장 경로 열기..."), win.dataset_ops.browse_root)
+    m.addAction(tr("데이터 저장 경로 선택..."), win.dataset_ops.browse_root)
     m.addAction(tr("로그 폴더 열기"), lambda: win.log(f"[로그] {LOG_DIR}"))
     m.addSeparator()
     m.addAction(tr("종료"), win.close)
@@ -284,7 +284,7 @@ def build_menu(win) -> None:
 
     m = mb.addMenu(tr("Dataset"))
     m.addAction(tr("새로고침"), win.dataset_ops.refresh_dataset_tree)
-    m.addAction(tr("데이터셋 폴더 선택..."), win.dataset_ops.browse_dataset_root)
+    m.addAction(tr("데이터 저장 경로 선택..."), win.dataset_ops.browse_root)
     m.addSeparator()
     m.addAction(tr("구조 확인..."), win.playback_ops.on_show_structure)
     m.addAction(tr("HDF5 트리 뷰어"), win._on_hdf5_tree)

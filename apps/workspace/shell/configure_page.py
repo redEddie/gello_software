@@ -1,5 +1,4 @@
 """Configure page builder for WorkspaceWindow."""
-from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -18,6 +17,7 @@ from gello.gui.i18n import tr
 
 from gello.robots.franka_fr3 import FR3_RESET_POSES
 
+from apps.workspace.shared.collector_picker import CollectorPicker
 from apps.workspace.shared.widgets import SceneInfoView
 from apps.workspace.shared.sizing import keep_height, shrinkable_combo
 
@@ -39,6 +39,15 @@ def build_configure(win) -> QWidget:
         "첫 scene 을 만들거나 계획에 없는 문장을 쓰는 것은 사람이 정합니다."))
     quick.clicked.connect(win.collection.on_quick_start)
     col.addWidget(quick)
+
+    # 수집자는 켤 때마다 손대는 칸이라 위에 온다 (2026-09-06 사용자).
+    # 아는 이름은 태그로 고르고, 처음 보는 이름은 그냥 친다.
+    who = QGroupBox(tr("수집자"))
+    wcol = QVBoxLayout(who)
+    wcol.setContentsMargins(6, 6, 6, 6)
+    win.collector_edit = CollectorPicker(win._recents)
+    wcol.addWidget(win.collector_edit)
+    col.addWidget(who)
 
     node = QGroupBox(tr("로봇 노드"))
     nrow = QVBoxLayout(node)
@@ -76,6 +85,8 @@ def build_configure(win) -> QWidget:
     win.scene_combo = QComboBox()
     shrinkable_combo(win.scene_combo)
     win.scene_combo.currentIndexChanged.connect(win.scene_ops.on_scene_selected)
+    # 사람이 고른 것만 -- 목록을 다시 채울 때는 오지 않는다.
+    win.scene_combo.activated.connect(win.scene_ops.on_scene_activated)
     srow.addWidget(win.scene_combo, 1)
     win.scene_refresh_btn = QPushButton("↻")
     win.scene_refresh_btn.setToolTip(tr("scene 목록 새로고침"))
@@ -83,9 +94,9 @@ def build_configure(win) -> QWidget:
     win.scene_refresh_btn.clicked.connect(win.scene_ops.refresh_scene_combo)
     srow.addWidget(win.scene_refresh_btn)
     sc_form.addRow(tr("Scene"), scene_row)
-    win.scene_new_btn = QPushButton(tr("새 Scene 구성..."))
-    win.scene_new_btn.clicked.connect(win.scene_ops.on_new_scene)
-    sc_form.addRow(win.scene_new_btn)
+    # "새 Scene 구성..." 버튼을 뺐다 (2026-09-06) -- 드롭다운 맨 위의
+    # "— 새 Scene (Sxxx) —" 를 고르면 Scene 탭이 열린다. 같은 일을 하는
+    # 입구가 바로 옆에 둘 있을 이유가 없다.
     # 계획이 있으면 시작 문장을 여기서 고른다 -- 고르면 아래 문장·slot ID
     # 가 함께 채워진다 (세션 중 slot 패널의 계획 콤보와 같은 장치).
     win.start_plan_combo = QComboBox()
@@ -99,53 +110,16 @@ def build_configure(win) -> QWidget:
     # 새 문장=다음 빈 ID) -- ID-문장 갈라짐 방지.
     win.lang_edit.editingFinished.connect(win.scene_ops.on_start_sentence_edited)
     sc_form.addRow(tr("시작 문장"), win.lang_edit)
-    # 수집 계획은 데이터셋에 귀속된다 -- 저장 경로 폴더 안의 instructions.json
-    # (고정 파일명, 2026-09-04 결정). 고르는 드롭다운은 없고 읽기 전용 표시 +
-    # 편집 버튼만 둔다. 계획이 있으면 Collect 의 slot 패널이 계획 기반
-    # 드롭다운 + 수집 카운트로 동작하고, 없으면 자유 입력.
-    win.plan_label = QLabel(tr("(계획 없음 — 자유 입력)"))
-    win.plan_label.setStyleSheet("color:#888;")
-    plan_row = QWidget()
-    prow = QHBoxLayout(plan_row)
-    prow.setContentsMargins(0, 0, 0, 0)
-    prow.addWidget(win.plan_label, 1)
-    win.plan_edit_btn = QPushButton("✎")
-    win.plan_edit_btn.setToolTip(tr("이 데이터셋의 계획(instructions.json) 편집 "
-                                    "(저장 시 규칙 검증)"))
-    win.plan_edit_btn.setMaximumWidth(32)
-    win.plan_edit_btn.clicked.connect(win.scene_planning.on_edit_plan)
-    prow.addWidget(win.plan_edit_btn)
-    plan_new_btn = QPushButton("+")
-    plan_new_btn.setToolTip(tr("이 데이터셋에 빈 계획(instructions.json) 만들기 "
-                               "(만들면 바로 편집이 열립니다)"))
-    plan_new_btn.setMaximumWidth(32)
-    plan_new_btn.clicked.connect(win.scene_planning.on_new_plan)
-    prow.addWidget(plan_new_btn)
-    plan_del_btn = QPushButton("🗑")
-    plan_del_btn.setToolTip(tr("이 데이터셋의 계획 파일 삭제 (수집 파일에는 영향 없음)"))
-    plan_del_btn.setMaximumWidth(32)
-    plan_del_btn.clicked.connect(win.scene_planning.on_delete_plan)
-    prow.addWidget(plan_del_btn)
-    sc_form.addRow(tr("수집 계획"), plan_row)
+    # instructions.json 을 화면에 적지 않는다 (2026-09-06). 지시문은
+    # 그 파일 하나로 통일됐으므로 "어느 파일인가"는 더 이상 고를 것이
+    # 아니고, 편집은 Instruction 탭이 맡는다.
     win.scene_iid_edit = QLineEdit(win._recents.most_recent("instruction_id", "I000"))
     win.scene_iid_edit.setToolTip(tr("시작 지시문의 ID (예: I000). "
                                       "수집 중 Collect 페이지에서 바꿀 수 있습니다."))
     sc_form.addRow(tr("시작 지시문 ID"), win.scene_iid_edit)
-    win.collector_edit = QLineEdit(win._recents.most_recent("collector", ""))
-    win.collector_edit.setPlaceholderText(tr("수집자 식별자 (필수 attr, 예: gibeom)"))
-    sc_form.addRow(tr("수집자"), win.collector_edit)
-    root_row = QWidget()
-    rl = QHBoxLayout(root_row)
-    rl.setContentsMargins(0, 0, 0, 0)
-    win.root_edit = QLineEdit(win._recents.most_recent(
-        "data_root", str(Path.home() / "libero_datasets")))
-    win.root_edit.editingFinished.connect(win.scene_ops.refresh_scene_combo)
-    rl.addWidget(win.root_edit, 1)
-    browse = QPushButton(tr("..."))
-    browse.setMaximumWidth(36)
-    browse.clicked.connect(win.dataset_ops.browse_root)
-    rl.addWidget(browse)
-    sc_form.addRow(tr("저장 경로"), root_row)
+    # 저장 경로 칸을 뺐다 (2026-09-06). 그 값은 런처 마법사가 정하고,
+    # 화면에서 고치는 자리는 Dataset 페이지 하나다 (File 메뉴도 같은 위젯을
+    # 고친다). 지금 어디에 쌓이는지는 상태바가 늘 비추고 있다.
     win.scene_info = SceneInfoView()
     sc_form.addRow(win.scene_info)
     win._pending_scene_meta = None
@@ -187,7 +161,7 @@ def build_configure(win) -> QWidget:
     col.addWidget(sess)
     # 줄 수가 정해진 상자는 세로로 안 늘어나게 (sizing.keep_height 참고).
     # Scene 수집은 예외 -- 계획 설명 라벨이 접히면서 높이가 는다.
-    keep_height(node, sess)
+    keep_height(who, node, sess)
     col.addStretch()
     win.scene_ops.refresh_scene_combo()
     return w

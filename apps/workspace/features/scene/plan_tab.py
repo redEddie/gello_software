@@ -1,4 +1,4 @@
-"""Plan 탭 -- 이 데이터셋의 scene × 지시문 수집 현황.
+"""Instruction 탭 -- 이 데이터셋의 scene × 지시문 수집 현황, 그리고 계획 편집.
 
 ② Configure(Scene 설정) 화면의 중앙 탭이다. 그 화면에 온 목적은 "다음에
 무엇을 찍을까"를 정하는 것인데, 지금까지 중앙에는 카메라 라이브가 떠 있었다
@@ -9,6 +9,13 @@
 scene 마다 Connect/Disconnect 하는 운용이라 수집 **중**에 다른 scene 의 숫자를
 볼 일이 없고, 그 표를 그리는 데 계획의 모든 scene 파일을 열어야 해서 저장
 한 번에 543ms 씩 멈췄다. 정하는 화면으로 옮기면 둘 다 해결된다.
+
+**줄을 누르면 그것이 시작 지시문이 된다** -- scene 과 지시문이 함께 정해진다
+(2026-09-06 사용자 요청). 왼쪽에서 scene 을 고르고 다시 문장을 고르던 두
+단계가, 보고 있던 그 줄을 누르는 한 번이 됐다.
+
+계획 파일(instructions.json)의 이름은 화면에 적지 않는다. 지시문이 그 파일
+하나로 통일된 뒤로는 고를 것이 아니고, 편집만 필요하다 -- 그 버튼이 여기 있다.
 
 숫자의 정본은 scene 파일이다 (계획 파일에는 카운트가 없다 -- 두 개의 진실
 금지). 채우는 것은 ScenePlanningOps.refresh_plan_progress 하나다.
@@ -41,9 +48,29 @@ def build_plan_tab(win) -> QWidget:
     win.plan_progress_tree.setRootIsDecorated(True)
     win.plan_progress_tree.header().setSectionResizeMode(
         3, QHeaderView.ResizeMode.Stretch)
+    win.plan_progress_tree.setToolTip(tr(
+        "지시문 줄을 누르면 그 scene 과 지시문이 시작 설정이 됩니다.\n"
+        "(수집 중에는 바꿀 수 없습니다 — 세션을 끝낸 뒤 고르세요.)"))
+    win.plan_progress_tree.itemClicked.connect(
+        lambda item, _c: win.scene_planning.on_plan_row_picked(item))
     col.addWidget(win.plan_progress_tree, 1)
 
     row = QHBoxLayout()
+    # 계획 편집은 여기다 (2026-09-06: Configure 왼쪽에서 이동). 표를 보다가
+    # "이 지시문의 목표를 올려야겠다" 고 생각하는 자리가 바로 여기다.
+    edit = QPushButton(tr("계획 편집..."))
+    edit.setToolTip(tr("이 데이터셋의 지시문과 목표 개수를 고칩니다 "
+                       "(저장할 때 규칙을 검사합니다)."))
+    edit.clicked.connect(win.scene_planning.on_edit_plan)
+    row.addWidget(edit)
+    new = QPushButton(tr("새 계획"))
+    new.setToolTip(tr("이 데이터셋에 빈 계획을 만듭니다 (만들면 바로 편집이 열립니다)."))
+    new.clicked.connect(win.scene_planning.on_new_plan)
+    row.addWidget(new)
+    delete = QPushButton(tr("계획 삭제"))
+    delete.setToolTip(tr("계획 파일만 지웁니다 (수집한 파일에는 영향 없음)."))
+    delete.clicked.connect(win.scene_planning.on_delete_plan)
+    row.addWidget(delete)
     row.addStretch(1)
     refresh = QPushButton(tr("새로고침"))
     refresh.setToolTip(tr(

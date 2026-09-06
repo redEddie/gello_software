@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtWidgets import QDialog, QMessageBox
+from PyQt6.QtWidgets import QMessageBox
 
-from apps.workspace.features.scene.dialogs.new_scene_dialog import NewSceneDialog
 from gello.config.station import load_station
 from gello.scene.dataset_meta import plan_path as dataset_plan_path
+from apps.workspace.shared.tabs import show_center_tab
 from gello.gui.i18n import tr
 from gello.scene.scene_format import (
     INSTRUCTION_ID_RE,
@@ -62,7 +62,6 @@ class SceneOps:
         self.win.scene_planning.refresh_start_plan_combo()
         self.win.collection.refresh_instruction()
         sid = self.win.scene_combo.currentData()
-        self.win.scene_new_btn.setEnabled(sid is None)
         if sid is None:
             if self.win._pending_scene_meta is not None:
                 self.win.scene_info.setText(
@@ -70,7 +69,7 @@ class SceneOps:
                     + "\n" + tr("(연결하면 이 구성으로 새 scene 파일이 만들어집니다)"))
             else:
                 self.win.scene_info.setText(
-                    tr("'새 Scene 구성...'으로 물체 배치를 정의하세요."))
+                    tr("Scene 탭에서 물체 배치를 정하세요."))
             return
         root = Path(self.win.root_edit.text().strip() or ".")
         try:
@@ -105,7 +104,22 @@ class SceneOps:
         except Exception as e:  # noqa: BLE001
             self.win.scene_info.setText(f"(scene 정보 읽기 실패: {type(e).__name__}: {e})")
 
+    def on_scene_activated(self, *_args) -> None:
+        """드롭다운을 **사람이** 건드렸을 때만 온다 (``activated``).
+
+        "— 새 Scene (Sxxx) —" 을 고르는 것이 곧 "새로 짜겠다"는 뜻이라 Scene
+        탭을 연다 -- 옛 [새 Scene 구성...] 버튼을 대신한다.
+
+        ``currentIndexChanged`` 가 아니라 ``activated`` 인 이유: 목록을 다시
+        채울 때마다(경로 변경·새로고침·세션 종료) 인덱스는 0 으로 돌아가는데,
+        그때마다 탭을 열면 보고 있던 화면을 빼앗는다 (실제로 그랬다).
+        """
+        if self.win.scene_combo.currentData() is None and self.win.worker is None:
+            self.on_new_scene()
+
     def on_new_scene(self) -> None:
+        """Scene 탭을 열고 다음 scene 번호로 맞춘다 (2026-09-06: 대화상자 ->
+        탭). 파일은 아직 만들지 않는다 -- Connect 가 만든다."""
         root = Path(self.win.root_edit.text().strip() or ".")
         try:
             sid = next_scene_id(root)
@@ -115,13 +129,27 @@ class SceneOps:
             return
         # 계획은 데이터셋 폴더 안 instructions.json 하나뿐이다 (고정 파일명).
         pp = dataset_plan_path(root)
-        dlg = NewSceneDialog(self.win, sid, data_root=root,
-                             plan_path=pp if pp.is_file() else None,
-                             station_name=STATION.name,
-                             schema_version=self.win.schema_version)
-        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.metadata is not None:
-            self.win._pending_scene_meta = dlg.metadata
-            self.on_scene_selected()
+        self.win.scene_composer.set_context(
+            sid, root, pp if pp.is_file() else None,
+            STATION.name, self.win.schema_version)
+        self.win.scene_compose_hint.setText(tr(
+            "물체를 고르고 격자에 배치한 뒤 [이 구성으로 시작] 을 누르세요."))
+        show_center_tab(self.win, "scene")
+
+    def on_compose_done(self) -> None:
+        """Scene 탭의 [이 구성으로 시작] -- 규칙을 통과하면 대기 scene 으로."""
+        md = self.win.scene_composer.build_valid()
+        if md is None:
+            return
+        self.win._pending_scene_meta = md
+        # 드롭다운을 "— 새 Scene —" 로 돌려 놓는다 (그것이 이 구성의 자리다).
+        if self.win.scene_combo.currentData() is not None:
+            self.win.scene_combo.setCurrentIndex(0)
+        self.on_scene_selected()
+        self.win.scene_compose_hint.setText(tr(
+            "{sid} 구성을 얹었습니다 — Connect 하면 이 배치로 파일이 만들어집니다."
+        ).format(sid=md.scene_id))
+        self.win.log(f"[Scene] {md.scene_id} 구성 준비 (물체 {len(md.objects)}개)")
 
     def scene_config_from_ui(self):
         """Connect 시점의 scene 설정 검증. (meta, scene_id, resume, error) --

@@ -1,5 +1,16 @@
-"""New scene composition dialog."""
+"""Scene 탭 -- 새 scene 구성 (소품 선택 + 3×3 존 배치 + 규칙 lint).
 
+옛 ``NewSceneDialog`` 이다. 대화상자였던 것을 ② Configure 의 중앙 탭으로
+옮겼다 (2026-09-06 사용자 요청: "새 scene 구성 또한 plan 탭처럼 탭으로").
+
+왜 탭이 나은가: 새 scene 을 짜는 동안 조작자는 **실제 책상 위 물체를 옮기고
+있다**. 모달 대화상자는 그동안 창의 나머지를 전부 막는데, 정작 그때 보고
+싶은 것이 옆의 Instruction 탭(이 scene 에 무슨 지시문이 몇 개 남았나)과
+카메라다. 탭이면 오가며 짤 수 있다.
+
+구성이 끝나면 [이 구성으로 시작] 이 그것을 Configure 의 대기 scene 으로
+얹는다 -- 실제 파일은 Connect 할 때 SceneWriter 가 만든다 (전과 같다).
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,7 +18,6 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
@@ -18,6 +28,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from apps.workspace.shared.widgets import SceneInfoView
@@ -34,17 +45,15 @@ from gello.scene.scene_format import (
 from gello.scene.scene_rules import check, object_count_range
 
 
-class NewSceneDialog(QDialog):
-    """새 scene 구성 — 소품 선택 + 3×3 존 배치 + 설명 + 규칙 lint."""
+class SceneComposer(QWidget):
+    """소품 선택 + 3×3 배치 + 규칙 lint. 탭이 이것을 담는다."""
 
-    def __init__(self, parent, scene_id: str,
+    def __init__(self, parent=None, scene_id: str = "S000",
                  data_root: "Path | None" = None,
                  plan_path: "Path | None" = None,
                  station_name: str = "",
                  schema_version: str = SCHEMA_VERSION) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("새 Scene 구성 — {sid}").format(sid=scene_id))
-        self.setMinimumWidth(720)
         self._scene_id = scene_id
         self._data_root = data_root
         self._plan_path = plan_path
@@ -54,6 +63,9 @@ class NewSceneDialog(QDialog):
         self.metadata = None  # accept 시 SceneMetadata
 
         layout = QVBoxLayout(self)
+        self.title_label = QLabel("")
+        self.title_label.setStyleSheet("font-weight:bold;")
+        layout.addWidget(self.title_label)
         hrow = QHBoxLayout()
         hint = QLabel(tr(
             "① 포함할 물체를 체크  ② 목록에서 물체를 클릭해 선택  "
@@ -114,12 +126,33 @@ class NewSceneDialog(QDialog):
         self.preview = SceneInfoView()
         layout.addWidget(self.preview)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
-                                   | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
         self._refresh()
+
+    def set_context(self, scene_id: str, data_root: "Path | None",
+                    plan_path: "Path | None", station_name: str,
+                    schema_version: str) -> None:
+        """탭은 한 번 만들어 계속 쓴다 -- 다음 scene 번호와 데이터셋 경로는
+        열 때마다 달라지므로 여기서 갈아 끼운다."""
+        self._scene_id = scene_id
+        self._data_root = data_root
+        self._plan_path = plan_path
+        self._station_name = station_name
+        self._schema_version = schema_version
+        self.title_label.setText(
+            tr("새 Scene {sid} 구성").format(sid=scene_id))
+        self._refresh()
+
+    def build_valid(self):
+        """규칙까지 통과한 SceneMetadata, 아니면 None (사유는 대화상자로)."""
+        md = self._build()
+        try:
+            from gello.scene.props import active_prop_ids
+
+            md.validate(known_prop_ids=active_prop_ids())
+        except ValueError as e:
+            QMessageBox.warning(self, tr("Scene 구성 오류"), str(e))
+            return None
+        return md
 
     def _checked_ids(self) -> list:
         return [self.prop_list.item(i).data(Qt.ItemDataRole.UserRole)
@@ -235,16 +268,3 @@ class NewSceneDialog(QDialog):
             self.layout_btn.setToolTip(tr(
                 "물체 {n}개는 3×3 격자 {cap}칸보다 많습니다.")
                 .format(n=n, cap=cap))
-
-    def _accept(self) -> None:
-        md = self._build()
-        try:
-            from gello.scene.props import active_prop_ids
-
-            md.validate(known_prop_ids=active_prop_ids())
-        except ValueError as e:
-            QMessageBox.warning(self, tr("Scene 구성 오류"), str(e))
-            return
-        self.metadata = md
-        super().accept()
-

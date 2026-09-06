@@ -74,6 +74,9 @@ class ScenePlanningOps:
                 it = QTreeWidgetItem(
                     [f"  {s.instruction_id}", str(c), str(s.target),
                      s.instruction])
+                # 줄을 누르면 이것이 시작 설정이 된다 (on_plan_row_picked).
+                it.setData(0, Qt.ItemDataRole.UserRole,
+                           (sp.scene_id, s.instruction_id, s.instruction))
                 if c >= s.target:
                     for col_i in range(4):
                         it.setForeground(col_i, Qt.GlobalColor.darkGreen)
@@ -91,6 +94,42 @@ class ScenePlanningOps:
             text += tr("  ·  파일 없는 scene {n}개 표시 안 함 ({s})").format(
                 n=len(skipped), s=", ".join(skipped[:4]))
         self.win.plan_progress_label.setText(text)
+
+    def on_plan_row_picked(self, item) -> None:
+        """Instruction 탭의 지시문 줄 = 시작 설정 (2026-09-06 사용자 요청).
+
+        scene 과 지시문이 **함께** 정해진다. 전에는 왼쪽에서 scene 을 고르고
+        다시 문장 드롭다운에서 고르는 두 단계였는데, 정작 무엇을 고를지는
+        이 표를 보고 정하고 있었다 -- 보던 줄을 누르는 것이 곧 답이다.
+
+        세션 중에는 바꾸지 않는다. 그때 지시문을 바꾸는 자리는 ③ Collect 의
+        목록이고(같은 scene 안에서만), scene 자체는 파일이라 세션 중에 못 바꾼다.
+        """
+        data = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+        if not data:
+            return                      # scene 머리줄 -- 고를 것이 없다
+        sid, iid, instr = data
+        if self.win.worker is not None:
+            self.win.log("[지시문] 수집 중에는 시작 설정을 바꿀 수 없습니다 "
+                         "(세션을 끝낸 뒤 고르세요)")
+            return
+        combo = self.win.scene_combo
+        for i in range(combo.count()):
+            if combo.itemData(i) == sid:
+                combo.setCurrentIndex(i)
+                break
+        else:
+            self.win.log(f"[지시문] {sid} 파일이 아직 없습니다 -- scene 을 먼저 만드세요")
+            return
+        self.win.scene_iid_edit.setText(iid)
+        self.win.lang_edit.setText(instr)
+        # Configure 의 계획 문장 드롭다운도 같은 줄로 맞춘다 (거울).
+        for i in range(self.win.start_plan_combo.count()):
+            if self.win.start_plan_combo.itemData(i) == (iid, instr):
+                self.win.start_plan_combo.setCurrentIndex(i)
+                break
+        self.win.collection.refresh_instruction()
+        self.win.log(f"[지시문] 시작 설정: {sid} · {iid} — {instr}")
 
     def refresh_start_plan_combo(self) -> None:
         """Configure 의 계획 문장 드롭다운 = 계획 × 선택 scene.

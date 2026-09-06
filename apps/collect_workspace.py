@@ -64,6 +64,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QMainWindow,
     QMessageBox,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
 )
@@ -240,6 +241,16 @@ class WorkspaceWindow(QMainWindow):
         self._log_file = None
         if log_path is not None:
             self._log_file = open(log_path, "a", buffering=1)  # noqa: SIM115
+
+        # 데이터 저장 경로의 **정본**. 창이 들고 있고 화면에는 Dataset 페이지
+        # 한 곳에서만 보인다 (2026-09-06). 전에는 Configure 와 Dataset 에
+        # 각각 칸이 있어서, 어느 쪽을 고쳐야 수집이 그리로 가는지가 매번
+        # 헷갈렸다. 값은 보통 런처 마법사가 정하고, 창 안에서 바꾸는 길은
+        # File > 데이터 저장 경로 와 Dataset 페이지의 [...] 둘 다 같은 이
+        # 위젯을 고친다. 여기서 만드는 이유는 빌드 순서다 -- Configure 가
+        # Dataset 보다 먼저 만들어지면서 이 값을 읽는다.
+        self.root_edit = QLineEdit(self._recents.most_recent(
+            "data_root", str(Path.home() / "libero_datasets")))
 
         self.schema = load_schema_config()
         # 상태 라벨 상수를 인스턴스로 노출 -- CollectionOps 가 self.win 으로 읽는다.
@@ -525,7 +536,7 @@ class WorkspaceWindow(QMainWindow):
             # 이 화면에 온 이유는 "다음에 무엇을 찍을까"다. 카메라가 아니라
             # 계획 현황을 띄운다 (2026-09-06 사용자 지적). 표는 계획의 모든
             # scene 파일을 열므로 여기 들어올 때만 새로 읽는다.
-            show_center_tab(self, "plan")
+            show_center_tab(self, "instruction")
             self.scene_planning.refresh_plan_progress()
         elif key == "stats":
             self.stats_ops.refresh_stats()

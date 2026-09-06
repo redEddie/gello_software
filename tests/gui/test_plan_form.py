@@ -142,10 +142,13 @@ try:
     win.scene_planning.on_new_plan()
     assert new_path.exists()
     assert json.loads(new_path.read_text())["scenes"] == []
-    assert "instructions.json" in win.plan_label.text()
+    # Configure 의 계획 라벨은 없어졌다 (2026-09-06) -- 지시문이
+    # instructions.json 하나로 통일된 뒤로 파일 이름을 화면에 적을 이유가
+    # 없다. 계획이 로드됐는지는 계획 객체로 본다.
+    assert win.scene_planning.current_plan() is not None
     win.scene_planning.on_delete_plan()
     assert not new_path.exists()
-    assert "없음" in win.plan_label.text()
+    assert win.scene_planning.current_plan() is None
 finally:
     new_path.unlink(missing_ok=True)
 print("7 통과: 계획 파일 생성(데이터셋 폴더) / 삭제(+표시 갱신)")

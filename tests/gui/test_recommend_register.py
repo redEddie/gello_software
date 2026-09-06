@@ -1,4 +1,4 @@
-"""RecommendDialog 문장 체크리스트 + 계획 등록, NewSceneDialog lint (offscreen)."""
+"""RecommendDialog 문장 체크리스트 + 계획 등록, SceneComposer lint (offscreen)."""
 import json
 import shutil
 import sys
@@ -18,7 +18,7 @@ app = QApplication(sys.argv)
 from tests.gui.helpers import _wait_recs  # noqa: E402
 
 import collect_workspace as cw  # noqa: E402
-from apps.workspace.features.scene.dialogs.new_scene_dialog import NewSceneDialog  # noqa: E402
+from apps.workspace.features.scene.scene_composer import SceneComposer  # noqa: E402
 from apps.workspace.features.scene.dialogs.recommend_dialog import RecommendDialog  # noqa: E402
 from gello.scene.props import props_by_id  # noqa: E402
 from gello.scene.scene_format import SceneMetadata  # noqa: E402
@@ -71,8 +71,8 @@ loaded = load_plan(plan_copy)
 assert loaded.scene("S999") is not None
 print("3 통과: 등록된 계획 load_plan 검증 통과")
 
-# ---- 4. NewSceneDialog lint: 규칙 위반 시 경고 표시 ----
-nd = NewSceneDialog(None, "S100")
+# ---- 4. SceneComposer lint: 규칙 위반 시 경고 표시 ----
+nd = SceneComposer(None, "S100")
 # 위반 배치: 흰 컵 2개 + drawer 중앙
 nd.prop_list.blockSignals(True)
 for i in range(nd.prop_list.count()):
@@ -90,10 +90,10 @@ nd._refresh()
 lint_text = nd.lint_label.text()
 assert "no_lookalike_pair" in lint_text or "color_diverse" in lint_text, lint_text
 assert "ban_zones" in lint_text, lint_text
-print("4 통과: NewSceneDialog 규칙 위반 경고")
+print("4 통과: SceneComposer 규칙 위반 경고")
 
-# ---- 5. NewSceneDialog lint: 규칙 통과 시 경고 없음 ----
-nd2 = NewSceneDialog(None, "S101")
+# ---- 5. SceneComposer lint: 규칙 통과 시 경고 없음 ----
+nd2 = SceneComposer(None, "S101")
 nd2.prop_list.blockSignals(True)
 for i in range(nd2.prop_list.count()):
     it = nd2.prop_list.item(i)
@@ -109,7 +109,7 @@ nd2._placements = {"OBJ-CUP-WHT-01": [0, 0], "OBJ-CUP-BLU-01": [1, 0],
 nd2._refresh()
 assert nd2.lint_label.text() == "", nd2.lint_label.text()
 # 컵 1 + 그릇 1 이면 pair_if_present 경고가 떠야 한다 (shortcut 방지)
-nd3 = NewSceneDialog(None, "S102")
+nd3 = SceneComposer(None, "S102")
 nd3.prop_list.blockSignals(True)
 for i in range(nd3.prop_list.count()):
     it = nd3.prop_list.item(i)
@@ -146,7 +146,7 @@ for sc in plan["scenes"]:
 assert n_warn == 0, f"정본 문법 밖 문장 {n_warn}개 -- lint 경고 확인"
 print(f"6 통과: 생성 문장 자기일관성 + 계획 {total}개 문장 전부 정본 문법 통과")
 
-print("\nRecommendDialog 문장/등록 + NewSceneDialog lint 검증 통과")
+print("\nRecommendDialog 문장/등록 + SceneComposer lint 검증 통과")
 import os  # noqa: E402
 
 
@@ -163,7 +163,7 @@ assert cb.toolTip(), "왜 못 하는지 설명이 없다"
 print("계획 미선택 시 등록 불가 이유를 보여준다 OK")
 
 # ---- 7. 워크플로 ②: 물체는 사람이 고르고 배치만 추천 (2026-09-06) ----
-nd4 = NewSceneDialog(None, "S103")
+nd4 = SceneComposer(None, "S103")
 assert not nd4.layout_btn.isEnabled(), "아무것도 안 골랐는데 눌린다"
 assert "이상 체크" in nd4.layout_btn.toolTip(), nd4.layout_btn.toolTip()
 picked_ids = ["OBJ-CUP-WHT-01", "OBJ-CUP-BLU-01",
@@ -191,7 +191,7 @@ assert len(set(layouts)) == 3, "배치안 3개가 서로 달라야 한다"
 # 문장은 배치와 무관하므로 세 안이 같은 체크리스트를 공유한다
 assert ldlg._sentence_checks[0] is ldlg._sentence_checks[1]
 assert len(ldlg._sentence_checks[0]) >= 1
-# 채택하면 배치가 NewSceneDialog 에 반영된다
+# 채택하면 배치가 SceneComposer 에 반영된다
 ldlg._radios[1].setChecked(True)
 ldlg._accept()
 nd4._apply_recommendation(ldlg.picked)

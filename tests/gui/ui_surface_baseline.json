@@ -1,7 +1,7 @@
 {
   "menus": {
     "File": [
-      "데이터 저장 경로 열기...",
+      "데이터 저장 경로 선택...",
       "로그 폴더 열기",
       "종료"
     ],
@@ -46,7 +46,7 @@
     ],
     "Dataset": [
       "새로고침",
-      "데이터셋 폴더 선택...",
+      "데이터 저장 경로 선택...",
       "구조 확인...",
       "HDF5 트리 뷰어",
       "myHDF5 (웹)",
@@ -80,7 +80,8 @@
       "Upload",
       "Settings",
       "Live",
-      "Plan",
+      "Instruction",
+      "Scene",
       "Playback",
       "Analysis",
       "Trim",
@@ -167,7 +168,8 @@
   ],
   "center_tabs": [
     "live",
-    "plan",
+    "instruction",
+    "scene",
     "playback",
     "analysis",
     "trim",
@@ -182,7 +184,8 @@
       "layout"
     ],
     "configure": [
-      "plan",
+      "instruction",
+      "scene",
       "live"
     ],
     "collect": [
