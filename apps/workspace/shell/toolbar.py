@@ -8,6 +8,7 @@ from gello.gui.i18n import tr
 
 from apps.workspace.shared.widgets import StatusLight
 from apps.workspace.constants import ACTIVITIES, LOG_DIR
+from apps.workspace.shared.tabs import show_center_tab
 
 
 def build_toolbar(win) -> None:
@@ -248,7 +249,7 @@ def build_menu(win) -> None:
     m.addSeparator()
     m.addAction(tr("카메라 점검 (USB 속도·프레임)"), win.system.on_check_cameras)
     m.addAction(tr("카메라 레이아웃 확인 (LIBERO 초기 배치와 비교)"),
-                lambda: win.center_tabs.setCurrentIndex(win._layout_tab_index))
+                lambda: show_center_tab(win, "layout"))
 
     m = mb.addMenu(tr("View"))
     for key, _icon, title, _tip in ACTIVITIES:

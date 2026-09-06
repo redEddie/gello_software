@@ -20,6 +20,7 @@ from gello.gui.scene_gallery import invalidate_scene_thumbs
 from gello.scene.scene_format import count_by_slot, describe_scene, read_scene_metadata
 
 from apps.workspace.constants import REPLAY_SCRIPT
+from apps.workspace.shared.tabs import show_center_tab
 
 
 class PlaybackOps:
@@ -38,7 +39,7 @@ class PlaybackOps:
         it = items[0]
         path = it.parent().data(0, Qt.ItemDataRole.UserRole)
         self.show_trim_for(path, it.data(0, Qt.ItemDataRole.UserRole))
-        self.win.center_tabs.setCurrentIndex(self.win.playback.trim_tab_index)
+        show_center_tab(self.win, "trim")
 
     # ------------------------------------------------------------------ Trim
     def show_trim_for(self, path: str, demo: str) -> None:
@@ -221,7 +222,7 @@ class PlaybackOps:
     def play_episode(self, path: str, demo: str) -> None:
         """Dataset 트리와 Analysis 순위표가 공유하는 재생 진입점."""
         if self.win.playback.play_key == (path, demo):
-            self.win.center_tabs.setCurrentIndex(1)
+            show_center_tab(self.win, "playback")
             return
         if self.win.session.active_file_path is not None and Path(path) == self.win.session.active_file_path:
             self.win.play_caption.setText(tr("수집 중인 파일은 재생할 수 없습니다."))
@@ -229,7 +230,7 @@ class PlaybackOps:
         self.stop_playback()
         self.win.playback.play_key = (path, demo)
         self.win.play_caption.setText(tr("불러오는 중... {d}").format(d=demo))
-        self.win.center_tabs.setCurrentIndex(1)
+        show_center_tab(self.win, "playback")
         if self.win.playback.play_loader is not None:
             self.win.playback.play_loader.wait()
         self.win.playback.play_loader = EpisodeLoadWorker(path, demo)

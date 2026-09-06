@@ -30,6 +30,19 @@ ACTIVITIES = (
     ("layout", "🎯", "Layout", "LIBERO 초기 배치와 카메라 비교"),
     ("settings", "🛠", "Settings", "스키마·레이아웃"),
 )
+#: 중앙 탭 -- (키, 제목). 키가 정본이다: 코드는 인덱스가 아니라 키로 탭을
+#: 가리킨다 (인덱스는 탭이 늘거나 줄면 밀린다). 순서가 곧 표시 순서다.
+CENTER_TABS = (
+    ("live", "Live"),
+    ("playback", "Playback"),
+    ("analysis", "Analysis"),
+    ("trim", "Trim"),
+    ("layout", "레이아웃"),
+    ("gallery", "Gallery"),
+    ("cloud", "Point Cloud"),
+    ("depth", "Depth"),
+)
+
 # 오른쪽 패널에서 값이 길어 좌우 배치로는 읽기 어려운 항목들.
 WIDE_FIELDS = {"ds_file", "ds_task"}
 

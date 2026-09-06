@@ -12,6 +12,7 @@ from gello.gui.workers import CameraPreviewWorker
 from gello.gui.grid_overlay import active_corners, draw_grid, save_grid_store
 from apps.workspace.shared.camera_node_proc import node_specs, spawn_node, spec_key
 from gello.gui.i18n import tr
+from apps.workspace.shared.tabs import center_tab_key
 
 
 class CameraOps:
@@ -204,7 +205,7 @@ class CameraOps:
         cams = self.win.cameras
         if cams.last_cam_frame:
             cams.last_cam_frame.clear()
-            if self.win.center_tabs.currentIndex() == self.win._layout_tab_index:
+            if center_tab_key(self.win) == "layout":
                 for role in ("agent", "wrist"):
                     self.win.layout_ref.layout_update_role(role)
 
@@ -231,7 +232,7 @@ class CameraOps:
         if win.session.current_state == "recording":
             return
         self.update_live_view(role, frame, cams=cams)
-        if win.center_tabs.currentIndex() == win._layout_tab_index:
+        if center_tab_key(win) == "layout":
             win.layout_ref.layout_update_role(role)
         cams.fps_count += 1
 
@@ -295,7 +296,7 @@ class CameraOps:
     def on_frames(self, agent_rgb, wrist_rgb) -> None:
         win = self.win
         cams = win.cameras
-        layout_on = win.center_tabs.currentIndex() == win._layout_tab_index
+        layout_on = center_tab_key(win) == "layout"
         for role, rgb in (("agent", agent_rgb), ("wrist", wrist_rgb)):
             if rgb is None:
                 continue

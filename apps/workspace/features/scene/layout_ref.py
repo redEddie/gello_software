@@ -10,6 +10,7 @@ from apps.workspace.constants import LAYOUT_DIR, LAYOUT_ZIP
 from gello.data.crop import resize_rgb
 from gello.gui.grid_overlay import draw_alignment_grid
 from gello.gui.i18n import tr
+from apps.workspace.shared.tabs import center_tab_key
 
 
 class LayoutRefOps:
@@ -104,7 +105,7 @@ class LayoutRefOps:
         self.win.layout_play_btn.setText(
             tr("일시정지") if self.win.playback.layout_playing else tr("재생"))
         if self.win.playback.layout_playing and \
-                self.win.center_tabs.currentIndex() == self.win._layout_tab_index:
+                center_tab_key(self.win) == "layout":
             self.win._layout_timer.start()
         else:
             self.win._layout_timer.stop()
@@ -143,7 +144,7 @@ class LayoutRefOps:
         """번갈아 보기 -- 겹침 대신 카메라와 스틸을 0.5초씩 교대로 보여준다."""
         self.win.layout_alpha_slider.setEnabled(not on)
         self.win._layout_blink_state = False
-        if on and self.win.center_tabs.currentIndex() == self.win._layout_tab_index:
+        if on and center_tab_key(self.win) == "layout":
             self.win._layout_blink_timer.start()
         else:
             self.win._layout_blink_timer.stop()

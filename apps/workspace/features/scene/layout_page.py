@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.gui.i18n import tr
+from apps.workspace.shared.tabs import show_center_tab
 
 
 def build_layout_page(win) -> QWidget:
@@ -24,7 +25,7 @@ def build_layout_page(win) -> QWidget:
 
     open_btn = QPushButton(tr("레이아웃 탭 열기"))
     open_btn.clicked.connect(
-        lambda: win.center_tabs.setCurrentIndex(win._layout_tab_index))
+        lambda: show_center_tab(win, "layout"))
     col.addWidget(open_btn)
 
     # Configure 의 카메라 그룹 복제 -- 여기서 고르나 저기서 고르나 같다.

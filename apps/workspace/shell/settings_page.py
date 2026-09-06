@@ -2,6 +2,7 @@
 from PyQt6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
 from gello.gui.i18n import tr
+from apps.workspace.shared.tabs import show_center_tab
 
 
 
@@ -15,7 +16,7 @@ def build_settings(win) -> QWidget:
     layout_btn.setToolTip(tr(
         "LIBERO 초기 배치 이미지와 현재 카메라를 50% 투명도로 겹쳐 보여줍니다."))
     layout_btn.clicked.connect(
-        lambda: win.center_tabs.setCurrentIndex(win._layout_tab_index))
+        lambda: show_center_tab(win, "layout"))
     col.addWidget(layout_btn)
     schema = QPushButton(tr("데이터셋 구조 사용자 설정..."))
     schema.setToolTip(tr("Action 구조는 고정입니다. Observation 필드만 고를 수 "

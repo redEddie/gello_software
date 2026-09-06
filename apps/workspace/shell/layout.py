@@ -28,7 +28,12 @@ from gello.gui.i18n import tr
 
 from apps.workspace.shared.widgets import SceneInfoView
 from apps.workspace.shared.sizing import relax_min_widths
-from apps.workspace.constants import ACTIVITIES, PLAYBACK_SPEEDS, WIDE_FIELDS
+from apps.workspace.constants import (
+    ACTIVITIES,
+    CENTER_TABS,
+    PLAYBACK_SPEEDS,
+    WIDE_FIELDS,
+)
 from .page_builders import PAGE_BUILDERS
 
 # Tab builders are imported here rather than through the package __init__ to
@@ -118,7 +123,6 @@ def build_center(win) -> None:
     grow.addWidget(grid_edit_btn)
     grow.addStretch(1)
     live.layout().addLayout(grow)
-    win._live_tab_index = win.center_tabs.addTab(live, tr("Live"))
 
     play = QWidget()
     play_col = QVBoxLayout(play)
@@ -166,17 +170,24 @@ def build_center(win) -> None:
     win.play_caption = QLabel(tr("Dataset 패널에서 에피소드를 고르면 여기서 재생됩니다."))
     win.play_caption.setStyleSheet("color:#888;")
     play_col.addWidget(win.play_caption)
-    win.center_tabs.addTab(play, tr("Playback"))
-    win.center_tabs.addTab(build_analysis_tab(win), tr("Analysis"))
-    win.playback.trim_tab_index = win.center_tabs.addTab(build_trim_tab(win), tr("Trim"))
-    win._layout_tab_index = win.center_tabs.addTab(
-        build_layout_tab(win), tr("레이아웃"))
-    win._gallery_tab_index = win.center_tabs.addTab(
-        build_gallery_tab(win), tr("Gallery"))
-    win._cloud_tab_index = win.center_tabs.addTab(
-        build_cloud_tab(win), tr("Point Cloud"))
-    win._depth_tab_index = win.center_tabs.addTab(
-        build_depth_tab(win), tr("Depth"))
+    # 탭은 키로 등록한다. 코드가 인덱스로 탭을 가리키면 탭이 하나만 늘어도
+    # 전부 밀리고, 그 밀림은 조용하다 (엉뚱한 탭이 열릴 뿐 예외가 안 난다).
+    # 순서·제목의 정본은 constants.CENTER_TABS 다.
+    win.center_tab_widgets = {
+        "live": live,
+        "playback": play,
+        "analysis": build_analysis_tab(win),
+        "trim": build_trim_tab(win),
+        "layout": build_layout_tab(win),
+        "gallery": build_gallery_tab(win),
+        "cloud": build_cloud_tab(win),
+        "depth": build_depth_tab(win),
+    }
+    missing = [k for k, _t in CENTER_TABS if k not in win.center_tab_widgets]
+    if missing:
+        raise RuntimeError(f"CENTER_TABS 에 있는데 만들지 않은 탭: {missing}")
+    for key, title in CENTER_TABS:
+        win.center_tabs.addTab(win.center_tab_widgets[key], tr(title))
     win.center_tabs.currentChanged.connect(win._on_center_tab_changed)
 
 

@@ -52,7 +52,6 @@ class PlaybackState:
     trim_loader: Any | None = None
     trim_timer: QTimer | None = None
     trim_series: Any | None = None
-    trim_tab_index: int = 0
 
     play_key: tuple | None = None
     play_timer: QTimer | None = None

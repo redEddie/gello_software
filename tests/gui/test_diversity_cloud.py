@@ -62,7 +62,7 @@ cw.CameraOps.restart_previews = lambda self: None
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
 # 탭 진입: 카메라 미선택 -> 안내만, 워커 없음
-win._on_center_tab_changed(win._cloud_tab_index)
+win._on_center_tab_changed(win.center_tabs.indexOf(win.center_tab_widgets["cloud"]))
 assert win.cameras.cloud_worker is None
 # 합성 클라우드 렌더
 rng = np.random.default_rng(0)
@@ -76,7 +76,7 @@ win._on_center_tab_changed(0)   # 탭 이탈 -> 워커 없음이면 no-op
 assert win.cameras.cloud_worker is None
 # 세션 중 진입 차단
 win.worker = object()
-win._on_center_tab_changed(win._cloud_tab_index)
+win._on_center_tab_changed(win.center_tabs.indexOf(win.center_tab_widgets["cloud"]))
 assert win.cameras.cloud_worker is None
 win.worker = None
 print("3 통과: 탭 진입/이탈 가드 + 합성 클라우드 렌더 + 세션 차단")
@@ -114,7 +114,7 @@ assert win.cameras.cloud_worker is None
 print("5 통과: 클라우드 카메라 콤보 (닫힌 탭에서는 지연 반영)")
 
 # ---- 6. Depth 탭: 소비자 전환 + 컬러맵 렌더 ----
-win._on_center_tab_changed(win._depth_tab_index)
+win._on_center_tab_changed(win.center_tabs.indexOf(win.center_tab_widgets["depth"]))
 assert win.cameras.depth_consumer == "depth" and win.cameras.cloud_worker is None
 z = np.full((48, 64), 0.6, np.float32)
 z[:10] = 0.0            # 무측정

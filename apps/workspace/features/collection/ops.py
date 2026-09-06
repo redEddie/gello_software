@@ -14,6 +14,7 @@ from gello.collect.worker import CollectionWorker, GATE_RAD, WorkerConfig
 from gello.scene.scene_format import count_by_slot, read_scene_metadata, scene_filename
 from apps.workspace.features.collection.header import set_header_state
 from apps.workspace.models import _new_stats
+from apps.workspace.shared.tabs import show_center_tab
 
 
 class CollectionOps:
@@ -500,7 +501,7 @@ class CollectionOps:
         # 연결되면 카메라 화면으로 따라간다. 버튼을 누른 시점이 아니라 여기인
         # 이유는, 연결이 미리보기 정리를 기다리거나 실패할 수 있기 때문이다 --
         # 그때 Live 로 옮겨두면 아무것도 안 나오는 탭을 보게 된다.
-        self.win.center_tabs.setCurrentIndex(self.win._live_tab_index)
+        show_center_tab(self.win, "live")
         # 기록 외 단계에서는 worker 가 카메라를 읽지 않으므로(게이지를 빠르게
         # 유지하기 위해 -- _emit_gate_status 참고) 미리보기가 그 구간의 유일한
         # 영상 공급원이다. 꺼져 있으면 자세를 맞추는 동안 화면이 빈다.

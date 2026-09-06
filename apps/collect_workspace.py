@@ -113,6 +113,7 @@ from apps.workspace.shell import (  # noqa: E402
     build_toolbar,
     set_toolbar_context,
 )
+from apps.workspace.shared.tabs import center_tab_key  # noqa: E402
 from apps.workspace.features.scene.dialogs.grid_editor_dialog import GridEditorDialog  # noqa: E402
 from apps.workspace.features.dataset.hdf5_tree_dialog import Hdf5TreeDialog  # noqa: E402
 from gello.gui.grid_overlay import (  # noqa: E402
@@ -402,12 +403,8 @@ class WorkspaceWindow(QMainWindow):
     # ------------------------------------------------------------- 분석 탭
     def _on_center_tab_changed(self, idx: int) -> None:
         """레이아웃 탭이 보이는 동안만 하단 로그를 접고 슬라이드쇼를 돌린다."""
-        if idx == getattr(self, "_cloud_tab_index", -1):
-            self.cameras.depth_consumer = "cloud"
-        elif idx == getattr(self, "_depth_tab_index", -1):
-            self.cameras.depth_consumer = "depth"
-        else:
-            self.cameras.depth_consumer = None
+        key = center_tab_key(self, idx)
+        self.cameras.depth_consumer = key if key in ("cloud", "depth") else None
         if self.cameras.depth_consumer is not None:
             self.depth_ops.start_cloud()     # 이미 같은 카메라로 돌고 있으면 유지
             if self.cameras.cloud_worker is not None:
@@ -416,7 +413,7 @@ class WorkspaceWindow(QMainWindow):
                 self.cameras.cloud_worker.mode = self.cameras.depth_consumer
         elif self.cameras.cloud_worker is not None:
             self.depth_ops.stop_cloud()
-        on = idx == self._layout_tab_index
+        on = key == "layout"
         self.bottom_tabs.setVisible(not on)
         if on:
             self._set_activity("layout")     # 컨트롤이 왼쪽 페이지에 있다
