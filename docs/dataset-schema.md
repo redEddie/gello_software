@@ -113,62 +113,90 @@ schema** — the same version can be stored either way.
 - **Joint torques / external forces / contact** — issue #16. Added in
   `knu-1.1.0` below.
 
-## `knu-1.1.0` — frozen 2026-09-05
+## `knu-1.1.0` — RETIRED 2026-09-06, do not use
 
-Adds seven observation datasets. Everything else is identical to `knu-1.0.0`.
+Defined seven observation datasets. **Three of them are zero in every frame of
+every file**, because they were added by checking that the `RobotState` field
+existed without ever checking that a value arrives:
 
 ```
-episode_NNN/obs/joint_torques          (T, 7) float32   tau_J
-episode_NNN/obs/ext_joint_torques      (T, 7) float32   tau_ext_hat_filtered
-episode_NNN/obs/desired_joint_torques  (T, 7) float32   tau_J_d
-episode_NNN/obs/ee_wrench              (T, 6) float32   O_F_ext_hat_K
-episode_NNN/obs/ee_wrench_ee           (T, 6) float32   K_F_ext_hat_K
-episode_NNN/obs/joint_contact          (T, 7) float32   joint_contact
-episode_NNN/obs/cartesian_contact      (T, 6) float32   cartesian_contact
+desired_joint_torques   always 0   tau_J_d is only filled by an external torque
+                                   controller; we drive the arm with
+                                   start_joint_position_control
+joint_contact           always 0   set_collision_behavior is called with lower ==
+cartesian_contact       always 0   upper, so contact is reported only when the
+                                   reflex fires — and a reflex aborts the episode,
+                                   so no saved frame can have the flag set
+```
+
+A zero in those three columns means **"not measured"**, not "no contact". Do not
+threshold them, do not train on them.
+
+The definition stays in `SCHEMA_FIELDS` so files already stamped `knu-1.1.0`
+still validate, but the version is removed from the launcher's picker
+(`SCHEMA_PICKABLE`) so nothing new can be recorded with it. `scene_015`, the
+only file that ever carried it, is being re-collected as `knu-1.1.1`.
+
+## `knu-1.1.1` — frozen 2026-09-06
+
+`knu-1.0.0` plus four force/torque datasets. Everything else is identical.
+
+```
+episode_NNN/obs/joint_torques      (T, 7) float32   tau_J
+episode_NNN/obs/ext_joint_torques  (T, 7) float32   tau_ext_hat_filtered
+episode_NNN/obs/ee_wrench          (T, 6) float32   O_F_ext_hat_K  (base frame O)
+episode_NNN/obs/ee_wrench_ee       (T, 6) float32   K_F_ext_hat_K  (stiffness/EE frame K)
 ```
 
 The single source for this list is `FT_OBS_FIELDS` in
 `gello/data/dataset_schema.py`; `FT_STATE_ATTRS` in `gello/robots/franka_fr3.py`
-maps each name to its `RobotState` field. Adding a field means editing those two
-tables — the buffer, the writer and the wizard's check all iterate them.
+maps each name to its `RobotState` field.
 
-Why these seven and not the three we started with:
+Removing fields is outside the "MINOR adds only" rule. It is a PATCH here
+because no `knu-1.1.0` file survives into the final dataset, so nothing loses a
+column it used to have.
 
-- `tau_J` is the torque actually measured at the joints; `tau_J_d` is what the
-  controller asked for. Their difference is the tracking error, which is the
-  cleanest cheap signal that something resisted the motion.
-- `tau_ext_hat_filtered` is franka's own estimate of the external part, i.e.
-  what the model could not explain.
-- `O_F_ext_hat_K` and `K_F_ext_hat_K` are the same external wrench in two
-  frames: the robot base `O`, and the stiffness frame `K` (which defaults to the
-  EE frame). Manipulation policies want the EE frame; keeping both saves every
-  consumer from re-deriving one from `O_T_EE`.
-- `joint_contact` / `cartesian_contact` are franka's own 0/1 contact flags,
-  computed against the `set_collision_behavior` lower thresholds. They are free
-  contact-event labels — the closest thing to ground truth for "when did it
-  touch something" that we get without annotating by hand.
+### Candidates that were rejected, and why
 
-All seven come straight from the FR3 robot state at 1 kHz, so capturing them
-costs nothing beyond the 46 floats per frame we store. A firmware or
-`pylibfranka` build without those fields makes the node log a warning and skip
-them — a file written on such a rig has `knu-1.0.0`'s field set and must be
-stamped `knu-1.0.0`, not `1.1.0`. The wizard's dataset-version [확인] button
-checks exactly this against the live robot before collection starts.
+All measured on the robot rather than reasoned about — `FT_OBS_REJECTED` keeps
+the same list next to the code:
 
-**Why the bump was needed, in hindsight.** The torque fields started being
-written with `scene_015` (2026-09-04) while the version string stayed
-`knu-1.0.0`. That produced two files both claiming `knu-1.0.0` with different
-observation sets — exactly what versioning exists to prevent. `scene_000` …
-`scene_014` genuinely lack the fields and stay `knu-1.0.0`.
+| field | measurement | verdict |
+|---|---|---|
+| `tau_J_d` | 0 in all 2090 frames of `scene_015` | never filled under position control |
+| `dtau_J` | \|max\| 242 N·m/s **stationary**, 255 N·m/s while shaken by hand | noise-dominated; cannot even separate moving from still |
+| `joint_contact`, `cartesian_contact` | 0 in all frames | unreachable (see above); and thresholding `ext_joint_torques` offline gives the same thing without baking a threshold into the data |
+| gripper `is_grasped` | — | `gripper_states` width already separates it cleanly (0.44–0.46 grasped vs 0.75–0.77 empty) |
 
-`scene_015` was briefly stamped `knu-1.1.0` in place while that version meant
-only the first three fields. It is being **re-collected** with the full seven,
-so the definition above was widened before any `knu-1.1.0` file was final —
-there is no released `knu-1.1.0` data with the narrow field set.
+### How accurate these values are
 
-Nothing downstream of the HDF5 changes: the LeRobot converter never consumed
-these keys (`_CONSUMED_OBS_KEYS`), so the published `-lerobot` dataset is
-unaffected.
+Measured 2026-09-06 by grasping a 0.5 kg calibration weight, with the payload
+declared in Desk (`m_ee = 0.85 kg` = Franka Hand 0.73 + camera/bracket 0.118):
+
+```
+                                         carry-phase Fz, joints below 0.15 rad/s
+empty hand                                        -1.671 +- 0.345 N
+holding 0.5 kg                                    +3.257 +- 0.410 N
+                                       difference  4.928 N  ->  502 g
+```
+
+Two things follow, and both matter to anyone using these columns:
+
+1. **The estimate is only trustworthy at low speed.** Restricting to
+   near-stationary frames is what makes 500 g read as 502 g; using every frame
+   gives 437 g. With the payload *undeclared* the same weight reads 613 g — the
+   unmodelled 118 g lands directly in the external-force estimate.
+2. **Per-frame values are noisy.** Even among near-stationary frames the
+   standard deviation is 2.6–3.4 N, comparable to the 4.9 N signal being
+   measured. A single frame cannot tell you whether a 500 g object is held;
+   averaging or filtering can. Treat these columns as a signal to integrate,
+   not as a per-frame contact sensor. Uncertainty on a mass estimate from a few
+   hundred frames is roughly ±50 g, and that is optimistic because consecutive
+   20 Hz frames are correlated.
+
+The payload declared in Desk at recording time is **not** stored in the file
+yet. Until it is, a file's absolute force values are only interpretable if the
+Desk configuration is known to have been correct.
 
 ## How to bump a MINOR
 

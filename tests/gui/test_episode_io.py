@@ -55,7 +55,7 @@ def _make_frame(seed=0, gripper_closed=False):
         "gripper_closed": gripper_closed,
         "commanded_joint_positions": rng.random(7).astype(np.float32),
         "commanded_gripper": float(rng.random()),
-        # 포스·토크 (knu-1.1.0 에서 추가). FR3 의 robot state 에서 오고,
+        # 포스·토크 (knu-1.1.1). FR3 의 robot state 에서 오고,
         # 그 필드가 없는 장비에서는 기록되지 않는다 -- 그래서 아래 5번이
         # "안 주면 안 쓴다" 를 따로 본다.
         "ft": {k: rng.random(n).astype(np.float32) for k, n in FT_OBS_FIELDS},
@@ -113,7 +113,7 @@ def test_round_trip():
                 assert obs["eye_in_hand_rgb"].shape == (5, 480, 640, 3)
                 assert obs["eye_in_hand_rgb"].dtype == np.uint8
                 assert obs["joint_states"].shape == (5, 7)
-                # knu-1.1.0 에서 들어온 포스·토크·접촉 (모양까지 고정)
+                # knu-1.1.1 의 포스·토크 4종 (모양까지 고정)
                 for key, width in FT_OBS_FIELDS:
                     assert obs[key].shape == (5, width), key
                 assert obs["joint_states"].dtype == np.float32

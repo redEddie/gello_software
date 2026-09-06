@@ -74,7 +74,7 @@ for _ in range(5):
         gripper_position=0.5, ee_pos_quat=np.zeros(7), gripper_closed=False,
         commanded_joint_positions=r.standard_normal(7).astype(np.float32),
         commanded_gripper=0.0,
-        # knu-1.1.0 필수 -- 이 파일은 그 버전으로 찍혀 있으므로 이어 붙이는
+        # knu-1.1.1 필수 -- 이 파일은 그 버전으로 찍혀 있으므로 이어 붙이는
         # 에피소드에도 있어야 한다 (없으면 검증기가 잡는다).
         ft={k: r.standard_normal(n).astype(np.float32)
             for k, n in FT_OBS_FIELDS})
@@ -114,7 +114,7 @@ for _ in range(40):
         gripper_position=0.5, ee_pos_quat=np.zeros(7), gripper_closed=False,
         commanded_joint_positions=r.standard_normal(7).astype(np.float32),
         commanded_gripper=0.0,
-        # knu-1.1.0 필수 -- 이 파일은 그 버전으로 찍혀 있으므로 이어 붙이는
+        # knu-1.1.1 필수 -- 이 파일은 그 버전으로 찍혀 있으므로 이어 붙이는
         # 에피소드에도 있어야 한다 (없으면 검증기가 잡는다).
         ft={k: r.standard_normal(n).astype(np.float32)
             for k, n in FT_OBS_FIELDS})

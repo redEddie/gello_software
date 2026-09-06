@@ -48,7 +48,7 @@ DEFAULT_CONFIG_PATH = Path.home() / "libero_gui_logs" / "dataset_schema.json"
 # 정본이다 (문서와 어긋나면 검증기가 잡는다).
 #: 지금 쓰는(기록하는) 버전. 읽기는 같은 MAJOR 안에서 위아래 모두 된다
 #: (schema_is_readable 참조).
-SCHEMA_VERSION = "knu-1.1.0"
+SCHEMA_VERSION = "knu-1.1.1"
 
 # --------------------------------------------------------- observation/dataset keys
 # Robot observation keys (returned by Robot.get_observations / RobotEnv.get_obs).
@@ -69,27 +69,41 @@ OBS_EE_STATES = "ee_states"
 OBS_EE_POS = "ee_pos"
 OBS_EE_ORI = "ee_ori"
 OBS_JOINT_VELOCITIES = "joint_velocities"
-# 포스·토크·접촉 (knu-1.1.0 에서 추가). FR3 의 robot state 에서 그대로 온다 --
-# 그 필드가 없는 펌웨어/바인딩에서는 기록되지 않으므로, 이것들이 있으면
-# 1.1.0, 없으면 1.0.0 이다.
+# 포스·토크 (knu-1.1.1). FR3 의 robot state 에서 그대로 온다 -- 그 필드가 없는
+# 펌웨어/바인딩에서는 기록되지 않는다.
+#
+# 넷만 남은 것은 후보 여덟을 로봇에 붙여 하나씩 재 본 결과다 (2026-09-06).
+# "필드가 존재한다"와 "값이 온다"와 "그 값에 정보가 있다"는 서로 다르고,
+# 앞의 둘만 보고 knu-1.1.0 에 넣었다가 그 버전을 통째로 폐기했다.
 OBS_JOINT_TORQUES = "joint_torques"
 OBS_EXT_JOINT_TORQUES = "ext_joint_torques"
-OBS_DESIRED_JOINT_TORQUES = "desired_joint_torques"
 OBS_EE_WRENCH = "ee_wrench"
 OBS_EE_WRENCH_EE = "ee_wrench_ee"
-OBS_JOINT_CONTACT = "joint_contact"
-OBS_CARTESIAN_CONTACT = "cartesian_contact"
 
-#: 위 7종을 한 묶음으로. 로봇 -> 수집 워커 -> 기록기가 모두 이 순서로 돌며,
+#: 탈락한 후보와 그 이유. 다시 넣자는 이야기가 나올 때 같은 측정을 반복하지
+#: 않도록 남긴다 -- 전부 실측이다.
+#:
+#: * ``tau_J_d`` (명령 관절토크): **항상 0**. start_joint_position_control 로
+#:   위치를 보내므로 libfranka 가 채울 명령 토크가 없다. 2090 프레임 전부 0.
+#: * ``dtau_J`` (관절토크 미분): 항상 0 은 아니지만 **노이즈가 지배**한다.
+#:   정지 상태 최대 242 N*m/s, 손으로 흔든 상태 255 N*m/s -- 5% 차이라 운동
+#:   여부조차 구분하지 못한다. 1kHz 미분이라 20Hz 차분으로 못 만드는 값인 것은
+#:   맞지만, 만들어 봐야 노이즈를 띄엄띄엄 찍은 난수다.
+#: * ``joint_contact``/``cartesian_contact``: set_collision_behavior 의 lower 를
+#:   upper(리플렉스)와 같게 두고 있어 **항상 0**이다. 게다가 문턱을 낮춰 살려도
+#:   ext_joint_torques 를 오프라인에서 자르면 같은 것을 얻는다 -- 수집 시점에
+#:   문턱을 굽는 대신 연속값을 남기는 쪽이 되돌릴 수 있다.
+#: * ``is_grasped`` (그리퍼): 파지 여부는 gripper_states 폭이 이미 뚜렷하게
+#:   가른다 (파지 0.44~0.46 vs 빈 손 0.75~0.77, 실측).
+FT_OBS_REJECTED = ("tau_J_d", "dtau_J", "joint_contact", "cartesian_contact")
+
+#: 위 넷을 한 묶음으로. 로봇 -> 수집 워커 -> 기록기가 모두 이 순서로 돌며,
 #: 필드를 늘릴 때 고칠 곳이 여기 하나가 되도록 한다. 값은 (키, 원소 수).
 FT_OBS_FIELDS = (
     (OBS_JOINT_TORQUES, 7),
     (OBS_EXT_JOINT_TORQUES, 7),
-    (OBS_DESIRED_JOINT_TORQUES, 7),
     (OBS_EE_WRENCH, 6),
     (OBS_EE_WRENCH_EE, 6),
-    (OBS_JOINT_CONTACT, 7),
-    (OBS_CARTESIAN_CONTACT, 6),
 )
 FT_OBS_KEYS = tuple(k for k, _ in FT_OBS_FIELDS)
 
@@ -140,22 +154,36 @@ SCHEMA_FIELDS = {
     },
 }
 
-#: knu-1.1.0 = knu-1.0.0 + 포스·토크·접촉 7종 (2026-09-05).
+#: knu-1.1.0 -- **폐기**. 검증기는 알아야 하지만 새로 찍어서는 안 된다.
 #:
-#: 왜 버전을 올렸나: S015 를 찍을 때부터 obs/joint_torques,
-#: ext_joint_torques, ee_wrench 가 들어가기 시작했는데 버전 문자열은 그대로
-#: knu-1.0.0 이었다. "같은 버전인데 필드가 다른 파일 두 벌"이 생긴 것이고,
-#: 그 문자열을 믿고 필드 구성을 가정하는 소비자는 틀리게 된다 -- 버저닝이
-#: 막으려던 바로 그 상황이다.
+#: 7종을 넣었는데 그중 셋(desired_joint_torques, joint_contact,
+#: cartesian_contact)이 실제로는 **모든 프레임에서 0** 이었다. 필드가 있다는
+#: 것만 보고 넣었고, 값이 오는지는 로봇에 붙어 확인하지 않았다 (2026-09-06
+#: 실측으로 드러남). 이유는 FT_OBS_REJECTED 주석에 있다.
 #:
-#: 처음 정의는 3종(측정 토크·외력 토크·베이스 렌치)이었으나, 이 버전으로 찍은
-#: 파일이 아직 하나도 확정되지 않은 동안(S015 재수집 예정) 나머지 4종을 함께
-#: 넣었다 -- 로봇이 1kHz 로 이미 계산해 두는 값이라 캡처 비용이 사실상 0 이고,
-#: 나중에 넣으면 또 한 번 MINOR 를 올려 "1.1 파일이 두 종류"가 된다.
+#: 그래서 정의는 그대로 남긴다 -- 이 버전으로 찍힌 파일이 검증을 통과해야
+#: 하기 때문이다. 대신 런처의 버전 선택지에서 빼서 새 파일이 이 버전을 달지
+#: 못하게 한다 (apps/workspace/launcher/pages.py 의 SCHEMA_PICKABLE).
 #:
-#: MINOR 는 추가만 한다는 규칙대로, 1.0.0 항목은 손대지 않고 새 키를 만든다.
-#: 옛 파일(scene_000~014)은 계속 1.0.0 규칙으로 검사된다.
+#: **이 버전 파일의 세 필드를 쓰지 마세요.** 값이 0인 것은 "접촉이 없었다"가
+#: 아니라 "측정되지 않았다" 이다.
+_KNU_110_OBS = ("joint_torques", "ext_joint_torques", "desired_joint_torques",
+                "ee_wrench", "ee_wrench_ee", "joint_contact", "cartesian_contact")
 SCHEMA_FIELDS["knu-1.1.0"] = {
+    **SCHEMA_FIELDS["knu-1.0.0"],
+    "obs_datasets": SCHEMA_FIELDS["knu-1.0.0"]["obs_datasets"] + _KNU_110_OBS,
+}
+
+#: knu-1.1.1 = knu-1.0.0 + 포스·토크 4종 (2026-09-06).
+#:
+#: 1.1.0 에서 죽은 필드 셋을 뺀 것이다. 필드 제거라 MINOR 규칙("추가만") 밖
+#: 이지만, 1.1.0 으로 찍힌 파일이 최종 데이터셋에 하나도 남지 않으므로
+#: (S015 재수집) 실질적인 하위 호환 문제는 없다. PATCH 를 올려 "1.1 계열인데
+#: 고쳐진 것"임을 나타내고, 1.1.0 은 위처럼 폐기 표시한다.
+#:
+#: 남은 넷은 전부 실측으로 검증됐다: 0.5 kg 추를 502 g 으로 읽고, Desk 에서
+#: 뺀 120 g 을 111 g 으로 읽어냈다 (정지 구간 기준, +-50 g).
+SCHEMA_FIELDS["knu-1.1.1"] = {
     **SCHEMA_FIELDS["knu-1.0.0"],
     "obs_datasets": SCHEMA_FIELDS["knu-1.0.0"]["obs_datasets"] + FT_OBS_KEYS,
 }
@@ -360,6 +388,15 @@ def selftest() -> None:
     assert len(cur["obs_datasets"]) == len(old["obs_datasets"]) + len(FT_OBS_KEYS)
     # 키가 겹치면 뒤엣것이 앞엣것을 덮어써 조용히 한 필드가 사라진다
     assert len(set(FT_OBS_KEYS)) == len(FT_OBS_KEYS)
+    # 탈락한 후보는 현재 버전에 없어야 한다 -- 값이 안 오는 것으로 실측된
+    # 필드들이라, 다시 들어오면 knu-1.1.0 과 같은 사고가 반복된다.
+    assert not (set(FT_OBS_KEYS) & set(FT_OBS_REJECTED))
+    for f in FT_OBS_REJECTED:
+        assert f not in cur["obs_datasets"], f
+    # 폐기된 1.1.0 은 정의가 남아 있어야 한다 -- 그 버전으로 찍힌 파일이
+    # 검증을 통과해야 하기 때문이다 (새로 찍는 것은 런처가 막는다).
+    dead = schema_required_fields("knu-1.1.0")
+    assert dead is not None and "desired_joint_torques" in dead["obs_datasets"]
 
     # 모르는 버전은 필드 목록이 없다 -> 검증기가 "모르는 스키마 버전" 으로 잡는다
     assert schema_required_fields("knu-9.9.9") is None

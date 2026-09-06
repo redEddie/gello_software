@@ -52,7 +52,6 @@ import numpy as np
 from gello.comm.zmq_core.robot_node import probe_observation
 from gello.data.dataset_schema import (
     FT_OBS_KEYS,
-    SCHEMA_FIELDS,
     SCHEMA_VERSION,
     schema_required_fields,
 )
@@ -82,12 +81,20 @@ _NO_CAMERA = ""      # "(선택 안함)" 항목의 data
 #: 경고만 남긴다 -- 확인은 선택이지 진행 조건이 아니다.
 _ROBOT_NODE_WAIT_S = 15.0
 
+#: 새로 찍을 수 있는 버전. **검증기가 아는 버전(SCHEMA_FIELDS)의 부분집합**
+#: 이다 -- 폐기된 버전은 이미 있는 파일을 검사하려면 정의가 남아야 하지만,
+#: 새 파일이 그 버전을 달아서는 안 된다.
+#:
+#: knu-1.1.0 이 빠져 있다: 필드 셋이 모든 프레임에서 0 인 채로 정의됐고
+#: (dataset_schema.py 의 폐기 주석 참조), 그걸 고친 것이 knu-1.1.1 이다.
+SCHEMA_PICKABLE = ("knu-1.0.0", "knu-1.1.1")
+
 #: 버전이 요구하는 **로봇 관측 키**. HDF5 필드명과 같지만 층이 다르다 --
 #: 이쪽은 "로봇이 줘야 하는 값" 이고, 확인 버튼이 이것으로 검사한다.
 #: 포스·토크는 FR3 펌웨어가 노출할 때만 오므로 장비마다 다를 수 있다.
 _ROBOT_OBS_FIELDS = {
     "knu-1.0.0": (),
-    "knu-1.1.0": FT_OBS_KEYS,
+    "knu-1.1.1": FT_OBS_KEYS,
 }
 
 # 카메라 역할은 더 이상 여기 고정돼 있지 않다 -- 스테이션이 정한다
@@ -353,7 +360,7 @@ class HardwarePage(QWizardPage):
         ver_row = QHBoxLayout()
         ver_row.addWidget(QLabel(tr("스키마 버전")))
         self.schema_combo = QComboBox()
-        for v in sorted(SCHEMA_FIELDS):
+        for v in SCHEMA_PICKABLE:
             self.schema_combo.addItem(v, v)
         self.schema_combo.currentIndexChanged.connect(self._refresh_schema_label)
         ver_row.addWidget(self.schema_combo, 1)

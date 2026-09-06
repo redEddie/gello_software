@@ -77,12 +77,9 @@ import numpy as np
 
 from gello.core.robot import Robot
 from gello.data.dataset_schema import (
-    OBS_CARTESIAN_CONTACT,
-    OBS_DESIRED_JOINT_TORQUES,
     OBS_EE_WRENCH,
     OBS_EE_WRENCH_EE,
     OBS_EXT_JOINT_TORQUES,
-    OBS_JOINT_CONTACT,
     OBS_JOINT_TORQUES,
     ROBOT_EE_POS_QUAT,
     ROBOT_GRIPPER_POSITION,
@@ -99,17 +96,11 @@ FT_STATE_ATTRS = (
     (OBS_JOINT_TORQUES, "tau_J"),
     # 외력으로 추정된 관절토크 (N*m). 모델이 예측한 토크를 뺀 나머지.
     (OBS_EXT_JOINT_TORQUES, "tau_ext_hat_filtered"),
-    # 제어기가 '내보낸' 관절토크 (N*m). 측정값과 짝지으면 추종 오차가 나온다.
-    (OBS_DESIRED_JOINT_TORQUES, "tau_J_d"),
     # 외력 렌치 [Fx Fy Fz Tx Ty Tz]. 베이스 좌표 O.
     (OBS_EE_WRENCH, "O_F_ext_hat_K"),
     # 같은 렌치를 강성 좌표 K(기본값 = EE 좌표)로. 조작은 손끝 기준이라
     # 베이스 좌표보다 이쪽이 바로 쓰인다.
     (OBS_EE_WRENCH_EE, "K_F_ext_hat_K"),
-    # franka 자체 접촉 판정 (0/1). set_collision_behavior 의 lower 문턱을
-    # 넘으면 1 -- 접촉 구간 라벨이 공짜로 따라온다.
-    (OBS_JOINT_CONTACT, "joint_contact"),
-    (OBS_CARTESIAN_CONTACT, "cartesian_contact"),
 )
 
 # FR3 gripper stroke (m).  Franka Hand opens to ~0.08 m.

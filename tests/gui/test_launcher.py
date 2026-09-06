@@ -327,8 +327,13 @@ from gello.scene.dataset_meta import schema_version_spans  # noqa: E402
 hwp.initializePage()
 assert hwp.schema_version() == SCHEMA_VERSION, \
     f"기본값은 최신이어야 한다: {hwp.schema_version()} != {SCHEMA_VERSION}"
+# 폐기된 버전은 목록에 없어야 한다 -- 검증기는 알지만 새로 찍지는 못한다.
+from apps.workspace.launcher.pages import SCHEMA_PICKABLE  # noqa: E402
+
+assert "knu-1.1.0" in SCHEMA_FIELDS and "knu-1.1.0" not in SCHEMA_PICKABLE, \
+    "폐기된 1.1.0 은 검증기엔 남고 선택지엔 없어야 한다"
 assert {hwp.schema_combo.itemData(i) for i in range(hwp.schema_combo.count())} \
-    == set(SCHEMA_FIELDS), "정의된 버전이 모두 고를 수 있어야 한다"
+    == set(SCHEMA_PICKABLE), "고를 수 있는 버전은 SCHEMA_PICKABLE 그대로여야 한다"
 # 옛 버전으로 내려 찍는 것도 가능해야 한다 (섞임 허용)
 _i = hwp.schema_combo.findData("knu-1.0.0")
 hwp.schema_combo.setCurrentIndex(_i)
@@ -359,9 +364,9 @@ for _v, _fields in _ROBOT_OBS_FIELDS.items():
     _extra = [f for f in _fields if f not in _req]
     assert not _extra, f"{_v}: 확인만 하고 스키마엔 없는 필드 {_extra}"
 _base = set(SCHEMA_FIELDS["knu-1.0.0"]["obs_datasets"])
-_added = [f for f in SCHEMA_FIELDS["knu-1.1.0"]["obs_datasets"] if f not in _base]
-assert set(_ROBOT_OBS_FIELDS["knu-1.1.0"]) == set(_added), \
-    f"1.1.0 이 더한 필드와 확인 대상이 다르다: {_added}"
+_added = [f for f in SCHEMA_FIELDS[SCHEMA_VERSION]["obs_datasets"] if f not in _base]
+assert set(_ROBOT_OBS_FIELDS[SCHEMA_VERSION]) == set(_added), \
+    f"{SCHEMA_VERSION} 이 더한 필드와 확인 대상이 다르다: {_added}"
 assert set(_added) == set(FT_OBS_KEYS)
 print("12 통과: 버전 [확인] 대상 == 그 버전이 더한 관측 필드")
 
