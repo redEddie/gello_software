@@ -225,6 +225,11 @@ class WorkerConfig:
     scene_metadata: Optional[SceneMetadata] = None
     scene_id: Optional[str] = None
     scene_resume: bool = False
+    #: 이번 세션이 기록할 스키마 버전 (마법사가 정한다). 새 scene 은
+    #: SceneMetadata 에 실려 가고, 이어찍기는 SceneWriter 가 이 값으로 파일의
+    #: 도장을 올린다 -- 안 그러면 새 필드 구성으로 찍으면서 도장은 옛 버전인
+    #: 파일이 된다 (2026-09-06 scene_015).
+    session_version: str = ""
     instruction_id: str = ""      # scene 모드 시작 slot 의 ID (예: "I000")
     collector: str = ""           # scene 모드 필수 attr -- 수집자 식별자
     agent_camera_serial: str = AGENT_CAMERA_SERIAL
@@ -1188,7 +1193,10 @@ class CollectionWorker(QThread):
                     crop_params=self.cfg.crop_params,
                     collector=self.cfg.collector,
                     known_prop_ids=active_prop_ids(),
+                    session_version=self.cfg.session_version,
                 )
+                if getattr(self._writer, "version_note", ""):
+                    self.log_message.emit(f"[스키마] {self._writer.version_note}")
             else:
                 self._writer = LiberoTaskWriter(
                     root=self.cfg.data_root,

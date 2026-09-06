@@ -213,6 +213,21 @@ SCHEMA_FIELDS["knu-1.2.0"] = {
 }
 
 
+def schema_version_key(value) -> tuple:
+    """비교용 (MAJOR, MINOR, PATCH). 별칭은 풀고, 못 읽으면 (-1,-1,-1).
+
+    버전 문자열을 문자로 비교하면 knu-1.10.0 이 knu-1.9.0 보다 작아진다.
+    비교가 필요한 곳(이어찍기에서 도장을 올릴지 판단할 때)이 생겨 여기 둔다.
+    """
+    v = normalize_schema_version(value)
+    body = v.split("-", 1)[1] if "-" in v else v
+    try:
+        parts = tuple(int(x) for x in body.split("."))
+    except ValueError:
+        return (-1, -1, -1)
+    return parts + (0,) * (3 - len(parts)) if len(parts) < 3 else parts[:3]
+
+
 def normalize_schema_version(value) -> str:
     """파일에 적힌 버전 표기를 정본 형태로. 별칭은 풀고, 나머지는 그대로.
 

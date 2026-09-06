@@ -85,6 +85,7 @@ from gello.data.dataset_schema import (
     SCHEMA_VERSION,
     DatasetSchemaConfig,
     normalize_schema_version,
+    schema_version_key,
 )
 from gello.data.crop import default_crop_params
 from gello.data.libero_format import (
@@ -319,6 +320,7 @@ class SceneWriter:
         crop_params: Optional[dict] = None,
         collector: str = "",
         known_prop_ids: Optional[set[str]] = None,
+        session_version: Optional[str] = None,
     ) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -326,6 +328,8 @@ class SceneWriter:
         self.crop_params = crop_params or default_crop_params()
         self.collector = collector
         self._buffer = LiberoEpisodeBuffer(self.schema, self.crop_params)
+        #: 이어찍기에서 버전 도장을 어떻게 했는지 -- 상류가 로그로 보여준다.
+        self.version_note = ""
 
         if resume:
             if metadata is not None:
@@ -346,6 +350,7 @@ class SceneWriter:
                     f"{self.path.name} 내부 scene_id 는 {self.metadata.scene_id!r} 다 "
                     f"(요청: {scene_id!r}) -- 파일명이 아니라 metadata 를 믿는다"
                 )
+            self._resume_version(session_version)
         else:
             if metadata is None:
                 raise ValueError("새 scene 에는 metadata 가 필요하다")
@@ -392,6 +397,61 @@ class SceneWriter:
             self._meta.attrs["next_episode_idx"] = max(existing, default=-1) + 1
         self._file.flush()
 
+    def _resume_version(self, session_version: "str | None") -> None:
+        """이어찍기: 파일의 버전 도장을 이번 세션 버전에 맞춘다.
+
+        이어 찍으면 **이번 세션이 쓰는 필드**가 그 파일에 들어간다. 그런데
+        도장은 파일이 처음 만들어질 때 찍힌 그대로였다 -- 2026-09-06 에
+        scene_015 가 정확히 그렇게 됐다: 에피소드를 다 지우고 새 필드 구성으로
+        40개를 다시 찍었는데 도장은 옛 knu-1.1.0 이라, 그 버전이 요구하는 (이제는
+        기록하지 않는) 필드가 없다며 검증에 걸렸다.
+
+        **올리기만 한다** (2026-09-06 사용자 결정). 내려 찍으면 이웃 에피소드가
+        가진 열을 잃은 파일이 되고, 그건 버저닝이 막으려는 바로 그 상황이다.
+        낮은 버전으로 찍고 싶으면 새 데이터셋으로 시작하는 것이 올바른 신호다.
+
+        이미 있는 에피소드가 새 버전의 필수 관측을 갖췄을 때만 올린다 -- 아니면
+        도장이 파일 내용을 넘어서 약속하는 셈이라, 옛 도장을 두고 사유만 남긴다.
+        """
+        from gello.data.dataset_schema import schema_required_fields
+
+        cur = normalize_schema_version(self.metadata.dataset_version)
+        want = normalize_schema_version(session_version or "")
+        if not want or want == cur:
+            return
+        req = schema_required_fields(want)
+        if req is None:
+            self.version_note = f"모르는 버전이라 도장을 두었습니다: {want}"
+            return
+        if schema_version_key(want) < schema_version_key(cur):
+            self.version_note = (
+                f"이 파일은 {cur} 인데 이번 세션은 {want} 입니다 -- 버전은 "
+                f"내리지 않습니다. 낮은 버전으로 찍으려면 새 데이터셋으로 "
+                f"시작하세요.")
+            return
+        missing = self._episodes_missing(req["obs_datasets"])
+        if missing:
+            self.version_note = (
+                f"{cur} -> {want} 로 올리지 못했습니다: 기존 에피소드 "
+                f"{len(missing)}개에 {want} 필수 관측이 없습니다. 도장을 그대로 둡니다.")
+            return
+        self.metadata.dataset_version = want
+        self._meta.attrs["dataset_version"] = want
+        self._meta.attrs["schema_version"] = want
+        self.version_note = f"버전 도장을 {cur} -> {want} 로 올렸습니다."
+
+    def _episodes_missing(self, need) -> list:
+        """필수 관측이 빠진 기존 에피소드 이름들 (데이터는 읽지 않는다)."""
+        out = []
+        for name in self._file:
+            if not EPISODE_GROUP_RE.match(name):
+                continue
+            obs = self._file[name].get("obs")
+            if obs is None or any(k not in obs for k in need):
+                out.append(name)
+        return out
+
+
     # ------------------------------------------------------- 버퍼 (legacy 미러)
     def start_episode(self) -> None:
         self._buffer.clear()
@@ -405,6 +465,8 @@ class SceneWriter:
     def detach_buffer(self) -> LiberoEpisodeBuffer:
         buf = self._buffer
         self._buffer = LiberoEpisodeBuffer(self.schema, self.crop_params)
+        #: 이어찍기에서 버전 도장을 어떻게 했는지 -- 상류가 로그로 보여준다.
+        self.version_note = ""
         return buf
 
     # ------------------------------------------------------------- 기준 사진

@@ -316,6 +316,7 @@ class CollectionOps:
             scene_metadata=scene_meta,
             scene_id=scene_sid,
             scene_resume=scene_resume,
+            session_version=self.win.schema_version,
             instruction_id=(self.win.scene_iid_edit.text().strip() if scene_on else ""),
             collector=(self.win.collector_edit.text().strip() if scene_on else ""),
             agent_camera_serial=agent,
