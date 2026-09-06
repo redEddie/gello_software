@@ -23,6 +23,7 @@ sys.path.insert(0, WT)
 
 from gello.data.dataset_schema import (  # noqa: E402
     FT_OBS_FIELDS,
+    schema_required_fields,
     schema_version_key,
 )
 from gello.scene.scene_format import SceneMetadata, SceneWriter  # noqa: E402
@@ -65,8 +66,9 @@ root = TMP / "up"
 w = SceneWriter(root=root, metadata=_meta("knu-1.1.0"))
 w.close()
 w2 = SceneWriter(root=root, scene_id="S000", resume=True,
-                 session_version="knu-1.2.0")
-assert w2.metadata.dataset_version == "knu-1.2.0", w2.metadata.dataset_version
+                 session_version="knu-1.2.0",
+                 session_payload={"mass": 0.85, "com": [-0.01, 0.0, 0.03]})
+assert w2.metadata.dataset_version == "knu-1.2.0", w2.version_note
 assert "올렸습니다" in w2.version_note, w2.version_note
 _episode(w2, np.random.default_rng(0))
 w2.close()
@@ -111,6 +113,32 @@ assert w2.metadata.dataset_version == "knu-1.0.0", "내용이 못 미치는데 �
 assert "올리지 못했습니다" in w2.version_note, w2.version_note
 w2.close()
 print("4 통과: 기존 에피소드가 새 버전을 못 갖추면 도장을 그대로 둔다")
+
+# --- 4b) 새 버전이 요구하는 metadata 를 모르면 올리지 않는다 --------------
+# 관측만 보고 올리면, 도장은 knu-1.2.0 인데 그 버전이 요구하는 부하 모델이
+# 없는 파일이 된다 -- 고치려던 것과 똑같은 모양의 결함이다.
+root4 = TMP / "nometa"
+w = SceneWriter(root=root4, metadata=_meta("knu-1.1.1"))
+w.close()
+w2 = SceneWriter(root=root4, scene_id="S000", resume=True,
+                 session_version="knu-1.2.0")            # 부하를 안 준다
+assert w2.metadata.dataset_version == "knu-1.1.1", "부하를 모르는데 올렸다"
+assert "알지 못합니다" in w2.version_note, w2.version_note
+w2.close()
+# 부하를 주면 올라가고, 그 값이 파일에 남는다
+w3 = SceneWriter(root=root4, scene_id="S000", resume=True,
+                 session_version="knu-1.2.0",
+                 session_payload={"mass": 0.85, "com": [-0.01, 0.0, 0.03]})
+assert w3.metadata.dataset_version == "knu-1.2.0", w3.version_note
+w3.close()
+import h5py, json as _json  # noqa: E402
+with h5py.File(root4 / "scene_000.hdf5") as _f:
+    _m = _f["metadata"].attrs
+    _need = schema_required_fields("knu-1.2.0")["metadata_attrs"]
+    assert not [k for k in _need if k not in _m], [k for k in _need if k not in _m]
+    assert float(_m["payload_mass"]) == 0.85
+    assert _json.loads(_m["payload_com"]) == [-0.01, 0.0, 0.03]
+print("4b 통과: metadata 를 모르면 안 올리고, 주면 올리면서 파일에 남긴다")
 
 # --- 5) 같은 버전이면 아무 말도 하지 않는다 -------------------------------
 w = SceneWriter(root=TMP / "same", metadata=_meta("knu-1.2.0"))

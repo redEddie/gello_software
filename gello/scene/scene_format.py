@@ -321,6 +321,7 @@ class SceneWriter:
         collector: str = "",
         known_prop_ids: Optional[set[str]] = None,
         session_version: Optional[str] = None,
+        session_payload: Optional[dict] = None,
     ) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -350,7 +351,7 @@ class SceneWriter:
                     f"{self.path.name} 내부 scene_id 는 {self.metadata.scene_id!r} 다 "
                     f"(요청: {scene_id!r}) -- 파일명이 아니라 metadata 를 믿는다"
                 )
-            self._resume_version(session_version)
+            self._resume_version(session_version, session_payload)
         else:
             if metadata is None:
                 raise ValueError("새 scene 에는 metadata 가 필요하다")
@@ -397,7 +398,8 @@ class SceneWriter:
             self._meta.attrs["next_episode_idx"] = max(existing, default=-1) + 1
         self._file.flush()
 
-    def _resume_version(self, session_version: "str | None") -> None:
+    def _resume_version(self, session_version: "str | None",
+                        session_payload: "dict | None" = None) -> None:
         """이어찍기: 파일의 버전 도장을 이번 세션 버전에 맞춘다.
 
         이어 찍으면 **이번 세션이 쓰는 필드**가 그 파일에 들어간다. 그런데
@@ -435,10 +437,41 @@ class SceneWriter:
                 f"{cur} -> {want} 로 올리지 못했습니다: 기존 에피소드 "
                 f"{len(missing)}개에 {want} 필수 관측이 없습니다. 도장을 그대로 둡니다.")
             return
+        # 관측만 보면 부족하다. 새 버전이 metadata attrs 를 요구할 수도 있고
+        # (knu-1.2.0 의 부하 모델), 그건 에피소드가 아니라 파일에 있다. 이걸
+        # 빼먹으면 도장은 올라갔는데 그 버전이 요구하는 값이 없는 파일이 된다
+        # -- 고치려던 것과 똑같은 모양의 결함이다.
+        need_meta = [k for k in req["metadata_attrs"] if k not in self._meta.attrs]
+        if need_meta and not self._fill_meta(need_meta, session_payload):
+            self.version_note = (
+                f"{cur} -> {want} 로 올리지 못했습니다: {want} 가 요구하는 "
+                f"{', '.join(need_meta)} 를 이번 세션이 알지 못합니다. "
+                f"도장을 그대로 둡니다.")
+            return
         self.metadata.dataset_version = want
         self._meta.attrs["dataset_version"] = want
         self._meta.attrs["schema_version"] = want
         self.version_note = f"버전 도장을 {cur} -> {want} 로 올렸습니다."
+
+    def _fill_meta(self, need: list, payload: "dict | None") -> bool:
+        """올리는 데 필요한 metadata attrs 를 이번 세션 값으로 채운다.
+
+        채울 수 있는 것만 채우고, 하나라도 모르면 **아무것도 쓰지 않고** False.
+        절반만 채워 두면 그 다음 검사에서 통과해 버려, 모르는 값이 빈 채로
+        도장만 올라간 파일이 남는다.
+        """
+        known = {}
+        if payload and payload.get("mass") is not None:
+            known[META_PAYLOAD_MASS] = float(payload["mass"])
+            known[META_PAYLOAD_COM] = json.dumps(list(payload.get("com") or []))
+        if any(k not in known for k in need):
+            return False
+        for k in need:
+            self._meta.attrs[k] = known[k]
+        if META_PAYLOAD_MASS in need:
+            self.metadata.payload_mass = known[META_PAYLOAD_MASS]
+            self.metadata.payload_com = json.loads(known[META_PAYLOAD_COM])
+        return True
 
     def _episodes_missing(self, need) -> list:
         """필수 관측이 빠진 기존 에피소드 이름들 (데이터는 읽지 않는다)."""

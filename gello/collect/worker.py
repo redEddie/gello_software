@@ -1145,25 +1145,27 @@ class CollectionWorker(QThread):
         finally:
             self._teleop.set_teleop_mode(False)
 
-    def _stamp_payload(self, metadata) -> None:
-        """로봇의 부하 모델을 scene metadata 에 적는다.
+    def _read_payload(self) -> dict:
+        """로봇의 부하 모델. 못 물어보면 빈 dict.
 
-        못 물어보면 조용히 넘어간다 -- 그러면 attrs 가 없어 파일이 낮은 버전
-        규칙으로 검사된다. 0 을 적어 "부하가 없었다"로 읽히게 하는 것보다 낫다.
+        새 scene 은 metadata 에 실어 보내고, 이어찍기는 SceneWriter 가 도장을
+        올릴 때 쓴다 -- 올라간 버전이 부하를 요구할 수 있기 때문이다.
+
+        못 읽으면 0 을 적지 않고 비운다. 0 은 "부하가 없었다"로 읽혀 없느니만
+        못하고, 비어 있으면 그 버전으로 올라가지 못해 눈에 띈다.
         """
         try:
             info = self._robot._client.payload()
         except Exception as e:  # noqa: BLE001
             self.log_message.emit(f"[부하] 로봇에서 못 읽었습니다: {e}")
-            return
+            return {}
         if not info or info.get("mass") is None:
             self.log_message.emit("[부하] 이 로봇은 부하 모델을 주지 않습니다.")
-            return
-        metadata.payload_mass = float(info["mass"])
-        metadata.payload_com = list(info.get("com") or [])
+            return {}
         self.log_message.emit(
-            f"[부하] {metadata.payload_mass * 1000:.0f} g "
-            f"(무게중심 {[round(c, 4) for c in metadata.payload_com]}) 기록")
+            f"[부하] {float(info['mass']) * 1000:.0f} g "
+            f"(무게중심 {[round(c, 4) for c in info.get('com') or []]})")
+        return info
 
     # ------------------------------------------------------------------- run
     def run(self) -> None:  # noqa: C901 - state machine, kept in one place on purpose
@@ -1181,8 +1183,11 @@ class CollectionWorker(QThread):
                 # 부하 모델을 metadata 에 싣는다 (knu-1.2.0). 정적 값이라 여기서
                 # 한 번만 묻고, 새 파일을 만들 때만 쓴다 -- 이어찍기면 그 파일이
                 # 이미 자기가 찍힐 때의 값을 갖고 있으므로 덮어쓰면 안 된다.
+                payload = self._read_payload()
                 if self.cfg.scene_metadata is not None and not self.cfg.scene_resume:
-                    self._stamp_payload(self.cfg.scene_metadata)
+                    if payload:
+                        self.cfg.scene_metadata.payload_mass = float(payload["mass"])
+                        self.cfg.scene_metadata.payload_com = list(payload.get("com") or [])
 
                 self._writer = SceneWriter(
                     root=self.cfg.data_root,
@@ -1194,6 +1199,7 @@ class CollectionWorker(QThread):
                     collector=self.cfg.collector,
                     known_prop_ids=active_prop_ids(),
                     session_version=self.cfg.session_version,
+                    session_payload=payload,
                 )
                 if getattr(self._writer, "version_note", ""):
                     self.log_message.emit(f"[스키마] {self._writer.version_note}")
