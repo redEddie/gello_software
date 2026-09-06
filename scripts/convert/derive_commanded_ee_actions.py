@@ -54,7 +54,9 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from gello.data.dataset_schema import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from gello.data.dataset_schema import (  # noqa: E402
     OBS_COMMANDED_GRIPPER_STATES,
     OBS_COMMANDED_JOINT_STATES,
     OBS_EE_STATES,

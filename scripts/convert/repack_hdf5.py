@@ -38,7 +38,12 @@ from typing import Optional
 import h5py
 import numpy as np
 
-from gello.data.dataset_schema import REPACK_COUNT_ATTR, REPACK_MARKER_ATTR
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from gello.data.dataset_schema import (  # noqa: E402
+    REPACK_COUNT_ATTR,
+    REPACK_MARKER_ATTR,
+)
 
 # Images are the only datasets big enough for compression to matter; the
 # rest are (T, <=8) float arrays where chunking overhead can exceed the win.
@@ -247,7 +252,6 @@ def main() -> int:
     t_all = time.monotonic()
     for p in args.files:
         if args.skip_repacked:
-            sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
             from gello.data.libero_format import hdf5_repack_status
 
             st = hdf5_repack_status(p)

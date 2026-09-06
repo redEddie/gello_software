@@ -10,13 +10,19 @@ Usage:
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import cv2
 import h5py
 import numpy as np
 
-from gello.data.dataset_schema import OBS_AGENTVIEW_RGB, OBS_EYE_IN_HAND_RGB
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from gello.data.dataset_schema import (  # noqa: E402
+    OBS_AGENTVIEW_RGB,
+    OBS_EYE_IN_HAND_RGB,
+)
 
 
 def export_episode(grp: h5py.Group, out_path: Path, fps: int) -> None:

@@ -13,12 +13,15 @@ Usage:
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
 import h5py
 import numpy as np
 
-from gello.data.dataset_schema import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from gello.data.dataset_schema import (  # noqa: E402
     OBS_AGENTVIEW_RGB,
     OBS_EE_POS,
     OBS_EYE_IN_HAND_RGB,
