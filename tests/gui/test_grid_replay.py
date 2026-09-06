@@ -206,6 +206,20 @@ assert win.procs.replay_process is None
 assert "중단" not in win.replay_btn.text()
 print("4 통과: 재생 가드 + 명령행 + 토글(재생↔중단) 왕복")
 
+# --- describe_grid: "저장이 안 된다" 를 로그에서 바로 보이게 --------------
+# 2026-09-06 신고 때 파일을 직접 열기 전에는 무엇이 로드됐는지 알 방법이
+# 없었다. 값과 **기본값 여부**를 같이 내는 것이 요점 -- 기본값으로 조용히
+# 돌아간 것과 조작자가 그렇게 맞춘 것은 화면만 봐서는 같아 보인다.
+_dflt = {"active": "g", "grids": {"g": [list(c) for c in DEFAULT_CORNERS]}}
+_mine = {"active": "g", "grids": {"g": [[0.05, 0.05], [0.95, 0.05],
+                                        [0.95, 0.95], [0.05, 0.95]]}}
+assert "기본값" in go.describe_grid(_dflt), go.describe_grid(_dflt)
+assert "기본값" not in go.describe_grid(_mine), go.describe_grid(_mine)
+assert "0.05" in go.describe_grid(_mine)          # 값이 실제로 보여야 한다
+assert "g" in go.describe_grid(_mine)             # 어느 격자인지도
+_none = go.describe_grid({"active": None, "grids": {}})
+assert "없음" in _none, _none
+print("5 통과: describe_grid 가 값·이름·기본값 여부를 함께 낸다")
 print("\n격자 + 실로봇 재생 검증 통과")
 import os  # noqa: E402
 

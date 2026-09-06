@@ -82,6 +82,25 @@ def active_corners(store: dict) -> "list | None":
     return store["grids"].get(store.get("active") or "")
 
 
+def describe_grid(store: dict) -> str:
+    """로그 한 줄 -- 어떤 격자가 실제로 쓰이고 있는지.
+
+    "저장이 안 된다"는 신고를 받았을 때(2026-09-06) 파일을 직접 열어 보기
+    전에는 무엇이 로드됐는지 알 방법이 없었다. 격자는 조작자가 눈으로
+    맞추는 값이라, 조용히 기본값으로 돌아가 있어도 화면만 봐서는 "내가
+    맞춘 그것"인지 알기 어렵다. 그래서 값과 **기본값 여부**를 같이 적는다.
+    """
+    name = store.get("active") or "(없음)"
+    corners = active_corners(store)
+    if not corners:
+        return f"활성 격자 없음 (저장된 격자 {len(store.get('grids', {}))}개)"
+    pts = " ".join(f"({c[0]:.2f},{c[1]:.2f})" for c in corners)
+    same = [list(map(float, c)) for c in corners] == [
+        list(map(float, c)) for c in DEFAULT_CORNERS]
+    tail = "  ← 기본값 그대로입니다" if same else ""
+    return f"{name}: {pts}{tail}"
+
+
 # 매 프레임(라이브 20~30Hz) 호출되므로 호모그래피 계산은 캐시한다 --
 # 꼭짓점은 편집할 때만 바뀐다. 키 몇 개면 충분해 크기만 느슨하게 막는다.
 _SEG_CACHE: dict = {}

@@ -120,6 +120,7 @@ from apps.workspace.shared.tabs import (  # noqa: E402
 from apps.workspace.features.scene.dialogs.grid_editor_dialog import GridEditorDialog  # noqa: E402
 from apps.workspace.features.dataset.hdf5_tree_dialog import Hdf5TreeDialog  # noqa: E402
 from gello.gui.grid_overlay import (  # noqa: E402
+    describe_grid,
     load_grid_store,
     save_grid_store,
 )
@@ -303,6 +304,11 @@ class WorkspaceWindow(QMainWindow):
         if log_path is not None:
             self.log(f"[로그] 이 세션 로그: {log_path}")
         self.log("[준비] 로봇 노드를 먼저 띄운 뒤 Connect 를 누르세요.")
+        # 시작 때 무엇이 로드됐는지 남긴다. 격자는 조작자가 눈으로 맞추는
+        # 값이라 조용히 기본값으로 돌아가 있어도 알아채기 어렵다 -- 실제로
+        # "저장이 안 된다"는 신고가 있었고(2026-09-06), 그때 파일을 직접
+        # 열기 전에는 무엇이 로드됐는지 알 수가 없었다.
+        self.log(tr("[격자] {d}").format(d=describe_grid(self.cameras.grid_store)))
         QTimer.singleShot(0, self.system.startup_tuning)
 
     # ------------------------------------------------------------- center
@@ -598,6 +604,9 @@ class WorkspaceWindow(QMainWindow):
                                save_callback=save_grid_store)
         dlg.exec()
         self.cameras.grid_store = load_grid_store()    # 저장 결과를 다시 정본에서
+        # 정본에서 다시 읽은 것을 찍는다 -- 편집기가 뭐라 했든, **파일에 남은
+        # 것**이 다음 세션에 뜰 값이다. 그 둘이 어긋나면 여기서 드러난다.
+        self.log(tr("[격자] {d}").format(d=describe_grid(self.cameras.grid_store)))
         self.camera_ops.regrid_live()
 
     def _connect_worker(self, w: CollectionWorker) -> None:
