@@ -74,6 +74,7 @@ def next_workflow(key: str):
 #: 가리킨다 (인덱스는 탭이 늘거나 줄면 밀린다). 순서가 곧 표시 순서다.
 CENTER_TABS = (
     ("live", "Live"),
+    ("plan", "Plan"),
     ("playback", "Playback"),
     ("analysis", "Analysis"),
     ("trim", "Trim"),
@@ -98,7 +99,10 @@ CENTER_TABS = (
 #: 유지된다"는 설계 의도이기도 하다.
 CENTER_TABS_BY_ACTIVITY = {
     "layout": ("live", "layout"),
-    "configure": ("live",),
+    # Plan 이 앞이다 -- scene 배치를 정하는 데 카메라는 필요 없고, 필요한 것은
+    # "어느 지시문이 몇 개 남았나"다 (2026-09-06 사용자 지적). live 는 남긴다:
+    # 어느 활동에서든 카메라를 잃지 않는다는 것이 이 창의 설계 전제다.
+    "configure": ("plan", "live"),
     "collect": ("live",),
     "dataset": ("live", "playback", "analysis", "trim", "gallery"),
     "stats": ("live", "playback", "analysis", "trim", "gallery"),

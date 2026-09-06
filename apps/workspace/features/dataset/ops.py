@@ -54,9 +54,6 @@ class DatasetOps:
         for key in ("save", "savefail"):
             if key in getattr(self.win, "tb_actions", {}):
                 self.win.tb_actions[key].setEnabled(not on and self.win.worker is not None)
-        for b in (getattr(self.win, "save_ok_btn", None), getattr(self.win, "save_ng_btn", None)):
-            if b is not None:
-                b.setEnabled(not on and self.win.worker is not None)
 
     # -------------------------------------------------------------------- root
     def dataset_root(self) -> Path:
@@ -492,7 +489,7 @@ class DatasetOps:
         # 잘못 고른 성공분만 눈에 띄게 하는 것이 목적이다.
         rows, n_success, hub_note = self.describe_delete_targets(by_file)
         detail = "\n".join(rows[:30]) + ("\n  …" if len(rows) > 30 else "")
-        notes = [tr("삭제 후 남은 에피소드는 번호가 다시 매겨집니다 (scene 은 slot E번호·uid 도).")]
+        notes = [tr("삭제 후 남은 에피소드는 번호가 다시 매겨집니다 (scene 은 지시문별 E번호·uid 도).")]
         if hub_note:
             notes.append(hub_note)
         notes.append(tr("파일 크기는 줄지 않습니다 (재압축 필요). 되돌릴 수 없습니다."))
@@ -550,7 +547,7 @@ class DatasetOps:
             except Exception as e:  # noqa: BLE001
                 QMessageBox.critical(self.win, tr("삭제 실패"), f"{path.name}\n{type(e).__name__}: {e}")
                 self.win.log(f"[삭제 실패] {path.name}: {type(e).__name__}: {e}")
-        self.win.collection.refresh_slot_counter()
+        self.win.collection.refresh_instruction()
         # 분석 통계는 파일에서 파생된다 -- 지운 에피소드가 순위표에 남아
         # 있으면 그 줄을 눌렀을 때 없는 것을 재생하려 든다.
         self.win.stats_ops.mark_stats_stale()

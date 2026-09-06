@@ -27,9 +27,10 @@ def build_configure(win) -> QWidget:
     col = QVBoxLayout(w)
     col.setContentsMargins(0, 0, 0, 0)
 
-    # 반사로 노드가 죽으면 조작자는 이 화면으로 돌아온다. 그때 할 일이
-    # 늘 같아서(노드 띄우기 → 가장 최근 scene → 가장 낮은 미완 slot →
-    # Connect) 버튼 하나로 묶었다 (2026-09-06 사용자 요청). 규칙의 정본은
+    # 이 화면에서 가장 많이 누르는 버튼이라 맨 위다 (위에서 아래로 "많이
+    # 누르는 순서 · 확정적인 순서" -- 2026-09-06 사용자 규칙). 반사로 노드가
+    # 죽으면 조작자는 이 화면으로 돌아오고, 그때 할 일이 늘 같다: 노드 띄우기
+    # → 가장 최근 scene → 가장 낮은 미완 지시문 → Connect. 규칙의 정본은
     # ScenePlanningOps.pick_resume_slot 이다.
     quick = QPushButton(tr("⚡ Quick resume"))
     quick.setToolTip(tr(
@@ -47,6 +48,19 @@ def build_configure(win) -> QWidget:
     win.node_stop_btn.clicked.connect(win.system.on_stop_node)
     nrow.addWidget(win.node_start_btn)
     nrow.addWidget(win.node_stop_btn)
+    # 연습 모드는 로봇 노드 **바로 밑**이다 (2026-09-06 사용자 지정).
+    # "파일을 남길 것인가"는 아래 Scene 설정 전부를 무의미하게 만드는
+    # 결정이라, 그것들을 다 채운 뒤 맨 아래에서 만나는 것이 순서가 거꾸로였다.
+    win.no_dataset_check = QCheckBox(tr("데이터셋 없이 조작만 (연습 / 씬 세팅)"))
+    win.no_dataset_check.setToolTip(tr(
+        "파일을 전혀 만들지 않고 텔레옵만 합니다. 자세 게이트·카메라·프레임 "
+        "카운터는 그대로 동작하고, 저장을 눌러도 버려집니다."))
+    win.no_dataset_check.toggled.connect(win.dataset_ops.on_no_dataset_toggled)
+    nrow.addWidget(win.no_dataset_check)
+    win.mode_hint = QLabel("")
+    win.mode_hint.setStyleSheet("color:#888;")
+    win.mode_hint.setWordWrap(True)
+    nrow.addWidget(win.mode_hint)
     col.addWidget(node)
 
     # ---- scene-v1 이 유일한 수집 방식이다 (2026-08-13, legacy 수집 UI
@@ -114,9 +128,9 @@ def build_configure(win) -> QWidget:
     prow.addWidget(plan_del_btn)
     sc_form.addRow(tr("수집 계획"), plan_row)
     win.scene_iid_edit = QLineEdit(win._recents.most_recent("instruction_id", "I000"))
-    win.scene_iid_edit.setToolTip(tr("시작 slot 의 instruction ID (예: I000). "
+    win.scene_iid_edit.setToolTip(tr("시작 지시문의 ID (예: I000). "
                                       "수집 중 Collect 페이지에서 바꿀 수 있습니다."))
-    sc_form.addRow(tr("시작 slot ID"), win.scene_iid_edit)
+    sc_form.addRow(tr("시작 지시문 ID"), win.scene_iid_edit)
     win.collector_edit = QLineEdit(win._recents.most_recent("collector", ""))
     win.collector_edit.setPlaceholderText(tr("수집자 식별자 (필수 attr, 예: gibeom)"))
     sc_form.addRow(tr("수집자"), win.collector_edit)
@@ -138,27 +152,9 @@ def build_configure(win) -> QWidget:
     win.session.scene_session = False
     col.addWidget(scene)
 
-    cam = QGroupBox(tr("카메라"))
-    cform = QFormLayout(cam)
-    win.agent_combo = QComboBox()
-    win.wrist_combo = QComboBox()
-    for c in (win.agent_combo, win.wrist_combo):
-        c.setEditable(True)
-        shrinkable_combo(c)
-        c.currentTextChanged.connect(win.camera_ops.on_camera_changed)
-    cform.addRow(tr("Agent"), win.agent_combo)
-    cform.addRow(tr("Wrist"), win.wrist_combo)
-    refresh = QPushButton(tr("카메라 새로고침"))
-    refresh.clicked.connect(win.camera_ops.refresh_cameras)
-    cform.addRow(refresh)
-    win.preview_btn = QPushButton(tr("미리보기 시작"))
-    win.preview_btn.clicked.connect(win.camera_ops.on_toggle_previews)
-    cform.addRow(win.preview_btn)
-    win.camera_hint = QLabel("")
-    win.camera_hint.setStyleSheet("color:#888;")
-    win.camera_hint.setWordWrap(True)
-    cform.addRow(win.camera_hint)
-    col.addWidget(cam)
+    # 카메라 그룹은 ① Layout 으로 갔다 (2026-09-06). 카메라 점검은 앞
+    # 단계에서 끝나는 일이라 Scene 을 정하는 화면에 있을 이유가 없었고,
+    # 두 곳에 같은 콤보를 두느라 서로 복사하는 코드까지 있었다.
 
     # "세션"이 아니라 "수집 설정": 여기 있는 것은 전부 Connect 시점에
     # 적용되는 수집 방식이다. 연습 모드도 그중 하나라 별도 "모드" 그룹을
@@ -166,16 +162,6 @@ def build_configure(win) -> QWidget:
     sess = QGroupBox(tr("수집 설정"))
     win.session_box = sess          # 세션 중에는 감춘다 (set_running)
     sform = QFormLayout(sess)
-    win.no_dataset_check = QCheckBox(tr("데이터셋 없이 조작만 (연습 / 씬 세팅)"))
-    win.no_dataset_check.setToolTip(tr(
-        "파일을 전혀 만들지 않고 텔레옵만 합니다. 자세 게이트·카메라·프레임 "
-        "카운터는 그대로 동작하고, 저장을 눌러도 버려집니다."))
-    win.no_dataset_check.toggled.connect(win.dataset_ops.on_no_dataset_toggled)
-    sform.addRow(win.no_dataset_check)
-    win.mode_hint = QLabel("")
-    win.mode_hint.setStyleSheet("color:#888;")
-    win.mode_hint.setWordWrap(True)
-    sform.addRow(win.mode_hint)
     win.reset_pose_combo = QComboBox()
     win.reset_pose_combo.addItems(sorted(FR3_RESET_POSES))
     if "libero" in FR3_RESET_POSES:
@@ -201,7 +187,7 @@ def build_configure(win) -> QWidget:
     col.addWidget(sess)
     # 줄 수가 정해진 상자는 세로로 안 늘어나게 (sizing.keep_height 참고).
     # Scene 수집은 예외 -- 계획 설명 라벨이 접히면서 높이가 는다.
-    keep_height(node, cam, sess)
+    keep_height(node, sess)
     col.addStretch()
     win.scene_ops.refresh_scene_combo()
     return w

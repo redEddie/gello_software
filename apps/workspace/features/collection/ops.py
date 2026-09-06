@@ -21,6 +21,7 @@ from gello.collect.worker import (
 )
 from gello.scene.scene_format import count_by_slot, read_scene_metadata, scene_filename
 from apps.workspace.features.collection.header import set_header_state
+from apps.workspace.features.collection.page import set_live_keys
 from apps.workspace.models import _new_stats
 from apps.workspace.shared.tabs import show_center_tab
 
@@ -70,8 +71,9 @@ class CollectionOps:
     # --------------------------------------------------------------- session UI
     def set_running(self, running: bool) -> None:
         savable = running and not self.win.session.no_dataset_session
-        # match/skip 은 2026-09-06 에 툴바 고정 구획으로 올라왔다 -- 좌측
-        # 버튼(match_btn/skip_btn)과 같은 조건으로 열고 닫는다.
+        # 에피소드 한 바퀴 버튼은 이제 툴바 고정 구획에만 있다 (2026-09-06:
+        # 좌측 Control 상자 제거 -- 같은 이름의 같은 동작이 두 벌이었다).
+        # 여는 조건은 그대로다.
         for key in ("discard", "home", "match", "skip"):
             self.win.tb_actions[key].setEnabled(running)
         for key in ("save", "savefail"):
@@ -81,17 +83,12 @@ class CollectionOps:
         # 노드를 기다리는 중이면 _quick_connect_when_ready 가 다시 잠근다.
         self.win.tb_actions["quick"].setEnabled(not running)
         self.win.tb_actions["disconnect"].setEnabled(running)
-        for b in (self.win.skip_btn, self.win.discard_btn, self.win.home_btn,
-                  # 정렬 버튼은 세션 중이면 항상 열린다 -- 자세 오차가
-                  # 커도 사람이 직접 요청하면 걸 수 있어야 한다 (2026-09-01).
-                  self.win.match_btn):
-            b.setEnabled(running)
         if not running:
             self.win.session.gate_ok = None
         # Start(기록 시작)는 게이트 자세 조건까지 본다 -- 아래 헬퍼가 전담.
         self.update_start_controls(running)
-        for b in (self.win.save_ok_btn, self.win.save_ng_btn):
-            b.setEnabled(savable)
+        self.win.instr_next_btn.setEnabled(running)
+        self.win.instr_tree.setEnabled(running)
         self.win.no_dataset_check.setEnabled(not running)
         self.win.task_box.setEnabled(not running and not self.win.no_dataset_check.isChecked())
         # Configure 는 "세션 전 준비" 화면이다 (2026-09-06). 세션이 시작되면
@@ -103,8 +100,7 @@ class CollectionOps:
         if not running:
             self.win.gate_box.setVisible(False)
         for w in (self.win.lang_edit, self.win.root_edit, self.win.agent_combo,
-                  self.win.wrist_combo, self.win.layout_agent_combo,
-                  self.win.layout_wrist_combo, self.win.reset_pose_combo,
+                  self.win.wrist_combo, self.win.reset_pose_combo,
                   self.win.grip_combo, self.win.eplen_edit, self.win.resetwait_edit,
                   self.win.wall_check, self.win.match_check):
             w.setEnabled(not running)
@@ -113,8 +109,11 @@ class CollectionOps:
         for w in self.win._crop_widgets:
             w.setEnabled(not running)
         self.win.camera_ops.update_preview_btn()
-        # scene 세션에서만 slot 전환 패널 노출
-        self.win.slot_box.setVisible(running and self.win.session.scene_session)
+        # scene 세션에서만 지시문 목록 노출 (legacy 는 파일 하나 = task 하나)
+        self.win.instr_box.setVisible(running and self.win.session.scene_session)
+        if not running:
+            self.win.now_hint.setText(tr("연결하면 여기에 다음 할 일이 나옵니다."))
+            set_live_keys(self.win, "idle")
         self.win.lights["robot"].set("ok" if running else "off",
                                  tr("연결됨") if running else tr("끊김"))
         if not running:
@@ -122,7 +121,7 @@ class CollectionOps:
             self.win.lights["leader"].set("off", "-")
 
     def update_start_controls(self, running: "bool | None" = None) -> None:
-        """Start Teleop 버튼/툴바는 게이트 상태에선 자세가 맞아야만 열린다.
+        """툴바의 Start Teleop 은 게이트 상태에선 자세가 맞아야만 열린다.
 
         자동 정렬이 켜져 있어도 같다 -- 정렬은 리더가 범위(GATE_RAD) 안에
         들어와야 발동하므로, 그 전에 시작을 눌러도 워커가 거부만 한다.
@@ -133,35 +132,38 @@ class CollectionOps:
         # _gate_ok 는 게이트 진입 직후 None("아직 모름") 일 수 있다 -- setEnabled 는
         # bool 만 받으므로 여기서 확정한다.
         ok = bool(running and (self.win.session.current_state != "gate" or self.win.session.gate_ok))
-        self.win.start_btn.setEnabled(ok)
         act = getattr(self.win, "tb_actions", {}).get("record")
         if act is not None:
             act.setEnabled(ok)
 
     # ------------------------------------------------------------------ slot counter
-    def refresh_slot_counter(self) -> None:
+    def refresh_instruction(self) -> None:
         """현재 (scene, instruction) 의 누계만 갱신한다 -- scene 파일 하나.
 
-        진행률 표(계획 전체)는 여기서 부르지 않는다. 잠깐 그렇게 했다가
-        되돌렸다: 이 함수는 저장·삭제·연결마다 불리는데 표는 계획의 모든
-        scene 파일을 연다. 데이터셋 16개 파일 기준 저장 한 번에 543ms 씩
-        메인 스레드가 멈췄다 (2026-09-04 실측). 표는 Collect 페이지에 들어올
-        때(_set_activity)와 "진행률 새로고침" 버튼에서만 갱신한다.
-        """
-        self._refresh_slot_counter()
+        지시문 **목록**은 함께 갱신한다 -- 저장할 때마다 그 줄의 카운트가
+        올라야 하고, 세션 중에는 saver 캐시로 세므로 파일을 열지 않는다.
 
-    def _refresh_slot_counter(self) -> None:
+        데이터셋 전체 진행률 표(Plan 탭)는 여기서 부르지 않는다. 잠깐 그렇게
+        했다가 되돌렸다: 이 함수는 저장·삭제·연결마다 불리는데 그 표는 계획의
+        모든 scene 파일을 연다. 데이터셋 16개 파일 기준 저장 한 번에 543ms 씩
+        메인 스레드가 멈췄다 (2026-09-04 실측). 그 표는 ② Configure 에 들어올
+        때(_set_activity)와 새로고침 버튼에서만 갱신한다.
+        """
+        self._refresh_instruction()
+        self.win.scene_planning.refresh_instruction_list()
+
+    def _refresh_instruction(self) -> None:
         """현재 (scene, instruction) 의 수집 누계/계획 target 상시 표시 (#38).
 
         GUI 를 켠 순간 누계가 아니라 HDF5 실측이다 -- GUI 재시작·에피소드
         삭제·재판정이 전부 그대로 반영된다. 정본은 count_by_slot (usable =
         quality_status success) 이고, 세션 중엔 파일이 잠겨 있으므로 saver 가
         본내준 에피소드 캐시로 같은 규칙으로 센다 (ScenePlanningOps.
-        session_slot_counts). 계획에 그 slot 이 없으면 target 없이 누계만
+        session_instruction_counts). 계획에 그 slot 이 없으면 target 없이 누계만
         보여준다 (0/0 이나 7/None 은 안 낸다). HDF5 를 열기 때문에 이 함수는
         scene/slot 선택·저장·삭제·세션 시작/종료 시점에만 부른다.
         """
-        label = getattr(self.win, "slot_counter", None)
+        label = getattr(self.win, "instr_counter", None)
         if label is None:
             return  # 창 초기화 중 -- Configure 페이지가 Collect 보다 먼저 만들어진다
         plan = self.win.scene_planning.current_plan()
@@ -170,9 +172,8 @@ class CollectionOps:
             # 캐시로 센다. 현재 slot 은 워커가 받은 최신 값 (cmd_set_slot).
             sid = self.win.scene_ops.session_scene_id()
             iid = (getattr(self.win.worker, "_slot_instruction_id", "")
-                   or getattr(self.win.worker.cfg, "instruction_id", "")
-                   or self.win.slot_iid_edit.text().strip())
-            counts = self.win.scene_planning.session_slot_counts()
+                   or getattr(self.win.worker.cfg, "instruction_id", ""))
+            counts = self.win.scene_planning.session_instruction_counts()
         else:
             sid = self.win.scene_combo.currentData()
             iid = self.win.scene_iid_edit.text().strip()
@@ -201,6 +202,14 @@ class CollectionOps:
                 if s.instruction_id == iid:
                     target = s.target
                     break
+        sentence = getattr(self.win, "instr_sentence", None)
+        if sentence is not None:
+            if self.win.session.scene_session and self.win.worker is not None:
+                text = getattr(self.win.worker, "_slot_instruction", "") \
+                    or getattr(self.win.worker.cfg, "language_instruction", "")
+            else:
+                text = self.win.lang_edit.text().strip()
+            sentence.setText(text)
         head = f"{sid} · {iid}" if iid else str(sid)
         if target is not None:
             # 목표 도달은 초록. 초과(11/10)도 그대로 -- 숫자는 정확히.
@@ -224,8 +233,7 @@ class CollectionOps:
         self.win.hud_slot.setText(f"{sid} · {iid}" if iid else str(sid or ""))
         # 지시문: 세션 중이면 워커가 쥔 것, 아니면 Configure 에서 고른 것.
         if self.win.session.scene_session and self.win.worker is not None:
-            instr = (getattr(self.win.worker, "_slot_instruction", "")
-                     or self.win.slot_instr_edit.text().strip())
+            instr = getattr(self.win.worker, "_slot_instruction", "")
         else:
             instr = self.win.lang_edit.text().strip()
         self.win.hud_instruction.setText(instr or tr("(지시문 없음)"))
@@ -266,7 +274,7 @@ class CollectionOps:
             return
         if not self._select_slot(iid, instr):
             QMessageBox.warning(self.win, tr("빠른 재개"),
-                                tr("slot {i} 을 계획에서 찾지 못했습니다.").format(i=iid))
+                                tr("지시문 {i} 을 계획에서 찾지 못했습니다.").format(i=iid))
             return
         self.win.log(f"[빠른 재개] {sid} · {note} — {instr}")
         self._quick_deadline = time.monotonic() + self.QUICK_NODE_WAIT_S
@@ -486,10 +494,9 @@ class CollectionOps:
         # scene 세션 표시 + Collect 페이지 slot 패널 초기값
         self.win.session.scene_session = scene_on
         if scene_on:
-            self.win.slot_iid_edit.setText(cfg.instruction_id)
-            self.win.slot_instr_edit.setText(cfg.language_instruction)
-            self.win.slot_current_label.setText(
-                f"{cfg.instruction_id}: {cfg.language_instruction}")
+            # 지시문 칸(ID/문장)은 없어졌다 -- 목록이 그 자리다. 세션이
+            # 시작하면 목록을 채우고 현재 줄을 표시한다.
+            self.win.scene_planning.refresh_instruction_list()
             # 오른쪽 배치도 -- 이어찍기는 metadata 가 파일에만 있으므로 워커가
             # 파일을 쥐기 전인 지금 읽어 둔다.
             md = scene_meta
@@ -543,9 +550,12 @@ class CollectionOps:
             self.win.session.gate_ok = None
         self.win.session.current_state = state
         self.update_start_controls()
-        self.win.state_label.setText(self.win.STATE_LABELS.get(state, state))
+        # 상태 **이름**은 HUD 띠가 배경색과 함께 말한다 -- 왼쪽에 같은 글자를
+        # 또 두지 않는다 (2026-09-06). 왼쪽이 맡는 것은 "그래서 지금 무엇을
+        # 하라"는 한국어 안내와, 지금 살아 있는 키다.
         set_header_state(self.win, state)
-        self.win.shortcut_hint.setText(self.win.SHORTCUT_HINTS.get(state, ""))
+        self.win.now_hint.setText(self.win.SHORTCUT_HINTS.get(state, ""))
+        set_live_keys(self.win, state)
         # 델타 바가 살아 있는 상태에서만 보여 준다 -- 그 밖에서는 갱신되지
         # 않아 낡은 값이 남는다.
         self.win.gate_box.setVisible(state == "gate")
@@ -591,9 +601,9 @@ class CollectionOps:
             # 시작' 쪽뿐이다.
             self.update_start_controls()
             if self.win.session.current_state == "gate":
-                self.win.shortcut_hint.setText(
-                    "Space: 텔레옵 시작   Enter: 자동 정렬 다시" if all_ok
-                    else "Space: 텔레옵 시작   Enter: 자동 정렬 (오차 커도 가능)")
+                self.win.now_hint.setText(
+                    tr("자세가 맞았습니다 — Space 로 시작하세요") if all_ok
+                    else tr("리더를 팔로워 자세에 맞추세요 (Enter: 자동 정렬)"))
 
     def on_pose_match(self, err, done) -> None:
         self.win.gate_label.setText(
@@ -627,7 +637,7 @@ class CollectionOps:
         # 지금 읽으면 그 파일만 통째로 빠진 통계가 나온다
         # (StatsOps.auto_refresh_analysis).
         self.win.stats_ops.mark_stats_stale()
-        self.refresh_slot_counter()
+        self.refresh_instruction()
 
     def on_save_status(self, text: str) -> None:
         """Background-save progress. Empty string means idle."""
@@ -668,8 +678,8 @@ class CollectionOps:
 
     def on_countdown(self, seconds) -> None:
         # 자동 진행이 없어졌으므로 카운트다운이 아니라 경과 시간이다.
-        self.win.state_label.setText(
-            tr("리셋 중 {s:.0f}s 경과 — 배치 후 Enter").format(s=seconds))
+        self.win.now_hint.setText(
+            tr("물체를 제자리에 놓으세요 — {s:.0f}초 경과. Enter: 계속").format(s=seconds))
 
     def on_fatal(self, msg) -> None:
         self.win.log(f"[치명적 오류] {msg}")
@@ -700,7 +710,7 @@ class CollectionOps:
         # monotonic 이라 사람이 읽을 수 없다 (collection_history).
         self.win.session.started_iso = now_iso()
         self.win.session.history_written = False
-        self.refresh_slot_counter()
+        self.refresh_instruction()
         if self.win.session.no_dataset_session:
             # NullTaskWriter has no real path; claiming one here would make the
             # dataset tree think a file is locked by this session.
@@ -715,7 +725,7 @@ class CollectionOps:
         if self.win.session.scene_session:
             # scene 파일이 실제로 만들어졌으니 보관해 둔 새 scene 구성은 소진.
             self.win._pending_scene_meta = None
-            self.win.scene_planning.refresh_slot_panel()
+            self.win.scene_planning.refresh_instruction_list()
         self.win.dataset_ops.update_dataset_panel()
         self.win.log(f"[연결] 파일: {path} (기존 {n_episodes}개 에피소드)")
         self.win.dataset_ops.refresh_dataset_tree()
@@ -749,7 +759,7 @@ class CollectionOps:
         self.win.scene_ops.set_right_scene(None)
         self.win.collection.set_running(False)
         self.win.dataset_ops.refresh_dataset_tree()
-        self.refresh_slot_counter()
+        self.refresh_instruction()
         if was_scene:
             # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
             self.win.scene_ops.refresh_scene_combo()

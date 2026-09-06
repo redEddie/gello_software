@@ -11,6 +11,7 @@ sys.path.insert(0, WT)
 sys.path.insert(0, WT + "/apps")
 sys.argv = ["t"]
 
+from PyQt6.QtCore import Qt  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication(sys.argv)
@@ -137,38 +138,52 @@ win.session.active_episode_cache = [
      "episode_id": 1, "episode_uid": "EP-S000-I000-E001", "collector": "t",
      "timestamp": ""},
 ]
-win.scene_planning.refresh_slot_panel()
-items = [(win.slot_plan_combo.itemText(i), win.slot_plan_combo.itemData(i))
-         for i in range(win.slot_plan_combo.count())]
-assert any("I000 · 1/10" in t for t, _ in items), f"카운트 표시 실패: {items}"
-assert "문장이 계획과 다름" in win.slot_plan_warn.text(), "패널 불일치 경고 없음"
-# 드롭다운 선택 -> 입력칸 채움
-idx = next(i for i, (t, d) in enumerate(items) if d is not None)
-win.slot_plan_combo.setCurrentIndex(idx)
-assert win.slot_iid_edit.text() == "I000"
-assert win.slot_instr_edit.text() == "pick up the blue cup and place it on the blue bowl"
-# 다음 미수집 slot (I000 2/10 -> 그대로 I000)
-win.slot_iid_edit.clear()
-win.slot_instr_edit.clear()
-win.scene_planning.on_next_slot()
-assert win.slot_iid_edit.text() == "I000" and win.slot_instr_edit.text()
-print("3 통과: 계획 자동선택, 카운트(2/10), 불일치 경고, 드롭다운 채움, 다음 slot 제시")
-
-# ---- 4. 계획 없음 회귀 -- instructions.json 을 지우면 자유 입력 ----
-(TMPD / "instructions.json").unlink()
-win.scene_planning.on_plan_changed()
-assert win.slot_plan_combo.count() == 1  # (직접 입력) 만
+# 드롭다운은 없어졌다 (2026-09-06) -- 목록이 그 자리다. 한 줄 = 한 지시문,
+# 누르면 바로 전환. 세션 중에만 보이므로 여기서는 워커를 흉내 낸다.
 calls = []
+
+
 class FW:
     cfg = type("C", (), {"task_name": "S000", "scene_metadata": None,
-                         "scene_id": "S000"})()
+                         "scene_id": "S000", "instruction_id": "I000",
+                         "language_instruction":
+                             "pick up the blue cup and place it on the blue bowl"})()
+
     def cmd_set_slot(self, i, d):
         calls.append((i, d))
+
+
 win.worker = FW()
-win.slot_iid_edit.setText("I009")
-win.slot_instr_edit.setText("open the top drawer")
-win.scene_planning.on_apply_slot()
-assert calls, "계획 없이 자유 입력 적용 실패"
+win.session.scene_session = True
+win.scene_planning.refresh_instruction_list()
+rows = [win.instr_tree.topLevelItem(i) for i in range(win.instr_tree.topLevelItemCount())]
+# ID 칸에는 현재 표시("▸")가 붙으므로 정본은 UserRole 이다.
+items = [(r.data(0, Qt.ItemDataRole.UserRole)[0], r.text(1), r.text(2))
+         for r in rows]
+assert any(iid == "I000" and cnt == "1/10" for iid, cnt, _ in items), \
+    f"카운트 표시 실패: {items}"
+assert "문장이 계획과 다름" in win.instr_warn.text(), "패널 불일치 경고 없음"
+# 한 줄을 누르면 곧바로 워커에 전달된다 (적용 버튼 없음)
+win.scene_planning.on_instruction_picked(rows[0])
+assert calls and calls[-1][1] == "I000", calls
+assert win.right_fields["ds_task"].text().startswith("I000: ")
+# 다음 미수집 (I000 1/10 -> 그대로 I000)
+calls.clear()
+win.scene_planning.on_next_instruction()
+assert calls and calls[-1][1] == "I000", calls
+print("3 통과: 계획 목록 카운트(1/10), 불일치 경고, 한 줄 클릭=즉시 전환, 다음 미수집")
+
+# ---- 4. 계획 없음 회귀 -- instructions.json 을 지우면 파일의 지시문만 ----
+(TMPD / "instructions.json").unlink()
+win.scene_planning.on_plan_changed()
+win.scene_planning.refresh_instruction_list()
+# 계획이 없으면 파일에 이미 있는 지시문만 나온다 (새 문장은 계획을 먼저)
+seen = {win.instr_tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)[0]
+        for i in range(win.instr_tree.topLevelItemCount())}
+assert seen == {"I000"}, seen
+calls.clear()
+win.scene_planning.apply_instruction("I009", "open the top drawer")
+assert calls, "계획 없이 적용 실패"
 # 오른쪽 패널 Dataset '태스크' 가 적용 즉시 현재 slot 으로 바뀐다
 assert win.right_fields["ds_task"].text() == "I009: open the top drawer"
 # 패널 갱신 경로도 워커의 현재 slot 을 읽는다 (연결 시점 설정이 아니라)

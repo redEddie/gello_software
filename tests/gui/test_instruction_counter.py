@@ -85,8 +85,8 @@ win.scene_combo.setCurrentIndex(win.scene_combo.findData("S000"))
 # 계획은 데이터셋 폴더의 instructions.json 이다 -- 이 임시 폴더에는 아직 없다
 # (= 자유 입력). 명시 해제할 드롭다운은 더 이상 없다.
 win.scene_iid_edit.setText(IID)
-win.collection.refresh_slot_counter()
-t = win.slot_counter.text()
+win.collection.refresh_instruction()
+t = win.instr_counter.text()
 assert t == f"S000 · {IID} · 2", t          # target 없음 -- 누계만, 0/0 도 아님
 assert "/" not in t
 print(f"2 통과: 계획 없음 -- 누계만 ({t})")
@@ -102,15 +102,15 @@ def _write_plan(target: int) -> None:
 
 # ---- 3. 계획 target 10 -> '2/10', 미달이면 초록 아님 ----
 _write_plan(10)
-win.collection.refresh_slot_counter()
-t = win.slot_counter.text()
+win.collection.refresh_instruction()
+t = win.instr_counter.text()
 assert t == f"S000 · {IID} · 2/10", t
-assert "#2ecc71" not in win.slot_counter.styleSheet()
-# 진행률 트리는 Collect "진행" 상자에 있지만 refresh_slot_counter 가 연쇄
-# 갱신하지는 **않는다**: 그 표는 계획의 모든 scene 파일을 열기 때문에
-# (실측 16개 543ms) 저장·삭제마다 부르면 메인 스레드가 그만큼 멈춘다.
-# 갱신 시점은 Collect 페이지 진입과 새로고침 버튼이다.
-assert win.plan_progress_label.text() == "", \
+assert "#2ecc71" not in win.instr_counter.styleSheet()
+# 진행률 트리는 ② Configure 의 Plan 탭에 있고(2026-09-06 이동),
+# refresh_instruction 가 연쇄 갱신하지는 **않는다**: 그 표는 계획의 모든
+# scene 파일을 열기 때문에 (실측 16개 543ms) 저장·삭제마다 부르면 메인
+# 스레드가 그만큼 멈춘다. 갱신 시점은 Configure 진입과 새로고침 버튼이다.
+assert "전체" not in win.plan_progress_label.text(), \
     f"카운터 갱신이 진행률 표까지 끌고 오면 안 된다: {win.plan_progress_label.text()}"
 win.scene_planning.refresh_plan_progress()          # 페이지 진입/버튼과 같은 경로
 assert "전체 2/10" in win.plan_progress_label.text(), win.plan_progress_label.text()
@@ -119,23 +119,23 @@ print(f"3 통과: 계획 target 과 맞춤 -- {t} (미달이라 초록 아님) +
 
 # ---- 4. target 도달(2/2) 이면 초록, 초과(11/10)도 숫자 정확 ----
 _write_plan(2)
-win.collection.refresh_slot_counter()
-assert win.slot_counter.text() == f"S000 · {IID} · 2/2", win.slot_counter.text()
-assert "#2ecc71" in win.slot_counter.styleSheet(), win.slot_counter.styleSheet()
+win.collection.refresh_instruction()
+assert win.instr_counter.text() == f"S000 · {IID} · 2/2", win.instr_counter.text()
+assert "#2ecc71" in win.instr_counter.styleSheet(), win.instr_counter.styleSheet()
 # 임시로 셋째(실패) 에피소드를 success 로 뒤집어 3/2 -- 넘어도 정확히 보여준다
 with h5py.File(scene, "a") as f:
     f[bad].attrs["quality_status"] = QUALITY_SUCCESS
-win.collection.refresh_slot_counter()
-assert win.slot_counter.text() == f"S000 · {IID} · 3/2", win.slot_counter.text()
+win.collection.refresh_instruction()
+assert win.instr_counter.text() == f"S000 · {IID} · 3/2", win.instr_counter.text()
 with h5py.File(scene, "a") as f:
     f[bad].attrs["quality_status"] = QUALITY_FAILED
-win.collection.refresh_slot_counter()
+win.collection.refresh_instruction()
 print("4 통과: target 도달=초록, 초과(3/2)도 숫자 그대로")
 
 # ---- 5. 계획에 없는 slot -> 누계만 ----
 win.scene_iid_edit.setText("I009")
-win.collection.refresh_slot_counter()
-t = win.slot_counter.text()
+win.collection.refresh_instruction()
+t = win.instr_counter.text()
 assert t == "S000 · I009 · 0" and "/" not in t, t
 win.scene_iid_edit.setText(IID)
 print(f"5 통과: 계획에 없는 slot -- 누계만 ({t})")
@@ -143,22 +143,22 @@ print(f"5 통과: 계획에 없는 slot -- 누계만 ({t})")
 # ---- 6. 에피소드 삭제 -> 숫자가 줄어든다 (이슈 #38 핵심) ----
 #    GUI DatasetOps 삭제 경로로 지우고, 카운터가 HDF5 를 다시 읽는지 본다.
 _write_plan(10)
-win.collection.refresh_slot_counter()
-assert win.slot_counter.text() == f"S000 · {IID} · 2/10"
+win.collection.refresh_instruction()
+assert win.instr_counter.text() == f"S000 · {IID} · 2/10"
 ok = win.dataset_ops.delete_episodes({scene: [ok0]})
 assert ok
 # 삭제 직후 count_by_slot 실측
 counts = count_by_slot(scene)
 assert counts[IID] == {"total": 2, "usable": 1}, counts
 # 카운터도 줄었다 -- GUI 를 켠 순간 누계였다면 여전히 2/10 이다
-assert win.slot_counter.text() == f"S000 · {IID} · 1/10", win.slot_counter.text()
-assert "#2ecc71" not in win.slot_counter.styleSheet()
+assert win.instr_counter.text() == f"S000 · {IID} · 1/10", win.instr_counter.text()
+assert "#2ecc71" not in win.instr_counter.styleSheet()
 print("6 통과: 에피소드 삭제 뒤 카운터 감소 2/10 -> 1/10 (HDF5 실측, GUI 누계 아님)")
 
 # ---- 7. scene 미선택 -> 자리 비움 (0/0 같은 것 안 냄) ----
 win.scene_combo.setCurrentIndex(0)
-win.collection.refresh_slot_counter()
-assert win.slot_counter.text() == "—", win.slot_counter.text()
+win.collection.refresh_instruction()
+assert win.instr_counter.text() == "—", win.instr_counter.text()
 print("7 통과: scene 미선택 -- 자리 비움")
 
 # ---- 8. HUD: 같은 숫자를 카메라 위 고정 띠에도, 스크롤 밖으로 밀리지 않게 ----
@@ -171,7 +171,7 @@ from PyQt6.QtWidgets import QScrollArea  # noqa: E402
 win.scene_combo.setCurrentIndex(win.scene_combo.findData("S000"))
 win.scene_iid_edit.setText(IID)
 _write_plan(10)
-win.collection.refresh_slot_counter()
+win.collection.refresh_instruction()
 assert win.hud_counter.text() == "1 / 10", win.hud_counter.text()
 assert win.hud_slot.text() == f"S000 · {IID}", win.hud_slot.text()
 assert win.hud_counter.font().pointSize() >= 24, "거리에서 읽히려면 크게"

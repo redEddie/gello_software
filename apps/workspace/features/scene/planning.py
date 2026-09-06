@@ -52,7 +52,7 @@ class ScenePlanningOps:
             counts: dict = {}
             note = ""
             if self.win.session.scene_session and sp.scene_id == self.win.scene_ops.session_scene_id():
-                counts = self.session_slot_counts()
+                counts = self.session_instruction_counts()
                 note = tr(" (세션 중 — 캐시)")
             elif path.exists():
                 try:
@@ -119,7 +119,7 @@ class ScenePlanningOps:
             counts: dict = {}
             if self.win.session.scene_session and sid == self.win.scene_ops.session_scene_id():
                 # 세션이 파일을 쥐고 있다 -- saver 가 보내준 캐시로 센다
-                counts = self.session_slot_counts()
+                counts = self.session_instruction_counts()
             else:
                 p = self.win.scene_ops.selected_scene_path()
                 if p is not None and p.exists():
@@ -144,12 +144,6 @@ class ScenePlanningOps:
         if d:
             self.win.scene_iid_edit.setText(d[0])
             self.win.lang_edit.setText(d[1])
-
-    def on_slot_sentence_edited(self) -> None:
-        # 세션 중에는 파일이 잠겨 있으므로 캐시로 (파일 인자 없이)
-        self.auto_assign_iid(self.win.slot_instr_edit.text(), self.win.slot_iid_edit,
-                              scene_id=self.win.scene_ops.session_scene_id(),
-                              episodes=self.win.session.active_episode_cache)
 
     def dataset_plan_path(self) -> Path:
         """현재 데이터셋(저장 경로)의 계획 파일 — 고정 파일명 컨벤션
@@ -178,7 +172,7 @@ class ScenePlanningOps:
         plan = self.current_plan()
         if plan is not None:
             n = sum(len(sp.slots) for sp in plan.scenes)
-            label.setText(tr("{f} — scene {s}개 · slot {n}개").format(
+            label.setText(tr("{f} — scene {s}개 · 지시문 {n}개").format(
                 f=PLAN_FILENAME, s=len(plan.scenes), n=n))
             label.setStyleSheet("")
         elif path.is_file():
@@ -249,54 +243,82 @@ class ScenePlanningOps:
             for w in plan.warnings:
                 self.win.log(f"[계획 경고] {w}")
         self.refresh_plan_label()
-        self.refresh_slot_panel()
+        self.refresh_instruction_list()
         self.win.scene_ops.on_scene_selected()
 
-    def refresh_slot_panel(self) -> None:
-        """계획 slot 드롭다운 + 수집 카운트 + 계획-파일 불일치 경고 갱신.
+    def refresh_instruction_list(self) -> None:
+        """Collect 화면의 지시문 목록 + 계획-파일 불일치 경고를 갱신한다.
+
+        드롭다운을 대신한다 (2026-09-06). 고르는 것과 보는 것이 같은 위젯이라
+        "지금 무엇을 찍고 있고, 남은 것은 무엇인가"가 한 눈에 들어온다 --
+        드롭다운은 닫혀 있는 동안 그 답을 감추고 있었다.
 
         카운트는 계획 파일이 아니라 scene 파일에서 계산한다(두 개의 진실
-        금지). 세션 중 에피소드가 저장될 때마다 다시 계산된다.
+        금지). 세션 중에는 파일이 잠겨 있으므로 saver 가 본내준 캐시로 센다.
         """
-        if not hasattr(self.win, "slot_plan_combo"):
+        tree = getattr(self.win, "instr_tree", None)
+        if tree is None:
             return
-        combo = self.win.slot_plan_combo
-        combo.blockSignals(True)
-        combo.clear()
+        tree.clear()
         plan = self.current_plan()
-        # Configure 쪽과 같은 규칙: 계획이 있으면 드롭다운에서만 고른다.
-        combo.addItem(tr("(계획에서 선택)") if plan is not None
-                      else tr("(직접 입력)"), None)
-        if hasattr(self.win, "slot_iid_edit"):
-            self.win.slot_iid_edit.setReadOnly(plan is not None)
-            self.win.slot_instr_edit.setReadOnly(plan is not None)
-            for w in (self.win.slot_iid_edit, self.win.slot_instr_edit):
-                w.setStyleSheet("color:#888;" if plan is not None else "")
-        # 세션 중이므로 파일을 다시 열지 않는다(HDF5 잠금) -- scene ID 는
-        # 워커 설정에서, 에피소드·카운트는 saver 가 보내준 캐시에서.
-        sid = self.win.scene_ops.session_scene_id() if self.win.session.scene_session else None
-        counts = self.session_slot_counts()
+        sid = (self.win.scene_ops.session_scene_id()
+               if self.win.session.scene_session else None)
+        counts = self.session_instruction_counts()
         episodes = list(self.win.session.active_episode_cache or [])
+        cur_iid = ""
+        if self.win.worker is not None:
+            cur_iid = (getattr(self.win.worker, "_slot_instruction_id", "")
+                       or getattr(self.win.worker.cfg, "instruction_id", ""))
         warn: list = []
+
+        rows: list = []
         if plan is not None and sid is not None:
-            slots = plan.slots_for(sid)
-            for s in slots:
-                c = counts.get(s.instruction_id, {}).get("usable", 0)
-                combo.addItem(
-                    f"{s.instruction_id} · {c}/{s.target} · {s.instruction}",
-                    (s.instruction_id, s.instruction))
-            if not slots:
+            for sl in plan.slots_for(sid):
+                c = counts.get(sl.instruction_id, {}).get("usable", 0)
+                rows.append((sl.instruction_id, c, sl.target, sl.instruction))
+            if not rows:
                 warn.append(tr("계획에 scene {s} 가 없습니다").format(s=sid))
             warn.extend(check_scene_against_plan(plan, sid, episodes))
-        combo.blockSignals(False)
-        self.win.slot_plan_warn.setText("\n".join(warn[:4]))
+        elif sid is not None:
+            # 계획이 없는 데이터셋: 파일에 이미 있는 지시문만 보여준다.
+            # 새 문장은 여기서 못 만든다 -- 계획을 먼저 쓰는 것이 규칙이고,
+            # 자유 입력이 계획 밖 지시문을 실데이터에 만든 적이 있다.
+            for iid, instr in sorted(self.known_instructions(
+                    sid, episodes=episodes).items()):
+                rows.append((iid, counts.get(iid, {}).get("usable", 0),
+                             None, instr))
 
-    def on_slot_plan_pick(self, *_args) -> None:
-        d = self.win.slot_plan_combo.currentData()
-        if d:
-            self.win.slot_iid_edit.setText(d[0])
-            self.win.slot_instr_edit.setText(d[1])
-            self.win.collection.refresh_slot_counter()
+        for iid, done, target, instr in rows:
+            item = QTreeWidgetItem([
+                ("▸ " if iid == cur_iid else "  ") + iid,
+                f"{done}/{target}" if target is not None else str(done),
+                instr])
+            item.setData(0, Qt.ItemDataRole.UserRole, (iid, instr))
+            item.setToolTip(2, instr)
+            if target is not None and done >= target:
+                # 목표를 채운 줄은 초록 -- 남은 것이 무엇인지가 목록의 요점이다.
+                for c in range(3):
+                    item.setForeground(c, Qt.GlobalColor.darkGreen)
+            if iid == cur_iid:
+                font = item.font(0)
+                font.setBold(True)
+                for c in range(3):
+                    item.setFont(c, font)
+            tree.addTopLevelItem(item)
+        self.win.instr_warn.setText("\n".join(warn[:4]))
+
+    def on_instruction_picked(self, item) -> None:
+        """목록에서 한 줄을 누르면 **바로** 그 지시문으로 바꾼다.
+
+        고르기와 확정을 나누지 않는다 (2026-09-06 사용자 결정). 진행 중인
+        에피소드는 워커가 시작 시점에 지시문을 캡처하므로 영향이 없고,
+        바뀐 것은 다음 에피소드부터다 -- 되돌리는 것도 다른 줄을 누르는 것
+        하나라, 확정 버튼이 막아 줄 실수가 없다.
+        """
+        data = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+        if not data:
+            return
+        self.apply_instruction(*data)
 
     # ------------------------------------------------------------ 빠른 재개
     def pick_resume_slot(self) -> tuple:
@@ -350,7 +372,7 @@ class ScenePlanningOps:
                                 i=s.instruction_id, c=c, t=s.target))
             s = slots[0]
             return (sid, s.instruction_id, s.instruction,
-                    tr("{i} — 이 scene 의 slot 은 모두 목표를 채웠습니다")
+                    tr("{i} — 이 scene 의 지시문이 모두 목표를 채웠습니다")
                     .format(i=s.instruction_id))
 
         # 계획이 없는 데이터셋: 그 파일에 이미 있는 slot 중 가장 낮은 ID.
@@ -372,75 +394,66 @@ class ScenePlanningOps:
         m = INSTRUCTION_ID_RE.match(str(iid))
         return (0, int(m.group(1))) if m else (1, 0)
 
-    def on_next_slot(self) -> None:
-        """계획에서 목표(target)를 못 채운 첫 slot 을 골라 채워준다 (§6:
-        채우지 못한 채 책상을 치우는 것이 재수집의 시작이다)."""
-        plan = self.current_plan()
-        sid = self.win.scene_ops.session_scene_id() if self.win.session.scene_session else None
-        if plan is None or sid is None:
-            self.win.log("[SLOT] 계획이 없거나 scene 세션이 아닙니다")
-            return
-        counts = self.session_slot_counts()
-        for s in plan.slots_for(sid):
-            c = counts.get(s.instruction_id, {}).get("usable", 0)
-            if c < s.target:
-                for i in range(self.win.slot_plan_combo.count()):
-                    if self.win.slot_plan_combo.itemData(i) == (s.instruction_id, s.instruction):
-                        self.win.slot_plan_combo.setCurrentIndex(i)
-                        break
-                self.win.slot_iid_edit.setText(s.instruction_id)
-                self.win.slot_instr_edit.setText(s.instruction)
-                self.win.log(f"[SLOT] 다음 미수집: {s.instruction_id} ({c}/{s.target}) {s.instruction}")
-                return
-        self.win.log("[SLOT] 이 scene 의 모든 slot 이 목표를 채웠습니다")
+    def on_next_instruction(self) -> None:
+        """아직 목표를 못 채운 지시문 중 **번호가 가장 낮은 것**으로 바꾼다
+        (§6: 채우지 못한 채 책상을 치우는 것이 재수집의 시작이다).
 
-    def on_apply_slot(self) -> None:
-        """scene 세션 중 slot 전환 -- worker 의 cmd_set_slot 호출만 한다."""
+        빠른 재개(pick_resume_slot)와 같은 규칙이고, 같은 헬퍼로 센다 --
+        두 곳이 다른 순서로 고르면 조작자가 어느 쪽을 믿을지 알 수 없다.
+        """
+        plan = self.current_plan()
+        sid = (self.win.scene_ops.session_scene_id()
+               if self.win.session.scene_session else None)
+        if plan is None or sid is None:
+            self.win.log("[지시문] 계획이 없거나 scene 세션이 아닙니다")
+            return
+        counts = self.session_instruction_counts()
+        for sl in sorted(plan.slots_for(sid),
+                         key=lambda x: self._iid_order(x.instruction_id)):
+            c = counts.get(sl.instruction_id, {}).get("usable", 0)
+            if c < sl.target:
+                self.win.log(f"[지시문] 다음 미수집: {sl.instruction_id} "
+                             f"({c}/{sl.target}) {sl.instruction}")
+                self.apply_instruction(sl.instruction_id, sl.instruction)
+                return
+        self.win.log("[지시문] 이 scene 의 지시문이 모두 목표를 채웠습니다")
+
+    def apply_instruction(self, iid: str, instr: str) -> None:
+        """세션의 지시문을 바꾼다 -- 다음 에피소드부터 적용된다.
+
+        부르는 곳은 둘뿐이다: 목록의 줄을 누를 때(on_instruction_picked)와
+        [Next unfilled]. 손으로 문장을 치는 길은 없앴다 -- 그 길이 계획 밖
+        지시문을 실데이터에 만들었다 (ID-문장 갈라짐).
+        """
         if self.win.worker is None or not self.win.session.scene_session:
             return
-        iid = self.win.slot_iid_edit.text().strip()
-        instr = self.win.slot_instr_edit.text().strip()
-        if not INSTRUCTION_ID_RE.match(iid):
-            QMessageBox.warning(self.win, tr("slot 오류"),
-                                tr("instruction ID 형식이 틀렸습니다 (예: I000)."))
+        iid, instr = iid.strip(), instr.strip()
+        if not INSTRUCTION_ID_RE.match(iid) or not instr:
+            QMessageBox.warning(self.win, tr("지시문 오류"),
+                                tr("지시문 ID 형식이 틀렸습니다 (예: I000)."))
             return
-        if not instr or (instr.startswith('"') and instr.endswith('"')):
-            QMessageBox.warning(self.win, tr("slot 오류"),
-                                tr("따옴표 없는 순수 문장을 입력하세요."))
-            return
-        # 계획이 있으면 계획의 (ID, 문장) 쌍만 적용 가능 -- 자유 입력이
-        # 계획 밖 slot 을 만들던 구멍을 세션 중에도 막는다.
+        # 계획이 있으면 계획의 (ID, 문장) 쌍만 적용 가능. 목록이 계획에서
+        # 나오므로 정상 경로에서는 늘 통과하지만, 계획이 그 사이 바뀌었을
+        # 수 있어 적용 시점에 다시 본다.
         plan = self.current_plan()
         sid = self.win.scene_ops.session_scene_id()
         if plan is not None and sid is not None:
             slots = plan.slots_for(sid)
-            if slots and not any(s.instruction_id == iid
-                                 and s.instruction == instr for s in slots):
-                QMessageBox.warning(self.win, tr("slot 오류"), tr(
-                    "계획에 없는 slot 입니다 ({i}). '계획 slot' 드롭다운에서 "
-                    "고르세요 — 새 문장은 계획을 먼저 수정하세요.").format(i=iid))
+            if slots and not any(x.instruction_id == iid
+                                 and x.instruction == instr for x in slots):
+                QMessageBox.warning(self.win, tr("지시문 오류"), tr(
+                    "계획에 없는 지시문입니다 ({i}). 계획을 먼저 고치세요 "
+                    "(② Configure > 수집 계획 ✎).").format(i=iid))
                 return
         self.win.worker.cmd_set_slot(instr, iid)
-        self.win.slot_current_label.setText(f"{iid}: {instr}")
-        self.win.collection.refresh_slot_counter()
-        # cmd_set_slot 은 워커 큐로 가서 다음 드레인에 반영된다 -- 오른쪽
-        # 패널은 사용자가 누른 값으로 즉시 갱신한다 (워커 속성은 곧 같아진다).
+        # cmd_set_slot 은 워커 큐로 가서 다음 드레인에 반영된다 -- 화면은
+        # 사용자가 누른 값으로 즉시 갱신한다 (워커 값은 곧 같아진다).
         self.win.right_fields["ds_task"].setText(f"{iid}: {instr}")
         self.win.right_fields["ds_task"].setToolTip(f"{iid}: {instr}")
         self.win._recents.add("instruction_id", iid)
         self.win._recents.add("language", instr)
-        # 계획과 어긋난 수동 입력은 막지 않되 즉시 보이게 한다 (ID-문장
-        # 갈라짐이 실데이터에서 실제로 발생했다).
-        plan = self.current_plan()
-        sid = self.win.scene_ops.session_scene_id()
-        if plan is not None and sid is not None:
-            sentences = {s.instruction_id: s.instruction
-                         for s in plan.slots_for(sid)}
-            if iid in sentences and sentences[iid] != instr:
-                self.win.log(f"[SLOT 경고] {iid} 문장이 계획({sid})과 다릅니다 -- "
-                         f"계획: {sentences[iid]!r}")
-            elif sentences and iid not in sentences:
-                self.win.log(f"[SLOT 경고] 계획({sid})에 없는 slot {iid} 로 수집합니다")
+        # refresh_instruction 이 목록까지 함께 갱신한다.
+        self.win.collection.refresh_instruction()
 
     def on_rank_selected(self) -> None:
         """Selecting a row draws its curves -- the point of the panel is that a
@@ -452,7 +465,7 @@ class ScenePlanningOps:
         self.win.stats_ops.show_analysis_for(path, demo)
         self.win.playback_ops.show_trim_for(path, demo)
 
-    def session_slot_counts(self) -> dict:
+    def session_instruction_counts(self) -> dict:
         """세션 중 slot 카운트 -- 파일은 saver 가 h5py 로 잠그고 있으므로
         다시 열지 않고, saver 가 보내준 에피소드 목록으로 계산한다
         (count_by_slot 과 같은 정의: usable = quality_status success)."""
@@ -467,7 +480,7 @@ class ScenePlanningOps:
                 c["usable"] += 1
         return counts
 
-    def known_slots(self, scene_id=None, scene_path=None, episodes=None) -> dict:
+    def known_instructions(self, scene_id=None, scene_path=None, episodes=None) -> dict:
         """**이 scene 의** instruction_id -> 문장 매핑.
 
         ID 는 scene 마다 독립이다(각 scene 의 첫 instruction 이 I000, 새
@@ -513,21 +526,21 @@ class ScenePlanningOps:
         instr = instr.strip()
         if not instr:
             return
-        known = self.known_slots(scene_id, scene_path, episodes=episodes)
+        known = self.known_instructions(scene_id, scene_path, episodes=episodes)
         for iid, s in known.items():
             if s == instr:
                 if iid_edit.text().strip() != iid:
                     iid_edit.setText(iid)
-                    self.win.log(f"[SLOT] 아는 문장 -- {iid} 재사용")
+                    self.win.log(f"[지시문] 아는 문장 -- {iid} 재사용")
                 return
         cur = iid_edit.text().strip()
         nxt = self.next_iid(known)
         if cur in known and known[cur] != instr:
             iid_edit.setText(nxt)
-            self.win.log(f"[SLOT] 새 문장 -- {nxt} 자동 배정 ({cur} 는 이 scene 에서 사용 중)")
+            self.win.log(f"[지시문] 새 문장 -- {nxt} 자동 배정 ({cur} 는 이 scene 에서 사용 중)")
         elif not INSTRUCTION_ID_RE.match(cur) or cur not in known and cur != nxt:
             # 빈/이상한 값이거나, 이 scene 기준으로 뜬금없는 번호(예: 다른
             # scene 에서 넘어온 I003)면 이 scene 의 다음 번호로 정렬한다.
             iid_edit.setText(nxt)
             if cur and cur != nxt:
-                self.win.log(f"[SLOT] 새 문장 -- {nxt} 자동 배정")
+                self.win.log(f"[지시문] 새 문장 -- {nxt} 자동 배정")

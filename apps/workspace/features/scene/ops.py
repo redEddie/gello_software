@@ -60,7 +60,7 @@ class SceneOps:
 
     def on_scene_selected(self, *_args) -> None:
         self.win.scene_planning.refresh_start_plan_combo()
-        self.win.collection.refresh_slot_counter()
+        self.win.collection.refresh_instruction()
         sid = self.win.scene_combo.currentData()
         self.win.scene_new_btn.setEnabled(sid is None)
         if sid is None:
@@ -77,7 +77,7 @@ class SceneOps:
             path = root / scene_filename(sid)
             if self.win.session.active_file_path is not None and path == self.win.session.active_file_path:
                 # 세션이 파일을 쥐고 있다 -- 캐시 요약으로 대신한다
-                counts = self.win.scene_planning.session_slot_counts()
+                counts = self.win.scene_planning.session_instruction_counts()
                 lines = [tr("{s} — 수집 세션 진행 중 (배치도는 오른쪽 패널에)")
                          .format(s=sid)]
                 if counts:
@@ -134,7 +134,7 @@ class SceneOps:
         if lang.startswith('"') and lang.endswith('"'):
             return None, None, False, tr("instruction 은 따옴표 없는 순수 문장이어야 합니다.")
         if not INSTRUCTION_ID_RE.match(iid):
-            return None, None, False, tr("시작 slot ID 형식이 틀렸습니다 (예: I000).")
+            return None, None, False, tr("시작 지시문 ID 형식이 틀렸습니다 (예: I000).")
         if not collector:
             return None, None, False, tr("수집자 식별자를 입력하세요 (에피소드 필수 attr).")
         # 계획이 선택돼 있으면 시작 slot 은 계획의 (ID, 문장) 쌍이어야 한다 --

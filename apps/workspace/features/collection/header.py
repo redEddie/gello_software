@@ -8,7 +8,7 @@
 "수집 갯수가 어디 보이냐"는 물음이 세 번 나온 이유다.
 
 그래서 스크롤되지 않는 자리(카메라 위)로 올리고 거리에서 읽히게 키웠다.
-숫자의 정본은 그대로 CollectionOps._refresh_slot_counter 하나다 -- 이
+숫자의 정본은 그대로 CollectionOps._refresh_instruction 하나다 -- 이
 모듈은 위젯만 만들고, 채우는 것은 그쪽이다.
 """
 from PyQt6.QtCore import Qt

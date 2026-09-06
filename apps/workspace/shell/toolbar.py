@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import QLabel, QMessageBox, QToolBar, QWidgetAction
 from gello.data.episode_stats import TASK_DEV_LIMIT
 from gello.gui.i18n import tr
 
+from apps.workspace.features.collection.page import KEY_MAP
 from apps.workspace.shared.widgets import StatusLight
 from apps.workspace.constants import (
     ACTIVITIES,
@@ -55,7 +56,7 @@ def build_toolbar(win) -> None:
     # 자주 누르는 것이 이것이고, 그때 Connect 는 노드가 없어서 어차피
     # 실패한다 (2026-09-06 사용자 요청).
     add("quick", tr("⚡ Quick resume"), win.collection.on_quick_start,
-        tr("가장 최근 scene 과 아직 못 채운 가장 낮은 slot 을 골라, "
+        tr("가장 최근 scene 과 아직 못 채운 가장 낮은 지시문을 골라, "
            "노드가 준비되면 바로 연결합니다"))
     add("connect", tr("▶ Connect"), win.collection.on_connect, tr("로봇에 연결하고 세션 시작"))
     add("disconnect", tr("■ Disconnect"), win.collection.on_disconnect, tr("세션 종료"))
@@ -94,13 +95,17 @@ def toolbar_context(win, key: str) -> list:
     """
     return {
         "configure": [
+            # 카메라 새로고침은 여기서 뺐다 (2026-09-06) -- 카메라를 고르는
+            # 자리가 ① Layout 하나로 모이면서, 이 화면에는 그 동작을 부를
+            # 이유가 없어졌다. ① 의 구획과 메뉴 색인에는 그대로 있다.
             (tr("새 Scene 구성..."), win.scene_ops.on_new_scene,
              tr("소품 조합과 3×3 배치를 정합니다")),
-            (tr("카메라 새로고침"), win.camera_ops.refresh_cameras, ""),
+            (tr("계획 편집..."), win.scene_planning.on_edit_plan,
+             tr("이 데이터셋의 지시문과 목표 개수를 고칩니다")),
         ],
         "collect": [
-            (tr("다음 미수집 slot 제시"), win.scene_planning.on_next_slot,
-             tr("계획에서 아직 목표를 못 채운 문장을 고릅니다")),
+            (tr("Next unfilled"), win.scene_planning.on_next_instruction,
+             tr("계획에서 아직 목표를 못 채운 지시문 중 번호가 가장 낮은 것으로")),
         ],
         "dataset": [
             (tr("새로고침"), win.dataset_ops.refresh_dataset_tree, ""),
@@ -246,9 +251,10 @@ def build_menu(win) -> None:
     m = mb.addMenu(tr("Collect"))
     m.addAction(tr("Quick resume"), win.collection.on_quick_start)
     m.addSeparator()
-    m.addAction(tr("다음 미수집 slot 제시"), win.scene_planning.on_next_slot)
-    m.addAction(tr("slot 적용 (다음 에피소드부터)"),
-                win.scene_planning.on_apply_slot)
+    m.addAction(tr("Next unfilled"), win.scene_planning.on_next_instruction)
+    # "지시문 적용" 은 색인에 없다 -- 화면에도 그런 동작이 없어졌다. 목록의
+    # 줄을 누르는 것이 곧 적용이고, 줄 누르기는 메뉴로 옮길 수 있는 동작이
+    # 아니다 (색인 규칙 1 은 "화면에 있는 **동작**" 이 대상이다).
     m.addSeparator()
     m.addAction(tr("Start Teleop"),
                 lambda: win.collection.cmd("cmd_start_teleop"))
@@ -263,7 +269,8 @@ def build_menu(win) -> None:
     m.addAction(tr("Discard"),
                 lambda: win.collection.cmd("cmd_discard_episode"))
     m.addSeparator()
-    m.addAction(tr("진행률 새로고침"), win.scene_planning.refresh_plan_progress)
+    m.addAction(tr("계획 진행률 새로고침 (Plan 탭)"),
+                win.scene_planning.refresh_plan_progress)
 
     m = mb.addMenu(tr("Scene"))
     m.addAction(tr("새 Scene 구성..."), win.scene_ops.on_new_scene)
@@ -342,18 +349,15 @@ def build_menu(win) -> None:
     m.addAction(win.act_toggle_right)
 
     m = mb.addMenu(tr("Help"))
+    # 표는 손으로 쓰지 않고 Collect 화면의 KEY_MAP 에서 만든다 -- 두 곳에
+    # 적으면 한쪽만 고쳐지고, 그 어긋남은 조작자가 키를 눌러 봐야만 드러난다.
     m.addAction(tr("단축키..."), lambda: QMessageBox.information(
         win, tr("단축키"),
         tr("양손이 GELLO 리더 위에 있으므로 마우스 없이 조작합니다.\n"
-           "같은 키가 상태에 따라 다르게 동작합니다.\n\n"
-           "  자세 정렬 중   Space        텔레옵 시작\n"
-           "  기록 중        Space        성공으로 끝내기\n"
-           "  기록 중        Esc          실패로 끝내기\n"
-           "  기록 중        Delete       폐기\n"
-           "  자세 정렬 중   Enter        자동 정렬 다시 (대략 맞춘 뒤에만)\n"
-           "  리셋 대기 중   Esc          직전 에피소드 판정 뒤집기\n"
-           "  리셋 대기 중   Enter        리셋 완료 — 계속\n\n"
-           "지금 쓸 수 있는 키는 Collect 패널 아래에 초록색으로 표시됩니다.")))
+           "같은 키가 상태에 따라 다르게 동작합니다.\n\n")
+        + "\n".join(f"  {k:<7}{what}" for k, what, _s in KEY_MAP)
+        + tr("\n\n지금 쓸 수 있는 키는 ③ Collect 화면의 Keys 상자에 "
+             "초록색으로 표시됩니다.")))
     m.addSeparator()
     m.addAction(tr("정보"), lambda: QMessageBox.information(
         win, tr("정보"),

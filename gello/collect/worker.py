@@ -433,7 +433,7 @@ class CollectionWorker(QThread):
         지점에서 처리한다. 파일을 만지지 않으므로 워커 스레드에서 안전하다."""
         self._slot_instruction = instruction
         self._slot_instruction_id = instruction_id
-        self.log_message.emit(f"[SLOT] {instruction_id}: {instruction}")
+        self.log_message.emit(f"[지시문] {instruction_id}: {instruction}")
 
     def _poll_cmd(self, block: bool = False, timeout: float = 0.0) -> Optional[tuple]:
         """Pops queued commands, servicing ``delete_episode``/``set_slot``

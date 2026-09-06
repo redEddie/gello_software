@@ -177,10 +177,18 @@ STATE_LABELS = {
     "approach": "APPROACH",
     "recording": "RECORDING",
 }
+#: 상태별 **한국어 안내문** -- "지금 무엇을 하라". Collect 화면의 '지금'
+#: 상자가 이것을 띄운다.
+#:
+#: 키 이름은 여기 적지 않는다 (2026-09-06). 바로 아래 Keys 상자가 지금 살아
+#: 있는 키를 초록으로 밝히고 있어서, 문장에까지 키를 넣으면 같은 말이 두 번
+#: 나오고 문장이 길어져 줄바꿈으로 아래 것들이 밀린다.
 SHORTCUT_HINTS = {
-    "reset_wait": "물체를 제자리에 놓으세요.   Enter: 계속   Esc: 직전 판정 뒤집기",
-    "gate": "리더를 팔로워 자세에 맞추세요.   Space: 텔레옵 시작   Enter: 자동 정렬",
-    "recording": "Space: 성공으로 끝내기   Esc: 실패로 끝내기   Del: 폐기",
+    "homing": "홈으로 돌아가는 중입니다.",
+    "reset_wait": "물체를 제자리에 놓으세요.",
+    "gate": "리더를 팔로워 자세에 맞추세요.",
+    "approach": "로봇이 리더 자세를 따라가는 중입니다.",
+    "recording": "기록 중입니다. 작업을 마치면 끝내세요.",
 }
 
 
@@ -513,6 +521,12 @@ class WorkspaceWindow(QMainWindow):
             # 지적: 이 흐름에 클릭이 너무 많다). 왼쪽 패널의 [레이아웃 탭
             # 열기] 버튼이 하던 일을 들어오는 것 자체가 하게 한다.
             show_center_tab(self, "layout")
+        elif key == "configure":
+            # 이 화면에 온 이유는 "다음에 무엇을 찍을까"다. 카메라가 아니라
+            # 계획 현황을 띄운다 (2026-09-06 사용자 지적). 표는 계획의 모든
+            # scene 파일을 열므로 여기 들어올 때만 새로 읽는다.
+            show_center_tab(self, "plan")
+            self.scene_planning.refresh_plan_progress()
         elif key == "stats":
             self.stats_ops.refresh_stats()
             self.stats_ops.refresh_history()
@@ -520,8 +534,9 @@ class WorkspaceWindow(QMainWindow):
             # 스캔하면 지금 찍고 있는 것만 빠진 통계가 나온다.
             self.stats_ops.auto_refresh_analysis()
         elif key == "collect":
-            # 진행률 트리는 Collect "진행" 상자에 있다 (Statistics 에서 이동)
-            self.scene_planning.refresh_plan_progress()
+            # 데이터셋 전체 진행률 표는 여기 없다 (2026-09-06: Plan 탭으로).
+            # 수집 중에 보는 것은 지금 scene 의 지시문 목록뿐이다.
+            self.scene_planning.refresh_instruction_list()
         elif key == "dataset":
             self.dataset_ops.refresh_dataset_tree()
             # Analysis 탭이 이 화면에 붙어 있다 -- 바뀐 게 있으면 여기서

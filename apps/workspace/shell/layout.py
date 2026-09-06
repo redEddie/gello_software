@@ -48,6 +48,7 @@ from apps.workspace.features.camera import build_cloud_tab, build_depth_tab
 from apps.workspace.features.gallery import build_gallery_tab
 from apps.workspace.features.playback import build_trim_tab
 from apps.workspace.features.scene.layout_tab import build_layout_tab
+from apps.workspace.features.scene.plan_tab import build_plan_tab
 
 
 def build_center(win) -> None:
@@ -178,6 +179,7 @@ def build_center(win) -> None:
     # 순서·제목의 정본은 constants.CENTER_TABS 다.
     win.center_tab_widgets = {
         "live": live,
+        "plan": build_plan_tab(win),
         "playback": play,
         "analysis": build_analysis_tab(win),
         "trim": build_trim_tab(win),
@@ -213,6 +215,17 @@ def build_left(win) -> None:
         head.setFont(f)
         head.setStyleSheet("color:#888; letter-spacing:1px;")
         col.addWidget(head)
+        # 다음 단계로 가는 버튼은 **맨 위**다 (2026-09-06 사용자 지정).
+        # 스크롤 밖에 두는 것은 그대로 -- 페이지가 길어져도 늘 같은 자리에
+        # 있어야 하고, 그래야 화면을 옮기는 동작이 손에 익는다.
+        nxt = next_workflow(key)
+        if nxt is not None:
+            nkey, nmark, nlabel = nxt
+            btn = QPushButton(tr("다음: {m} {l}  →").format(m=nmark, l=tr(nlabel)))
+            btn.setToolTip(tr("{t} 화면으로 이동합니다").format(
+                t=dict((k, t) for k, _i, t, _p in ACTIVITIES)[nkey]))
+            btn.clicked.connect(lambda _c=False, k=nkey: win._set_activity(k))
+            col.addWidget(btn)
         # 페이지가 창보다 길어지면(예: Configure 의 scene 그룹) 세로
         # 스크롤. 가로 스크롤은 쓰지 않는다 -- 내용이 패널 폭에 맞게
         # 접히는 것이 원칙이다 (긴 한 줄 표시는 SceneInfoView 처럼 줄바꿈
@@ -225,17 +238,6 @@ def build_left(win) -> None:
         relax_min_widths(page)
         scroll.setWidget(page)
         col.addWidget(scroll, 1)
-        # 다음 단계로 가는 버튼. 스크롤 **밖**에 둔다 -- 페이지가 길어지면
-        # 스크롤 안의 것은 안 보이는데, 이 버튼이 답하는 질문("다 했다, 이제
-        # 뭐?")은 페이지를 끝까지 내려본 뒤에 나온다.
-        nxt = next_workflow(key)
-        if nxt is not None:
-            nkey, nmark, nlabel = nxt
-            btn = QPushButton(tr("다음: {m} {l}  →").format(m=nmark, l=tr(nlabel)))
-            btn.setToolTip(tr("{t} 화면으로 이동합니다").format(
-                t=dict((k, t) for k, _i, t, _p in ACTIVITIES)[nkey]))
-            btn.clicked.connect(lambda _c=False, k=nkey: win._set_activity(k))
-            col.addWidget(btn)
         win.left_pages[key] = win.left_stack.count()
         win.left_stack.addWidget(wrapper)
 

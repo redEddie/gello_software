@@ -27,15 +27,14 @@
     ],
     "Collect": [
       "Quick resume",
-      "다음 미수집 slot 제시",
-      "slot 적용 (다음 에피소드부터)",
+      "Next unfilled",
       "Start Teleop",
       "Auto-align (Enter)",
       "Reset done — continue (Enter)",
       "Save (success)",
       "Save as fail (Esc)",
       "Discard",
-      "진행률 새로고침"
+      "계획 진행률 새로고침 (Plan 탭)"
     ],
     "Scene": [
       "새 Scene 구성...",
@@ -81,6 +80,7 @@
       "Upload",
       "Settings",
       "Live",
+      "Plan",
       "Playback",
       "Analysis",
       "Trim",
@@ -115,10 +115,10 @@
     ],
     "configure": [
       "새 Scene 구성...",
-      "카메라 새로고침"
+      "계획 편집..."
     ],
     "collect": [
-      "다음 미수집 slot 제시"
+      "Next unfilled"
     ],
     "dataset": [
       "새로고침",
@@ -167,6 +167,7 @@
   ],
   "center_tabs": [
     "live",
+    "plan",
     "playback",
     "analysis",
     "trim",
@@ -181,6 +182,7 @@
       "layout"
     ],
     "configure": [
+      "plan",
       "live"
     ],
     "collect": [

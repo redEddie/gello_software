@@ -52,47 +52,17 @@ class CameraOps:
                         combo.setCurrentIndex(i)
                         break
             combo.blockSignals(False)
-        self.mirror_camera_combos(rebuild=True)
         self.set_camera_hint(tr("{n}대 감지됨").format(n=len(entries)))
         self.win.log(f"[카메라] {len(entries)}대 감지: {[s for s, _ in entries]}")
         self.ensure_camera_node()
 
     def set_camera_hint(self, text: str) -> None:
         self.win.camera_hint.setText(text)
-        if hasattr(self.win, "layout_camera_hint"):
-            self.win.layout_camera_hint.setText(text)
 
-    def mirror_camera_combos(self, rebuild: bool = False) -> None:
-        """Configure 콤보(원본) -> Layout 콤보(미러) 복사. ``rebuild`` 면 항목
-        목록까지 새로 채운다 (refresh_cameras 뒤)."""
-        if not hasattr(self.win, "layout_agent_combo"):
-            return
-        for src, dst in ((self.win.agent_combo, self.win.layout_agent_combo),
-                         (self.win.wrist_combo, self.win.layout_wrist_combo)):
-            dst.blockSignals(True)
-            if rebuild:
-                dst.clear()
-                for i in range(src.count()):
-                    dst.addItem(src.itemText(i), src.itemData(i))
-            i = src.currentIndex()
-            if i >= 0 and src.itemText(i) == src.currentText():
-                dst.setCurrentIndex(i)
-            else:
-                dst.setCurrentText(src.currentText())
-            dst.blockSignals(False)
-
-    def on_layout_camera_changed(self) -> None:
-        """Layout 콤보에서 고른 것을 원본으로 밀어넣는다. 원본 시그널이
-        on_camera_changed 를 태워 미리보기 재시작까지 이어진다."""
-        for src, dst in ((self.win.layout_agent_combo, self.win.agent_combo),
-                         (self.win.layout_wrist_combo, self.win.wrist_combo)):
-            if src.currentText() == dst.currentText():
-                continue
-            i = src.currentIndex()
-            if i >= 0 and src.itemText(i) == src.currentText():
-                dst.setCurrentIndex(i)
-            else:
-                dst.setCurrentText(src.currentText())
+    # mirror_camera_combos / on_layout_camera_changed 를 지웠다
+    # (2026-09-06). 카메라 콤보가 Configure 와 Layout 두 곳에 있어서
+    # 서로 복사하고 있었는데, 카메라를 고르는 자리를 ① Layout 하나로
+    # 모으면서 거울이 필요 없어졌다.
 
     def combo_serial(self, combo: QComboBox) -> str:
         data = combo.currentData()
@@ -102,7 +72,6 @@ class CameraOps:
         return "" if text.startswith("(") else text
 
     def on_camera_changed(self) -> None:
-        self.mirror_camera_combos()
         if self.win.worker is not None:
             return  # 세션 중 카메라 교체는 없다 -- 노드도 그대로 둔다
         self.ensure_camera_node()   # 선택이 바뀌면 노드를 새 구성으로 재시작
@@ -123,11 +92,9 @@ class CameraOps:
         if not hasattr(self.win, "preview_btn"):
             return
         on = bool(self.win.agent_preview or self.win.wrist_preview)
-        for btn in (self.win.preview_btn,
-                    getattr(self.win, "layout_preview_btn", None)):
-            if btn is not None:
-                btn.setText(tr("미리보기 중단") if on else tr("미리보기 시작"))
-                btn.setEnabled(self.win.worker is None)
+        self.win.preview_btn.setText(
+            tr("미리보기 중단") if on else tr("미리보기 시작"))
+        self.win.preview_btn.setEnabled(self.win.worker is None)
 
     def restart_previews(self) -> None:
         self.stop_previews_async()

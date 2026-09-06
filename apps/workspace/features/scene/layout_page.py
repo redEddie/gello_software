@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.gui.i18n import tr
-from apps.workspace.shared.tabs import show_center_tab
+from apps.workspace.shared.sizing import shrinkable_combo
 
 
 def build_layout_page(win) -> QWidget:
@@ -23,34 +23,34 @@ def build_layout_page(win) -> QWidget:
     col = QVBoxLayout(w)
     col.setContentsMargins(0, 0, 0, 0)
 
-    open_btn = QPushButton(tr("레이아웃 탭 열기"))
-    open_btn.clicked.connect(
-        lambda: show_center_tab(win, "layout"))
-    col.addWidget(open_btn)
+    # "레이아웃 탭 열기" 버튼을 뺐다 (2026-09-06) -- 이 활동에 들어오면
+    # 그 탭이 자동으로 열린다 (_set_activity). 눌러도 아무 일이 없는 버튼은
+    # 있는 것보다 없는 편이 낫다. 메뉴 색인(View > 레이아웃)에는 남아 있다.
 
-    # Configure 의 카메라 그룹 복제 -- 여기서 고르나 저기서 고르나 같다.
-    # Configure 쪽 콤보가 원본이고 이쪽은 미러: 이쪽에서 바꾸면 원본으로
-    # 밀어넣고(_on_layout_camera_changed), 원본이 바뀌면 여기로 복사한다
-    # (_mirror_camera_combos). 미리보기 재시작은 원본의 시그널이 담당한다.
+    # 카메라를 고르는 자리는 **여기 하나**다 (2026-09-06). 전에는 Configure
+    # 에도 같은 콤보가 있고 둘을 서로 복사했는데(mirror), 카메라 점검은 ①
+    # 단계에서 끝나는 일이라 ② Scene 설정에는 있을 이유가 없었다 -- 거울을
+    # 없애면 "어느 쪽이 원본인가"라는 질문도 함께 없어진다.
     cam = QGroupBox(tr("카메라"))
     cform = QFormLayout(cam)
-    win.layout_agent_combo = QComboBox()
-    win.layout_wrist_combo = QComboBox()
-    for c in (win.layout_agent_combo, win.layout_wrist_combo):
+    win.agent_combo = QComboBox()
+    win.wrist_combo = QComboBox()
+    for c in (win.agent_combo, win.wrist_combo):
         c.setEditable(True)
-        c.currentTextChanged.connect(win.camera_ops.on_layout_camera_changed)
-    cform.addRow(tr("Agent"), win.layout_agent_combo)
-    cform.addRow(tr("Wrist"), win.layout_wrist_combo)
+        shrinkable_combo(c)
+        c.currentTextChanged.connect(win.camera_ops.on_camera_changed)
+    cform.addRow(tr("Agent"), win.agent_combo)
+    cform.addRow(tr("Wrist"), win.wrist_combo)
     refresh = QPushButton(tr("카메라 새로고침"))
     refresh.clicked.connect(win.camera_ops.refresh_cameras)
     cform.addRow(refresh)
-    win.layout_preview_btn = QPushButton(tr("미리보기 시작"))
-    win.layout_preview_btn.clicked.connect(win.camera_ops.on_toggle_previews)
-    cform.addRow(win.layout_preview_btn)
-    win.layout_camera_hint = QLabel("")
-    win.layout_camera_hint.setStyleSheet("color:#888;")
-    win.layout_camera_hint.setWordWrap(True)
-    cform.addRow(win.layout_camera_hint)
+    win.preview_btn = QPushButton(tr("미리보기 시작"))
+    win.preview_btn.clicked.connect(win.camera_ops.on_toggle_previews)
+    cform.addRow(win.preview_btn)
+    win.camera_hint = QLabel("")
+    win.camera_hint.setStyleSheet("color:#888;")
+    win.camera_hint.setWordWrap(True)
+    cform.addRow(win.camera_hint)
     col.addWidget(cam)
 
     show = QGroupBox(tr("슬라이드쇼"))
