@@ -292,6 +292,18 @@ class FrankaFR3Robot(Robot):
         # 한 번만 확인하고, 없으면 관측에서 키를 빼서 상류(add_frame)가
         # 기록을 생략하게 한다 -- 0 으로 채워 "측정된 무접촉"처럼 보이게
         # 하는 것이 최악이므로 조용한 0 채움은 하지 않는다.
+        # 부하 모델. **정적이라 obs 가 아니라 파일 메타에 한 번 적는다.**
+        # 이 값이 틀리면 미신고 질량이 통째로 외력 추정에 섞이는데(2026-09-06
+        # 실측: 120 g 을 빼자 500 g 추가 613 g 으로 읽혔다), 파일에 안 남으면
+        # 나중에 그 파일이 어떤 부하 설정으로 찍혔는지 알 방법이 없다.
+        self._payload = {
+            "mass": float(np.asarray(st.m_total, dtype=float).ravel()[0]),
+            "com": np.asarray(st.F_x_Ctotal, dtype=float).ravel().tolist(),
+        } if hasattr(st, "m_total") else {}
+        if self._payload:
+            print(f"[FR3] payload {self._payload['mass'] * 1000:.0f} g, "
+                  f"com {np.round(self._payload['com'], 4).tolist()}")
+
         self._has_ft = all(hasattr(st, a) for _, a in FT_STATE_ATTRS)
         self._ft: Dict[str, np.ndarray] = {}
         if self._has_ft:
@@ -404,6 +416,10 @@ class FrankaFR3Robot(Robot):
         # "기록 안 함"이지 오류가 아니다.
         out.update(ft)
         return out
+
+    def payload(self) -> dict:
+        """부하 모델 (질량 kg, 플랜지 기준 무게중심 m). 연결 때 한 번 읽은 값."""
+        return dict(self._payload)
 
     def _read_ft(self, st) -> None:
         """``self._ft`` 를 갱신한다. 호출자가 ``self._lock`` 을 쥐고 있어야 한다."""

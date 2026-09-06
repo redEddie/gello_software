@@ -1121,6 +1121,26 @@ class CollectionWorker(QThread):
         finally:
             self._teleop.set_teleop_mode(False)
 
+    def _stamp_payload(self, metadata) -> None:
+        """로봇의 부하 모델을 scene metadata 에 적는다.
+
+        못 물어보면 조용히 넘어간다 -- 그러면 attrs 가 없어 파일이 낮은 버전
+        규칙으로 검사된다. 0 을 적어 "부하가 없었다"로 읽히게 하는 것보다 낫다.
+        """
+        try:
+            info = self._robot._client.payload()
+        except Exception as e:  # noqa: BLE001
+            self.log_message.emit(f"[부하] 로봇에서 못 읽었습니다: {e}")
+            return
+        if not info or info.get("mass") is None:
+            self.log_message.emit("[부하] 이 로봇은 부하 모델을 주지 않습니다.")
+            return
+        metadata.payload_mass = float(info["mass"])
+        metadata.payload_com = list(info.get("com") or [])
+        self.log_message.emit(
+            f"[부하] {metadata.payload_mass * 1000:.0f} g "
+            f"(무게중심 {[round(c, 4) for c in metadata.payload_com]}) 기록")
+
     # ------------------------------------------------------------------- run
     def run(self) -> None:  # noqa: C901 - state machine, kept in one place on purpose
         try:
@@ -1133,6 +1153,12 @@ class CollectionWorker(QThread):
                 # scene metadata 와 저장 시점 slot 에서 나온다. 소품 인벤토리
                 # 검증(미등록 ID 거부)은 SceneMetadata.validate 가 한다.
                 from gello.scene.props import active_prop_ids
+
+                # 부하 모델을 metadata 에 싣는다 (knu-1.2.0). 정적 값이라 여기서
+                # 한 번만 묻고, 새 파일을 만들 때만 쓴다 -- 이어찍기면 그 파일이
+                # 이미 자기가 찍힐 때의 값을 갖고 있으므로 덮어쓰면 안 된다.
+                if self.cfg.scene_metadata is not None and not self.cfg.scene_resume:
+                    self._stamp_payload(self.cfg.scene_metadata)
 
                 self._writer = SceneWriter(
                     root=self.cfg.data_root,

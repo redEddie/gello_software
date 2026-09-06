@@ -80,6 +80,8 @@ import h5py
 import numpy as np
 
 from gello.data.dataset_schema import (
+    META_PAYLOAD_COM,
+    META_PAYLOAD_MASS,
     SCHEMA_VERSION,
     DatasetSchemaConfig,
     normalize_schema_version,
@@ -179,6 +181,13 @@ class SceneMetadata:
     station: str = ""
     dataset_version: str = SCENE_DATASET_VERSION
     created: str = ""
+    #: 기록 시점의 로봇 부하 모델 (knu-1.2.0). 질량 kg, 무게중심 m.
+    #: 이 값이 없으면 파일의 절대 힘값을 해석할 수 없다 -- 미신고 질량이
+    #: 그대로 외력 추정에 섞이기 때문이다 (dataset_schema 의 META_PAYLOAD_* 참조).
+    #: 부하를 못 알려주는 로봇(시뮬레이터 등)에서는 None 이고, 그때는 attrs 를
+    #: 쓰지 않아 파일이 1.1.1 규칙으로 검사된다.
+    payload_mass: Optional[float] = None
+    payload_com: Optional[list] = None
 
     def validate(self, known_prop_ids: Optional[set[str]] = None) -> None:
         """구조가 틀린 metadata 로 파일을 만드는 것을 생성 시점에 막는다.
@@ -248,6 +257,10 @@ def _read_metadata(meta: h5py.Group) -> SceneMetadata:
         dataset_version=normalize_schema_version(
             meta.attrs.get("dataset_version", "")),
         created=str(meta.attrs.get("created", "")),
+        payload_mass=(float(meta.attrs[META_PAYLOAD_MASS])
+                      if META_PAYLOAD_MASS in meta.attrs else None),
+        payload_com=(json.loads(meta.attrs[META_PAYLOAD_COM])
+                     if META_PAYLOAD_COM in meta.attrs else None),
     )
 
 
@@ -360,6 +373,12 @@ class SceneWriter:
             # info.json 과 키 이름을 맞춰, 두 포맷을 한 쿼리로 대조할 수 있게.
             self._meta.attrs["schema_version"] = metadata.dataset_version
             self._meta.attrs["created"] = metadata.created
+            # 부하 모델은 있을 때만 쓴다 -- 못 주는 로봇에서 0 을 적으면
+            # "부하가 0 이었다"로 읽혀 없느니만 못하다.
+            if metadata.payload_mass is not None:
+                self._meta.attrs[META_PAYLOAD_MASS] = float(metadata.payload_mass)
+                self._meta.attrs[META_PAYLOAD_COM] = json.dumps(
+                    list(metadata.payload_com or []))
             self._meta.attrs["next_episode_idx"] = 0
 
         if "next_episode_idx" not in self._meta.attrs:

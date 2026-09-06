@@ -60,6 +60,11 @@ class ZMQServerRobot:
                         result = self._robot.command_joint_state(**args)
                     elif method == "get_observations":
                         result = self._robot.get_observations()
+                    elif method == "payload":
+                        # 정적 값이라 obs 에 싣지 않는다. 이 로봇이 못 주면
+                        # 빈 dict -- 상류가 그걸 보고 기록을 생략한다.
+                        fn = getattr(self._robot, "payload", None)
+                        result = fn() if fn is not None else {}
                     else:
                         result = {"error": "Invalid method"}
                         print(result)
@@ -147,6 +152,22 @@ class ZMQClientRobot(Robot):
         send_message = pickle.dumps(request)
         try:
             self._socket.send(send_message)
+            result = pickle.loads(self._socket.recv())
+            if isinstance(result, dict) and "error" in result:
+                raise RuntimeError(result["error"])
+            return result
+        except zmq.Again:
+            raise RuntimeError("ZMQ timeout - robot may be disconnected")
+
+    def payload(self) -> dict:
+        """로봇의 부하 모델 (질량 kg, 무게중심 m). 못 주는 로봇이면 빈 dict.
+
+        정적 값이라 관측이 아니라 파일 메타에 한 번 적는다 -- 세션 시작 때
+        한 번만 부른다.
+        """
+        request = {"method": "payload"}
+        try:
+            self._socket.send(pickle.dumps(request))
             result = pickle.loads(self._socket.recv())
             if isinstance(result, dict) and "error" in result:
                 raise RuntimeError(result["error"])

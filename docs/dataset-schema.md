@@ -198,6 +198,32 @@ The payload declared in Desk at recording time is **not** stored in the file
 yet. Until it is, a file's absolute force values are only interpretable if the
 Desk configuration is known to have been correct.
 
+## `knu-1.2.0` — frozen 2026-09-06
+
+Same observation datasets as `knu-1.1.1`. Adds two **metadata** attributes
+recording the robot's payload model at the time of recording:
+
+```
+metadata/payload_mass   float    kg     m_total
+metadata/payload_com    string   m      F_x_Ctotal as JSON [x, y, z], flange frame
+```
+
+Frame data does not grow by a single byte — these are written once per file.
+
+**Why this is not optional.** An undeclared mass lands directly in the external
+force estimate. Measured 2026-09-06 on the same 0.5 kg weight: with the payload
+declared (`m_ee = 0.85 kg`) it read 502 g; with 120 g removed from the
+declaration it read 613 g. Without this attribute there is no way, later, to
+tell which configuration a file was recorded under — you can only hope the Desk
+setting was right at the time. That is exactly the position we were in when
+`scene_015` had to be investigated by hand.
+
+The worker reads it from the robot once at session start
+(`CollectionWorker._stamp_payload`) via a `payload` request to the robot node.
+A robot that cannot report it (simulator, `PrintRobot`) leaves the attributes
+absent rather than writing zero — a zero would read as "no payload", which is
+worse than missing. Such a file is then checked against `knu-1.1.1`'s rules.
+
 ## How to bump a MINOR
 
 1. Add the fields to the writer.

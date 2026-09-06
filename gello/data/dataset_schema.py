@@ -48,7 +48,7 @@ DEFAULT_CONFIG_PATH = Path.home() / "libero_gui_logs" / "dataset_schema.json"
 # 정본이다 (문서와 어긋나면 검증기가 잡는다).
 #: 지금 쓰는(기록하는) 버전. 읽기는 같은 MAJOR 안에서 위아래 모두 된다
 #: (schema_is_readable 참조).
-SCHEMA_VERSION = "knu-1.1.1"
+SCHEMA_VERSION = "knu-1.2.0"
 
 # --------------------------------------------------------- observation/dataset keys
 # Robot observation keys (returned by Robot.get_observations / RobotEnv.get_obs).
@@ -186,6 +186,28 @@ SCHEMA_FIELDS["knu-1.1.0"] = {
 SCHEMA_FIELDS["knu-1.1.1"] = {
     **SCHEMA_FIELDS["knu-1.0.0"],
     "obs_datasets": SCHEMA_FIELDS["knu-1.0.0"]["obs_datasets"] + FT_OBS_KEYS,
+}
+
+#: 기록 시점의 로봇 부하 모델. metadata 그룹 attrs 로 한 번만 적는다.
+#:
+#: 정적 값이라 프레임마다 실을 이유가 없고, 그렇다고 안 적으면 **그 파일의
+#: 절대 힘값을 해석할 수 없다**. 미신고 질량은 그대로 외력 추정에 섞이기
+#: 때문이다 -- 2026-09-06 실측: Desk 에서 120 g 을 빼자 같은 0.5 kg 추가
+#: 613 g 으로 읽혔다. 그때 우리는 "Desk 가 맞았을 것"이라고 믿는 것 말고
+#: 확인할 방법이 없었고, 그것이 이 필드를 만든 이유다.
+META_PAYLOAD_MASS = "payload_mass"      # kg, m_total
+META_PAYLOAD_COM = "payload_com"        # m, F_x_Ctotal (플랜지 기준 x,y,z)
+
+#: knu-1.2.0 = knu-1.1.1 + 부하 모델 메타 2종 (2026-09-06).
+#:
+#: obs 는 1.1.1 과 같다 -- 늘어난 것은 metadata attrs 뿐이라 프레임 데이터는
+#: 한 바이트도 커지지 않는다. 그래도 MINOR 인 이유는 "필드 추가"이기
+#: 때문이고, 옛 파일은 이 attrs 가 없으므로 1.1.1 규칙으로 계속 검사된다.
+SCHEMA_FIELDS["knu-1.2.0"] = {
+    **SCHEMA_FIELDS["knu-1.1.1"],
+    "metadata_attrs": SCHEMA_FIELDS["knu-1.1.1"]["metadata_attrs"] + (
+        META_PAYLOAD_MASS, META_PAYLOAD_COM,
+    ),
 }
 
 
@@ -397,6 +419,11 @@ def selftest() -> None:
     # 검증을 통과해야 하기 때문이다 (새로 찍는 것은 런처가 막는다).
     dead = schema_required_fields("knu-1.1.0")
     assert dead is not None and "desired_joint_torques" in dead["obs_datasets"]
+    # 1.2.0 이 더한 것은 metadata attrs 뿐 -- obs 는 1.1.1 과 같아야 한다.
+    prev = schema_required_fields("knu-1.1.1")
+    assert cur["obs_datasets"] == prev["obs_datasets"]
+    added = set(cur["metadata_attrs"]) - set(prev["metadata_attrs"])
+    assert added == {META_PAYLOAD_MASS, META_PAYLOAD_COM}, added
 
     # 모르는 버전은 필드 목록이 없다 -> 검증기가 "모르는 스키마 버전" 으로 잡는다
     assert schema_required_fields("knu-9.9.9") is None

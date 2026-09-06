@@ -29,6 +29,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gello.data.dataset_schema import (  # noqa: E402
+    META_PAYLOAD_MASS,
     FT_OBS_FIELDS,
     OBS_AGENTVIEW_RGB,
     OBS_EE_POS_QUAT,
@@ -215,6 +216,8 @@ def _read_md_checked(meta: h5py.Group) -> SceneMetadata:
         station=str(meta.attrs.get("station", "")),
         dataset_version=str(meta.attrs.get("dataset_version", "")),
         created=str(meta.attrs.get("created", "")),
+        payload_mass=(float(meta.attrs[META_PAYLOAD_MASS])
+                      if META_PAYLOAD_MASS in meta.attrs else None),
     )
     md.validate()
     return md
@@ -291,6 +294,10 @@ def selftest(keep: Path | None) -> None:
         layout=layout,
         description="컵 2개가 노란 그릇 양옆, 서랍장 왼쪽 아래. 종이컵은 어떤 instruction 에도 안 나오는 무시 대상.",
         station="selftest",
+        # knu-1.2.0 필수. 수집 때는 워커가 로봇에서 읽어 채운다
+        # (CollectionWorker._stamp_payload).
+        payload_mass=0.85,
+        payload_com=[-0.01, 0.0, 0.03],
     )
 
     # -- metadata 검증이 실제로 막는지
