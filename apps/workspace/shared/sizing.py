@@ -82,6 +82,21 @@ def scrollable(inner: QWidget) -> QScrollArea:
     return area
 
 
+def cap_rows(tree, rows: int) -> None:
+    """트리가 좌측 패널에서 차지할 높이를 ``rows`` 줄로 묶는다.
+
+    패널은 이미 통째로 스크롤 안에 있다 (build_left). 그 안에 또 스크롤되는
+    상자를 넣으면 휠이 어느 쪽을 굴리는지 예측할 수 없어지므로, 트리는
+    자기 최대 높이를 갖고 넘치는 줄만 자기 안에서 스크롤한다.
+
+    높이는 픽셀이 아니라 글꼴에서 유도한다 -- 이 파일의 첫 규칙과 같은
+    이유로, 박아 두면 글꼴이 바뀔 때 줄이 잘린다.
+    """
+    line = QFontMetrics(tree.font()).height() + 6
+    head = tree.header().sizeHint().height() if tree.header() is not None else line
+    tree.setMaximumHeight(head + line * rows + 6)
+
+
 def relax_min_widths(root: QWidget) -> None:
     """좌측 패널은 가로 스크롤이 없으므로 자식들이 패널 폭에 맞춰 줄어들 수
     있어야 한다. 버튼·체크박스·라디오는 텍스트 전체 폭을 최소로 고집하는

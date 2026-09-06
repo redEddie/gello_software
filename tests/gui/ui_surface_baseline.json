@@ -17,6 +17,14 @@
     "Leader": [
       "토크 과부하 잠금 해제 (서보 리부트)"
     ],
+    "Camera": [
+      "카메라 새로고침",
+      "미리보기 시작/중지",
+      "카메라 노드 재시작",
+      "카메라 노드 종료 (카메라 해제)",
+      "카메라 점검 (USB 속도·프레임)",
+      "카메라 레이아웃 확인 (LIBERO 초기 배치와 비교)"
+    ],
     "Collect": [
       "다음 미수집 slot 제시",
       "slot 적용 (다음 에피소드부터)",
@@ -63,21 +71,13 @@
       "전체 task 다시 업로드...",
       "계정 확인 / 전환..."
     ],
-    "Camera": [
-      "카메라 새로고침",
-      "미리보기 시작/중지",
-      "카메라 노드 재시작",
-      "카메라 노드 종료 (카메라 해제)",
-      "카메라 점검 (USB 속도·프레임)",
-      "카메라 레이아웃 확인 (LIBERO 초기 배치와 비교)"
-    ],
     "View": [
-      "Configure",
-      "Collect",
-      "Dataset",
-      "Upload",
+      "① Layout",
+      "② Configure",
+      "③ Collect",
+      "④ Dataset",
       "Statistics",
-      "Layout",
+      "Upload",
       "Settings",
       "Live",
       "Playback",
@@ -107,6 +107,10 @@
     "skip"
   ],
   "toolbar_context": {
+    "layout": [
+      "카메라 새로고침",
+      "3×3 격자 편집..."
+    ],
     "configure": [
       "새 Scene 구성...",
       "카메라 새로고침"
@@ -118,15 +122,11 @@
       "새로고침",
       "실패만 선택"
     ],
-    "upload": [
-      "전체 처리"
-    ],
     "stats": [
       "다시 분석"
     ],
-    "layout": [
-      "카메라 새로고침",
-      "3×3 격자 편집..."
+    "upload": [
+      "전체 처리"
     ],
     "settings": []
   },
@@ -155,12 +155,12 @@
     "RUNME_SCRIPT": "scripts/runme.sh"
   },
   "activities": [
+    "layout",
     "configure",
     "collect",
     "dataset",
-    "upload",
     "stats",
-    "layout",
+    "upload",
     "settings"
   ],
   "center_tabs": [
@@ -174,6 +174,10 @@
     "depth"
   ],
   "center_tabs_by_activity": {
+    "layout": [
+      "live",
+      "layout"
+    ],
     "configure": [
       "live"
     ],
@@ -196,10 +200,6 @@
     ],
     "upload": [
       "live"
-    ],
-    "layout": [
-      "live",
-      "layout"
     ],
     "settings": [
       "live"

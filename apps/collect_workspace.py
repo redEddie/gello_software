@@ -32,7 +32,7 @@ Panel map (all splitters, all user-resizable):
     ├──────┴──────────┴───────────────────────┴──────────────┤
     │ bottom tabs: Log / Upload / Validation                 │
     ├────────────────────────────────────────────────────────┤
-    │ status bar: robot / camera / recording / fps / episode │
+    │ status bar: robot / leader / camera / node · 여유 · fps · 경로│
     └────────────────────────────────────────────────────────┘
 
 Widgets and dialogs come from gello/gui/{widgets,dialogs,workers}.py and
@@ -74,6 +74,7 @@ from gello.data.dataset_schema import (  # noqa: E402
     load_schema_config,
     save_schema_config,
 )
+from gello.data.collection_history import new_run_id  # noqa: E402
 from gello.scene.dataset_meta import load_identity  # noqa: E402
 from gello.gui.dialogs import DatasetSchemaDialog, hf_account  # noqa: E402
 from gello.gui.constants import PLAYBACK_FPS  # noqa: E402
@@ -116,6 +117,7 @@ from apps.workspace.shell import (  # noqa: E402
 from apps.workspace.shared.tabs import (  # noqa: E402
     center_tab_key,
     set_center_tabs,
+    show_center_tab,
 )
 from apps.workspace.features.scene.dialogs.grid_editor_dialog import GridEditorDialog  # noqa: E402
 from apps.workspace.features.dataset.hdf5_tree_dialog import Hdf5TreeDialog  # noqa: E402
@@ -197,6 +199,13 @@ class WorkspaceWindow(QMainWindow):
         # 여기서는 고정으로 쓴다 -- 새 scene 파일에 그대로 찍힌다. 기록기가
         # 내용을 보고 추측하면 토크를 못 주는 장비에서 어긋난다 (2026-09-05).
         self.schema_version = schema_version
+        # 이 GUI 실행의 이름. 수집 이력 한 줄마다 찍혀서, "켜고 나서 몇 개
+        # 찍었나"가 그 이름으로 묶인 줄들의 합이 된다 (collection_history).
+        self.run_id = new_run_id()
+        self.station_name = STATION.name
+        # 지금 보고 있는 활동. 자동 재분석이 "아무도 안 보는데 디스크를
+        # 훑는" 것을 피하려면 이 값이 필요하다.
+        self._activity = ""
         self.worker: CollectionWorker | None = None
         self.procs = ProcessRegistry()
         self.playback = PlaybackState()
@@ -260,6 +269,19 @@ class WorkspaceWindow(QMainWindow):
         self.cameras.fps_timer = QTimer(self)
         self.cameras.fps_timer.timeout.connect(self.camera_ops.tick_fps)
         self.cameras.fps_timer.start(1000)
+
+        # 저장 경로 여유는 초마다 볼 값이 아니다 -- 에피소드 하나가 60MB 라
+        # 5초 사이에 눈에 띄게 줄지 않는다.
+        self.disk_timer = QTimer(self)
+        self.disk_timer.timeout.connect(self.stats_ops.refresh_disk)
+        self.disk_timer.start(5000)
+        self.stats_ops.refresh_disk()
+
+        # 데이터가 바뀌면 알아서 다시 분석한다 (2026-09-06 사용자 요청).
+        # 단발 타이머라 신호가 몰려 와도 스캔은 한 번이다.
+        self.analysis_timer = QTimer(self)
+        self.analysis_timer.setSingleShot(True)
+        self.analysis_timer.timeout.connect(self.stats_ops.auto_refresh_analysis)
 
         self.playback.play_timer = QTimer(self)
         self.playback.play_timer.setInterval(int(1000 / PLAYBACK_FPS))
@@ -474,6 +496,7 @@ class WorkspaceWindow(QMainWindow):
     def _set_activity(self, key: str) -> None:
         """Switch the LEFT panel only. The center camera is untouched -- that
         is the whole point of this layout, so nothing here may touch it."""
+        self._activity = key
         self.left_stack.setCurrentIndex(self.left_pages[key])
         # 툴바의 화면별 구획도 같이 간다 (고정 구획은 그대로 -- 다른 화면에
         # 가 있어도 진행 중인 에피소드를 끝낼 수 있어야 한다).
@@ -484,15 +507,26 @@ class WorkspaceWindow(QMainWindow):
         act = self._activity_actions.get(key)
         if act is not None and not act.isChecked():
             act.setChecked(True)
-        if key == "stats":
+        if key == "layout":
+            # 이 화면에 온 이유가 "레퍼런스와 견줘 보려고"인데, 지금까지는
+            # 와서 다시 레이아웃 탭을 눌러야 그게 보였다 (2026-09-06 사용자
+            # 지적: 이 흐름에 클릭이 너무 많다). 왼쪽 패널의 [레이아웃 탭
+            # 열기] 버튼이 하던 일을 들어오는 것 자체가 하게 한다.
+            show_center_tab(self, "layout")
+        elif key == "stats":
             self.stats_ops.refresh_stats()
-            if not self.session.stats:
-                self.stats_ops.refresh_analysis()
+            self.stats_ops.refresh_history()
+            # auto_ 를 쓴다 -- 세션 중에는 기록 중인 파일이 잠겨 있어서, 그냥
+            # 스캔하면 지금 찍고 있는 것만 빠진 통계가 나온다.
+            self.stats_ops.auto_refresh_analysis()
         elif key == "collect":
             # 진행률 트리는 Collect "진행" 상자에 있다 (Statistics 에서 이동)
             self.scene_planning.refresh_plan_progress()
         elif key == "dataset":
             self.dataset_ops.refresh_dataset_tree()
+            # Analysis 탭이 이 화면에 붙어 있다 -- 바뀐 게 있으면 여기서
+            # 최신값으로 맞춘다 (세션 중이면 auto_ 쪽이 알아서 건너뛴다).
+            self.stats_ops.auto_refresh_analysis()
         elif key == "upload":
             text, color = hf_account()
             self.hf_label.setText(text)
@@ -807,6 +841,10 @@ class WorkspaceWindow(QMainWindow):
         self.camera_ops.stop_previews_blocking()
         self.camera_ops.stop_camera_node()
         if self.worker is not None and self.worker.isRunning():
+            # 이력은 여기서 남긴다. cmd_quit 뒤의 wait() 동안에는 이벤트
+            # 루프가 안 돌아서 on_worker_finished 가 올 자리가 없다 --
+            # 창을 그냥 닫으면 마지막 세션이 통째로 이력에서 빠졌다.
+            self.stats_ops.record_session()
             self.worker.cmd_quit()
             self.worker.wait(5000)
         self.system.on_stop_node()

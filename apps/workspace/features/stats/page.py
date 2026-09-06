@@ -1,17 +1,19 @@
 """Stats page builder for WorkspaceWindow."""
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QFormLayout,
     QGridLayout,
     QGroupBox,
     QLabel,
     QPushButton,
+    QTreeWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from gello.gui.fonts import set_bold
 from gello.gui.i18n import tr
+
+from apps.workspace.shared.sizing import cap_rows
 
 
 def build_stats(win) -> QWidget:
@@ -53,11 +55,42 @@ def build_stats(win) -> QWidget:
     # 수집 중에 보는 정보는 수집 화면에 있어야 하고, 같은 정보를 두 패널에
     # 두지 않는다 (아래 파일 목록 주석과 같은 원칙).
 
-    win.disk_box = QGroupBox(tr("디스크"))
-    dform = QFormLayout(win.disk_box)
-    win.disk_label = QLabel("-")
-    dform.addRow(tr("저장 경로 여유"), win.disk_label)
-    col.addWidget(win.disk_box)
+    # 디스크 상자는 상태바로 옮겼다 (2026-09-06 사용자 요청). 저장 경로의
+    # 여유는 수집 중에 알아야 하는 값인데, 여기 있으면 화면을 옮겨야 보였다.
+
+    # 수집 이력 -- 이 화면의 카운터는 GUI 를 닫으면 사라진다. 이력은 세션이
+    # 끝날 때마다 한 줄씩 파일에 쌓여서, "오늘 이 속도가 평소만 한가"에
+    # 답한다. 정본은 <state_dir>/collection_history.jsonl (collection_history.py).
+    board = QGroupBox(tr("수집 속도 순위 (이 데이터셋)"))
+    bcol = QVBoxLayout(board)
+    win.board_hint = QLabel(tr("(이력 없음)"))
+    win.board_hint.setStyleSheet("color:#888;")
+    win.board_hint.setWordWrap(True)
+    bcol.addWidget(win.board_hint)
+    win.board_tree = QTreeWidget()
+    win.board_tree.setHeaderLabels([tr("수집자"), tr("분당"), tr("저장"),
+                                    tr("성공률"), tr("시간")])
+    win.board_tree.setRootIsDecorated(False)
+    win.board_tree.setToolTip(tr(
+        "같은 데이터셋을 찍은 세션만 셉니다 — task 가 다르면 한 에피소드에 드는 "
+        "시간도 달라서, 다른 데이터셋과 한 줄에 세우면 비교가 되지 않습니다.\n"
+        "'분당' 은 자리에 앉아 있던 시간 기준입니다 (리셋·재배치 포함)."))
+    cap_rows(win.board_tree, 6)
+    bcol.addWidget(win.board_tree)
+    col.addWidget(board)
+
+    hist = QGroupBox(tr("최근 세션"))
+    hcol = QVBoxLayout(hist)
+    win.history_tree = QTreeWidget()
+    win.history_tree.setHeaderLabels([tr("시작"), tr("수집자"), tr("저장"),
+                                      tr("시간"), tr("분당")])
+    win.history_tree.setRootIsDecorated(False)
+    win.history_tree.setToolTip(tr(
+        "Connect 부터 Disconnect 까지가 한 줄입니다. 이번에 켜고 찍은 것은 "
+        "'이번 실행' 으로 굵게 표시됩니다."))
+    cap_rows(win.history_tree, 6)
+    hcol.addWidget(win.history_tree)
+    col.addWidget(hist)
 
     # 파일 목록은 여기 없다. Dataset 패널의 트리가 이미 파일과 에피소드를
     # 모두 들고 있어서, 같은 목록을 두 군데 두면 어느 쪽 선택이 분석에

@@ -9,6 +9,7 @@ import numpy as np
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QMessageBox
 
+from gello.data.collection_history import now_iso
 from gello.gui.i18n import tr
 from gello.collect.worker import CollectionWorker, GATE_RAD, WorkerConfig
 from gello.scene.scene_format import count_by_slot, read_scene_metadata, scene_filename
@@ -472,6 +473,11 @@ class CollectionOps:
         self.win.right_fields["episode"].setText(name)
         self.win.dataset_ops.update_dataset_panel()
         self.win.stats_ops.refresh_stats()
+        # 방금 찍은 것이 분석에 빠져 있다고 표시만 해 둔다. 실제 스캔은
+        # 세션이 끝난 뒤에 돈다 -- 기록 중인 파일은 saver 가 쥐고 있어서
+        # 지금 읽으면 그 파일만 통째로 빠진 통계가 나온다
+        # (StatsOps.auto_refresh_analysis).
+        self.win.stats_ops.mark_stats_stale()
         self.refresh_slot_counter()
 
     def on_save_status(self, text: str) -> None:
@@ -529,6 +535,10 @@ class CollectionOps:
         # 이번 task 카운터는 여기서 0 으로 돌아간다(누적은 그대로). 연습 모드도
         # 마찬가지다 -- NullTaskWriter 도 저장을 받아 넘기므로 카운터는 움직인다.
         self.win.session.counters = _new_stats()
+        # 이력 한 줄의 시작 시각. counters["t0"] 와 같은 순간이지만 그쪽은
+        # monotonic 이라 사람이 읽을 수 없다 (collection_history).
+        self.win.session.started_iso = now_iso()
+        self.win.session.history_written = False
         self.refresh_slot_counter()
         if self.win.session.no_dataset_session:
             # NullTaskWriter has no real path; claiming one here would make the
@@ -565,6 +575,10 @@ class CollectionOps:
             # 연결할 때 그 워커를 인자로 묶어 넘기는 쪽이 명시적이고, 클래스가
             # QObject 인지에 기대지 않는다.
             return
+        # worker 를 놓기 **전에** 이력을 남긴다 -- 이 세션이 무슨 scene 을
+        # 찍었는지는 worker 가 들고 있다. 연습 모드(파일 없음)는 남기지
+        # 않는다: 저장 카운터가 0 이라 record_session 이 알아서 건너뛴다.
+        self.win.stats_ops.record_session()
         self.win.worker = None
         self.win.session.no_dataset_session = False
         self.win.session.active_file_path = None
@@ -579,6 +593,9 @@ class CollectionOps:
             # 세션이 만든/키운 scene 파일이 목록·slot 현황에 반영되게.
             self.win.scene_ops.refresh_scene_combo()
         self.win.camera_ops.restart_previews()
+        # 세션 중에는 기록 중인 파일을 열 수 없어 미뤄 둔 재분석을 지금 돈다
+        # (파일이 풀렸다). 보고 있는 화면이 아니면 auto_ 쪽이 건너뛴다.
+        self.win.stats_ops.auto_refresh_analysis()
         if self.win.cameras.depth_consumer is not None:
             # 세션 동안 Depth/Point Cloud 탭에 머물러 있었다면 스트림을 다시
             # 올린다 (세션 중엔 안난만 보였다). 미리보기가 뜨는 시간을 준다.

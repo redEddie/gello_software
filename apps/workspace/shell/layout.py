@@ -1,6 +1,6 @@
 """Main layout builders for WorkspaceWindow (center, left, right, bottom, layout)."""
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QActionGroup
+from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -34,6 +34,8 @@ from apps.workspace.constants import (
     CENTER_TABS,
     PLAYBACK_SPEEDS,
     WIDE_FIELDS,
+    next_workflow,
+    workflow_step,
 )
 from .page_builders import PAGE_BUILDERS
 
@@ -201,7 +203,10 @@ def build_left(win) -> None:
         wrapper = QWidget()
         col = QVBoxLayout(wrapper)
         col.setContentsMargins(6, 6, 6, 6)
-        head = QLabel(title.upper())
+        # 수집 한 바퀴의 단계면 번호를 앞에 붙인다 -- 아이콘 바만으로는
+        # 순서가 순서라는 것을 알 수 없다 (아이콘은 그림이지 차례가 아니다).
+        step = workflow_step(key)
+        head = QLabel(f"{step[0]} {title.upper()}" if step else title.upper())
         f = head.font()
         f.setPointSize(max(8, f.pointSize() - 1))
         f.setBold(True)
@@ -220,6 +225,17 @@ def build_left(win) -> None:
         relax_min_widths(page)
         scroll.setWidget(page)
         col.addWidget(scroll, 1)
+        # 다음 단계로 가는 버튼. 스크롤 **밖**에 둔다 -- 페이지가 길어지면
+        # 스크롤 안의 것은 안 보이는데, 이 버튼이 답하는 질문("다 했다, 이제
+        # 뭐?")은 페이지를 끝까지 내려본 뒤에 나온다.
+        nxt = next_workflow(key)
+        if nxt is not None:
+            nkey, nmark, nlabel = nxt
+            btn = QPushButton(tr("다음: {m} {l}  →").format(m=nmark, l=tr(nlabel)))
+            btn.setToolTip(tr("{t} 화면으로 이동합니다").format(
+                t=dict((k, t) for k, _i, t, _p in ACTIVITIES)[nkey]))
+            btn.clicked.connect(lambda _c=False, k=nkey: win._set_activity(k))
+            col.addWidget(btn)
         win.left_pages[key] = win.left_stack.count()
         win.left_stack.addWidget(wrapper)
 
@@ -241,8 +257,14 @@ def build_right(win) -> None:
         # 파일과 스키마가 한 칸에 같이 있어야 "지금 어디에, 어떤 형식으로
         # 쌓이는가"가 한눈에 잡힌다. 세션 중에는 그 세션의 값이, 아닐 때는
         # 트리에서 고른 파일의 값이 뜬다.
+        # 스키마 버전이 형식 줄들의 머리에 온다 -- 아래 네 줄(액션 공간·
+        # 그리퍼·이미지·FPS)이 "무슨 규약인가"의 세부이고, 버전이 그 규약의
+        # 이름이다. 데이터셋 하나가 여러 버전을 담을 수 있게 된 뒤로는
+        # (knu-1.1.0 부터, 이슈 #12) 파일마다 다를 수 있어서, 미리 볼 때
+        # 이 줄이 없으면 어느 규약으로 읽어야 하는지 알 수 없다.
         ("Dataset", (("ds_file", "파일"), ("ds_task", "태스크"),
-                     ("ds_episodes", "에피소드"), ("ds_action", "액션 공간"),
+                     ("ds_episodes", "에피소드"), ("ds_schema", "스키마"),
+                     ("ds_action", "액션 공간"),
                      ("ds_gripper", "그리퍼 규약"), ("ds_image", "이미지"),
                      ("ds_fps", "FPS"), ("ds_repack", "재압축"))),
     ):
@@ -338,10 +360,19 @@ def build_layout(win) -> None:
     win._activity_group = QActionGroup(win)
     win._activity_group.setExclusive(True)
     win._activity_actions = {}
-    for key, icon, title, tip in ACTIVITIES:
+    for n, (key, icon, title, tip) in enumerate(ACTIVITIES, start=1):
         act = QAction(icon, win)
         act.setCheckable(True)
-        act.setToolTip(f"{title} — {tr(tip)}")
+        # 단계면 번호를, 어느 것이든 단축키를 툴팁에 적는다. 손이 리더암에
+        # 있는 동안 화면을 옮기려면 마우스로 아이콘을 조준하는 것보다
+        # Ctrl+숫자가 빠르고, 그 사실을 알 자리가 여기밖에 없다.
+        step = workflow_step(key)
+        mark = f"{step[0]} " if step else ""
+        act.setToolTip(f"{mark}{title} — {tr(tip)}   (Ctrl+{n})")
+        act.setShortcut(QKeySequence(f"Ctrl+{n}"))
+        # 툴바 버튼은 포커스가 그 위에 있어야 단축키를 받는다 -- 창 어디에
+        # 포커스가 있든 들어야 하므로 창 범위로 올린다.
+        act.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         act.triggered.connect(lambda _c, k=key: win._set_activity(k))
         win._activity_group.addAction(act)
         win.activity_bar.addAction(act)

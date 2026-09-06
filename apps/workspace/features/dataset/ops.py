@@ -9,7 +9,7 @@ import h5py
 from PyQt6.QtCore import QProcess, Qt
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QTreeWidgetItem
 
-from gello.data.dataset_schema import OBS_AGENTVIEW_RGB
+from gello.data.dataset_schema import OBS_AGENTVIEW_RGB, normalize_schema_version
 from gello.data.episode_stats import TASK_DEV_LIMIT
 from gello.data.libero_format import hdf5_repack_status, renumber_episodes
 from gello.gui.text_utils import repo_id_error
@@ -73,12 +73,14 @@ class DatasetOps:
                                              self.win.dataset_root_edit.text())
         if d:
             self.win.dataset_root_edit.setText(d)
+            self.win.stats_ops.mark_stats_stale()
             self.refresh_dataset_tree()
 
     def browse_root(self) -> None:
         d = QFileDialog.getExistingDirectory(self.win, tr("데이터 저장 경로"), self.win.root_edit.text())
         if d:
             self.win.root_edit.setText(d)
+            self.win.stats_ops.mark_stats_stale()
             self.refresh_dataset_tree()
 
     # -------------------------------------------------------------------- tree
@@ -358,6 +360,9 @@ class DatasetOps:
         if skipped_cache:
             parts.append(f"{skipped_cache}개 건너뜀 (세션 캐시에 없음)")
         self.win.log(", ".join(parts))
+        # 판정이 바뀌면 순위표의 빨강(실패) 표시도 바뀌어야 한다.
+        if flipped:
+            self.win.stats_ops.mark_stats_stale()
         return True
 
     # ------------------------------------------------------------------ delete
@@ -546,6 +551,9 @@ class DatasetOps:
                 QMessageBox.critical(self.win, tr("삭제 실패"), f"{path.name}\n{type(e).__name__}: {e}")
                 self.win.log(f"[삭제 실패] {path.name}: {type(e).__name__}: {e}")
         self.win.collection.refresh_slot_counter()
+        # 분석 통계는 파일에서 파생된다 -- 지운 에피소드가 순위표에 남아
+        # 있으면 그 줄을 눌렀을 때 없는 것을 재생하려 든다.
+        self.win.stats_ops.mark_stats_stale()
         return True
 
     def on_delete_file(self) -> None:
@@ -597,6 +605,7 @@ class DatasetOps:
         except OSError as e:
             QMessageBox.critical(self.win, tr("삭제 실패"), str(e))
             self.win.log(f"[파일 삭제 실패] {path.name}: {e}")
+        self.win.stats_ops.mark_stats_stale()
         self.refresh_dataset_tree()
 
     def update_dataset_panel(self, path: "Path | None" = None) -> None:
@@ -640,12 +649,17 @@ class DatasetOps:
             f["ds_image"].setText(f"{cfg.schema.image_size}²" if cfg.schema.image_size
                                   else tr("원본 해상도"))
             f["ds_fps"].setText(str(cfg.fps))
+            # 이 세션이 찍는 버전. 파일에서 읽지 않는 이유는 기록기가 쓰는
+            # 값이 정본이기 때문이다 -- 첫 저장 전에는 파일에 아직 없고,
+            # 이어찍기로 승격된 파일은 다음 저장에서야 새 값이 찍힌다.
+            f["ds_schema"].setText(self.win.schema_version)
             f["ds_repack"].setText("-")
             return
 
         if path is None or not Path(path).exists():
-            for k in ("ds_file", "ds_task", "ds_episodes", "ds_action",
-                      "ds_gripper", "ds_image", "ds_fps", "ds_repack"):
+            for k in ("ds_file", "ds_task", "ds_episodes", "ds_schema",
+                      "ds_action", "ds_gripper", "ds_image", "ds_fps",
+                      "ds_repack"):
                 f[k].setText("-")
             return
 
@@ -658,6 +672,7 @@ class DatasetOps:
             tr("혼합 — 다시 필요") if st["mixed"]
             else (st["marker"] or (tr("완료") if st["repacked"] else tr("안 됨"))))
         task = action = gripper = image = "-"
+        schema = "-"
         try:
             with h5py.File(path, "r") as h:
                 if "data" in h:
@@ -670,9 +685,18 @@ class DatasetOps:
                             task = str(info)[:60]
                     names = sorted(data.keys(), key=lambda s: int(s.split("_")[1]))
                     container = data
+                    # legacy *_demo.hdf5 에는 버전 attr 이 없다. "-" 로 두면
+                    # "못 읽었다"와 구별이 안 되므로 이름을 붙여 준다 --
+                    # 버전 체계가 생기기 전 파일이라는 것이 사실이다.
+                    schema = tr("legacy (버전 이전)")
                 else:
                     # scene-v1: task 는 파일 단위 개념이 아니다 -- scene ID 로 표기
                     task = "scene " + str(h["metadata"].attrs.get("scene_id", "?"))
+                    # 옛 표기(scene-v1)도 SemVer 로 풀어서 보여준다 -- 읽는
+                    # 사람이 어느 시절 표기인지 몰라도 되게 (scene_format 의
+                    # _read_metadata 와 같은 규칙).
+                    schema = normalize_schema_version(
+                        h["metadata"].attrs.get("dataset_version", "")) or "-"
                     names = sorted((k for k in h.keys() if k.startswith("episode_")),
                                    key=lambda s: int(s.split("_")[1]))
                     container = h
@@ -688,6 +712,7 @@ class DatasetOps:
             task = f"({type(e).__name__})"
         f["ds_task"].setText(task)
         f["ds_task"].setToolTip(task)
+        f["ds_schema"].setText(schema)
         f["ds_action"].setText(action)
         f["ds_gripper"].setText(gripper)
         f["ds_image"].setText(image)

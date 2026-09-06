@@ -7,7 +7,12 @@ from gello.data.episode_stats import TASK_DEV_LIMIT
 from gello.gui.i18n import tr
 
 from apps.workspace.shared.widgets import StatusLight
-from apps.workspace.constants import ACTIVITIES, CENTER_TABS, LOG_DIR
+from apps.workspace.constants import (
+    ACTIVITIES,
+    CENTER_TABS,
+    LOG_DIR,
+    workflow_step,
+)
 from apps.workspace.shared.tabs import (
     is_index_only,
     lab_icon,
@@ -304,7 +309,11 @@ def build_menu(win) -> None:
 
     m = mb.addMenu(tr("View"))
     for key, _icon, title, _tip in ACTIVITIES:
-        m.addAction(title, lambda _c=False, k=key: win._set_activity(k))
+        # 번호는 왼쪽 패널 머리줄·활동 바 툴팁과 같은 것을 쓴다 -- 색인이
+        # 정본과 다른 이름을 쓰면 같은 것인지 알 수 없다 (위 규칙 2).
+        step = workflow_step(key)
+        m.addAction(f"{step[0]} {title}" if step else title,
+                    lambda _c=False, k=key: win._set_activity(k))
     m.addSeparator()
     # 중앙 탭도 색인에 넣는다. 다음 단계에서 활동에 따라 탭 구성이 달라지면
     # 화면에 안 보이는 탭이 생기는데, 여기 없으면 그 탭에 닿을 길이 사라진다.
@@ -363,5 +372,13 @@ def build_statusbar(win) -> None:
         light = StatusLight(label)
         sb.addWidget(light)
         win.lights[key] = light
+    # 저장 경로의 남은 용량. 노드의 생사와 같은 종류의 사실이다 -- GUI 가
+    # 어쩌지 못하는 바깥 조건이고, 모른 채 조작하면 비싸다. 다 차면 수집은
+    # 저장하는 순간 실패하는데 그때는 이미 한 판을 찍은 뒤다. Statistics 의
+    # '디스크' 상자에 있던 것을 여기로 옮겼다 (2026-09-06 사용자 요청) --
+    # 화면을 옮겨야 보이는 값이라 정작 수집 중에는 아무도 안 봤다.
+    win.sb_disk = QLabel("")
+    win.sb_disk.setToolTip(tr("저장 경로의 남은 용량 / 전체 용량"))
+    sb.addPermanentWidget(win.sb_disk)
     win.sb_right = QLabel("")
     sb.addPermanentWidget(win.sb_right)

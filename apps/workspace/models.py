@@ -108,6 +108,16 @@ class SessionState:
 
     # analysis / episode-stat rows
     stats: list = field(default_factory=list)
+    #: 마지막 스캔 뒤에 데이터가 바뀌었나. 저장·삭제·재판정·트림·폴더 변경이
+    #: 올린다. 처음이 True 인 이유는 아직 아무것도 안 읽었기 때문이다.
+    stats_stale: bool = True
+
+    #: 이번 연결 세션이 시작한 벽시계 시각 (ISO). 이력 한 줄의 시작 시각이
+    #: 된다 -- counters["t0"] 는 monotonic 이라 사람이 읽을 수 없다.
+    started_iso: str = ""
+    #: 이번 세션을 이력에 이미 남겼나. 종료 경로가 둘이라(정상 Disconnect 와
+    #: 창 닫기) 없으면 같은 세션이 두 줄로 쌓인다.
+    history_written: bool = False
 
     # scene/no-dataset session bookkeeping
     scene_session: bool = False

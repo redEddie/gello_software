@@ -311,18 +311,13 @@ class CameraOps:
         cams.fps_value = cams.fps_count
         cams.fps_count = 0
         win.right_fields["fps"].setText(f"{cams.fps_value:.0f}")
-        if win.worker is not None and not win.session.no_dataset_session:
-            # max(): 저장이 백그라운드라 episode_list_changed 가 몇 초 늦게 온다.
-            # 그 사이를 연결시점 + 이번 task 저장수로 메운다. _session 이 Connect
-            # 마다 리셋되므로 두 값 모두 지금 task 의 것이다.
-            total = max(len(win.session.active_episode_cache or []),
-                        win.session.episodes_at_connect + win.session.counters["saved"])
-            count = tr("{k}: 에피소드 {t}개 (이번 +{s})").format(
-                k=win._current_task_label(limit=32), t=total, s=win.session.counters["saved"])
-        else:
-            count = tr("저장 {s}").format(s=win.session.cumulative["saved"])
+        # 에피소드 수는 여기서 뺐다 (2026-09-06 사용자 요청). 같은 숫자를
+        # 헤더 띠·오른쪽 Dataset 상자·Collect 의 slot 카운터가 이미 세 번
+        # 말하고 있었고, 상태바는 그중 가장 작고 가장 안 보는 자리였다.
+        # 남는 것은 이 자리에서만 알 수 있는 둘 -- 카메라가 도는 속도와
+        # 지금 어디에 쌓고 있는가.
         win.sb_right.setText(
-            f"{cams.fps_value:.0f} fps   |   {count}   |   {win.root_edit.text()}")
+            f"{cams.fps_value:.0f} fps   |   {win.root_edit.text()}")
 
     # ------------------------------------------------------------------ node
     def camera_node_specs(self) -> list:
