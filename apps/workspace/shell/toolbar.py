@@ -7,7 +7,7 @@ from gello.data.episode_stats import TASK_DEV_LIMIT
 from gello.gui.i18n import tr
 
 from apps.workspace.shared.widgets import StatusLight
-from apps.workspace.constants import ACTIVITIES, LOG_DIR
+from apps.workspace.constants import ACTIVITIES, CENTER_TABS, LOG_DIR
 from apps.workspace.shared.tabs import show_center_tab
 
 
@@ -254,6 +254,11 @@ def build_menu(win) -> None:
     m = mb.addMenu(tr("View"))
     for key, _icon, title, _tip in ACTIVITIES:
         m.addAction(title, lambda _c=False, k=key: win._set_activity(k))
+    m.addSeparator()
+    # 중앙 탭도 색인에 넣는다. 다음 단계에서 활동에 따라 탭 구성이 달라지면
+    # 화면에 안 보이는 탭이 생기는데, 여기 없으면 그 탭에 닿을 길이 사라진다.
+    for key, title in CENTER_TABS:
+        m.addAction(tr(title), lambda _c=False, k=key: show_center_tab(win, k))
     m.addSeparator()
     win.act_toggle_bottom = QAction(tr("하단 패널"), win, checkable=True, checked=True)
     win.act_toggle_bottom.triggered.connect(
