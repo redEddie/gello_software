@@ -8,7 +8,11 @@ from gello.gui.i18n import tr
 
 from apps.workspace.shared.widgets import StatusLight
 from apps.workspace.constants import ACTIVITIES, CENTER_TABS, LOG_DIR
-from apps.workspace.shared.tabs import show_center_tab
+from apps.workspace.shared.tabs import (
+    is_index_only,
+    lab_icon,
+    show_center_tab,
+)
 
 
 def build_toolbar(win) -> None:
@@ -258,7 +262,11 @@ def build_menu(win) -> None:
     # 중앙 탭도 색인에 넣는다. 다음 단계에서 활동에 따라 탭 구성이 달라지면
     # 화면에 안 보이는 탭이 생기는데, 여기 없으면 그 탭에 닿을 길이 사라진다.
     for key, title in CENTER_TABS:
-        m.addAction(tr(title), lambda _c=False, k=key: show_center_tab(win, k))
+        act = m.addAction(tr(title),
+                          lambda _c=False, k=key: show_center_tab(win, k))
+        if is_index_only(key):
+            # 표시는 아이콘 자리에 -- 글자에 붙이면 그 줄만 시작이 밀린다.
+            act.setIcon(lab_icon())
     m.addSeparator()
     win.act_toggle_bottom = QAction(tr("하단 패널"), win, checkable=True, checked=True)
     win.act_toggle_bottom.triggered.connect(

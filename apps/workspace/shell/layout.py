@@ -28,6 +28,7 @@ from gello.gui.i18n import tr
 
 from apps.workspace.shared.widgets import SceneInfoView
 from apps.workspace.shared.sizing import relax_min_widths
+from apps.workspace.shared.tabs import tab_title
 from apps.workspace.constants import (
     ACTIVITIES,
     CENTER_TABS,
@@ -186,8 +187,8 @@ def build_center(win) -> None:
     missing = [k for k, _t in CENTER_TABS if k not in win.center_tab_widgets]
     if missing:
         raise RuntimeError(f"CENTER_TABS 에 있는데 만들지 않은 탭: {missing}")
-    for key, title in CENTER_TABS:
-        win.center_tabs.addTab(win.center_tab_widgets[key], tr(title))
+    for key, _title in CENTER_TABS:
+        win.center_tabs.addTab(win.center_tab_widgets[key], tab_title(key))
     win.center_tabs.currentChanged.connect(win._on_center_tab_changed)
 
 

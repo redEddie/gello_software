@@ -31,6 +31,53 @@ def is_index_only(key: str) -> bool:
     return not any(key in keys for keys in CENTER_TABS_BY_ACTIVITY.values())
 
 
+#: 색인 전용 탭의 실험실 표시. 활동 바(⚙ 🎮 📂)와 툴바(▶ ✔ 🗑)가 이미
+#: 이모지를 기호로 쓰고 있어 어휘가 낯설지 않다. U+2697 ALEMBIC 은 유니코드의
+#: '플라스크'다 (삼각플라스크 전용 이모지는 없다). 변이선택자 FE0F 를 붙여야
+#: 컬러로 그려진다 -- 없으면 단색 선화가 되어 다른 기호들과 톤이 어긋난다.
+LAB_MARK = "⚗️"
+
+
+def lab_icon():
+    """실험실 표시를 QIcon 으로 (메뉴용).
+
+    메뉴에서는 글자 앞에 이모지를 붙이지 않는다. Qt 메뉴는 왼쪽에
+    체크표시용 여백을 잡아 두는데, 이모지를 글자에 넣으면 그 여백 **뒤**에
+    붙어서 그 줄만 글자 시작이 두 칸 밀린다. 아이콘으로 주면 이모지가 그
+    여백 안에 들어가고 글자 시작이 다른 줄과 맞는다 (2026-09-06 사용자 지적).
+    """
+    global _LAB_ICON
+    if _LAB_ICON is None:
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QFont, QIcon, QPainter, QPixmap
+        size = 16
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pm)
+        font = QFont()
+        font.setPointSizeF(size * 0.72)
+        painter.setFont(font)
+        painter.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, LAB_MARK)
+        painter.end()
+        _LAB_ICON = QIcon(pm)
+    return _LAB_ICON
+
+
+_LAB_ICON = None
+
+
+def tab_title(key: str) -> str:
+    """**탭**에 쓸 제목. 색인 전용이면 실험실 표시를 앞에 붙인다 (탭에는
+    아이콘 여백이 없어 접두사가 맞다).
+
+    표시를 CENTER_TABS 의 제목에 손으로 써넣지 않는 이유: 그러면 사실이
+    두 곳(배분표와 제목)에 적힌다. 여기서 파생하면 활동에 넣는 순간
+    표시가 저절로 사라지고, 빼는 순간 저절로 붙는다.
+    """
+    title = dict(CENTER_TABS).get(key, key)
+    return f"{LAB_MARK} {tr(title)}" if is_index_only(key) else tr(title)
+
+
 def show_center_tab(win, key: str) -> None:
     """중앙 탭을 키로 연다.
 
@@ -47,8 +94,7 @@ def show_center_tab(win, key: str) -> None:
         elif is_index_only(key):
             # 색인 전용 탭 -- 지금 활동 끝에 잠깐 붙인다. 활동을 옮기면
             # set_center_tabs 의 제거 루프가 알아서 떼어 낸다.
-            title = dict(CENTER_TABS).get(key, key)
-            win.center_tabs.addTab(w, tr(title))
+            win.center_tabs.addTab(w, tab_title(key))
     idx = win.center_tabs.indexOf(w)
     if idx >= 0:
         win.center_tabs.setCurrentIndex(idx)
@@ -96,7 +142,7 @@ def _sync(win, activity: str) -> None:
                 # show() 를 부르지 않는다 -- 어느 페이지를 보일지는 QTabWidget
                 # 이 정한다. 직접 부르면 현재가 아닌 페이지까지 보여서 내용이
                 # 겹쳐 보인다 (2026-09-06 렌더에서 실제로 그랬다).
-                tabs.insertTab(pos, w, tr(title))
+                tabs.insertTab(pos, w, tab_title(key))
             elif idx != pos:
                 tabs.tabBar().moveTab(idx, pos)
             pos += 1
