@@ -9,10 +9,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gello.gui.constants import TODO_MARK
 from gello.gui.i18n import tr
 
-from apps.workspace.shared.widgets import mark_todo
 
 
 def build_upload(win) -> QWidget:
@@ -131,11 +129,9 @@ def build_upload(win) -> QWidget:
     note.setStyleSheet("color:#888;")
     note.setWordWrap(True)
     col.addWidget(note)
-    qbox = QGroupBox(f"{tr('업로드 큐 / 이력')} ({TODO_MARK})")
-    qcol = QVBoxLayout(qbox)
-    qcol.addWidget(QLabel(tr("업로드는 현재 한 번에 하나씩, 로그 탭으로만 확인합니다.")))
-    mark_todo(qbox, tr("큐잉과 이력 보관은 아직 없습니다."))
-    col.addWidget(qbox)
+    # '업로드 큐 / 이력' 자리표시 상자를 뺐다 (2026-09-06) -- 큐잉과 이력
+    # 보관은 아직 없고, 업로드는 한 번에 하나씩 돌며 진행은 하단 Upload 탭에
+    # 찍힌다. 그 사실은 위 안내 문구가 이미 말한다.
     col.addStretch()
     return w
 

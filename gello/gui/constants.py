@@ -52,10 +52,6 @@ RECENTS_PATH = Path.home() / "libero_gui_logs" / "recent_inputs.json"
 # motion at the speed it actually happened -- which is the point of reviewing.
 PLAYBACK_FPS = 20
 
-# 미개발 표시. collect_workspace 가 이 값을 import 하므로 여기에 두고
-# 위에서 가져다 쓴다 -- 반대로 두면 순환 import 가 된다.
-TODO_MARK = "미개발"
-
 JOINT_LABELS = [f"J{i}" for i in range(1, 8)] + ["grip"]
 
 STATE_LABELS_KO = {

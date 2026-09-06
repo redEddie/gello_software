@@ -15,10 +15,8 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.data.episode_stats import TASK_DEV_LIMIT
-from gello.gui.constants import TODO_MARK
 from gello.gui.i18n import tr
 
-from apps.workspace.shared.widgets import mark_todo
 
 
 def build_dataset(win) -> QWidget:
@@ -38,10 +36,8 @@ def build_dataset(win) -> QWidget:
     dbrowse.clicked.connect(win.dataset_ops.browse_dataset_root)
     dr.addWidget(dbrowse)
     col.addLayout(dr)
-    search = QLineEdit()
-    search.setPlaceholderText(f"{tr('에피소드 검색')} ({TODO_MARK})")
-    mark_todo(search, tr("검색/필터는 아직 없습니다."))
-    col.addWidget(search)
+    # 비활성 '에피소드 검색' 입력칸을 뺐다 (2026-09-06). 검색/필터는 아직
+    # 없고, 누를 수 없는 입력칸은 트리 위에서 자리만 차지했다.
     win.dataset_tree = QTreeWidget()
     win.dataset_tree.setColumnCount(3)
     win.dataset_tree.setHeaderLabels([tr("파일 / 에피소드"), tr("프레임"), tr("결과")])

@@ -23,11 +23,10 @@ from PyQt6.QtWidgets import (
 )
 
 from gello.data.crop import load_crop_params
-from gello.gui.constants import TODO_MARK
 from gello.gui.widgets import VideoView
 from gello.gui.i18n import tr
 
-from apps.workspace.shared.widgets import SceneInfoView, TODO_STYLE, mark_todo
+from apps.workspace.shared.widgets import SceneInfoView
 from apps.workspace.shared.sizing import relax_min_widths
 from apps.workspace.constants import ACTIVITIES, PLAYBACK_SPEEDS, WIDE_FIELDS
 from .page_builders import PAGE_BUILDERS
@@ -274,12 +273,8 @@ def build_right(win) -> None:
     sv.addWidget(win.right_scene_view)
     col.addWidget(scene_box)
 
-    sysbox = QGroupBox(f"System ({TODO_MARK})")
-    sform = QFormLayout(sysbox)
-    for label in ("CPU", "GPU", "Memory"):
-        sform.addRow(label, QLabel("-"))
-    mark_todo(sysbox, tr("시스템 사용률 표시는 아직 없습니다. 디스크는 Statistics에 있습니다."))
-    col.addWidget(sysbox)
+    # System(CPU/GPU/Memory) 자리표시 상자를 뺐다 (2026-09-06). 값이 늘 "-"
+    # 였고 우측 패널 높이의 1/8 을 썼다. 디스크 사용량은 Statistics 에 있다.
     col.addStretch()
 
 
@@ -298,15 +293,11 @@ def build_bottom(win) -> None:
     win.validation_view = QPlainTextEdit()
     win.validation_view.setReadOnly(True)
     win.bottom_tabs.addTab(win.validation_view, tr("Validation"))
-    for title, why in (
-        (tr("ROS2"), tr("이 스택은 ROS2가 아니라 pylibfranka로 직접 구동합니다.")),
-        (tr("Terminal"), tr("임베디드 셸은 아직 없습니다. 로그 탭을 쓰세요.")),
-    ):
-        ph = QPlainTextEdit(f"{title} — {TODO_MARK}\n\n{why}")
-        ph.setReadOnly(True)
-        ph.setStyleSheet(TODO_STYLE)
-        idx = win.bottom_tabs.addTab(ph, f"{title} ({TODO_MARK})")
-        win.bottom_tabs.setTabEnabled(idx, False)
+    # 비활성 자리표시 탭 ROS2·Terminal 을 뺐다 (2026-09-06). 누를 수 없는
+    # 탭이 탭 바의 40% 를 차지하면서 알려주는 것은 "없다"뿐이었다.
+    # 원래 적혀 있던 내용은 지금도 사실이라 여기 남긴다:
+    #   ROS2     -- 이 스택은 ROS2 가 아니라 pylibfranka 로 직접 구동한다.
+    #   Terminal -- 임베디드 셸은 없다. 로그는 Log 탭에서 본다.
 
 
 

@@ -3,8 +3,6 @@
 from PyQt6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from gello.gui.fonts import MONO_STACK
-from gello.gui.constants import TODO_MARK
-from gello.gui.i18n import tr
 
 # Status-dot colors used by StatusLight and similar indicators.
 _DOT = {
@@ -14,16 +12,10 @@ _DOT = {
     "bad": "#e74c3c",
 }
 
-# Style applied to disabled "not yet implemented" placeholders.
-TODO_STYLE = "color:#6b6b6b; font-style:italic;"
-
-
-def mark_todo(widget: QWidget, note: str = "") -> QWidget:
-    """Disable a widget and mark it as not-yet-implemented."""
-    widget.setEnabled(False)
-    widget.setStyleSheet(TODO_STYLE)
-    widget.setToolTip(f"{TODO_MARK}: " + (note or tr("아직 구현되지 않은 기능입니다.")))
-    return widget
+# '미개발' 자리표시 헬퍼(mark_todo/TODO_STYLE/TODO_MARK)는 2026-09-06 에
+# 없앴다. 누를 수 없는 위젯을 상시 화면에 두지 않기로 했기 때문이다 --
+# 알려주는 것은 "없다"뿐인데 자리와 시선은 실제로 쓴다. 계획은 코드 주석과
+# 이슈에 남기고, 화면에는 동작하는 것만 올린다.
 
 
 def _dot(state: str, text: str) -> str:
