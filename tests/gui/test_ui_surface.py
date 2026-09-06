@@ -51,6 +51,13 @@ class _Stub(QMainWindow):
         self.dataset_ops = _NoOp()
         self.collection = _NoOp()
         self.system = _NoOp()
+        # 메뉴바가 전량 색인이 되면서(2026-09-06) 빌더가 요구하는 ops 가
+        # 늘었다. 여기 없으면 빌드가 AttributeError 로 죽는데, 그게 이
+        # 스텁의 존재 이유다 -- 메뉴에 없는 ops 를 연결하면 즉시 걸린다.
+        self.scene_planning = _NoOp()
+        self.scene_ops = _NoOp()
+        self.layout_ref = _NoOp()
+        self.stats_ops = _NoOp()
 
     def __getattr__(self, name):
         if name.startswith("_"):

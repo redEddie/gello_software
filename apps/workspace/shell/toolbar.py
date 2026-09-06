@@ -45,6 +45,23 @@ def build_toolbar(win) -> None:
 
 
 def build_menu(win) -> None:
+    """메뉴바는 **동작의 전량 색인**이다 (2026-09-06 사용자 결정).
+
+    규칙 세 가지:
+
+    1. 화면(좌측 패널·중앙 탭·다이얼로그)에 있는 동작은 전부 여기에도 있다.
+       색인이 불완전하면 화면에서 버튼을 뺄 수 없다 -- 빼는 순간 그 동작에
+       닿을 길이 사라지기 때문이다. 화면을 줄이는 모든 작업이 이 완전성에
+       기대고 있다.
+    2. 색인 항목은 **정본의 이름을 그대로** 쓴다. 버튼이 ``Save (success)``
+       인데 메뉴가 "성공으로 저장"이면 둘이 같은 것인지 알 수 없다.
+    3. 축은 "무엇을 관리하는가"다: 로봇 노드 / 수집 상태 / scene / 데이터셋 /
+       업로드 / 카메라. 옛 ``Process`` 메뉴처럼 "어떤 종류의 일인가"로 묶으면
+       로봇 노드와 카메라 노드가 같은 서랍에 들어가 찾을 수 없다.
+
+    툴바는 이것과 역할이 다르다 -- 현재 화면에서 자주 쓰는 것 + 수집 흐름
+    고정 구획이라, 여기와 겹치는 것은 중복이 아니라 거울이다.
+    """
     mb = win.menuBar()
 
     m = mb.addMenu(tr("File"))
@@ -53,47 +70,107 @@ def build_menu(win) -> None:
     m.addSeparator()
     m.addAction(tr("종료"), win.close)
 
+    # 로봇 노드 관리 -- 팔과 그 프로세스에 관한 모든 것.
+    m = mb.addMenu(tr("Robot"))
+    m.addAction(tr("Connect"), win.collection.on_connect)
+    m.addAction(tr("Disconnect"), win.collection.on_disconnect)
+    m.addAction(tr("Home"), lambda: win.collection.cmd("cmd_go_home"))
+    m.addSeparator()
+    m.addAction(tr("노드 시작"), win.system.on_start_node)
+    # [NODE DOWN] 로그가 "'노드 재시작' 버튼을 누르세요"라고 지시하는데
+    # 정작 그 버튼이 없었다 (2026-09-04).
+    m.addAction(tr("노드 재시작"), win.system.on_restart_node)
+    m.addAction(tr("노드 종료"), win.system.on_stop_node)
+    m.addSeparator()
+    m.addAction(tr("시스템 튜닝 실행 (runme.sh)"), win.system.run_runme)
+    m.addAction(tr("리더암 토크 과부하 잠금 해제"),
+                win.system.on_reset_leader_protection)
+
+    # 데이터 수집 상태 관리 -- 에피소드 하나가 도는 동안의 모든 동작.
+    # 다른 화면(예: 파일 미리보기)에 가 있어도 여기서 닿을 수 있어야 한다.
+    m = mb.addMenu(tr("Collect"))
+    m.addAction(tr("다음 미수집 slot 제시"), win.scene_planning.on_next_slot)
+    m.addAction(tr("slot 적용 (다음 에피소드부터)"),
+                win.scene_planning.on_apply_slot)
+    m.addSeparator()
+    m.addAction(tr("Start Teleop"),
+                lambda: win.collection.cmd("cmd_start_teleop"))
+    m.addAction(tr("Auto-align (Enter)"),
+                lambda: win.collection.cmd("cmd_auto_match_pose"))
+    m.addAction(tr("Reset done — continue (Enter)"),
+                lambda: win.collection.cmd("cmd_skip_reset_wait"))
+    m.addSeparator()
+    # save, not cmd -- 성공 여부가 통계에 기록되어야 한다 (툴바와 같은 이유).
+    m.addAction(tr("Save (success)"), lambda: win.collection.save(True))
+    m.addAction(tr("Save as fail (Esc)"), lambda: win.collection.save(False))
+    m.addAction(tr("Discard"),
+                lambda: win.collection.cmd("cmd_discard_episode"))
+    m.addSeparator()
+    m.addAction(tr("진행률 새로고침"), win.scene_planning.refresh_plan_progress)
+
+    m = mb.addMenu(tr("Scene"))
+    m.addAction(tr("새 Scene 구성..."), win.scene_ops.on_new_scene)
+    m.addAction(tr("Scene 목록 새로고침"), win.scene_ops.refresh_scene_combo)
+    m.addSeparator()
+    m.addAction(tr("계획 편집..."), win.scene_planning.on_edit_plan)
+    m.addAction(tr("새 계획..."), win.scene_planning.on_new_plan)
+    m.addAction(tr("계획 삭제"), win.scene_planning.on_delete_plan)
+    m.addSeparator()
+    m.addAction(tr("3×3 워크스페이스 격자 편집..."), win.layout_ref.on_edit_grid)
+
     m = mb.addMenu(tr("Dataset"))
     m.addAction(tr("새로고침"), win.dataset_ops.refresh_dataset_tree)
+    m.addAction(tr("데이터셋 폴더 선택..."), win.dataset_ops.browse_dataset_root)
+    m.addSeparator()
+    m.addAction(tr("구조 확인..."), win.playback_ops.on_show_structure)
+    m.addAction(tr("HDF5 트리 뷰어"), win._on_hdf5_tree)
+    m.addAction(tr("myHDF5 (웹)"), win.upload.on_myhdf5)
+    m.addSeparator()
     m.addAction(tr("실패만 선택"), win.dataset_ops.on_select_failed)
     m.addAction(tr("튀는 것만 선택 (scene·문장 그룹 평균과 ±{d} 밖)")
                 .format(d=TASK_DEV_LIMIT),
                 win.dataset_ops.on_select_jerky)
+    m.addSeparator()
+    m.addAction(tr("선택 재판정 (성공↔실패)"), win.dataset_ops.on_relabel_selected)
+    m.addAction(tr("선택 재생 (실로봇)"), win.playback_ops.on_replay_selected)
+    m.addAction(tr("끝 다듬기 (Trim 탭에서)"), win.playback_ops.on_open_trim)
+    m.addSeparator()
     m.addAction(tr("에피소드 삭제"), win.dataset_ops.on_delete_selected)
     m.addAction(tr("파일 삭제"), win.dataset_ops.on_delete_file)
-    m.addAction(tr("구조 확인..."), win.playback_ops.on_show_structure)
     m.addSeparator()
-    m.addAction(tr("용량 최적화 (재압축)..."), win.upload.on_repack)
-    m.addAction(tr("LeRobot 변환/업로드..."), win.upload.on_lerobot)
+    m.addAction(tr("다시 분석"),
+                lambda: win.stats_ops.refresh_analysis(force=True))
+    m.addAction(tr("데이터셋 구조 사용자 설정..."), win._on_schema)
+
+    # 업로드는 Dataset 에서 떼어낸다 -- 되돌릴 수 없는 바깥 동작이라
+    # 고르다가 잘못 누르는 자리에 두지 않는다.
+    m = mb.addMenu(tr("Upload"))
+    m.addAction(tr("전체 처리 (재압축 → 변환 → 업로드)"), win.upload.on_pipeline)
     m.addSeparator()
-    m.addAction(tr("전체 처리 (재압축 → 변환 → 업로드)..."), win.upload.on_pipeline)
-    m.addAction(tr("HDF5 업로드..."), win.upload.on_hdf5_upload)
+    m.addAction(tr("재압축 + 업로드 (자동)"), win.upload.on_hdf5_auto)
+    m.addAction(tr("용량 최적화 (재압축)"), win.upload.on_repack)
+    m.addAction(tr("원본 업로드..."), win.upload.on_hdf5_upload)
+    m.addSeparator()
+    m.addAction(tr("변환 + 업로드 (자동)"), win.upload.on_lerobot_auto)
+    m.addAction(tr("이어붙이기 (새 에피소드만)"), win.upload.on_lerobot_resume)
+    m.addAction(tr("HDF5 골라서 변환만..."), win.upload.on_lerobot)
+    m.addAction(tr("전체 task 다시 업로드..."), win.upload.on_lerobot_reupload)
+    m.addSeparator()
+    m.addAction(tr("계정 확인 / 전환..."), win.upload.on_hf_accounts)
 
-    m = mb.addMenu(tr("Robot"))
-    m.addAction(tr("연결"), win.collection.on_connect)
-    m.addAction(tr("세션 종료"), win.collection.on_disconnect)
-    m.addAction(tr("홈으로"), lambda: win.collection.cmd("cmd_go_home"))
-
-    m = mb.addMenu(tr("Process"))
-    m.addAction(tr("로봇 노드 시작"), win.system.on_start_node)
-    # [NODE DOWN] 로그가 "'노드 재시작' 버튼을 누르세요"라고 지시하는데
-    # 정작 그 버튼이 없었다 (2026-09-04).
-    m.addAction(tr("로봇 노드 재시작"), win.system.on_restart_node)
-    m.addAction(tr("로봇 노드 종료"), win.system.on_stop_node)
+    m = mb.addMenu(tr("Camera"))
+    m.addAction(tr("카메라 새로고침"), win.camera_ops.refresh_cameras)
+    # 화면 버튼이 토글이라 색인도 토글을 가리킨다 (옛 "미리보기 중지"를 대체).
+    m.addAction(tr("미리보기 시작/중지"), win.camera_ops.on_toggle_previews)
     m.addSeparator()
     m.addAction(tr("카메라 노드 재시작"),
                 win.camera_ops.on_restart_camera_node)
     m.addAction(tr("카메라 노드 종료 (카메라 해제)"),
                 win.camera_ops.on_stop_camera_node_manual)
     m.addSeparator()
-    m.addAction(tr("시스템 튜닝 실행 (runme.sh)"), win.system.run_runme)
-    m.addAction(tr("리더암 토크 과부하 잠금 해제"),
-                win.system.on_reset_leader_protection)
     m.addAction(tr("카메라 점검 (USB 속도·프레임)"), win.system.on_check_cameras)
-
-    m = mb.addMenu(tr("Camera"))
-    m.addAction(tr("새로고침"), win.camera_ops.refresh_cameras)
-    m.addAction(tr("미리보기 중지"), win.camera_ops.stop_previews_async)
+    m.addAction(tr("카메라 레이아웃 확인 (LIBERO 초기 배치와 비교)"),
+                lambda: win.center_tabs.setCurrentIndex(win._layout_tab_index))
 
     m = mb.addMenu(tr("View"))
     for key, _icon, title, _tip in ACTIVITIES:
@@ -107,11 +184,6 @@ def build_menu(win) -> None:
     win.act_toggle_right.triggered.connect(
         lambda on: win.right_scroll.setVisible(on))
     m.addAction(win.act_toggle_right)
-
-    m = mb.addMenu(tr("Tools"))
-    m.addAction(tr("Hugging Face 계정..."), win.upload.on_hf_accounts)
-    m.addSeparator()
-    m.addAction(tr("데이터셋 구조 사용자 설정..."), win._on_schema)
 
     m = mb.addMenu(tr("Help"))
     m.addAction(tr("단축키..."), lambda: QMessageBox.information(
@@ -131,7 +203,6 @@ def build_menu(win) -> None:
         win, tr("정보"),
         tr("FR3 GELLO 데이터 수집 워크스페이스\n\n"
            "카메라는 항상 중앙에 유지됩니다. 왼쪽 아이콘 바로 패널만 바꾸세요.")))
-
 
 
 def build_statusbar(win) -> None:
