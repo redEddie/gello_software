@@ -461,7 +461,7 @@ class PlaybackOps:
         if self.win.session.scene_session:
             # 저장/재판정마다 saver 가 새 목록을 보내온다 -- slot 카운트 갱신
             self.win.scene_planning.refresh_instruction_list()
-            self.win.scene_planning.refresh_start_plan_combo()   # Configure 쪽 카운트도 동기화
+            self.win.scene_planning.refresh_start_instruction()  # Configure 쪽 표시도 동기화
             self.win.collection.refresh_instruction()
 
     # -------------------------------------------------------------- hdf5 view

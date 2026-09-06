@@ -20,6 +20,8 @@
 """
 from __future__ import annotations
 
+import zlib
+
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -37,6 +39,55 @@ from gello.gui.widgets.recents import COLLECTOR_MAX
 #: 태그 줄 하나에 몇 개까지. 좌측 패널은 가로 스크롤이 없으므로(sizing.py)
 #: 넘치는 것은 다음 줄로 접는다.
 _PER_ROW = 3
+
+#: 태그 바탕색 팔레트. 어두운 창이라 **어둡게** 두고(2026-09-06 사용자),
+#: 사람마다 다른 색을 준다 -- 이름을 읽기 전에 색으로 먼저 알아보게 하려는
+#: 것이라, 색은 이름에서 결정론적으로 뽑는다 (같은 사람은 늘 같은 색).
+#: 무작위로 주면 GUI 를 켤 때마다 달라져서 오히려 못 알아본다.
+_TAG_COLORS = (
+    ("#2d3f4f", "#7fb3d5"),   # 청
+    ("#2f4535", "#82c99a"),   # 녹
+    ("#4a3a2b", "#e0a96d"),   # 주황
+    ("#42303f", "#cf9fd0"),   # 보라
+    ("#4a3030", "#e08e8e"),   # 적
+    ("#2b4444", "#7fcfcf"),   # 청록
+    ("#3d3d2b", "#d4d47f"),   # 황
+    ("#33344a", "#9aa0e0"),   # 남
+    ("#3a4a2b", "#aed07f"),   # 연두
+    ("#4a2b3a", "#d07fa8"),   # 자주
+)
+
+
+def _tag_colors(names) -> dict:
+    """이름 -> (바탕, 글자). 화면에 함께 뜨는 것들끼리는 **겹치지 않는다**.
+
+    바라는 색은 이름에서 결정론적으로 뽑는다 (crc32) -- 같은 사람은 늘 같은
+    색이라야 이름을 읽기 전에 색으로 알아본다. 파이썬 ``hash()`` 를 안 쓰는
+    이유는 실행마다 소금이 달라 GUI 를 다시 켜면 색이 바뀌기 때문이고,
+    글자 코드의 단순 합을 안 쓰는 이유는 비슷한 이름이 한 값으로 몰리기
+    때문이다 (실측: 여섯 중 넷이 한 색).
+
+    그래도 부딪히면 다음 빈 색으로 밀어 준다 -- 나란히 놓인 두 태그가 같은
+    색이면 다채롭게 만든 뜻이 없다. 팔레트가 모자라면 그때는 겹친다.
+    """
+    out: dict = {}
+    used: set = set()
+    for name in names:
+        want = zlib.crc32(name.encode("utf-8")) % len(_TAG_COLORS)
+        for step in range(len(_TAG_COLORS)):
+            i = (want + step) % len(_TAG_COLORS)
+            if i not in used:
+                break
+        used.add(i)
+        out[name] = _TAG_COLORS[i]
+    return out
+
+
+def _tag_style(bg: str, fg: str) -> str:
+    return (f"QPushButton{{background:{bg}; color:{fg};"
+            f" border:1px solid {fg}44; border-radius:9px;"
+            " padding:2px 9px;}"
+            f"QPushButton:hover{{border-color:{fg};}}")
 
 
 class CollectorPicker(QWidget):
@@ -134,6 +185,7 @@ class CollectorPicker(QWidget):
         self._tag_box.setVisible(bool(shown))
         if not shown:
             return
+        colors = _tag_colors(shown)
         row = None
         for i, name in enumerate(shown):
             if i % _PER_ROW == 0:
@@ -145,10 +197,7 @@ class CollectorPicker(QWidget):
             btn.setToolTip(tr("이 이름으로 확정합니다 (치던 글자는 지워집니다)"))
             btn.setSizePolicy(QSizePolicy.Policy.Maximum,
                               QSizePolicy.Policy.Fixed)
-            btn.setStyleSheet(
-                "QPushButton{border:1px solid #555; border-radius:9px;"
-                " padding:2px 9px; color:#ddd;}"
-                "QPushButton:hover{background:#3a3a3a;}")
+            btn.setStyleSheet(_tag_style(*colors[name]))
             btn.clicked.connect(lambda _c=False, n=name: self._pick(n))
             row.addWidget(btn)
         row.addStretch(1)

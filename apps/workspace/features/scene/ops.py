@@ -59,7 +59,7 @@ class SceneOps:
         self.win.scene_planning.on_plan_changed()
 
     def on_scene_selected(self, *_args) -> None:
-        self.win.scene_planning.refresh_start_plan_combo()
+        self.win.scene_planning.refresh_start_instruction()
         self.win.collection.refresh_instruction()
         sid = self.win.scene_combo.currentData()
         if sid is None:
@@ -158,36 +158,42 @@ class SceneOps:
         iid = self.win.scene_iid_edit.text().strip()
         collector = self.win.collector_edit.text().strip()
         if not lang:
-            return None, None, False, tr("시작 instruction 문장을 Language 칸에 입력하세요.")
+            return None, None, False, tr(
+                "시작 지시문이 없습니다 — Instruction 탭에서 줄을 눌러 고르세요.")
         if lang.startswith('"') and lang.endswith('"'):
             return None, None, False, tr("instruction 은 따옴표 없는 순수 문장이어야 합니다.")
         if not INSTRUCTION_ID_RE.match(iid):
             return None, None, False, tr("시작 지시문 ID 형식이 틀렸습니다 (예: I000).")
         if not collector:
             return None, None, False, tr("수집자 식별자를 입력하세요 (에피소드 필수 attr).")
-        # 계획이 선택돼 있으면 시작 slot 은 계획의 (ID, 문장) 쌍이어야 한다 --
-        # 자유 입력이 계획 밖 slot 을 만들던 구멍의 마지막 잠금. 새 문장은
-        # ✎ 편집으로 계획에 추가하고, 자유 수집은 '(계획 없음)' 을 고른다.
+        # **계획은 필수다** (2026-09-06 사용자 결정). 지시문은 데이터셋의
+        # instructions.json 에서만 온다 -- 자유 입력이 계획 밖 지시문을
+        # 실데이터에 만든 적이 있고(ID-문장 갈라짐), 그 길을 아예 없앴다.
+        # 계획 없이 찍은 파일은 나중에 무엇을 얼마나 모았는지 셀 수가 없다.
         plan = self.win.scene_planning.current_plan()
-        if plan is not None:
-            psid = self.configure_scene_id()
-            slots = plan.slots_for(psid) if psid else ()
-            if not slots:
-                return None, None, False, tr(
-                    "계획({p})에 scene {s} 가 없습니다. ✎ 편집으로 scene 을 "
-                    "추가하거나, 자유 수집이면 수집 계획을 '(계획 없음)' 으로 "
-                    "바꾸세요.").format(p=plan.path.name, s=psid)
-            if not any(s.instruction_id == iid and s.instruction == lang
-                       for s in slots):
-                return None, None, False, tr(
-                    "시작 문장은 '계획 문장' 드롭다운에서 선택하세요. "
-                    "({i}: {t!r} 는 계획에 없습니다 — 새 문장은 ✎ 편집으로 "
-                    "계획에 먼저 추가)").format(i=iid, t=lang[:40])
+        if plan is None:
+            return None, None, False, tr(
+                "이 데이터셋에는 수집 계획이 없습니다.\n\n"
+                "Instruction 탭의 [새 계획] 으로 만든 뒤 [계획 편집] 에서 "
+                "scene 과 지시문을 적으세요. 지시문은 계획에서만 옵니다.")
+        psid = self.configure_scene_id()
+        slots = plan.slots_for(psid) if psid else ()
+        if not slots:
+            return None, None, False, tr(
+                "계획에 scene {s} 가 없습니다.\n\n"
+                "Instruction 탭의 [계획 편집] 에서 이 scene 의 지시문을 "
+                "추가하세요.").format(s=psid)
+        if not any(s.instruction_id == iid and s.instruction == lang
+                   for s in slots):
+            return None, None, False, tr(
+                "시작 지시문이 계획에 없습니다 ({i}: {t!r}).\n\n"
+                "Instruction 탭에서 줄을 눌러 고르세요.").format(i=iid, t=lang[:40])
         sid = self.win.scene_combo.currentData()
         if sid is None:
             if self.win._pending_scene_meta is None:
                 return None, None, False, tr(
-                    "'새 Scene 구성...'으로 배치를 먼저 정의하거나 기존 scene 을 고르세요.")
+                    "Scene 탭에서 배치를 먼저 정하거나, 드롭다운에서 기존 "
+                    "scene 을 고르세요.")
             return self.win._pending_scene_meta, None, False, None
         return None, sid, True, None
 
@@ -265,7 +271,6 @@ class SceneOps:
             done.append(tr("관절 한계 벽"))
         return done
 
-    def on_start_sentence_edited(self) -> None:
-        self.win.scene_planning.auto_assign_iid(self.win.lang_edit.text(), self.win.scene_iid_edit,
-                                                 scene_id=self.configure_scene_id(),
-                                                 scene_path=self.selected_scene_path())
+    # on_start_sentence_edited 를 지웠다 (2026-09-06). 시작 문장을 손으로
+    # 치는 길이 없어졌기 때문이다 -- 계획이 필수가 되면서 지시문은
+    # instructions.json 에서만 온다 (scene_config_from_ui 가 막는다).

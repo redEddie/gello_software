@@ -72,8 +72,12 @@ class _Stub(QMainWindow):
 
 def surface() -> dict:
     win = _Stub()
-    build_menu(win)
+    # 창과 같은 순서로 짓는다 (collect_workspace.__init__): 툴바가 먼저다 --
+    # 메뉴 색인이 툴바의 토글 QAction 을 **그대로** 담기 때문이다
+    # (2026-09-06: 관절 한계 벽·자세 정렬). 순서가 어긋나면 실제로는
+    # 멀쩡한데 여기서만 AttributeError 가 난다.
     build_toolbar(win)
+    build_menu(win)
     build_statusbar(win)
 
     menus = {}

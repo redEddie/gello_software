@@ -123,66 +123,36 @@ class ScenePlanningOps:
             return
         self.win.scene_iid_edit.setText(iid)
         self.win.lang_edit.setText(instr)
-        # Configure 의 계획 문장 드롭다운도 같은 줄로 맞춘다 (거울).
-        for i in range(self.win.start_plan_combo.count()):
-            if self.win.start_plan_combo.itemData(i) == (iid, instr):
-                self.win.start_plan_combo.setCurrentIndex(i)
-                break
+        self.refresh_start_instruction()
         self.win.collection.refresh_instruction()
         self.win.log(f"[지시문] 시작 설정: {sid} · {iid} — {instr}")
 
-    def refresh_start_plan_combo(self) -> None:
-        """Configure 의 계획 문장 드롭다운 = 계획 × 선택 scene.
+    def refresh_start_instruction(self) -> None:
+        """Configure 의 "시작 지시문" 한 줄과 계획 없음 경고를 갱신한다.
 
-        카운트는 scene 파일에서 온다 (계획 파일에는 카운트가 없다 -- 두 개의
-        진실 금지). 세션이 파일을 쥐고 있으면 카운트만 생략된다.
+        고르는 장치는 여기 없다 (2026-09-06) -- Instruction 탭이 그 일을 하고,
+        이 줄은 그 결과를 보여 줄 뿐이다. 드롭다운 + 문장 칸 + ID 칸 세 줄이
+        같은 하나를 말하던 것을 한 줄로 줄였다.
+
+        **계획이 없으면 수집할 수 없다**고 여기서 미리 말한다. Connect 를
+        눌러 봐야 알게 되는 것보다, 준비 화면에서 붉게 보이는 편이 낫다.
         """
-        if not hasattr(self.win, "start_plan_combo"):
+        warn = getattr(self.win, "start_warn", None)
+        if warn is None:
             return
-        combo = self.win.start_plan_combo
-        keep = combo.currentData()
-        combo.blockSignals(True)
-        combo.clear()
         plan = self.current_plan()
-        # 계획이 있으면 문장은 계획에서만 고른다 -- 자유 입력이 계획 밖
-        # slot(문장-ID 갈라짐)을 실데이터에 만들었다. 새 문장은 ✎ 편집으로
-        # 계획에 먼저 추가한다. 계획이 없을 때만 직접 입력을 연다.
-        combo.addItem(tr("(계획에서 선택)") if plan is not None
-                      else tr("(직접 입력)"), None)
-        self.win.lang_edit.setReadOnly(plan is not None)
-        self.win.scene_iid_edit.setReadOnly(plan is not None)
-        for w in (self.win.lang_edit, self.win.scene_iid_edit):
-            w.setStyleSheet("color:#888;" if plan is not None else "")
+        if plan is None:
+            warn.setText(tr(
+                "이 데이터셋에는 수집 계획이 없습니다 — Instruction 탭의 "
+                "[새 계획] 으로 먼저 만드세요. 계획 없이는 수집할 수 없습니다."))
+            return
         sid = self.win.scene_ops.configure_scene_id()
-        if plan is not None and sid is not None:
-            counts: dict = {}
-            if self.win.session.scene_session and sid == self.win.scene_ops.session_scene_id():
-                # 세션이 파일을 쥐고 있다 -- saver 가 보내준 캐시로 센다
-                counts = self.session_instruction_counts()
-            else:
-                p = self.win.scene_ops.selected_scene_path()
-                if p is not None and p.exists():
-                    try:
-                        counts = count_by_slot(p)
-                    except Exception:  # noqa: BLE001 -- HDF5 잠금 등
-                        counts = {}
-            for s in plan.slots_for(sid):
-                c = counts.get(s.instruction_id, {}).get("usable", 0)
-                combo.addItem(
-                    f"{s.instruction_id} · {c}/{s.target} · {s.instruction}",
-                    (s.instruction_id, s.instruction))
-            if keep:
-                for i in range(combo.count()):
-                    if combo.itemData(i) == keep:
-                        combo.setCurrentIndex(i)
-                        break
-        combo.blockSignals(False)
-
-    def on_start_plan_pick(self, *_args) -> None:
-        d = self.win.start_plan_combo.currentData()
-        if d:
-            self.win.scene_iid_edit.setText(d[0])
-            self.win.lang_edit.setText(d[1])
+        if sid is not None and not plan.slots_for(sid):
+            warn.setText(tr(
+                "계획에 {s} 가 없습니다 — Instruction 탭의 [계획 편집] 에서 "
+                "이 scene 의 지시문을 추가하세요.").format(s=sid))
+            return
+        warn.setText("")
 
     def dataset_plan_path(self) -> Path:
         """현재 데이터셋(저장 경로)의 계획 파일 — 고정 파일명 컨벤션

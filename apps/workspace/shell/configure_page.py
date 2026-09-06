@@ -97,26 +97,29 @@ def build_configure(win) -> QWidget:
     # "새 Scene 구성..." 버튼을 뺐다 (2026-09-06) -- 드롭다운 맨 위의
     # "— 새 Scene (Sxxx) —" 를 고르면 Scene 탭이 열린다. 같은 일을 하는
     # 입구가 바로 옆에 둘 있을 이유가 없다.
-    # 계획이 있으면 시작 문장을 여기서 고른다 -- 고르면 아래 문장·slot ID
-    # 가 함께 채워진다 (세션 중 slot 패널의 계획 콤보와 같은 장치).
-    win.start_plan_combo = QComboBox()
-    shrinkable_combo(win.start_plan_combo)
-    win.start_plan_combo.currentIndexChanged.connect(win.scene_planning.on_start_plan_pick)
-    sc_form.addRow(tr("계획 문장"), win.start_plan_combo)
-    win.lang_edit = QLineEdit()
-    win.lang_edit.setPlaceholderText(tr("예) pick up the blue cup and place it on the blue bowl"))
-    win.lang_edit.setText(win._recents.most_recent("language", ""))
-    # 문장을 바꾸면 slot ID 가 자동으로 따라온다 (아는 문장=재사용,
-    # 새 문장=다음 빈 ID) -- ID-문장 갈라짐 방지.
-    win.lang_edit.editingFinished.connect(win.scene_ops.on_start_sentence_edited)
-    sc_form.addRow(tr("시작 문장"), win.lang_edit)
-    # instructions.json 을 화면에 적지 않는다 (2026-09-06). 지시문은
-    # 그 파일 하나로 통일됐으므로 "어느 파일인가"는 더 이상 고를 것이
-    # 아니고, 편집은 Instruction 탭이 맡는다.
+    # 시작 지시문은 **보여 주기만** 한다 (2026-09-06). 고르는 자리는
+    # Instruction 탭이다 -- 거기서 줄을 누르면 scene 과 함께 정해진다.
+    # 전에는 여기에 드롭다운·문장 칸·ID 칸 세 줄이 있었고 셋이 같은 하나를
+    # 말했다. 손으로 치는 길을 없앤 것은 계획을 필수로 만들었기 때문이다:
+    # 계획 밖 문장을 실데이터에 넣던 구멍이 그 입력칸이었다.
+    start_row = QWidget()
+    strow = QHBoxLayout(start_row)
+    strow.setContentsMargins(0, 0, 0, 0)
     win.scene_iid_edit = QLineEdit(win._recents.most_recent("instruction_id", "I000"))
-    win.scene_iid_edit.setToolTip(tr("시작 지시문의 ID (예: I000). "
-                                      "수집 중 Collect 페이지에서 바꿀 수 있습니다."))
-    sc_form.addRow(tr("시작 지시문 ID"), win.scene_iid_edit)
+    win.scene_iid_edit.setReadOnly(True)
+    win.scene_iid_edit.setMaximumWidth(64)
+    strow.addWidget(win.scene_iid_edit)
+    win.lang_edit = QLineEdit(win._recents.most_recent("language", ""))
+    win.lang_edit.setReadOnly(True)
+    strow.addWidget(win.lang_edit, 1)
+    for e in (win.scene_iid_edit, win.lang_edit):
+        e.setStyleSheet("color:#bbb;")
+        e.setToolTip(tr("Instruction 탭에서 줄을 누르면 여기 값이 바뀝니다."))
+    sc_form.addRow(tr("시작 지시문"), start_row)
+    win.start_warn = QLabel("")
+    win.start_warn.setWordWrap(True)
+    win.start_warn.setStyleSheet("color:#e67e22;")
+    sc_form.addRow(win.start_warn)
     # 저장 경로 칸을 뺐다 (2026-09-06). 그 값은 런처 마법사가 정하고,
     # 화면에서 고치는 자리는 Dataset 페이지 하나다 (File 메뉴도 같은 위젯을
     # 고친다). 지금 어디에 쌓이는지는 상태바가 늘 비추고 있다.
@@ -152,12 +155,9 @@ def build_configure(win) -> QWidget:
         "더 이상 사용하지 않습니다 — 리셋 대기는 시간으로 끝나지 않고 "
         "'리셋 완료' 버튼(Enter)으로만 끝납니다."))
     sform.addRow(tr("리셋 대기(s) (미사용)"), win.resetwait_edit)
-    win.wall_check = QCheckBox(tr("관절 한계 벽 사용"))
-    win.wall_check.setChecked(True)
-    sform.addRow(win.wall_check)
-    win.match_check = QCheckBox(tr("에피소드마다 리더를 리셋 포즈로 정렬"))
-    win.match_check.setChecked(True)
-    sform.addRow(win.match_check)
+    # "관절 한계 벽"·"자세 정렬" 은 툴바로 갔다 (2026-09-06 사용자 요청).
+    # 평소에는 켜 두고 쓰는 것이라 매번 읽을 줄이 아니고, 끌 때는 툴바에서
+    # 한 번에 끈다 (Collect 메뉴에도 같은 토글이 있다).
     col.addWidget(sess)
     # 줄 수가 정해진 상자는 세로로 안 늘어나게 (sizing.keep_height 참고).
     # Scene 수집은 예외 -- 계획 설명 라벨이 접히면서 높이가 는다.

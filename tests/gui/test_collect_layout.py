@@ -252,7 +252,40 @@ assert "gibeom" not in win._recents.get("collector"), "오래된 이름이 안 �
 caps = [lab.text() for lab in picker.findChildren(QLabel)
         if lab.text().startswith("max")]
 assert caps == [f"max {COLLECTOR_MAX}"], caps
-print(f"12. 수집자 태그 OK (부분 일치 · 클릭 확정 · max {COLLECTOR_MAX})")
+# 함께 뜨는 뱃지는 색이 겹치지 않는다 (같은 사람은 늘 같은 색이 우선).
+from apps.workspace.shared.collector_picker import _tag_colors  # noqa: E402
+
+roster = win._recents.get("collector")
+colors = _tag_colors(roster)
+assert len({c[0] for c in colors.values()}) == len(roster), \
+    f"뱃지 색이 겹친다: {colors}"
+assert _tag_colors(roster) == colors, "같은 명단인데 색이 달라졌다 (결정론적이어야)"
+print(f"12. 수집자 태그 OK (부분 일치 · 클릭 확정 · max {COLLECTOR_MAX} · 색 {len(roster)}종)")
+
+# ------------------- 12b. 계획은 필수다 + 안전 토글은 툴바에 (2026-09-06)
+assert win.wall_check in win.tool_bar.actions(), "관절 한계 벽 토글이 툴바에 없다"
+assert win.match_check in win.tool_bar.actions(), "자세 정렬 토글이 툴바에 없다"
+assert win.match_check.text() == "⇱ 자세 정렬", win.match_check.text()
+assert not [c for c in conf.findChildren(QCheckBox)
+            if "한계 벽" in c.text() or "정렬" in c.text()], \
+    "안전 토글이 아직 ② 패널에 있다"
+# 계획을 치우면 연결이 막힌다
+plan_file = root / "instructions.json"
+saved = plan_file.read_text(encoding="utf-8")
+plan_file.unlink()
+try:
+    # 나머지 조건은 다 갖춰 두고 **계획만** 없앤다 -- 그래야 계획이 막은
+    # 것인지 다른 빈칸이 막은 것인지 헷갈리지 않는다.
+    win.collector_edit.setText("tester")
+    win.scene_iid_edit.setText("I000")
+    win.lang_edit.setText(SENT["I000"])
+    _, _, _, err = win.scene_ops.scene_config_from_ui()
+    assert err and "수집 계획이 없습니다" in err, err
+finally:
+    plan_file.write_text(saved, encoding="utf-8")
+# 손으로 시작 지시문을 칠 수 없다
+assert win.lang_edit.isReadOnly() and win.scene_iid_edit.isReadOnly()
+print("12b. 계획 필수 + 안전 토글 툴바 이동 OK")
 
 # ------------------------------- 13. Instruction 탭 줄 = scene + 지시문 설정
 win._set_activity("configure")

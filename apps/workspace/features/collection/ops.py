@@ -101,9 +101,11 @@ class CollectionOps:
             self.win.gate_box.setVisible(False)
         for w in (self.win.lang_edit, self.win.root_edit, self.win.agent_combo,
                   self.win.wrist_combo, self.win.reset_pose_combo,
-                  self.win.grip_combo, self.win.eplen_edit, self.win.resetwait_edit,
-                  self.win.wall_check, self.win.match_check):
+                  self.win.grip_combo, self.win.eplen_edit, self.win.resetwait_edit):
             w.setEnabled(not running)
+        # 툴바 토글 -- Connect 시점에 읽히는 값이라 세션 중에는 잠근다.
+        for act in (self.win.wall_check, self.win.match_check):
+            act.setEnabled(not running)
         # 크롭 정렬은 에피소드 attrs 에 Connect 시점 스냅샷으로 찍히므로,
         # 세션 중에 움직이면 가이드와 기록이 어긋난다. 잠근다.
         for w in self.win._crop_widgets:
@@ -302,18 +304,14 @@ class CollectionOps:
         return False
 
     def _select_slot(self, iid: str, instr: str) -> bool:
-        combo = self.win.start_plan_combo
-        for i in range(combo.count()):
-            d = combo.itemData(i)
-            if d and d[0] == iid:
-                combo.setCurrentIndex(i)       # on_start_plan_pick 이 문장·ID 를 채운다
-                self.win.scene_planning.on_start_plan_pick()
-                return True
-        if combo.count() > 1:
-            return False                       # 계획은 있는데 그 slot 이 없다
-        # 계획이 없는 데이터셋 -- 칸이 읽기 전용이 아니므로 직접 채운다.
+        """시작 지시문을 그 값으로 맞춘다.
+
+        고르는 장치(드롭다운)는 없어졌으므로 값을 직접 쓴다 -- 그 값은
+        pick_resume_slot 이 계획에서 뽑은 것이라 계획 밖일 수 없다.
+        """
         self.win.scene_iid_edit.setText(iid)
         self.win.lang_edit.setText(instr)
+        self.win.scene_planning.refresh_start_instruction()
         return True
 
     def _node_ready(self) -> bool:

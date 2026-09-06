@@ -106,29 +106,47 @@ win.scene_ops.refresh_scene_combo()
 # scene 파일이 수집 세션에 잠겨 있어도 돌 수 있게 scene 선택을 주입한다
 win.scene_ops.configure_scene_id = lambda: "S000"
 win.scene_ops.selected_scene_path = lambda: None
-win.scene_planning.refresh_start_plan_combo()
-combo = win.start_plan_combo
+# 계획 문장 드롭다운은 없어졌다 (2026-09-06) -- 고르는 자리는 Instruction
+# 탭이고, Configure 는 고른 결과를 읽기 전용 한 줄로 보여줄 뿐이다.
+win.scene_planning.refresh_start_instruction()
 plan = win.scene_planning.current_plan()
 n_slots = len(plan.slots_for("S000"))
-assert combo.count() == 1 + n_slots, (combo.count(), n_slots)
-combo.setCurrentIndex(1)                 # 첫 계획 문장 선택
-d = combo.currentData()
-assert d and win.scene_iid_edit.text() == d[0] and win.lang_edit.text() == d[1]
-assert "/" in combo.itemText(1)          # 카운트 표기 c/target
-print(f"5 통과: 계획 문장 드롭다운 ({n_slots}개) + ID/문장 자동 채움")
+assert n_slots >= 1
+assert win.start_warn.text() == "", win.start_warn.text()
+sl = plan.slots_for("S000")[0]
+win.scene_iid_edit.setText(sl.instruction_id)
+win.lang_edit.setText(sl.instruction)
+print(f"5 통과: 계획 지시문 {n_slots}개, 시작 지시문 한 줄 표시")
 
-# ---- 6. 계획 선택 시: 자유 입력 잠금 + 계획 밖 문장 연결 거부 ----
+# ---- 6. 시작 지시문은 손으로 못 친다 + 계획 밖 문장은 연결 거부 ----
 assert win.lang_edit.isReadOnly() and win.scene_iid_edit.isReadOnly()
 win.collector_edit.setText("t")
 win.lang_edit.setText("open the top drawer")     # 계획에 없는 문장 (주입)
 win.scene_iid_edit.setText("I009")
 _, _, _, err = win.scene_ops.scene_config_from_ui()
 assert err and "계획" in err, err
-combo.setCurrentIndex(1)                          # 계획 문장으로 복귀
-win.scene_planning.on_start_plan_pick()   # 인덱스가 그대로면 시그널이 없어 직접 호출
+win.scene_iid_edit.setText(sl.instruction_id)     # 계획의 지시문으로 복귀
+win.lang_edit.setText(sl.instruction)
 _, _, _, err2 = win.scene_ops.scene_config_from_ui()
 assert err2 is None or "계획" not in err2, err2   # 남는 오류는 scene 선택뿐
-print("6 통과: 계획 선택 시 자유 입력 잠금 + 계획 밖 시작 문장 거부")
+print("6 통과: 시작 지시문 읽기 전용 + 계획 밖 문장 거부")
+
+# ---- 6b. 계획이 아예 없으면 연결 자체를 막는다 (2026-09-06) ----
+import os as _os  # noqa: E402
+
+_plan_file = DS / "instructions.json"
+_saved = _plan_file.read_text(encoding="utf-8")
+_plan_file.unlink()
+try:
+    _, _, _, err3 = win.scene_ops.scene_config_from_ui()
+    assert err3 and "수집 계획이 없습니다" in err3, err3
+    win.scene_planning.refresh_start_instruction()
+    assert "계획이 없습니다" in win.start_warn.text(), win.start_warn.text()
+finally:
+    _plan_file.write_text(_saved, encoding="utf-8")
+    _os.sync() if hasattr(_os, "sync") else None
+win.scene_planning.refresh_start_instruction()
+print("6b 통과: 계획 없이는 수집할 수 없다 (연결 거부 + 화면 경고)")
 
 # ---- 7. 계획 파일 새로 만들기 / 삭제 (데이터셋 폴더 안 instructions.json) ----
 cw.QMessageBox.question = staticmethod(
