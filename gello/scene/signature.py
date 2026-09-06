@@ -22,9 +22,20 @@ from gello.scene.scene_format import STANDARD_GRID
 
 W_OBJ, W_PLACE, W_REL = 0.5, 0.35, 0.15
 
-#: 격자 크기. 정본은 scene_format.STANDARD_GRID 다 -- 여기서 다시 적으면
-#: 표준 격자를 바꿀 때 한쪽만 바뀐다.
+#: **새로 만들** scene 의 격자. 정본은 scene_format.STANDARD_GRID 다 --
+#: 여기서 다시 적으면 표준 격자를 바꿀 때 한쪽만 바뀐다.
+#:
+#: 이미 있는 파일을 **읽을 때는 쓰지 않는다**. 파일마다 자기 격자가
+#: layout.grid 에 적혀 있고, 거리 계산은 그것을 쓴다 (Signature.grid) --
+#: 표준을 3×3 에서 바꾸는 날 옛 파일이 조용히 새 격자로 해석되면 다양성
+#: 추천과 scene 경계 판정이 통째로 어긋난다 (2026-09-06 사용자 지적).
 GRID = tuple(STANDARD_GRID)
+
+
+def _max_manhattan(grid) -> int:
+    """그 격자에서 가능한 최대 맨해튼 거리 = 대각선 양 끝."""
+    rows, cols = int(grid[0]), int(grid[1])
+    return max(1, (rows - 1) + (cols - 1))
 
 
 @dataclass(frozen=True)
@@ -34,6 +45,9 @@ class Signature:
     triples: tuple            # ((category,color,material), ...) 정렬됨
     placements: tuple         # ((category, (r,c)), ...) 정렬됨
     relations: frozenset      # (category, rel, category)
+    #: 이 scene 자신의 격자 (파일의 layout.grid). 거리 정규화에 쓴다 --
+    #: 코드 상수가 아니라 여기 값을 쓰는 것이 요점이다.
+    grid: tuple = GRID
 
 
 def _prop_triple(oid: str, props: dict) -> tuple:
@@ -49,7 +63,10 @@ def signature(md, props: dict) -> Signature:
     """md 는 SceneMetadata 또는 같은 필드를 가진 객체."""
     placements = md.layout.get("placements", {})
     cats = {oid: _prop_triple(oid, props)[0] for oid in md.objects}
+    # 격자는 **그 scene 이 적어 둔 것**을 쓴다. 없는 옛 파일만 표준으로 본다.
+    grid = md.layout.get("grid") or GRID
     return Signature(
+        grid=(int(grid[0]), int(grid[1])),
         triples=tuple(sorted(_prop_triple(o, props) for o in md.objects)),
         placements=tuple(sorted(
             (cats[oid], tuple(spec["zone"]))
@@ -68,13 +85,20 @@ def jaccard_multiset(a: Counter, b: Counter) -> float:
 
 
 def placement_distance(sa: Signature, sb: Signature) -> "float | None":
-    """같은 category 끼리 가까운 존부터 그리디 매칭. 매칭 쌍이 없으면 None."""
+    """같은 category 끼리 가까운 존부터 그리디 매칭. 매칭 쌍이 없으면 None.
+
+    거리는 그 격자의 최대 맨해튼 거리로 나눠 0~1 로 만든다. 전에는 3×3 의
+    값(4)이 숫자로 박혀 있었다 -- 격자를 바꾸면 정규화가 조용히 틀려진다.
+    두 scene 의 격자가 다르면 큰 쪽으로 나눈다 (그런 비교 자체가 이미
+    의심스럽지만, 여기서 죽을 일은 아니다).
+    """
     by_cat_a: dict = {}
     by_cat_b: dict = {}
     for cat, zone in sa.placements:
         by_cat_a.setdefault(cat, []).append(zone)
     for cat, zone in sb.placements:
         by_cat_b.setdefault(cat, []).append(zone)
+    span = max(_max_manhattan(sa.grid), _max_manhattan(sb.grid))
     dists = []
     for cat in set(by_cat_a) & set(by_cat_b):
         remaining = list(by_cat_b[cat])
@@ -85,7 +109,7 @@ def placement_distance(sa: Signature, sb: Signature) -> "float | None":
                      key=lambda z: abs(z[0] - za[0]) + abs(z[1] - za[1]))
             remaining.remove(zb)
             d = abs(zb[0] - za[0]) + abs(zb[1] - za[1])
-            dists.append(min(d, 4) / 4.0)
+            dists.append(min(d, span) / span)
     if not dists:
         return None
     return sum(dists) / len(dists)

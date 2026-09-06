@@ -353,7 +353,19 @@ assert "S002" in win.scene_composer.title_label.text(), \
 _compose([CUP, BOWL, RED], {CUP: [0, 2], BOWL: [2, 1], RED: [1, 1]})
 made = sorted(p.name for p in root.glob("scene_*.hdf5"))
 assert made == ["scene_000.hdf5", "scene_001.hdf5", "scene_002.hdf5"], made
-print("14. 새 Scene = Scene 탭, 누르는 즉시 파일, 여러 개 OK:", made)
+# 만든 scene 은 **계획에도 함께** 들어간다 -- 입구가 하나여야 한다.
+plan_now = json.loads((root / "instructions.json").read_text(encoding="utf-8"))
+in_plan = {sc["scene_id"] for sc in plan_now["scenes"]}
+assert {"S000", "S001", "S002"} <= in_plan, in_plan
+assert [sc for sc in plan_now["scenes"] if sc["scene_id"] == "S001"][0]["slots"] == [], \
+    "새 scene 의 지시문은 비어 있어야 한다 (무엇을 시킬지는 사람이 정한다)"
+# 그리고 지시문이 없다는 것이 연결 거부 문구로 정확히 나온다
+win.scene_combo.setCurrentIndex(
+    [i for i in range(win.scene_combo.count())
+     if win.scene_combo.itemData(i) == "S001"][0])
+_, _, _, err = win.scene_ops.scene_config_from_ui()
+assert err and "지시문이 없습니다" in err, err
+print("14. Scene 탭 = 파일 + 계획 항목, 여러 개 OK:", made)
 
 # -------------------------------------------- 15. 데이터 저장 경로는 하나다
 assert not hasattr(win, "dataset_root_edit"), "경로 칸이 아직 둘이다"

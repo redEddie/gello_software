@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
 from apps.workspace.features.scene.dialogs.plan_json_dialog import PlanJsonDialog
 from gello.gui.i18n import tr
 from gello.scene.collection_plan import load_plan
-from gello.scene.scene_format import INSTRUCTION_ID_RE, SCENE_ID_RE
+from gello.scene.scene_format import INSTRUCTION_ID_RE
 
 
 class PlanEditDialog(QDialog):
@@ -61,9 +61,11 @@ class PlanEditDialog(QDialog):
         self.scene_combo = QComboBox()
         self.scene_combo.currentIndexChanged.connect(self._on_scene_changed)
         srow.addWidget(self.scene_combo, 1)
-        add_scene_btn = QPushButton(tr("scene 추가"))
-        add_scene_btn.clicked.connect(self._on_add_scene)
-        srow.addWidget(add_scene_btn)
+        # [scene 추가] 를 뺐다 (2026-09-06 사용자 결정: **배치가 주**).
+        # scene 은 Scene 탭에서 배치를 짜면 파일과 계획 항목이 함께 생긴다 --
+        # 여기서 ID 만 먼저 적을 수 있으면 "파일 없는 계획 scene" 이 생기고,
+        # 그것이 "scene 추가하는 곳이 두 군데" 였다.
+        srow.addWidget(QLabel(tr("scene 은 Scene 탭에서 배치를 짜면 생깁니다")))
         del_scene_btn = QPushButton(tr("scene 삭제"))
         del_scene_btn.setToolTip(tr(
             "이 scene 을 계획에서 뺍니다. 이미 수집한 파일은 지워지지 않지만 "
@@ -284,15 +286,6 @@ class PlanEditDialog(QDialog):
             self._cur_sid = self.scene_combo.currentText() or None
             if self._cur_sid:
                 self._load_rows(self._cur_sid)
-
-    def _on_add_scene(self) -> None:
-        used = [int(m.group(1)) for sid in self._scene_order
-                if (m := SCENE_ID_RE.match(sid))]
-        sid = f"S{(max(used) + 1) if used else 0:03d}"
-        self._scene_order.append(sid)
-        self._work[sid] = []
-        self.scene_combo.addItem(sid)
-        self.scene_combo.setCurrentIndex(self.scene_combo.count() - 1)
 
     def _on_raw_edit(self) -> None:
         dlg = PlanJsonDialog(self, self._path)

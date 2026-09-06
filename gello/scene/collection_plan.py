@@ -75,6 +75,12 @@ class CollectionPlan:
     def scene(self, scene_id: str) -> Optional[ScenePlan]:
         return next((s for s in self.scenes if s.scene_id == scene_id), None)
 
+    def has_scene(self, scene_id: str) -> bool:
+        """계획이 이 scene 을 알고 있나. 지시문이 아직 0개여도 True 다 --
+        "계획에 없다"와 "지시문을 아직 안 적었다"는 다른 사건이고, 고치는
+        방법도 다르다 (2026-09-06)."""
+        return self.scene(scene_id) is not None
+
     def slots_for(self, scene_id: str) -> tuple:
         sp = self.scene(scene_id)
         return sp.slots if sp is not None else ()
@@ -133,6 +139,42 @@ def load_plan(path: Path) -> CollectionPlan:
                                 slots=tuple(slots)))
     return CollectionPlan(path=path, version=1, scenes=tuple(scenes),
                           warnings=warnings)
+
+
+def ensure_scene(path: Path, scene_id: str) -> bool:
+    """계획 파일에 ``scene_id`` 항목이 없으면 (지시문 0개로) 추가한다.
+
+    새로 만든 scene 이 계획에 자동으로 들어가게 하는 자리다 (2026-09-06
+    사용자 결정: **배치가 주**). 전에는 scene 을 쓰려면 파일 하나와 계획
+    항목 하나를 각각 손으로 만들어야 했고, 그것이 "scene 추가하는 곳이 두
+    군데"의 실체였다.
+
+    지시문은 넣지 않는다 -- 무엇을 시킬지는 사람이 정할 일이라, 빈 채로
+    두고 화면이 "지시문을 적으세요"라고 말한다.
+
+    파일이 없으면 만든다. 이미 있으면 False (아무것도 안 씀).
+    부가 필드는 보존한다 -- 이 함수는 scenes 목록에 한 줄을 더할 뿐이다.
+    """
+    path = Path(path)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("최상위가 매핑이 아니다")
+    except (OSError, ValueError):
+        raw = {"plan_version": 1, "scenes": []}
+    scenes = raw.setdefault("scenes", [])
+    if any(isinstance(s, dict) and s.get("scene_id") == scene_id
+           for s in scenes):
+        return False
+    scenes.append({"scene_id": scene_id, "slots": []})
+    # scene 번호 순으로 -- 사람이 읽는 파일이고, 순서가 뒤엉키면 diff 가
+    # 무의미해진다.
+    scenes.sort(key=lambda s: str(s.get("scene_id", "")))
+    raw.setdefault("plan_version", 1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8")
+    return True
 
 
 def check_scene_against_plan(plan: CollectionPlan, scene_id: str,

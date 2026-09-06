@@ -7,6 +7,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import QMessageBox
 
 from gello.config.station import load_station
+from gello.scene.collection_plan import ensure_scene
 from gello.scene.dataset_meta import plan_path as dataset_plan_path
 from apps.workspace.shared.tabs import show_center_tab
 from gello.gui.i18n import tr
@@ -170,21 +171,35 @@ class SceneOps:
             QMessageBox.warning(self.win, tr("Scene 만들기 실패"),
                                 f"{type(e).__name__}: {e}")
             return
+        # 계획에도 같이 적는다 (2026-09-06 사용자 결정: **배치가 주**).
+        # 전에는 scene 하나를 쓰려면 파일과 계획 항목을 각각 손으로 만들어야
+        # 했고, 그것이 "scene 추가하는 곳이 두 군데"의 실체였다. 지시문은
+        # 비워 둔다 -- 무엇을 시킬지는 사람이 정한다.
+        added = False
+        try:
+            added = ensure_scene(dataset_plan_path(root), md.scene_id)
+        except OSError as e:
+            self.win.log(f"[계획] {md.scene_id} 항목을 추가하지 못했습니다: {e}")
         self.win.log(f"[Scene] {md.scene_id} 생성 (물체 {len(md.objects)}개, "
-                     f"에피소드 0개) — {scene_filename(md.scene_id)}")
+                     f"에피소드 0개) — {scene_filename(md.scene_id)}"
+                     + (f" · 계획에 {md.scene_id} 추가" if added else ""))
         self.refresh_scene_combo()
         for i in range(self.win.scene_combo.count()):
             if self.win.scene_combo.itemData(i) == md.scene_id:
                 self.win.scene_combo.setCurrentIndex(i)
                 break
         self.win.scene_compose_hint.setText(tr(
-            "{f} 를 만들었습니다 (에피소드 0개). 이어서 다른 배치를 더 짜 두거나, "
-            "Connect 해서 찍으세요.").format(f=scene_filename(md.scene_id)))
+            "{f} 를 만들고 계획에 {s} 를 넣었습니다. 이제 이 scene 에서 무엇을 "
+            "시킬지 적으세요.").format(f=scene_filename(md.scene_id), s=md.scene_id))
         # 다음 번호로 갈아 끼워 둔다 -- 연달아 여러 개를 짜는 것이 이 화면의
         # 새 용도다.
         self.win.scene_composer.set_context(
             next_scene_id(root), root, self.dataset_plan_path_or_none(root),
             STATION.name, self.win.schema_version)
+        # 지시문을 적으러 보낸다. scene 을 만든 사람의 다음 질문이 늘
+        # "여기서 무엇을 시키지?" 라서, 그 화면으로 데려다 주는 편이 낫다.
+        self.win.scene_planning.refresh_plan_progress()
+        show_center_tab(self.win, "instruction")
 
     def dataset_plan_path_or_none(self, root: Path):
         pp = dataset_plan_path(root)
@@ -218,12 +233,19 @@ class SceneOps:
         # 갈라짐), 그 길을 아예 없앴다. 계획 없이 찍은 파일은 나중에 무엇을
         # 얼마나 모았는지 셀 수가 없다.
         psid = self.configure_scene_id()
-        slots = plan.slots_for(psid) if psid else ()
-        if not slots:
+        # "계획에 없다"와 "지시문을 아직 안 적었다"는 다른 사건이다 -- 앞은
+        # 이제 거의 안 나고(만들 때 함께 적힌다), 뒤는 새 scene 을 만든 직후
+        # 늘 나는 정상 상태다. 같은 문구로 말하면 무엇을 하라는 것인지 모른다.
+        if not plan.has_scene(psid or ""):
             return None, None, False, tr(
                 "계획에 scene {s} 가 없습니다.\n\n"
-                "Instruction 탭의 [계획 편집] 에서 이 scene 의 지시문을 "
-                "추가하세요.").format(s=psid)
+                "Instruction 탭의 [계획 편집] 에서 추가하세요.").format(s=psid)
+        slots = plan.slots_for(psid)
+        if not slots:
+            return None, None, False, tr(
+                "{s} 에 지시문이 없습니다.\n\n"
+                "Instruction 탭의 [계획 편집] 에서 이 scene 에서 무엇을 시킬지 "
+                "적으세요.").format(s=psid)
         if not any(s.instruction_id == iid and s.instruction == lang
                    for s in slots):
             return None, None, False, tr(

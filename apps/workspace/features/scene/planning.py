@@ -66,6 +66,16 @@ class ScenePlanningOps:
                 skipped.append(sp.scene_id)
                 continue
             s_done = s_total = 0
+            if not sp.slots:
+                # 배치는 있는데 무엇을 시킬지가 없다 -- 새 scene 을 만든
+                # 직후의 정상 상태이고, 다음에 할 일이 정해져 있다.
+                top = QTreeWidgetItem([
+                    f"{sp.scene_id}{note}", "", "",
+                    tr("지시문이 없습니다 — [계획 편집] 에서 적으세요")])
+                for col_i in range(4):
+                    top.setForeground(col_i, Qt.GlobalColor.darkYellow)
+                tree.addTopLevelItem(top)
+                continue
             top = QTreeWidgetItem([f"{sp.scene_id}{note}", "", "", ""])
             for s in sp.slots:
                 c = counts.get(s.instruction_id, {}).get("usable", 0)

@@ -73,11 +73,23 @@ n0 = len(orig["scenes"][0]["slots"])          # 원본 슬롯 수
 assert s000[-1]["instruction_id"] == f"I{n0 + 1:03d}"  # 섹션2에서 +1, 지운 I001 재사용 금지 -> 그 다음
 print("3 통과: 행 삭제(번호 유지) + 지운 번호 재사용 금지")
 
-# ---- 4. scene 추가 + 검증 실패 시 파일 무변경 ----
+# ---- 4. 새 scene 은 계획에 자동으로 들어간다 + 검증 실패 시 파일 무변경 ----
+# [scene 추가] 버튼은 없어졌다 (2026-09-06): scene 은 Scene 탭에서 배치를
+# 짜면 파일과 계획 항목이 **함께** 생긴다. 그 자리는 ensure_scene 이다.
+from gello.scene.collection_plan import ensure_scene  # noqa: E402
+
+assert not hasattr(PlanEditDialog, "_on_add_scene"), \
+    "계획 편집에 아직 [scene 추가] 가 있다 (입구가 둘이 된다)"
 before = plan_copy.read_text()
 next_sid = f"S{max(int(s['scene_id'][1:]) for s in json.loads(before)['scenes']) + 1:03d}"
+assert ensure_scene(plan_copy, next_sid) is True
+assert ensure_scene(plan_copy, next_sid) is False, "두 번 넣으면 안 된다"
+added = [x for x in json.loads(plan_copy.read_text())["scenes"]
+         if x["scene_id"] == next_sid]
+assert added and added[0]["slots"] == [], added
+before = plan_copy.read_text()
 dlg3 = PlanEditDialog(None, plan_copy)
-dlg3._on_add_scene()
+dlg3.scene_combo.setCurrentText(next_sid)
 assert dlg3.scene_combo.currentText() == next_sid
 dlg3._add_row({"id": None, "instr": "", "target": 1})
 bad = dlg3.tree.topLevelItem(0)
