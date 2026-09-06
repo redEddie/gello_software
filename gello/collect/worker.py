@@ -64,9 +64,26 @@ GRIPPER_OPEN = 0.0  # GELLO/franka_fr3 convention: 0=open, 1=closed
 # 관절 점프가 크면 기존 관절 램프로 폴백 -- homing 이 안 되는 것보다는
 # 예전처럼 무섭게라도 돌아가는 쪽이 낫다.
 HOME_LIFT_M = 0.10       # 1단계: 현재 포즈에서 수직 리프트 높이
-HOME_EE_STEP_M = 0.010   # tick 당 EE 이동 (20Hz -> 0.2 m/s)
-HOME_ROT_STEP_RAD = 0.05  # tick 당 EE 회전 (20Hz -> 1.0 rad/s)
+HOME_EE_STEP_M = 0.010   # 웨이포인트 간 EE 이동
+HOME_ROT_STEP_RAD = 0.05  # 웨이포인트 간 EE 회전
 HOME_MAX_DQ = 0.35       # 연속 웨이포인트 관절 점프 상한 -- 초과 시 폴백
+#: tick 당 관절 이동 상한 (rad). 20Hz 이므로 0.06 = 1.2 rad/s.
+#:
+#: 웨이포인트 하나 = tick 하나가 아니다. 위의 EE 스텝은 **직교** 속도만
+#: 묶는다 -- 자코비안이 나빠지는 자세에서는 1cm 이동이 관절 0.3 rad 이 되고,
+#: 그것이 한 tick 에 그대로 나가면 6.8 rad/s 를 요구하게 된다 (오프라인
+#: 실측: 무작위 시작 자세 276경로 중 58%가 드라이버 상한을 넘었고 최악은
+#: 0.339 rad/tick). 드라이버가 낼 수 있는 것은 max_joint_velocity=1.5 rad/s
+#: 뿐이라, 그 위로 요구하면 명령이 팔보다 빨리 달아나고 그 격차가 경로 내내
+#: 쌓인다 -- 명령이 끝난 뒤에도 팔은 v_max 로 계속 달리고, 그것이 조작자가
+#: 본 "가끔 홈이 너무 빠르다" 와 그때의 반사다 (2026-09-06 보고).
+#:
+#: 그래서 웨이포인트 사이를 관절 공간에서 다시 잘라(_densify) 이 값을 넘지
+#: 않게 한다. v_max 의 80% 로 두어 명령이 팔을 앞지르지 않게 한다 -- 앞지르지
+#: 않으면 쌓일 격차도 없다. RAMP_STEP(0.10 = 2.0 rad/s)을 쓰지 않는 이유가
+#: 그것이다: 그쪽은 목표로 clip 되어 스스로 멎지만, 홈 경로는 웨이포인트가
+#: 줄줄이 이어져 있어 멎을 자리가 없다.
+HOME_TICK_DQ = 0.06
 
 # Fallback defaults, used only if the GUI doesn't supply a serial (e.g. a
 # script driving CollectionWorker directly). The GUI itself always populates
@@ -649,12 +666,19 @@ class CollectionWorker(QThread):
     def _home_trajectory(self, q_now: np.ndarray) -> "list[np.ndarray] | None":
         """수직 +HOME_LIFT_M 리프트 -> 홈 EE 포즈 직선의 관절 웨이포인트.
 
-        tick 당 하나씩 실행되도록 EE 스텝 크기로 샘플링한다. IK 는 직전 해를
-        시드로 체인하되(_ik_posture) 널스페이스로 자세를 reset_q 쪽으로 함께
-        밀기 때문에, EE 가 홈에 도착할 때쯤이면 관절도 reset_q 에 거의 수렴해
-        있다. 남는 잔차는 호출자의 _ramp_to(reset_q) 가 안전망으로 정리한다.
+        두 단계로 만든다. **모양**은 EE 스텝 크기로 샘플링하고(리프트 -> 직선),
+        **속도**는 마지막에 관절 공간에서 다시 잘라(_densify) tick 당 이동을
+        HOME_TICK_DQ 아래로 묶는다. 이 둘을 한 번에 하려던 것이 옛 버그였다 --
+        EE 스텝은 직교 속도만 묶어서, 자코비안이 나빠지는 자세에서는 1cm 가
+        관절 0.3rad 이 되고 그것이 한 tick 에 그대로 나갔다.
 
-        None 반환 = 만들 수 없음(임포트 실패, IK 발산, 관절 점프 초과).
+        IK 는 직전 해를 시드로 체인하되(_ik_posture) 널스페이스로 자세를
+        reset_q 쪽으로 함께 밀기 때문에, EE 가 홈에 도착할 때쯤이면 관절도
+        reset_q 에 거의 수렴해 있다. 남는 잔차는 호출자의 _ramp_to(reset_q)
+        가 안전망으로 정리한다.
+
+        반환 리스트의 한 원소 = 한 tick. None = 만들 수 없음(임포트 실패,
+        IK 발산, 관절 점프 초과).
         """
         try:
             # fr3_kinematics 는 gello.robots 에 있다. GUI/클라이언트 모두
@@ -712,9 +736,36 @@ class CollectionWorker(QThread):
                 if q is None:
                     return None
                 wps.append(q)
-            return wps
+            # 여기까지가 **모양**이다. 속도는 아직 아무도 안 봤다 -- 마지막에
+            # 관절 공간에서 다시 잘라 tick 당 이동을 묶는다.
+            return self._densify(q_now, wps)
         except Exception:  # noqa: BLE001 - 어떤 실패든 폴백이 정답
             return None
+
+    @staticmethod
+    def _densify(q_start: np.ndarray, wps: "list[np.ndarray]",
+                 max_dq: float = HOME_TICK_DQ) -> "list[np.ndarray]":
+        """웨이포인트 사이를 관절 공간에서 잘라 tick 당 이동을 ``max_dq`` 아래로.
+
+        경로의 **모양은 그대로 두고 시간만 늘린다**. 자르는 두 점은 이미
+        HOME_MAX_DQ(0.35 rad) 안에 있는 이웃한 IK 해라, 그 사이의 선형
+        보간이 EE 직선에서 벗어나는 양은 무시할 만하다 (곡률은 그 구간
+        길이의 제곱에 비례한다). 0.35 를 넘는 점프는 IK 가 다른 가지로
+        넘어간 것이고, 그때는 보간이 아니라 폴백이 맞아서 _solve 가 미리
+        걸러낸다.
+
+        시작점을 함께 받는 이유: 첫 웨이포인트로 가는 첫 tick 이 가장 큰
+        점프인 경우가 실제로 있다 (텔레옵이 끝난 자세에서 리프트로).
+        """
+        out: list = []
+        prev = np.asarray(q_start, dtype=np.float64)
+        for q in wps:
+            q = np.asarray(q, dtype=np.float64)
+            n = int(np.ceil(np.abs(q - prev).max() / max_dq))
+            for i in range(1, max(1, n) + 1):
+                out.append(prev + (q - prev) * (i / max(1, n)))
+            prev = q
+        return out
 
     def _ramp_home(self, max_ticks: int = 600, react_to_go_home: bool = True) -> str:
         """EE 경로(리프트 -> 직선) homing. 실패 시 기존 관절 램프로 폴백.
