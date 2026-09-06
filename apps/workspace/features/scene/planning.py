@@ -18,7 +18,11 @@ from gello.scene.collection_plan import (
 )
 from gello.scene.scene_format import (
     INSTRUCTION_ID_RE,
+    SCENE_FILE_RE,
     count_by_slot,
+    iter_scene_files,
+    list_scene_episodes,
+    read_scene_metadata,
     scene_filename,
 )
 
@@ -293,6 +297,80 @@ class ScenePlanningOps:
             self.win.slot_iid_edit.setText(d[0])
             self.win.slot_instr_edit.setText(d[1])
             self.win.collection.refresh_slot_counter()
+
+    # ------------------------------------------------------------ 빠른 재개
+    def pick_resume_slot(self) -> tuple:
+        """"지금 이어 찍을 자리" 를 데이터에서 골라 준다.
+
+        규칙은 조작자가 준 그대로다 (2026-09-06): **scene 은 번호가 가장 높은
+        것, task 는 번호가 낮은 순.** 노드가 반사로 죽어 다시 붙을 때 매번
+        같은 자리를 손으로 다시 고르고 있었고, 그 자리를 고르는 규칙 자체는
+        늘 같았다.
+
+        "번호가 낮은 순"의 후보는 **아직 목표를 못 채운 slot** 이다 -- 다 채운
+        I000 으로 매번 돌아가면 계획이 영영 안 끝난다. 전부 채웠으면 그때는
+        가장 낮은 ID 로 그냥 이어 찍는다 (판단이 필요한 자리라 막지 않는다).
+
+        반환: ``(scene_id, instruction_id, instruction, note)`` 또는
+        고를 수 없으면 ``(None, None, None, 사유)``.
+        """
+        root = Path(self.win.root_edit.text().strip() or ".")
+        try:
+            files = list(iter_scene_files(root))
+        except OSError as e:
+            return None, None, None, tr("저장 경로를 읽을 수 없습니다: {e}").format(e=e)
+        if not files:
+            return None, None, None, tr(
+                "{r} 에 scene 파일이 없습니다 — 첫 scene 은 '새 Scene 구성...' 으로 "
+                "사람이 정해야 합니다.").format(r=root)
+        # 파일명 번호가 곧 scene 번호다 (scene_NNN.hdf5). metadata 를 열어
+        # 확인하지 않는 이유: 여기서 알고 싶은 것은 "가장 최근 자리" 뿐이고,
+        # 파일 열기는 잠겨 있을 수 있다.
+        newest = max(files, key=lambda p: int(SCENE_FILE_RE.match(p.name).group(1)))
+        try:
+            sid = read_scene_metadata(newest).scene_id
+        except Exception:  # noqa: BLE001 -- 잠겼거나 깨졌다: 파일명으로 되돌린다
+            sid = f"S{int(SCENE_FILE_RE.match(newest.name).group(1)):03d}"
+
+        counts: dict = {}
+        try:
+            counts = count_by_slot(newest)
+        except Exception:  # noqa: BLE001 -- 잠금: 카운트 없이 고른다
+            pass
+
+        plan = self.current_plan()
+        if plan is not None and plan.slots_for(sid):
+            slots = sorted(plan.slots_for(sid),
+                           key=lambda s: self._iid_order(s.instruction_id))
+            for s in slots:
+                c = counts.get(s.instruction_id, {}).get("usable", 0)
+                if c < s.target:
+                    return (sid, s.instruction_id, s.instruction,
+                            tr("{i} ({c}/{t})").format(
+                                i=s.instruction_id, c=c, t=s.target))
+            s = slots[0]
+            return (sid, s.instruction_id, s.instruction,
+                    tr("{i} — 이 scene 의 slot 은 모두 목표를 채웠습니다")
+                    .format(i=s.instruction_id))
+
+        # 계획이 없는 데이터셋: 그 파일에 이미 있는 slot 중 가장 낮은 ID.
+        try:
+            known = {ep["instruction_id"]: ep["instruction"]
+                     for ep in list_scene_episodes(newest)}
+        except Exception:  # noqa: BLE001
+            known = {}
+        if not known:
+            return None, None, None, tr(
+                "{s} 에 기록된 slot 이 없고 계획도 없습니다 — 문장을 직접 "
+                "입력해야 합니다.").format(s=sid)
+        iid = min(known, key=self._iid_order)
+        return sid, iid, known[iid], tr("{i} (계획 없음)").format(i=iid)
+
+    @staticmethod
+    def _iid_order(iid: str) -> tuple:
+        """I007 < I010 이 되게 숫자로 센다. 형식이 아니면 맨 뒤."""
+        m = INSTRUCTION_ID_RE.match(str(iid))
+        return (0, int(m.group(1))) if m else (1, 0)
 
     def on_next_slot(self) -> None:
         """계획에서 목표(target)를 못 채운 첫 slot 을 골라 채워준다 (§6:

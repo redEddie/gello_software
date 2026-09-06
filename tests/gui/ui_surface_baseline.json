@@ -26,6 +26,7 @@
       "카메라 레이아웃 확인 (LIBERO 초기 배치와 비교)"
     ],
     "Collect": [
+      "Quick resume",
       "다음 미수집 slot 제시",
       "slot 적용 (다음 에피소드부터)",
       "Start Teleop",
@@ -101,6 +102,7 @@
     "disconnect",
     "home",
     "match",
+    "quick",
     "record",
     "save",
     "savefail",

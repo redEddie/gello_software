@@ -27,6 +27,18 @@ def build_configure(win) -> QWidget:
     col = QVBoxLayout(w)
     col.setContentsMargins(0, 0, 0, 0)
 
+    # 반사로 노드가 죽으면 조작자는 이 화면으로 돌아온다. 그때 할 일이
+    # 늘 같아서(노드 띄우기 → 가장 최근 scene → 가장 낮은 미완 slot →
+    # Connect) 버튼 하나로 묶었다 (2026-09-06 사용자 요청). 규칙의 정본은
+    # ScenePlanningOps.pick_resume_slot 이다.
+    quick = QPushButton(tr("⚡ Quick resume"))
+    quick.setToolTip(tr(
+        "가장 번호가 높은 scene 과 아직 목표를 못 채운 가장 낮은 slot 을 골라,\n"
+        "로봇 노드가 준비되면 바로 연결합니다.\n"
+        "첫 scene 을 만들거나 계획에 없는 문장을 쓰는 것은 사람이 정합니다."))
+    quick.clicked.connect(win.collection.on_quick_start)
+    col.addWidget(quick)
+
     node = QGroupBox(tr("로봇 노드"))
     nrow = QVBoxLayout(node)
     win.node_start_btn = QPushButton(tr("노드 시작"))

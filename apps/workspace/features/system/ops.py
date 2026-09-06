@@ -12,6 +12,10 @@ from PyQt6.QtCore import QProcess
 
 from apps.workspace.constants import CHECK_CAMERAS, RESET_PROTECTION, RUNME_SCRIPT
 from apps.workspace.shared.robot_node_proc import spawn_node
+
+#: launch_nodes.py 가 서버를 열기 직전에 찍는 줄. 여기 문자열을 바꾸려면
+#: 저쪽 print 도 같이 바꿔야 한다 -- 한쪽만 바꾸면 조용히 영영 안 기다린다.
+NODE_READY_MARK = "Starting robot server"
 from gello.config.station import load_station
 from gello.gui.i18n import tr
 
@@ -192,6 +196,7 @@ class SystemOps:
         proc.readyReadStandardOutput.connect(self.on_node_output)
         proc.finished.connect(self.on_node_finished)
         self.win.procs.node_process = proc
+        self.win.procs.node_ready = False
         self.win.log("[노드] 시작합니다...")
         # 인디케이터는 세션 중 장애 신호(node_status)로만 갱신되고 있어서,
         # 노드가 잘 떠 있어도 '노드 -' 로 남았다 (실화면에서 확인된 혼란).
@@ -200,6 +205,7 @@ class SystemOps:
 
     def on_node_finished(self, code: int, _status) -> None:
         self.win.log(f"[노드] 종료 (exit={code})")
+        self.win.procs.node_ready = False
         self.win.lights["node"].set("off", "-")
 
     def on_node_output(self) -> None:
@@ -207,8 +213,14 @@ class SystemOps:
             return
         data = self.win._proc_text(self.win.procs.node_process)
         for line in data.splitlines():
-            if line.strip():
-                self.win.log(f"[노드] {line}")
+            if not line.strip():
+                continue
+            # 이 줄이 나왔다 = 로봇 객체가 다 만들어졌고(FCI 연결 포함) 이제
+            # 요청을 받는다. 노드가 준비됐는지 밖에서 알 수 있는 유일한 신호다.
+            if NODE_READY_MARK in line:
+                self.win.procs.node_ready = True
+                self.win.lights["node"].set("ok", tr("정상"))
+            self.win.log(f"[노드] {line}")
 
     def on_stop_node(self) -> None:
         if self.win.procs.node_process is None or \

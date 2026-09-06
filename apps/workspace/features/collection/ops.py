@@ -6,9 +6,11 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QProcess, QTimer
 from PyQt6.QtWidgets import QMessageBox
 
+from gello.comm.zmq_core.robot_node import probe_observation
+from gello.config.station import load_station
 from gello.data.collection_history import now_iso
 from gello.gui.i18n import tr
 from gello.collect.worker import CollectionWorker, GATE_RAD, WorkerConfig
@@ -23,6 +25,8 @@ class CollectionOps:
 
     def __init__(self, win) -> None:
         self.win = win
+        #: 빠른 재개가 노드를 기다리는 마감 시각 (None = 안 기다리는 중).
+        self._quick_deadline = None
 
     # ------------------------------------------------------------------ control
     def cmd(self, name: str, *args) -> None:
@@ -68,6 +72,9 @@ class CollectionOps:
         for key in ("save", "savefail"):
             self.win.tb_actions[key].setEnabled(savable)
         self.win.tb_actions["connect"].setEnabled(not running)
+        # 빠른 재개는 Connect 와 같은 조건이다 -- 그 끝이 Connect 라서.
+        # 노드를 기다리는 중이면 _quick_connect_when_ready 가 다시 잠근다.
+        self.win.tb_actions["quick"].setEnabled(not running)
         self.win.tb_actions["disconnect"].setEnabled(running)
         for b in (self.win.skip_btn, self.win.discard_btn, self.win.home_btn,
                   # 정렬 버튼은 세션 중이면 항상 열린다 -- 자세 오차가
@@ -217,6 +224,143 @@ class CollectionOps:
         else:
             instr = self.win.lang_edit.text().strip()
         self.win.hud_instruction.setText(instr or tr("(지시문 없음)"))
+
+    # -------------------------------------------------------------- 빠른 재개
+    #: 빠른 재개가 노드를 기다려 주는 시간(초). FCI 연결 + 첫 read_once 는
+    #: 보통 5~10초인데, Desk 에서 잠금이 걸려 있으면 영영 안 온다.
+    QUICK_NODE_WAIT_S = 40.0
+
+    def on_quick_start(self) -> None:
+        """설정을 데이터에서 알아서 고르고 바로 연결까지 간다 (2026-09-06).
+
+        노드가 반사로 죽으면 조작자는 매번 같은 일을 손으로 반복했다 --
+        노드를 다시 띄우고, scene 을 고르고, slot 을 고르고, Connect.
+        고르는 규칙 자체는 늘 같았다(가장 최근 scene · 가장 낮은 미완 slot),
+        그래서 규칙을 코드에 두고 버튼 하나로 만든다.
+
+        고르지 **못하는** 경우에는 멈추고 이유를 말한다. 첫 scene 을 만드는
+        것이나 계획에 없는 새 문장을 쓰는 것은 사람의 판단이고, 그것까지
+        추측하면 엉뚱한 파일이 조용히 생긴다.
+        """
+        if self.win.worker is not None:
+            self.win.log("[빠른 재개] 이미 세션이 실행 중입니다.")
+            return
+        sid, iid, instr, note = self.win.scene_planning.pick_resume_slot()
+        if sid is None:
+            QMessageBox.information(self.win, tr("빠른 재개"), note)
+            self.win.log(f"[빠른 재개] 고를 수 없음 — {note}")
+            return
+        if self.win.no_dataset_check.isChecked():
+            # 연습 모드로 두면 파일을 안 만든다 -- 이어 찍으러 누른 버튼이
+            # 아무것도 안 남기는 것이 가장 나쁜 결과다.
+            self.win.no_dataset_check.setChecked(False)
+            self.win.log("[빠른 재개] 연습 모드를 껐습니다 (이어 찍기).")
+        if not self._select_scene(sid):
+            QMessageBox.warning(self.win, tr("빠른 재개"),
+                                tr("scene {s} 을 목록에서 찾지 못했습니다.").format(s=sid))
+            return
+        if not self._select_slot(iid, instr):
+            QMessageBox.warning(self.win, tr("빠른 재개"),
+                                tr("slot {i} 을 계획에서 찾지 못했습니다.").format(i=iid))
+            return
+        self.win.log(f"[빠른 재개] {sid} · {note} — {instr}")
+        self._quick_deadline = time.monotonic() + self.QUICK_NODE_WAIT_S
+        if not self._node_ready():
+            self.win.log("[빠른 재개] 로봇 노드가 응답하지 않습니다 — 띄웁니다.")
+            self.win.system.on_start_node()
+            if self.win.procs.node_process is None:
+                # 노드를 띄울 수 없다 (GELLO_NO_ROBOT_NODE=1 등). 40초를
+                # 기다려 봐야 달라질 것이 없으므로 바로 말한다.
+                self._quick_deadline = None
+                QMessageBox.warning(self.win, tr("빠른 재개"),
+                                    tr("로봇 노드를 띄울 수 없습니다 — 로그를 확인하세요."))
+                return
+        self._quick_connect_when_ready()
+
+    def _select_scene(self, sid: str) -> bool:
+        combo = self.win.scene_combo
+        for _try in range(2):
+            for i in range(combo.count()):
+                if combo.itemData(i) == sid:
+                    combo.setCurrentIndex(i)   # on_scene_selected 가 slot 목록을 다시 채운다
+                    return True
+            # 목록이 낡았을 수 있다 (다른 창에서 파일이 생겼다든지)
+            self.win.scene_ops.refresh_scene_combo()
+        return False
+
+    def _select_slot(self, iid: str, instr: str) -> bool:
+        combo = self.win.start_plan_combo
+        for i in range(combo.count()):
+            d = combo.itemData(i)
+            if d and d[0] == iid:
+                combo.setCurrentIndex(i)       # on_start_plan_pick 이 문장·ID 를 채운다
+                self.win.scene_planning.on_start_plan_pick()
+                return True
+        if combo.count() > 1:
+            return False                       # 계획은 있는데 그 slot 이 없다
+        # 계획이 없는 데이터셋 -- 칸이 읽기 전용이 아니므로 직접 채운다.
+        self.win.scene_iid_edit.setText(iid)
+        self.win.lang_edit.setText(instr)
+        return True
+
+    def _node_ready(self) -> bool:
+        """노드가 요청을 받을 준비가 됐나.
+
+        stdout 표시가 정본이고(우리가 띄운 노드), 그 줄을 못 본 노드
+        (마법사에게서 이어받았거나 터미널에서 손으로 띄운 것)는 짧은 관측
+        요청으로 보충한다. 250ms 는 창이 멈춘 것으로 보이지 않을 만큼 짧고,
+        떠 있는 노드가 답하기에는 충분하다.
+        """
+        if self.win.procs.node_ready:
+            return True
+        proc = self.win.procs.node_process
+        if proc is not None and proc.state() == QProcess.ProcessState.NotRunning:
+            return False
+        # proc is None 이어도 물어본다 -- 터미널에서 손으로 띄운 노드가 있을
+        # 수 있고, Connect 는 그 경우를 이미 지원한다. 여기서만 막으면
+        # 빠른 재개가 그 워크플로에서 쓸모없어진다.
+        node = load_station().node
+        try:
+            probe_observation(node.host, int(node.port), timeout_ms=250)
+        except Exception:  # noqa: BLE001 -- 아직 안 떴다: 정상 경로
+            return False
+        self.win.procs.node_ready = True
+        return True
+
+    def _quick_connect_when_ready(self) -> None:
+        """노드가 응답할 때까지 기다렸다가 연결한다 (창은 계속 움직인다).
+
+        여기서 block 하지 않는 이유는 on_connect 의 미리보기 대기와 같다 --
+        멈춘 창은 조작자가 무엇을 기다리는지 알 수 없게 만든다.
+        """
+        if self._quick_deadline is None or self.win.worker is not None:
+            return
+        act = self.win.tb_actions.get("quick")
+        if self._node_ready():
+            self._quick_deadline = None
+            if act is not None:
+                act.setEnabled(True)
+            self.win.statusBar().clearMessage()
+            self.win.log("[빠른 재개] 노드 준비 완료 — 연결합니다.")
+            self.on_connect()
+            return
+        if time.monotonic() > self._quick_deadline:
+            self._quick_deadline = None
+            if act is not None:
+                act.setEnabled(True)
+            self.win.statusBar().clearMessage()
+            self.win._alert(tr("빠른 재개"),
+                            tr("로봇 노드가 {s:.0f}초 안에 응답하지 않았습니다.\n\n"
+                               "FR3 Desk 에서 잠금이 풀려 있고 FCI 가 켜져 있는지 "
+                               "확인한 뒤 다시 누르세요. 노드 로그는 Log 탭에 "
+                               "있습니다.").format(s=self.QUICK_NODE_WAIT_S))
+            return
+        if act is not None:
+            act.setEnabled(False)
+        self.win.statusBar().showMessage(
+            tr("빠른 재개 — 로봇 노드를 기다리는 중... (준비되면 자동으로 연결합니다)"),
+            1000)
+        QTimer.singleShot(500, self._quick_connect_when_ready)
 
     # ------------------------------------------------------------------ connect
     def on_connect(self) -> None:

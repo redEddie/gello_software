@@ -51,6 +51,12 @@ def build_toolbar(win) -> None:
         return act
 
     # ---- 고정: 세션 ----
+    # 빠른 재개가 Connect 앞에 온다. 반사로 노드가 죽은 뒤 조작자가 가장
+    # 자주 누르는 것이 이것이고, 그때 Connect 는 노드가 없어서 어차피
+    # 실패한다 (2026-09-06 사용자 요청).
+    add("quick", tr("⚡ Quick resume"), win.collection.on_quick_start,
+        tr("가장 최근 scene 과 아직 못 채운 가장 낮은 slot 을 골라, "
+           "노드가 준비되면 바로 연결합니다"))
     add("connect", tr("▶ Connect"), win.collection.on_connect, tr("로봇에 연결하고 세션 시작"))
     add("disconnect", tr("■ Disconnect"), win.collection.on_disconnect, tr("세션 종료"))
     tb.addSeparator()
@@ -238,6 +244,8 @@ def build_menu(win) -> None:
                 lambda: show_center_tab(win, "layout"))
 
     m = mb.addMenu(tr("Collect"))
+    m.addAction(tr("Quick resume"), win.collection.on_quick_start)
+    m.addSeparator()
     m.addAction(tr("다음 미수집 slot 제시"), win.scene_planning.on_next_slot)
     m.addAction(tr("slot 적용 (다음 에피소드부터)"),
                 win.scene_planning.on_apply_slot)

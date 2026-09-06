@@ -26,6 +26,11 @@ class ProcessRegistry:
     """QProcess handles and pipeline progress for WorkspaceWindow."""
 
     node_process: QProcess | None = None
+    #: 로봇 노드가 "Starting robot server" 를 찍었나 = FCI 연결까지 끝났나.
+    #: 그 줄은 로봇 객체를 다 만든 **뒤에** 나오므로 준비 완료의 정본이다
+    #: (scripts/launch/launch_nodes.py). 노드를 띄우자마자 붙으려 하면
+    #: 조용히 실패하는데, 빠른 재개는 그 사이를 기다려야 한다.
+    node_ready: bool = False
     camera_node_process: QProcess | None = None
     convert_process: QProcess | None = None
     repack_process: QProcess | None = None
