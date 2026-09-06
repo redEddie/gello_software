@@ -36,6 +36,11 @@ def spawn_node(station, parent=None) -> "QProcess | None":
     proc = QProcess(parent)
     proc.setProgram(station.node.python_path)
     proc.setArguments([
+        # -u: 파이프로 넘어가는 stdout 은 블록 버퍼(8KB)라, 노드가 죽기
+        # 직전에 찍은 줄이 버퍼에 갇힌 채 사라진다. 그 줄이 대개 원인을
+        # 가진 유일한 것이다 ([FR3] CONTROL LOOP ABORTED). 노드 준비 표시
+        # (SystemOps.NODE_READY_MARK)도 이것 없이는 늦게 온다.
+        "-u",
         LAUNCH_NODES_SCRIPT,
         "--robot", station.robot.kind,
         "--robot-ip", station.robot.ip,

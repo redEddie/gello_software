@@ -13,7 +13,12 @@ from gello.comm.zmq_core.robot_node import probe_observation
 from gello.config.station import load_station
 from gello.data.collection_history import now_iso
 from gello.gui.i18n import tr
-from gello.collect.worker import CollectionWorker, GATE_RAD, WorkerConfig
+from gello.collect.worker import (
+    CONTROL_DEAD_MARK,
+    CollectionWorker,
+    GATE_RAD,
+    WorkerConfig,
+)
 from gello.scene.scene_format import count_by_slot, read_scene_metadata, scene_filename
 from apps.workspace.features.collection.header import set_header_state
 from apps.workspace.models import _new_stats
@@ -630,14 +635,26 @@ class CollectionOps:
         self.win.save_status_label.setStyleSheet(
             "color:#f39c12;" if text else "color:#888;")
 
-    def on_node_status(self, ok) -> None:
-        """로봇 노드 응답 여부를 상태표시등과 오른쪽 패널에 반영한다.
+    def on_node_status(self, ok, why: str = "") -> None:
+        """로봇 노드 응답 여부를 상태표시등에 반영한다.
+
+        ``why`` 는 워커가 잡은 예외 그대로다 -- 반사의 이름이 그 안에 있다.
+        점 위에 얹어 두면 로그를 거슬러 올라가지 않고도 "왜 빨간가"에 답이
+        된다 (2026-09-06 조작자 지적: 로그에 반사 종류가 안 보였다).
 
         on_discarded 와 같이 Phase 4-8 에서 창에서 지워지고 옮겨지지 않았다
         (2026-09-04 복구). 노드가 처음 응답할 때 죽었을 것이다.
         """
-        txt = tr("정상") if ok else tr("응답 없음")
-        self.win.lights["node"].set("ok" if ok else "bad", txt)
+        light = self.win.lights["node"]
+        if ok:
+            light.set("ok", tr("정상"))
+            light.setToolTip("")
+            return
+        # 제어 루프가 죽은 것과 프로세스가 없는 것은 다른 사건이라 다르게
+        # 적는다 -- 고치는 방법이 다르다 (worker._node_down_hint 와 같은 기준).
+        dead = CONTROL_DEAD_MARK in why
+        light.set("bad", tr("제어 루프 다운") if dead else tr("응답 없음"))
+        light.setToolTip(why or tr("이유 불명 — Log 탭의 [노드] 줄을 보세요"))
 
     def on_discarded(self, n_frames) -> None:
         """폐기된 테이크. 저장하지 않으므로 통계에만 남긴다.

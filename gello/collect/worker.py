@@ -15,6 +15,7 @@ running in ``pylibfranka-venv``.
 from __future__ import annotations
 
 import queue
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -84,6 +85,57 @@ HOME_MAX_DQ = 0.35       # 연속 웨이포인트 관절 점프 상한 -- 초과
 #: 그것이다: 그쪽은 목표로 clip 되어 스스로 멎지만, 홈 경로는 웨이포인트가
 #: 줄줄이 이어져 있어 멎을 자리가 없다.
 HOME_TICK_DQ = 0.06
+
+#: 노드 복구 재시도가 같은 이유로 계속 실패할 때 로그를 다시 찍는 주기(초).
+#: 2초마다 찍으면 로그가 그것만으로 차고, 안 찍으면 멈춘 것처럼 보인다.
+_RECOVERY_LOG_PERIOD_S = 30.0
+
+#: 제어 루프가 죽었을 때 franka_fr3.get_observations 가 붙이는 접두어.
+#: 이 문자열이 보이면 "노드는 살아 있는데 팔이 죽었다" -- 기다려도 낫지
+#: 않으므로 안내가 달라진다 (한쪽만 바꾸면 안내가 조용히 틀려진다).
+CONTROL_DEAD_MARK = "control loop is dead"
+
+
+#: "RuntimeError: ..." 처럼 이미 타입 이름이 앞에 붙은 메시지.
+_TYPED_MSG_RE = re.compile(r"^[A-Za-z_]\w*(Error|Exception|Interrupt|Exit)\s*:")
+
+
+def _why(e: BaseException) -> str:
+    """예외를 사람이 읽을 한 줄로. 원인 체인을 지킨다.
+
+    반사 이름은 libfranka 의 abort 메시지 안에 있고, 그것은 노드 -> ZMQ ->
+    여기로 오는 동안 문자열로만 남는다. 타입만 찍거나 자체 문구로 갈아치우면
+    그 이름이 사라진다 -- 실제로 그래서 "로그에 반사 종류가 안 보였다".
+    """
+    text = str(e)
+    if not text:
+        return type(e).__name__
+    # ZMQ 경계를 건너온 예외는 이미 타입 이름을 문자열로 달고 있다
+    # (robot_node.py 가 {"error": "RuntimeError: ..."} 로 싣고 클라이언트가
+    # 그대로 raise 한다). 여기서 또 붙이면 "RuntimeError: RuntimeError: ..."
+    # 가 되어 정작 읽어야 할 뒤쪽이 밀린다.
+    msg = text if _TYPED_MSG_RE.match(text) else f"{type(e).__name__}: {text}"
+    cause = e.__cause__ or e.__context__
+    if cause is not None and str(cause) and str(cause) not in msg:
+        msg += f" -- 원인: {type(cause).__name__}: {cause}"
+    return msg
+
+
+def _node_down_hint(e: BaseException) -> str:
+    """이유에 맞는 다음 행동. 둘은 고치는 방법이 다르다.
+
+    * 제어 루프가 죽었다 = 노드 프로세스는 답하지만 팔이 멈췄다. 기다려도
+      낫지 않는다 -- 노드를 다시 띄워야 한다 (그때 FR3 가 반사 상태를
+      지우고 다시 붙는다).
+    * 그 밖(ZMQ 무응답) = 프로세스가 없거나 네트워크가 끊겼다. 노드가
+      돌아오면 자동으로 재연결된다.
+    """
+    if CONTROL_DEAD_MARK in str(e):
+        return ("[NODE DOWN] 팔의 제어 루프가 멈췄습니다 (반사/오류). 기다려도 "
+                "복구되지 않습니다 -- Robot 메뉴 > '노드 재시작' 을 누르세요. "
+                "FR3 Desk 에 오류가 떠 있으면 먼저 지워야 합니다.")
+    return ("[NODE DOWN] robot node 가 응답하지 않습니다 -- 노드가 돌아오면 "
+            "자동으로 이어집니다. 안 돌아오면 '노드 재시작' 을 누르세요.")
 
 # Fallback defaults, used only if the GUI doesn't supply a serial (e.g. a
 # script driving CollectionWorker directly). The GUI itself always populates
@@ -278,7 +330,9 @@ class CollectionWorker(QThread):
     episode_discarded = pyqtSignal(int)  # n_frames
     reset_countdown = pyqtSignal(float)  # seconds remaining
     log_message = pyqtSignal(str)
-    node_status = pyqtSignal(bool)  # True=ok, False=down
+    #: (살아 있나, 왜). 이유가 함께 가야 상태표시등이 "응답 없음" 이라고만
+    #: 하지 않고 무엇 때문인지 보여줄 수 있다 (2026-09-06).
+    node_status = pyqtSignal(bool, str)  # True=ok, False=down
     fatal_error = pyqtSignal(str)
     connected = pyqtSignal(int, str)  # starting episode count, active .hdf5 path
     episode_list_changed = pyqtSignal(list)  # LiberoTaskWriter.list_episodes()
@@ -1369,7 +1423,7 @@ class CollectionWorker(QThread):
 
                     if outcome == "quit":
                         break
-                except (zmq.ZMQError, RuntimeError):
+                except (zmq.ZMQError, RuntimeError) as e:
                     # Two distinct failures land here, both needing the same
                     # recovery: (a) the robot node process died/dropped off
                     # the network (zmq.ZMQError), or (b) the process is
@@ -1386,14 +1440,19 @@ class CollectionWorker(QThread):
                     # way: discard whatever episode was in flight, wait for
                     # the node to come back, then resume from home.
                     self._writer.discard_episode()
-                    self.node_status.emit(False)
-                    self.log_message.emit(
-                        "[NODE DOWN] robot node 무응답 또는 제어 루프 다운 -- "
-                        "자동 복구 안 되면 '노드 재시작' 버튼을 누르세요"
-                    )
+                    self.node_status.emit(False, _why(e))
+                    # 이유를 그대로 싣는다. 예전에는 이 자리에서 예외를
+                    # 버리고 "무응답 또는 제어 루프 다운" 이라고만 적었는데,
+                    # 그 예외가 반사의 이름을 들고 있는 유일한 것이었다 --
+                    # libfranka 의 abort 메시지가 여기까지 그대로 온다
+                    # ("motion aborted by reflex! [joint_velocity_violation]"
+                    # 같은 것). 조작자가 "로그에 반사 종류가 안 보인다"고 한
+                    # 것이 이것이다 (2026-09-06).
+                    self.log_message.emit(f"[NODE DOWN] {_why(e)}")
+                    self.log_message.emit(_node_down_hint(e))
                     if not self._wait_node_recovery():
                         break
-                    self.node_status.emit(True)
+                    self.node_status.emit(True, "")
                     need_reset = True
         except Exception as e:  # noqa: BLE001
             # 원인 체인 유지: wall 폴트는 "joint-limit wall thread failed"
@@ -1508,13 +1567,32 @@ class CollectionWorker(QThread):
             time.sleep(0.02)
 
     def _wait_node_recovery(self) -> bool:
+        """노드가 다시 살아날 때까지 2초마다 되묻는다.
+
+        재시도가 **왜** 실패하는지를 말한다. 예전에는 예외를 통째로 삼켜서,
+        화면에는 [NODE DOWN] 한 줄이 뜬 뒤 아무 일도 없었다 -- 제어 루프가
+        죽은 노드는 프로세스로는 멀쩡히 살아 답하므로 이 재시도가 영영
+        실패하는데, 그 사실도 이유도 보이지 않았다 (2026-09-06 보고).
+
+        2초마다 같은 줄을 찍으면 로그가 그것만으로 찬다. 처음 한 번, 이유가
+        바뀔 때, 그리고 그 뒤로는 _RECOVERY_LOG_PERIOD_S 마다 한 번만.
+        """
+        last_why = None
+        last_log = 0.0
         while True:
             cmd = self._poll_cmd()
             if cmd and cmd[0] == "quit":
                 return False
             try:
                 self._robot.reconnect_node()
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                why = _why(e)
+                now = time.monotonic()
+                if why != last_why or now - last_log > _RECOVERY_LOG_PERIOD_S:
+                    self.log_message.emit(f"[NODE 대기] {why}")
+                    if why != last_why:
+                        self.log_message.emit(_node_down_hint(e))
+                    last_why, last_log = why, now
                 time.sleep(2.0)
                 continue
             self.log_message.emit("[NODE OK] 재연결 완료")

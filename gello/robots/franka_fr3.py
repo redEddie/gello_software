@@ -572,8 +572,14 @@ class FrankaFR3Robot(Robot):
                     self._q_cmd = q_cmd.copy()
                     self._qd_cmd = qd_cmd.copy()
         except Exception as e:  # noqa: BLE001
-            self._control_error = str(e)
-            print(f"[FR3] CONTROL LOOP ABORTED: {e}")
+            # 이 줄이 반사의 이름을 가진 원본이다 (libfranka 의 abort 메시지:
+            # "Move command aborted: motion aborted by reflex! [...]").
+            # flush 가 없으면 파이프로 넘어갈 때 블록 버퍼에 갇히는데, 이
+            # 프로세스는 그 뒤로 아무것도 안 찍을 수도 있어서 그대로 사라진다
+            # -- 상류 GUI 에서 "반사 종류가 안 보인다" 였던 이유의 절반이다
+            # (나머지 절반은 worker 가 예외를 버린 것, 2026-09-06).
+            self._control_error = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            print(f"[FR3] CONTROL LOOP ABORTED: {self._control_error}", flush=True)
 
     def _gripper_read_loop(self) -> None:
         """Samples the measured finger width, and does nothing else.

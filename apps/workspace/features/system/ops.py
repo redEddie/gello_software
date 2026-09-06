@@ -203,10 +203,15 @@ class SystemOps:
         # GUI 가 켠 시점/종료 시점에도 갱신한다.
         self.win.lights["node"].set("busy", tr("시작 중"))
 
-    def on_node_finished(self, code: int, _status) -> None:
-        self.win.log(f"[노드] 종료 (exit={code})")
+    def on_node_finished(self, code: int, status) -> None:
+        # 스스로 끝난 것과 죽은 것은 다른 사건이다. exit 코드만 적으면
+        # 둘이 구별되지 않고, 조작자가 볼 것은 대개 후자다.
+        crashed = status == QProcess.ExitStatus.CrashExit
+        how = tr("비정상 종료(크래시)") if crashed else tr("종료")
+        self.win.log(f"[노드] {how} (exit={code}) — 원인은 위의 [노드] 줄에 있습니다")
         self.win.procs.node_ready = False
-        self.win.lights["node"].set("off", "-")
+        self.win.lights["node"].set("bad" if crashed else "off",
+                                    tr("죽음") if crashed else "-")
 
     def on_node_output(self) -> None:
         if self.win.procs.node_process is None:
