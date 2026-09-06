@@ -113,7 +113,10 @@ from apps.workspace.shell import (  # noqa: E402
     build_toolbar,
     set_toolbar_context,
 )
-from apps.workspace.shared.tabs import center_tab_key  # noqa: E402
+from apps.workspace.shared.tabs import (  # noqa: E402
+    center_tab_key,
+    set_center_tabs,
+)
 from apps.workspace.features.scene.dialogs.grid_editor_dialog import GridEditorDialog  # noqa: E402
 from apps.workspace.features.dataset.hdf5_tree_dialog import Hdf5TreeDialog  # noqa: E402
 from gello.gui.grid_overlay import (  # noqa: E402
@@ -469,6 +472,9 @@ class WorkspaceWindow(QMainWindow):
         # 툴바의 화면별 구획도 같이 간다 (고정 구획은 그대로 -- 다른 화면에
         # 가 있어도 진행 중인 에피소드를 끝낼 수 있어야 한다).
         set_toolbar_context(self, key)
+        # 중앙 탭도 활동을 따라간다 -- 활동 바와 중앙 탭은 같은 축이다
+        # (수집 / 큐레이션 / 셋업·점검). "live" 는 어디서든 남는다.
+        set_center_tabs(self, key)
         act = self._activity_actions.get(key)
         if act is not None and not act.isChecked():
             act.setChecked(True)

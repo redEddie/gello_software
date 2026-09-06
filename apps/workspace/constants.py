@@ -43,6 +43,23 @@ CENTER_TABS = (
     ("depth", "Depth"),
 )
 
+#: 활동별로 중앙에 띄우는 탭. 활동 바(왼쪽)와 중앙 탭이 같은 축이라 --
+#: 수집 / 큐레이션 / 셋업·점검 -- 함께 움직인다.
+#:
+#: "live" 는 어느 활동에서든 남는다. 수집 도중 파일을 미리 보러 Dataset 으로
+#: 건너가는 워크플로가 실제로 있고, 그때 카메라를 잃으면 안 된다 (툴바의
+#: 수집 흐름 고정 구획과 같은 이유). layout.py 의 "카메라는 항상 중앙에
+#: 유지된다"는 설계 의도이기도 하다.
+CENTER_TABS_BY_ACTIVITY = {
+    "configure": ("live",),
+    "collect": ("live",),
+    "dataset": ("live", "playback", "analysis", "trim", "gallery"),
+    "stats": ("live", "playback", "analysis", "trim", "gallery"),
+    "upload": ("live",),
+    "layout": ("live", "layout", "cloud", "depth"),
+    "settings": ("live",),
+}
+
 # 오른쪽 패널에서 값이 길어 좌우 배치로는 읽기 어려운 항목들.
 WIDE_FIELDS = {"ds_file", "ds_task"}
 

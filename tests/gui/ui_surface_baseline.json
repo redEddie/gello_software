@@ -160,6 +160,50 @@
     "layout",
     "settings"
   ],
+  "center_tabs": [
+    "live",
+    "playback",
+    "analysis",
+    "trim",
+    "layout",
+    "gallery",
+    "cloud",
+    "depth"
+  ],
+  "center_tabs_by_activity": {
+    "configure": [
+      "live"
+    ],
+    "collect": [
+      "live"
+    ],
+    "dataset": [
+      "live",
+      "playback",
+      "analysis",
+      "trim",
+      "gallery"
+    ],
+    "stats": [
+      "live",
+      "playback",
+      "analysis",
+      "trim",
+      "gallery"
+    ],
+    "upload": [
+      "live"
+    ],
+    "layout": [
+      "live",
+      "layout",
+      "cloud",
+      "depth"
+    ],
+    "settings": [
+      "live"
+    ]
+  },
   "page_builders": [
     "collect",
     "configure",

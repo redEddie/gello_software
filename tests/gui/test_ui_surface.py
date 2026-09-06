@@ -33,7 +33,11 @@ from apps.workspace.shell import (  # noqa: E402
     build_toolbar,
 )
 from apps.workspace.shell.toolbar import toolbar_context  # noqa: E402
-from apps.workspace.constants import ACTIVITIES  # noqa: E402
+from apps.workspace.constants import (  # noqa: E402
+    ACTIVITIES,
+    CENTER_TABS,
+    CENTER_TABS_BY_ACTIVITY,
+)
 
 
 class _NoOp:
@@ -112,6 +116,11 @@ def surface() -> dict:
         "shortcuts": sorted(keys),
         "scripts": scripts,
         "activities": [k for k, *_ in ACTIVITIES],
+        # 중앙 탭은 활동에 따라 갈린다 -- 목록이 조용히 줄면 그 탭에 닿을
+        # 길이 사라진다 (2026-09-06).
+        "center_tabs": [k for k, _t in CENTER_TABS],
+        "center_tabs_by_activity": {k: list(v) for k, v
+                                    in CENTER_TABS_BY_ACTIVITY.items()},
         "page_builders": sorted(PAGE_BUILDERS),
     }
 

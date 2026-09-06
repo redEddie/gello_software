@@ -61,8 +61,11 @@ cw.CameraOps.refresh_cameras = lambda self: None
 cw.CameraOps.restart_previews = lambda self: None
 cw.QMessageBox.warning = staticmethod(lambda *a, **k: None)
 win = cw.WorkspaceWindow(None)
-# 탭 진입: 카메라 미선택 -> 안내만, 워커 없음
-win._on_center_tab_changed(win.center_tabs.indexOf(win.center_tab_widgets["cloud"]))
+# 탭 진입: 카메라 미선택 -> 안내만, 워커 없음.
+# 2026-09-06: 중앙 탭은 활동을 따라간다 -- Point Cloud 는 layout 활동에만
+# 붙으므로 show_center_tab 이 활동까지 옮겨 준다 (인덱스로는 못 들어간다).
+from apps.workspace.shared.tabs import show_center_tab  # noqa: E402
+show_center_tab(win, "cloud")
 assert win.cameras.cloud_worker is None
 # 합성 클라우드 렌더
 rng = np.random.default_rng(0)
@@ -72,11 +75,11 @@ win.depth_ops.on_cloud(pts, rgb)
 assert win.cloud_view.pixmap() is not None
 assert "2,000" in win.cloud_status.text() or "2000" in win.cloud_status.text()
 win.cloud_yaw.setValue(60)      # 시점 변경 -> 재렌더 경로
-win._on_center_tab_changed(0)   # 탭 이탈 -> 워커 없음이면 no-op
+show_center_tab(win, "live")    # 탭 이탈 -> 워커 없음이면 no-op
 assert win.cameras.cloud_worker is None
 # 세션 중 진입 차단
 win.worker = object()
-win._on_center_tab_changed(win.center_tabs.indexOf(win.center_tab_widgets["cloud"]))
+show_center_tab(win, "cloud")
 assert win.cameras.cloud_worker is None
 win.worker = None
 print("3 통과: 탭 진입/이탈 가드 + 합성 클라우드 렌더 + 세션 차단")
@@ -114,7 +117,7 @@ assert win.cameras.cloud_worker is None
 print("5 통과: 클라우드 카메라 콤보 (닫힌 탭에서는 지연 반영)")
 
 # ---- 6. Depth 탭: 소비자 전환 + 컬러맵 렌더 ----
-win._on_center_tab_changed(win.center_tabs.indexOf(win.center_tab_widgets["depth"]))
+show_center_tab(win, "depth")
 assert win.cameras.depth_consumer == "depth" and win.cameras.cloud_worker is None
 z = np.full((48, 64), 0.6, np.float32)
 z[:10] = 0.0            # 무측정
