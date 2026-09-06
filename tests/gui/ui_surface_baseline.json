@@ -196,9 +196,7 @@
     ],
     "layout": [
       "live",
-      "layout",
-      "cloud",
-      "depth"
+      "layout"
     ],
     "settings": [
       "live"

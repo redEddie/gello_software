@@ -18,11 +18,17 @@ from apps.workspace.constants import CENTER_TABS, CENTER_TABS_BY_ACTIVITY
 
 
 def activity_for_tab(key: str) -> Optional[str]:
-    """그 탭을 띄우는 활동. "live" 처럼 어디에나 있는 탭은 None."""
+    """그 탭을 띄우는 활동. 어디에나 있는 탭("live")과 어느 활동에도 없는
+    색인 전용 탭은 None."""
     owners = [a for a, keys in CENTER_TABS_BY_ACTIVITY.items() if key in keys]
     if len(owners) == len(CENTER_TABS_BY_ACTIVITY):
         return None                      # 모든 활동에 있다 -- 옮길 필요 없음
     return owners[0] if owners else None
+
+
+def is_index_only(key: str) -> bool:
+    """어느 활동에도 안 붙는 탭인가 (View 메뉴로만 열리는 것)."""
+    return not any(key in keys for keys in CENTER_TABS_BY_ACTIVITY.values())
 
 
 def show_center_tab(win, key: str) -> None:
@@ -38,6 +44,11 @@ def show_center_tab(win, key: str) -> None:
         owner = activity_for_tab(key)
         if owner is not None:
             win._set_activity(owner)
+        elif is_index_only(key):
+            # 색인 전용 탭 -- 지금 활동 끝에 잠깐 붙인다. 활동을 옮기면
+            # set_center_tabs 의 제거 루프가 알아서 떼어 낸다.
+            title = dict(CENTER_TABS).get(key, key)
+            win.center_tabs.addTab(w, tr(title))
     idx = win.center_tabs.indexOf(w)
     if idx >= 0:
         win.center_tabs.setCurrentIndex(idx)

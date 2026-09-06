@@ -46,6 +46,12 @@ CENTER_TABS = (
 #: 활동별로 중앙에 띄우는 탭. 활동 바(왼쪽)와 중앙 탭이 같은 축이라 --
 #: 수집 / 큐레이션 / 셋업·점검 -- 함께 움직인다.
 #:
+#: 여기 어느 줄에도 없는 탭("cloud", "depth")은 **색인 전용**이다: 화면에는
+#: 안 나오고 View 메뉴로만 열리며, 열면 지금 활동에 잠깐 붙었다가 활동을
+#: 옮기면 떨어진다. 구현은 멀쩡한데(세션 중 차단·미리보기 충돌 처리까지)
+#: 수집 워크플로에는 없는 도구라, 표면을 늘리지 않고 남겨 두는 자리다
+#: (2026-09-06 사용자 결정). 상시로 승격하려면 여기 한 줄에 키를 넣으면 된다.
+#:
 #: "live" 는 어느 활동에서든 남는다. 수집 도중 파일을 미리 보러 Dataset 으로
 #: 건너가는 워크플로가 실제로 있고, 그때 카메라를 잃으면 안 된다 (툴바의
 #: 수집 흐름 고정 구획과 같은 이유). layout.py 의 "카메라는 항상 중앙에
@@ -56,7 +62,7 @@ CENTER_TABS_BY_ACTIVITY = {
     "dataset": ("live", "playback", "analysis", "trim", "gallery"),
     "stats": ("live", "playback", "analysis", "trim", "gallery"),
     "upload": ("live",),
-    "layout": ("live", "layout", "cloud", "depth"),
+    "layout": ("live", "layout"),
     "settings": ("live",),
 }
 
