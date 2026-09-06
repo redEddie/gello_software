@@ -140,7 +140,6 @@ from gello.data.schema_description import (
     describe_episode,
     describe_schema,
     resolved_action_column_names,
-    schema_from_episode,
 )
 
 
