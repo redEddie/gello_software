@@ -270,8 +270,10 @@ def shorthand_case() -> None:
     P = props_by_id()
     short = "pick up the small gray bowl and place it inside the blue bowl"
     full = "pick up the small gray bowl and place it inside the large blue bowl"
-    # lint 는 둘 다 통과시킨다 -- 같은 물체를 가리킨다
-    assert lint(short) is None and lint(full) is None
+    # 2026-09-07 부터 문법이 약칭 해소를 폐지해 lint 가 약칭을 거부한다.
+    # 그 메시지는 "지칭 파싱 실패" 라 원인을 말하지 못하므로, audit 은 이쪽
+    # 문구로 **대신**한다 -- 둘 다 내면 한 줄에 두 사유가 붙는다.
+    assert lint(short) is not None and lint(full) is None
     assert shorthand_references(short) == ["the blue bowl"], short
     assert shorthand_references(full) == [], full
     # 15cm bowl category 의 색은 그 자체가 정본이라 세지 않는다
@@ -290,7 +292,7 @@ def shorthand_case() -> None:
                     f[k].attrs["instruction"] = short
         msgs = [v.message for v in audit_scene(path)
                 if v.instruction_id == "I000"]
-        assert SHORTHAND_MSG in msgs, msgs
+        assert msgs == [SHORTHAND_MSG], msgs
     print("shorthand_case OK")
 
 

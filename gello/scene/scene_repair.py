@@ -106,12 +106,18 @@ def _messages(text: str, md, props: dict, strict_relation: bool) -> list:
     """
     out = []
     msg = lint(text, md, props, strict_relation=strict_relation)
-    if msg:
+    short = shorthand_references(text)
+    if msg and not short:
         out.append(msg)
+    elif short:
+        # **약칭이면 이쪽 문구만 낸다.** 2026-09-07 에 문법이 약칭 해소를
+        # 폐지하면서 lint 가 같은 문장을 직접 잡게 됐는데, 그 메시지는
+        # "지칭 파싱 실패: 'blue bowl'" 이라 원인을 말하지 못한다. 둘을 다
+        # 내면 한 줄에 두 사유가 붙어 세는 수도 부풀고, 고치는 사람은
+        # 무엇을 하라는 것인지 두 번 읽어야 한다.
+        out.append(SHORTHAND_MSG)
     if reversed_adjectives(text):
         out.append(ORDER_MSG)
-    if shorthand_references(text):
-        out.append(SHORTHAND_MSG)
     return out
 
 
