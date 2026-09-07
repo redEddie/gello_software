@@ -111,9 +111,13 @@ def _selftest() -> None:
     sents_a = enumerate_instructions(base, props)
     sents_b = enumerate_instructions(base, props)
     assert sents_a == sents_b
-    # 개별 지칭만 배제된다 -- 집합 지칭("stack all the white cups")은
-    # 2026-08-31 부터 정상 생성 (모호하지 않다).
-    assert all(not re.search(r"the white cup\b(?!s)", x)
+    # **맨** 지칭만 배제된다. 집합 지칭("stack all the white cups")은
+    # 2026-08-31 부터, 한정어 지칭("the white cup farthest from ...")은
+    # 2026-09-07 부터 정상 생성된다 -- 둘 다 모호하지 않다.
+    from gello.scene.instruction_grammar import _QUAL_RE
+
+    _bare = re.compile(r"the white cup\b(?!s)(?! (?:" + _QUAL_RE + "))")
+    assert all(not _bare.search(x)
                for x in enumerate_instructions(
         SceneMetadata(
             scene_id="S001",

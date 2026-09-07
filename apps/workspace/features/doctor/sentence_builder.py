@@ -97,11 +97,31 @@ def sense_key(sentence: str) -> tuple:
     같은 물체를 가리키는 다른 글자가 됐다 -- 글자로 비교하면 이미 쓰이는
     문장을 "안 쓰인다" 고 판정해서, 같은 뜻의 지시문이 둘 생긴다.
     """
-    from gello.scene.instruction_grammar import _parse_object_phrase, skill_of
-
     src, dst = _split(sentence)
-    return (skill_of(sentence),
-            _parse_object_phrase(src), _parse_object_phrase(dst))
+    from gello.scene.instruction_grammar import skill_of
+
+    return skill_of(sentence), _sense(src), _sense(dst)
+
+
+def _sense(phrase: str) -> tuple:
+    """지칭 구 -> (색, 종류, 한정어). 한정어는 글자 그대로 남긴다.
+
+    한정어를 떼면 안 된다. "the blue cup farthest from the white cup" 과
+    "... closest to ..." 은 **서로 다른 컵**인데, 떼면 둘 다 (blue, cup) 이
+    되어 같은 문장으로 판정된다 -- 실제로 그렇게 짜 놨다가 잡았다
+    (2026-09-07). 파서가 한정어를 안 받으므로 여기서 먼저 떼어 두고,
+    떼어 낸 것을 열쇠의 셋째 자리에 넣는다.
+    """
+    from gello.scene.instruction_grammar import _QUALIFIERS, _parse_object_phrase
+
+    head, qual = phrase, ""
+    for q in _QUALIFIERS:
+        mark = f" {q} "
+        if mark in phrase:
+            head, _sep, rest = phrase.partition(mark)
+            qual = f"{q} {rest}"
+            break
+    return (_parse_object_phrase(head), qual)
 
 
 def _split(sentence: str) -> "tuple[str, str]":
@@ -196,7 +216,8 @@ class SentenceDialog(QDialog):
     """
 
     def __init__(self, parent, title: str, current: str, options: list,
-                 note: str = "", used_by: "dict | None" = None) -> None:
+                 note: str = "", used_by: "dict | None" = None,
+                 resolve=None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("문장 고치기"))
         self.chosen = None
@@ -208,7 +229,14 @@ class SentenceDialog(QDialog):
             src, dst = _split(sent)
             self._index.setdefault(skill or "?", {}).setdefault(
                 src, {})[dst] = sent
-        self._cur_src, self._cur_dst = _split(current)
+        # 미리 고르는 것은 **물체 기준**이다. 글자로 맞추면 "farthest from
+        # the yellow bowl" 이 "farthest from the white cup" 과 안 맞아
+        # 엉뚱한 물체가 기본값이 된다 -- 확인만 눌러도 가리키는 대상이
+        # 조용히 바뀐다 (2026-09-07 실측).
+        self._resolve = resolve or (lambda phrase: phrase)
+        cur_src, cur_dst = _split(current)
+        self._cur_src = self._resolve(cur_src)
+        self._cur_dst = self._resolve(cur_dst)
         # {문장: 그것을 쓰는 다른 지시문 id}. 후보에서 빼지 않는다 -- 뱃지는
         # 남기고 취소선을 그어 이유를 툴팁으로 말한다.
         # 뜻으로 대조한다 (sense_key) -- 글자로 하면 어순이 다른 같은 뜻을
@@ -289,7 +317,8 @@ class SentenceDialog(QDialog):
             b.set_available(bool(free), "" if free else tr(
                 "이 물체로 만들 수 있는 문장은 이미 다 쓰이고 있습니다"))
         # 지금 지시문의 물체가 이 동작으로도 고를 수 있으면 그것을 켠다.
-        src = self._cur_src
+        src = next((x for x in self._all_src
+                    if self._resolve(x) == self._cur_src), "")
         if src not in self._src_badges or self._src_badges[src]._off:
             src = next((x for x in self._all_src
                         if not self._src_badges[x]._off),
@@ -310,7 +339,8 @@ class SentenceDialog(QDialog):
             owner = self._used_by.get(sense_key(sent))
             b.set_available(owner is None, "" if owner is None else tr(
                 "{iid} 가 이미 쓰는 문장입니다").format(iid=owner))
-            if owner is None and (not pick or dst == self._cur_dst):
+            if owner is None and (not pick
+                                  or self._resolve(dst) == self._cur_dst):
                 pick = dst
         self._pick_dst(pick)
 

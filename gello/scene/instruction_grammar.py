@@ -52,6 +52,7 @@ pick/drag 문장에서 빠지고(tidy 만 생성) 스킬도 tidy-into 로 따로
 
 from __future__ import annotations
 
+import math
 import re
 from functools import lru_cache
 from typing import Optional
@@ -275,12 +276,133 @@ def _with_color(color: str, category: str) -> str:
     return f"{size[0]} {color} {size[1]}"
 
 
+def _zone(md: SceneMetadata, oid: str) -> Optional[tuple]:
+    spec = (md.layout or {}).get("placements", {}).get(oid)
+    if not spec:
+        return None
+    z = spec["zone"] if isinstance(spec, dict) else spec
+    return (int(z[0]), int(z[1]))
+
+
+def _margin(qual: str, zones: dict, anchor_zone: tuple) -> "tuple[str, float]":
+    """한정어가 후보 중 딱 하나를 집으면 (그 oid, 벌어진 정도), 아니면 ("", 0).
+
+    벌어진 정도는 1등과 2등의 차다. 이것으로 정본을 고른다 -- 아슬아슬하게
+    구분되는 지칭은 물체가 몇 cm만 움직여도 뒤집히고, 사람 눈에도 애매하다.
+
+    거리는 유클리드다. 맨해튼이면 S007 의 두 파란 컵이 노란 그릇에서 같은
+    거리라 아무것도 못 집는데, 보면 분명히 하나가 더 멀다.
+    """
+    if qual in ("farthest from", "closest to"):
+        d = sorted(((math.dist(z, anchor_zone), o) for o, z in zones.items()),
+                   reverse=(qual == "farthest from"))
+        if len(d) < 2 or d[0][0] == d[1][0]:
+            return "", 0.0
+        return d[0][1], abs(d[0][0] - d[1][0])
+    # 왼쪽/오른쪽은 열로 본다 ([0,0] 이 왼쪽 위라 열이 클수록 오른쪽).
+    col = anchor_zone[1]
+    hit = [(o, z) for o, z in zones.items()
+           if (z[1] < col if qual == "to the left of" else z[1] > col)]
+    if len(hit) != 1:
+        return "", 0.0
+    return hit[0][0], abs(hit[0][1][1] - col)
+
+
+def _qualified_reference(color: str, category: str, oid: str,
+                         md: SceneMetadata,
+                         props: dict[str, Prop]) -> Optional[str]:
+    """동일 외형이 여럿일 때 이 하나를 콕 집는 **정본 지칭 하나**.
+
+    쓸 수 있는 것을 다 만들지 않는다. S007(파란 컵 2개)에서 다 만들었더니
+    문장이 14개에서 128개가 됐고, 같은 컵이 이름을 셋씩 갖는 바람에 그
+    이름들끼리 조합되기까지 했다 ("drag the blue cup closest to the white cup
+    next to the white cup"). 물체 하나에 이름 하나여야 고르는 화면도, 계획
+    파일도 읽힌다.
+
+    고르는 기준은 **가장 크게 벌어진 것**이다 -- 아슬아슬한 구분은 물체가
+    조금만 움직여도 뒤집힌다. 같으면 _QUALIFIERS 순서, 그다음 objects 순서로
+    끊어 결정적으로 만든다.
+    """
+    group = [o for o in md.objects
+             if o in props and props[o].color == color
+             and props[o].category == category]
+    if len(group) < 2:
+        return None
+    zones = {o: _zone(md, o) for o in group}
+    if any(z is None for z in zones.values()):
+        return None
+
+    best = None          # (-margin, 한정어 순번, 기준점 순번, 구)
+    for a_idx, anchor_oid in enumerate(md.objects):
+        if anchor_oid in group or anchor_oid not in props:
+            continue
+        ap = props[anchor_oid]
+        anchor = _reference(ap.color, ap.category, md, props)
+        az = _zone(md, anchor_oid)
+        if anchor is None or az is None:
+            continue
+        for q_idx, qual in enumerate(_QUALIFIERS):
+            who, margin = _margin(qual, zones, az)
+            if who != oid:
+                continue
+            key = (-margin, q_idx, a_idx,
+                   f"the {_with_color(color, category)} {qual} {anchor}")
+            if best is None or key < best:
+                best = key
+    return None if best is None else best[3]
+
+
+def resolve_reference(phrase: str, md: SceneMetadata,
+                       props: dict[str, Prop]) -> Optional[str]:
+    """지칭 구가 가리키는 **물체 하나의 oid**. 못 정하면 None.
+
+    글자가 아니라 물체로 대조해야 하는 자리가 있다. "the blue cup farthest
+    from the yellow bowl" 과 "the blue cup farthest from the white cup" 은
+    글자는 다르지만 S007 에서는 같은 컵이다 -- 화면이 글자로만 맞춰 보면
+    "없는 지칭" 으로 보고 엉뚱한 컵을 기본값으로 켠다 (2026-09-07 에 실제로
+    그랬다: 확인만 눌렀으면 가리키는 물체가 조용히 바뀌었다).
+    """
+    text = phrase.strip()
+    head, qual, anchor_phrase = text, "", ""
+    for q in _QUALIFIERS:
+        mark = f" {q} "
+        if mark in text:
+            head, _sep, anchor_phrase = text.partition(mark)
+            qual = q
+            break
+    parsed = _parse_object_phrase(head)
+    if parsed is None:
+        return None
+    color, category = parsed
+    group = [o for o in md.objects
+             if o in props and props[o].color == color
+             and props[o].category == category]
+    if len(group) == 1:
+        return group[0]
+    if not group or not qual:
+        return None
+    anchor_oid = resolve_reference(anchor_phrase, md, props)
+    if anchor_oid is None:
+        return None
+    az = _zone(md, anchor_oid)
+    zones = {o: _zone(md, o) for o in group}
+    if az is None or any(z is None for z in zones.values()):
+        return None
+    who, _margin_ = _margin(qual, zones, az)
+    return who or None
+
+
 def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[str]:
     """scene 에서 문법에 맞는 instruction 문장을 결정적으로 모두 생성.
 
-    (color, category) 가 유일하지 않아 모호한 물체가 들어가는 문장은
-    생성하지 않는다 (QUALIFIER 문장은 생성하지 않는다 -- 그건 동일 외형
-    복수 scene 을 사람이 의도적으로 만들 때 쓰는 문법이다).
+    동일 외형이 여럿이면 **한정어로 하나씩 콕 집어** 생성한다 (2026-09-07).
+    전에는 그런 물체가 들어가는 문장을 통째로 안 만들었는데, 그러면 S007
+    (파란 컵 2개)에서 만들 수 있는 문장이 "stack all the blue cups" 하나뿐이
+    되어 닥터가 그 scene 의 문장을 고칠 수 없었다. 한정어는 lint 가 이미
+    받고 있었고, 만드는 쪽만 없었다.
+
+    한정어는 **배치로 실제 구분되는 것만** 만든다 -- _qualified_references
+    참고.
     """
     by_cat: dict[str, list[tuple[str, str]]] = {}  # category -> [(color, oid), ...]
     for oid in md.objects:
@@ -289,13 +411,24 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
             continue
         by_cat.setdefault(p.category, []).append((p.color, oid))
 
-    def refs(cats: set[str]) -> list[tuple[str, str, str]]:
-        """지칭 가능한 (color, category, oid) 목록."""
+    def refs(cats: set[str]) -> list[tuple[str, str]]:
+        """지칭 가능한 **(지칭 구, oid)** 목록.
+
+        유일하면 한 개("the white cup"), 동일 외형이 여럿이면 한정어로 하나씩
+        콕 집는 구들이 대신 들어온다 -- 그런 scene 에서도 pick/drag 문장이
+        나온다 (2026-09-07: S007 은 파란 컵이 둘이라 stack 문장 하나밖에
+        못 만들었고, 그래서 닥터가 그 scene 의 문장을 고칠 수 없었다).
+        """
         out = []
         for cat in sorted(cats):
             for color, oid in by_cat.get(cat, []):
-                if _reference(color, cat, md, props) is not None:
-                    out.append((color, cat, oid))
+                phrase = _reference(color, cat, md, props)
+                if phrase is not None:
+                    out.append((phrase, oid))
+                else:
+                    q = _qualified_reference(color, cat, oid, md, props)
+                    if q is not None:
+                        out.append((q, oid))
         return out
 
     sentences: set[str] = set()
@@ -303,21 +436,16 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
     # 1) pick up {obj} and place it inside {bowl}
     # 목적지가 그릇이면 언제나 inside 다 (2026-09-07 사용자 확정 -- 그릇은
     # 오목해서 물체가 안으로 들어간다). on 문장은 만들지 않는다.
-    for ocolor, ocat, ooid in refs(_PICKABLE):
-        for bcolor, bcat, boid in refs(_BOWL_CATS):
-            if ooid == boid:
+    for o, ooid in refs(_PICKABLE):
+        for b, boid in refs(_BOWL_CATS):
+            if ooid == boid or o == b:
                 continue
-            o = _reference(ocolor, ocat, md, props)
-            b = _reference(bcolor, bcat, md, props)
             sentences.add(f"pick up {o} and place it inside {b}")
 
     # 2) pick up {obj} and place it on top of the drawer
     if "drawer" in by_cat:
-        for ocolor, ocat, _ in refs(_PICKABLE):
-            sentences.add(
-                f"pick up {_reference(ocolor, ocat, md, props)} "
-                "and place it on top of the drawer"
-            )
+        for o, _oid in refs(_PICKABLE):
+            sentences.add(f"pick up {o} and place it on top of the drawer")
 
     # 2b) (2026-08-31 폐지) "pick up {cutlery} ... inside the drawer" 는 더
     # 이상 생성하지 않는다 -- 커트러리는 tidy 전용(2d), drawer 목적지도
@@ -325,43 +453,31 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
 
     # 2c) pick up {obj} and place it on the wooden tray
     if "tray" in by_cat:
-        for ocolor, ocat, _ in refs(_PICKABLE):
+        for o, _oid in refs(_PICKABLE):
             sentences.add(
-                f"pick up {_reference(ocolor, ocat, md, props)} "
-                f"and place it on the {NOUN_MAP['tray']}"
-            )
+                f"pick up {o} and place it on the {NOUN_MAP['tray']}")
 
     # 2d) tidy the cutlery into {container} -- 커트러리 전용 동사. 더미를
     # 반복 운반하는 동작이라 pick/drag 와 스킬(tidy-into)부터 분리된다.
     if "cutlery" in by_cat:
-        for tcolor, tcat, _ in refs(_TIDY_TARGETS):
-            sentences.add(
-                f"tidy the cutlery into {_reference(tcolor, tcat, md, props)}"
-            )
+        for t, _oid in refs(_TIDY_TARGETS):
+            sentences.add(f"tidy the cutlery into {t}")
 
     # 3) pick up {obj} and place it next to {obj2}
     objs = refs(_PICKABLE)
     besides = refs(_BESIDE_CATS)
-    for c1, cat1, oid1 in objs:
-        for c2, cat2, oid2 in besides:
-            if oid1 == oid2:
-                continue
-            o1 = _reference(c1, cat1, md, props)
-            o2 = _reference(c2, cat2, md, props)
+    for o1, oid1 in objs:
+        for o2, oid2 in besides:
             # 색 없는 지칭(cutlery 더미)은 낱개 소품이 여럿이어도 같은 구가
             # 된다 -- "the cutlery next to the cutlery" 방지.
-            if o1 == o2:
+            if oid1 == oid2 or o1 == o2:
                 continue
             sentences.add(f"pick up {o1} and place it next to {o2}")
 
     # 4) drag {obj} next to {obj2} -- 들지 않고 끌기 (큰 그릇 포함)
-    for c1, cat1, oid1 in refs(_DRAGGABLE):
-        for c2, cat2, oid2 in besides:
-            if oid1 == oid2:
-                continue
-            o1 = _reference(c1, cat1, md, props)
-            o2 = _reference(c2, cat2, md, props)
-            if o1 == o2:
+    for o1, oid1 in refs(_DRAGGABLE):
+        for o2, oid2 in besides:
+            if oid1 == oid2 or o1 == o2:
                 continue
             sentences.add(f"drag {o1} next to {o2}")
 
@@ -666,9 +782,13 @@ def selftest() -> None:
         },
     )
     s2 = enumerate_instructions(md2, props)
-    # 개별 지칭("the white cup")은 모호해 생성되지 않는다. 집합 지칭
-    # ("the white cups")은 2026-08-31 부터 stack 문장으로 생성된다.
-    assert not any(re.search(r"the white cup\b(?!s)", x) for x in s2)
+    # 맨 지칭("the white cup" 뒤에 한정어 없음)은 여전히 생성되지 않는다.
+    # 한정어가 붙은 것은 2026-09-07 부터 생성된다 -- 그래야 동일 외형이
+    # 여럿인 scene 에서도 문장을 만들 수 있다.
+    _bare = re.compile(r"the white cup\b(?!s)(?! (?:" + _QUAL_RE + "))")
+    assert not any(_bare.search(x) for x in s2), [x for x in s2 if _bare.search(x)]
+    assert any("the white cup farthest from the small blue bowl" in x
+               for x in s2), s2
     assert "stack all the white cups" in s2
     err = lint("pick up the white cup and place it on the small blue bowl", md2, props)
     assert err is not None and "QUALIFIER" in err, err
@@ -764,8 +884,12 @@ def selftest() -> None:
             "OBJ-CUP-RED-01": {"zone": [0, 1]}}})
     s7 = enumerate_instructions(md7, props)
     assert "stack all the pink striped bowls" in s7
-    # 개별 지칭은 여전히 모호 -> 그 물체가 든 개별 문장은 생성 안 됨
-    assert not any("the pink striped bowl " in x for x in s7)
+    # 맨 지칭은 여전히 모호 -> 생성 안 됨. 한정어가 붙은 것은 생성된다
+    # (2026-09-07) -- 두 그릇이 빨간 컵에서 서로 다른 거리라 구분된다.
+    _bare7 = re.compile(r"the pink striped bowl\b(?!s)(?! (?:" + _QUAL_RE + "))")
+    assert not any(_bare7.search(x) for x in s7), [x for x in s7 if _bare7.search(x)]
+    assert any("the pink striped bowl closest to the red cup" in x
+               for x in s7), s7
     assert lint("stack all the pink striped bowls", md7, props) is None
     assert skill_of("stack all the pink striped bowls") == "stack-all"
     assert all(skill_of(s) in SKILLS for s in s7)

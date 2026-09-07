@@ -24,11 +24,11 @@ from gello.gui.widgets.video_view import np_to_pixmap
 from gello.scene.dataset_meta import plan_path as dataset_plan_path
 from gello.scene.instruction_grammar import (
     enumerate_instructions,
+    resolve_reference,
     skill_of,
 )
 from gello.scene.props import props_by_id
 from gello.scene.scene_format import (
-    describe_scene,
     iter_scene_files,
     read_reference_image,
     read_scene_metadata,
@@ -122,7 +122,7 @@ class DoctorOps:
         win.doctor_title.setText(tr("{sid} — {f}").format(
             sid=scene_id, f=path.name))
         self._show_photo(path)
-        win.doctor_info.setText(describe_scene(md))
+        win.doctor_info.set_scene(md)
 
         props = props_by_id()
         self._suggestion = suggest_object_fix(path, props)
@@ -231,7 +231,8 @@ class DoctorOps:
                 tr("안 찍은 빈 칸이라 지시문 파일만 바뀝니다."))
         dlg = SentenceDialog(
             win, tr("{sid} {iid}").format(sid=self._scene_id, iid=iid),
-            cur, options, note, used_by)
+            cur, options, note, used_by,
+            resolve=lambda phrase: resolve_reference(phrase, md, props))
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.chosen:
             return
         text = dlg.chosen

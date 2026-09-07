@@ -196,6 +196,62 @@ def swap_case() -> None:
     print("swap_case OK")
 
 
+def qualifier_case() -> None:
+    """동일 외형이 여럿인 scene -- 한정어로 하나씩 집는다 (S007 의 모양).
+
+    전에는 그런 물체가 든 문장을 아예 안 만들어서, 닥터가 그 scene 의
+    지시문을 고칠 수 없었다 (만들 수 있는 문장이 stack 하나뿐이었다).
+    """
+    from gello.scene.instruction_grammar import (
+        enumerate_instructions,
+        resolve_reference,
+    )
+    from gello.scene.props import props_by_id
+    from gello.scene.scene_format import SceneMetadata
+
+    P = props_by_id()
+    md = SceneMetadata(
+        scene_id="S007",
+        objects=["OBJ-CUP-WHT-02", "OBJ-CUP-BLU-01", "OBJ-CUP-BLU-02",
+                 "OBJ-BOWLL-YEL-01"],
+        layout={"grid": [3, 3], "placements": {
+            "OBJ-CUP-WHT-02": {"zone": [2, 1]},
+            "OBJ-CUP-BLU-01": {"zone": [0, 2]},
+            "OBJ-CUP-BLU-02": {"zone": [1, 1]},
+            "OBJ-BOWLL-YEL-01": {"zone": [0, 0]}}})
+    ss = enumerate_instructions(md, P)
+    blue = [s for s in ss if "blue cup" in s and "cups" not in s]
+    assert blue, "동일 외형이 둘이면 문장이 하나도 안 나온다"
+
+    # 컵 하나에 이름 하나 -- 다 만들면 같은 컵이 이름을 셋씩 갖고 그것들끼리
+    # 조합돼 문장이 14 -> 128 개가 된다.
+    from apps.workspace.features.doctor.sentence_builder import _split
+
+    names = set()
+    for s in blue:
+        for ph in _split(s):
+            if ph.startswith("the blue cup"):
+                names.add(ph)
+    assert len(names) == 2, names
+    for ph in names:
+        assert resolve_reference(ph, md, P) is not None, ph
+    assert len({resolve_reference(ph, md, P) for ph in names}) == 2, names
+
+    # 기준점이 달라도 같은 컵이면 같은 물체로 풀린다 -- 화면이 글자로
+    # 맞추면 엉뚱한 컵을 기본값으로 켠다.
+    a = resolve_reference("the blue cup farthest from the yellow bowl", md, P)
+    b = resolve_reference("the blue cup farthest from the white cup", md, P)
+    assert a == b == "OBJ-CUP-BLU-01", (a, b)
+
+    # 뜻 열쇠는 한정어를 남긴다 -- 떼면 서로 다른 컵이 같아진다.
+    from apps.workspace.features.doctor.sentence_builder import sense_key
+    x = "pick up the blue cup farthest from the white cup and place it inside the large yellow bowl"
+    y = "pick up the blue cup closest to the white cup and place it inside the large yellow bowl"
+    assert sense_key(x) != sense_key(y)
+    print("qualifier_case OK")
+
+
 if __name__ == "__main__":
     main()
     swap_case()
+    qualifier_case()
