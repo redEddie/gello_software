@@ -83,4 +83,8 @@ print(f"4 통과: replay 로더 scene({len(t1['q'])}f) + legacy({len(t2['q'])}f)
 print("\n계획 편집 + replay 로더 검증 통과")
 import os  # noqa: E402
 
+# os._exit 는 버퍼를 비우지 않는다 -- 먼저 비운다. 없으면 이 파일의
+# 출력이 통째로 사라져서, 검사가 실제로 돌았는지 사람이 볼 수 없다
+# (스위트는 종료 코드만 보므로 통과로 지나간다).
+sys.stdout.flush()
 os._exit(0)

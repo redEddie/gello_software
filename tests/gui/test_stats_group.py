@@ -93,4 +93,8 @@ assert win.rank_tree.topLevelItemCount() == len(stats)
 print("통과: 큐레이션 후보 그룹 콤보 -- 한 그룹만 / 전체 복귀")
 import os  # noqa: E402
 
+# os._exit 는 버퍼를 비우지 않는다 -- 먼저 비운다. 없으면 이 파일의
+# 출력이 통째로 사라져서, 검사가 실제로 돌았는지 사람이 볼 수 없다
+# (스위트는 종료 코드만 보므로 통과로 지나간다).
+sys.stdout.flush()
 os._exit(0)

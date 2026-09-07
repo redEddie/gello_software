@@ -202,4 +202,8 @@ print("   통과: 체크박스 비활성 + 결과 depth False")
 print("\ndepth 기록 + 게이트 검증 통과")
 import os  # noqa: E402
 
+# os._exit 는 버퍼를 비우지 않는다 -- 먼저 비운다. 없으면 이 파일의
+# 출력이 통째로 사라져서, 검사가 실제로 돌았는지 사람이 볼 수 없다
+# (스위트는 종료 코드만 보므로 통과로 지나간다).
+sys.stdout.flush()
 os._exit(0)

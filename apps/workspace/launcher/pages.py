@@ -794,9 +794,17 @@ class HardwarePage(QWizardPage):
                     for v, a, b in spans))
                 newest = max(s[0] for s in spans)
                 if picked != newest:
-                    lines.append(tr("고른 버전이 마지막으로 쓴 것과 다릅니다 "
-                                    "— 이 시점부터 {v} 로 기록됩니다.")
-                                 .format(v=picked))
+                    lines.append(tr("고른 버전이 마지막으로 쓴 것과 "
+                                    "다릅니다."))
+                # **어디에 적용되는지 늘 말한다.** "이 시점부터 {v} 로
+                # 기록됩니다" 라고만 적었는데, 그것은 새 scene 에만 참이다 --
+                # 이어 찍는 파일은 자기 버전을 유지하고 안전할 때만 올라간다.
+                # 이 화면은 조작자가 새로 만들지 이어 찍을지 아직 모르므로
+                # 한쪽을 단정하면 다른 쪽에서 틀린 말이 된다 (2026-09-07).
+                lines.append(tr(
+                    "새 scene 은 {v} 로 찍힙니다 (채울 수 있는 값까지). "
+                    "이어 찍는 파일은 자기 버전을 유지하되 안전할 때만 "
+                    "{v} 까지 올라갑니다 — 내려가지 않습니다.").format(v=picked))
         else:
             lines.append(tr("새 데이터셋입니다."))
         req = schema_required_fields(picked)

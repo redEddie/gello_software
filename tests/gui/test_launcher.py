@@ -353,7 +353,19 @@ for _sid, _v in (("S000", "knu-1.0.0"), ("S001", "knu-1.0.0"),
 assert schema_version_spans(_MIX) == [
     ("knu-1.0.0", "S000", "S001"), ("knu-1.1.0", "S002", "S002")], \
     schema_version_spans(_MIX)
-print("11 통과: 스키마 버전 기본=최신 / 내려 찍기 가능 / 이력은 파일에서 파생")
+# 라벨은 **어디에 적용되는지** 말해야 한다. "이 시점부터 {v} 로 기록됩니다"
+# 라고만 적었는데 그것은 새 scene 에만 참이다 -- 이어 찍는 파일은 자기 버전을
+# 유지하고 안전할 때만 올라간다. 이 화면은 조작자가 새로 만들지 이어 찍을지
+# 아직 모르므로 한쪽을 단정하면 다른 쪽에서 틀린 말이 된다 (2026-09-07).
+hwp._dataset_root = lambda: _MIX          # 이어 찍기 모드를 흉내낸다
+hwp._refresh_schema_label()
+_txt = hwp.schema_label.text()
+assert "새 scene" in _txt and "이어 찍는 파일" in _txt, _txt
+assert "내려가지 않습니다" in _txt, _txt
+assert "이 시점부터" not in _txt, _txt
+hwp._dataset_root = lambda: None
+print("11 통과: 스키마 버전 기본=최신 / 내려 찍기 가능 / 이력은 파일에서 파생 "
+      "/ 라벨이 새 scene·이어찍기를 구별")
 
 # --- 12) [확인] 이 검사하는 필드 == 그 버전이 실제로 요구하는 필드 -------------
 # 두 목록이 갈라지면 확인은 통과했는데 검증기는 떨어뜨리는 파일이 나온다.
@@ -394,4 +406,7 @@ print("13 통과: 로봇 노드 인계 경로 (마법사 -> LaunchResult -> 워�
 
 print("\n런처 마법사 검증 통과")
 _cleanup()
+# os._exit 는 버퍼를 비우지 않는다 -- 먼저 비운다. 없으면 이 파일의
+# 출력이 통째로 사라져서, 검사가 실제로 돌았는지 알 수 없다.
+sys.stdout.flush()
 os._exit(0)

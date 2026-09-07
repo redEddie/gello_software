@@ -58,4 +58,8 @@ assert "shape" in dlg.detail.toPlainText()
 print("통과: 트리 구성 + attrs + 이미지 미리보기 + 데이터셋 정보")
 import os  # noqa: E402
 
+# os._exit 는 버퍼를 비우지 않는다 -- 먼저 비운다. 없으면 이 파일의
+# 출력이 통째로 사라져서, 검사가 실제로 돌았는지 사람이 볼 수 없다
+# (스위트는 종료 코드만 보므로 통과로 지나간다).
+sys.stdout.flush()
 os._exit(0)
