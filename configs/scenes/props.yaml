@@ -1,5 +1,5 @@
 # 소품 인벤토리 -- scene metadata 의 objects/distractors 에 들어가는
-# instance ID 의 정본. 읽는 코드는 gello/props.py.
+# instance ID 의 정본. 읽는 코드는 gello/scene/props.py.
 #
 # 규칙 (Notion 프로토콜 §3):
 #   - 물리적 instance 마다 안정적인 ID. 같은 색 두 개(파란 컵 x2, 하얀 컵 x2)를
@@ -47,7 +47,7 @@ props:
   - {id: OBJ-BOWLL-YEL-01, category: large_bowl, color: yellow, material: melamine}
   - {id: OBJ-BOWLL-WHT-01, category: large_bowl, color: white, material: melamine}
   - {id: OBJ-BOWLL-BLU-01, category: large_bowl, color: blue, material: melamine}
-  - {id: OBJ-BOWLL-GRN-01, category: large_bowl, color: green, material: melamine}  # TH melamine salad bowl 20.5cm
+  - {id: OBJ-BOWLL-PIS-01, category: large_bowl, color: pistachio, material: melamine}  # TH melamine salad bowl 20.5cm; 우유 탄 피스타치오 -- green 은 실물보다 진하게 읽혀 2026-09-07 개명 (수집 이력 없음)
 
   # 15cm melamine bowls
   - {id: OBJ-BOWLM-JPN-01, category: bowl, color: blue japanese, material: melamine}  # Japanese wave-pattern melamine bowl, normal size

@@ -239,7 +239,7 @@ def qualifier_case() -> None:
 
     # 기준점이 달라도 같은 컵이면 같은 물체로 풀린다 -- 화면이 글자로
     # 맞추면 엉뚱한 컵을 기본값으로 켠다.
-    a = resolve_reference("the blue cup farthest from the yellow bowl", md, P)
+    a = resolve_reference("the blue cup farthest from the large yellow bowl", md, P)
     b = resolve_reference("the blue cup farthest from the white cup", md, P)
     assert a == b == "OBJ-CUP-BLU-01", (a, b)
 

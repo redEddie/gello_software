@@ -165,7 +165,7 @@ class PlanEditDialog(QDialog):
         it.setData(0, Qt.ItemDataRole.UserRole, row["id"])
         self.tree.addTopLevelItem(it)
         instr = QLineEdit(row["instr"])
-        instr.setPlaceholderText(tr("예) pick up the blue cup and place it on the blue bowl"))
+        instr.setPlaceholderText(tr("예) pick up the blue cup and place it inside the large blue bowl"))
         instr.textChanged.connect(self._check_dups)   # 중복은 저장 전에 보이게
         self.tree.setItemWidget(it, 1, instr)
         spin = QSpinBox()

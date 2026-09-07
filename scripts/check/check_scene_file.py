@@ -316,7 +316,7 @@ def selftest(keep: Path | None) -> None:
     # -- 생성 + 에피소드 3개 (instruction 2종)
     w = SceneWriter(root, metadata=md, collector="tester", known_prop_ids=prop_ids)
     w.set_reference_image(np.zeros((48, 64, 3), dtype=np.uint8))
-    I0 = "pick up the blue cup and place it on the yellow bowl"
+    I0 = "pick up the blue cup and place it inside the large yellow bowl"
     I3 = "open the top drawer"
     _dummy_frames(w, seed=1)
     assert w.save_buffer(w.detach_buffer(), instruction=I0, instruction_id="I000", success=True) == "episode_000"

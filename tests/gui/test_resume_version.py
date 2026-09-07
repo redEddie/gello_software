@@ -57,7 +57,7 @@ def _episode(w, rng):
             ft={k: rng.standard_normal(n).astype(np.float32)
                 for k, n in FT_OBS_FIELDS})
     w.save_buffer(w.detach_buffer(), instruction="pick up the blue cup and "
-                  "place it on the yellow bowl", instruction_id="I000",
+                  "place it inside the large yellow bowl", instruction_id="I000",
                   success=True, collector="t")
 
 
@@ -111,7 +111,7 @@ for _ in range(3):
         commanded_joint_positions=rng.standard_normal(7).astype(np.float32),
         commanded_gripper=0.0)                 # ft 없음 = 1.0.0 모양
 w.save_buffer(w.detach_buffer(), instruction="pick up the blue cup and place "
-              "it on the yellow bowl", instruction_id="I000",
+              "it inside the large yellow bowl", instruction_id="I000",
               success=True, collector="t")
 w.close()
 w2 = SceneWriter(root=root3, scene_id="S000", resume=True,
