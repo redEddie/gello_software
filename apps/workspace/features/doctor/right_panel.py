@@ -16,13 +16,14 @@
 """
 from PyQt6.QtWidgets import (
     QFrame,
-    QGroupBox,
+    QStackedWidget,
     QLabel,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from apps.workspace.shared.collapsible import CollapsibleBox
 from apps.workspace.shared.info import InfoCard
 from gello.gui.i18n import tr
 
@@ -54,6 +55,17 @@ TASK_ACTIONS = (
 )
 
 
+def _buttons(win, box: QVBoxLayout, actions, store: dict) -> None:
+    for name, label, tip in actions:
+        b = QPushButton(tr(label))
+        b.setToolTip(tr(tip))
+        # ops 를 이름으로 늦게 찾는다 -- 패널이 DoctorOps 보다 먼저 생긴다.
+        b.clicked.connect(lambda _c=False, n=name: getattr(win.doctor, n)())
+        b.setEnabled(False)
+        store[name] = b
+        box.addWidget(b)
+
+
 def _rule() -> QFrame:
     """구분선. HLine 의 color: 대신 1px 상자의 background 로 그린다.
 
@@ -65,17 +77,6 @@ def _rule() -> QFrame:
     f.setFixedHeight(1)
     f.setStyleSheet("background:#d0d0d0;")
     return f
-
-
-def _buttons(win, box: QVBoxLayout, actions, store: dict) -> None:
-    for name, label, tip in actions:
-        b = QPushButton(tr(label))
-        b.setToolTip(tr(tip))
-        # ops 를 이름으로 늦게 찾는다 -- 패널이 DoctorOps 보다 먼저 생긴다.
-        b.clicked.connect(lambda _c=False, n=name: getattr(win.doctor, n)())
-        b.setEnabled(False)
-        store[name] = b
-        box.addWidget(b)
 
 
 def _slot(parent: QVBoxLayout, title: str) -> QLabel:
@@ -95,64 +96,71 @@ def _slot(parent: QVBoxLayout, title: str) -> QLabel:
 
 
 def build_doctor_right(win) -> QWidget:
-    """상자 셋. 각 상자의 칸은 늘 같은 순서로 늘 있다.
+    """**중앙 탭마다 자기 쪽**을 갖는다.
 
-        Scene        이 파일의 값 · 소품 고치기
-        Diagnosis    맞지 않는 것 · 수정 영향
-        Instruction  고른 지시문의 값 · 문장 고치기 / 교환 / 빼기
+    닥터의 탭 둘은 하는 일이 다르다 -- 기록 닥터는 고른 scene·지시문을
+    고치고, 진행 닥터는 고른 미달 줄로 데려간다. 우측에 넷을 다 두면 진행
+    탭에서 앞의 셋이 고를 것도 없이 비어 있다 (2026-09-07 사용자 지적).
+    활동탭마다 자기 구현이라는 규칙을 중앙 탭까지 민 것이다.
 
-    **진단이 따로인 이유**: 맞지 않는 것은 scene 의 기록과 지시문의 문장을
-    맞대어 나온 결과라 어느 한쪽에 속하지 않는다 (2026-09-07 사용자).
-    Scene 상자에 넣으면 "이 파일의 값" 과 "두 쪽을 맞댄 판단" 이 한 상자에
-    섞인다.
+    상자는 여닫힌다. 우측은 세로로 길어지는데, 지금 안 보는 상자 때문에
+    스크롤하는 것이 아깝다.
     """
+    stack = QStackedWidget()
+    win.doctor_right_pages = {}
+    for key, build in (("doc_record", _record_page),
+                       ("doc_progress", _progress_page)):
+        win.doctor_right_pages[key] = stack.count()
+        stack.addWidget(build(win))
+    win.doctor_right_stack = stack
+    return stack
+
+
+def _record_page(win) -> QWidget:
     w = QWidget()
     col = QVBoxLayout(w)
     col.setContentsMargins(0, 0, 0, 0)
 
-    # --- Scene ---------------------------------------------------------
-    sbox = QGroupBox(tr("Scene"))
-    sv = QVBoxLayout(sbox)
-    sv.setContentsMargins(6, 6, 6, 6)
+    box = CollapsibleBox(tr("Scene"))
     win.doctor_scene_card = InfoCard()
-    sv.addWidget(win.doctor_scene_card)
-    sv.addWidget(_rule())
+    box.body.addWidget(win.doctor_scene_card)
+    box.body.addWidget(_rule())
     win.doctor_scene_buttons = {}
-    _buttons(win, sv, SCENE_ACTIONS, win.doctor_scene_buttons)
-    col.addWidget(sbox)
+    _buttons(win, box.body, SCENE_ACTIONS, win.doctor_scene_buttons)
+    col.addWidget(box)
 
-    # --- Diagnosis -----------------------------------------------------
-    dbox = QGroupBox(tr("Diagnosis"))
-    dv = QVBoxLayout(dbox)
-    dv.setContentsMargins(6, 6, 6, 6)
-    win.doctor_scene_diag = _slot(dv, tr("맞지 않는 것"))
-    win.doctor_scene_cost = _slot(dv, tr("수정 영향"))
-    col.addWidget(dbox)
+    box = CollapsibleBox(tr("Diagnosis"))
+    win.doctor_scene_diag = _slot(box.body, tr("맞지 않는 것"))
+    win.doctor_scene_cost = _slot(box.body, tr("수정 영향"))
+    col.addWidget(box)
 
-    # --- Shortfall (진행 닥터) -----------------------------------------
-    pbox = QGroupBox(tr("Shortfall"))
-    pv = QVBoxLayout(pbox)
-    pv.setContentsMargins(6, 6, 6, 6)
-    win.progress_card = InfoCard()
-    pv.addWidget(win.progress_card)
-    win.progress_note = _slot(pv, tr("이어 찍으면"))
-    pv.addWidget(_rule())
-    win.progress_buttons = {}
-    _buttons(win, pv, SHORTFALL_ACTIONS, win.progress_buttons)
-    win.progress_box = pbox
-    col.addWidget(pbox)
-
-    # --- Instruction ---------------------------------------------------
-    tbox = QGroupBox(tr("Instruction"))
-    tv = QVBoxLayout(tbox)
-    tv.setContentsMargins(6, 6, 6, 6)
+    box = CollapsibleBox(tr("Instruction"))
     win.doctor_task_card = InfoCard()
-    tv.addWidget(win.doctor_task_card)
-    win.doctor_task_diag = _slot(tv, tr("맞지 않는 것"))
-    tv.addWidget(_rule())
+    box.body.addWidget(win.doctor_task_card)
+    win.doctor_task_diag = _slot(box.body, tr("맞지 않는 것"))
+    box.body.addWidget(_rule())
     win.doctor_task_buttons = {}
-    _buttons(win, tv, TASK_ACTIONS, win.doctor_task_buttons)
-    col.addWidget(tbox)
+    _buttons(win, box.body, TASK_ACTIONS, win.doctor_task_buttons)
+    col.addWidget(box)
+
+    col.addStretch(1)
+    return w
+
+
+def _progress_page(win) -> QWidget:
+    w = QWidget()
+    col = QVBoxLayout(w)
+    col.setContentsMargins(0, 0, 0, 0)
+
+    box = CollapsibleBox(tr("Shortfall"))
+    win.progress_card = InfoCard()
+    box.body.addWidget(win.progress_card)
+    win.progress_note = _slot(box.body, tr("이어 찍으면"))
+    box.body.addWidget(_rule())
+    win.progress_buttons = {}
+    _buttons(win, box.body, SHORTFALL_ACTIONS, win.progress_buttons)
+    win.progress_box = box
+    col.addWidget(box)
 
     col.addStretch(1)
     return w

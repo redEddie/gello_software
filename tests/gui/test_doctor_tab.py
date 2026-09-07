@@ -195,6 +195,27 @@ def main() -> None:
         assert not bad, f"화면에 'slot' 이 남아 있다: {bad}"
         print("6. 화면에 'slot' 없음 OK")
 
+        # 6b. 우측이 **중앙 탭**을 따라간다 + 상자가 여닫힌다
+        from apps.workspace.shared.collapsible import CollapsibleBox
+        from apps.workspace.shared.tabs import show_center_tab as _tab
+
+        _boxes = lambda: [b._title for b in                      # noqa: E731
+                          win.doctor_right_stack.currentWidget()
+                          .findChildren(CollapsibleBox)]
+        assert _boxes() == ["Scene", "Diagnosis", "Instruction"], _boxes()
+        _tab(win, "doc_progress")
+        # 진행 탭에서는 고를 것이 없는 상자를 두지 않는다
+        assert _boxes() == ["Shortfall"], _boxes()
+        _tab(win, "doc_record")
+        assert _boxes() == ["Scene", "Diagnosis", "Instruction"], _boxes()
+        _b = win.doctor_right_stack.currentWidget().findChildren(
+            CollapsibleBox)[0]
+        assert _b.is_open() and "▾" in _b._head.text()
+        _b.set_open(False)
+        assert not _b.is_open() and "▸" in _b._head.text()
+        _b.set_open(True)
+        print("6b. 우측이 중앙 탭을 따라가고 상자가 여닫힌다 OK")
+
         # 7. 우측 패널이 닥터 자기 페이지다 (공용 상자를 고르는 게 아니다)
         from apps.workspace.shell.right_builders import RIGHT_BUILDERS
 

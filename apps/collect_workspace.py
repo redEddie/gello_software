@@ -465,6 +465,10 @@ class WorkspaceWindow(QMainWindow):
                 self.cameras.cloud_worker.mode = self.cameras.depth_consumer
         elif self.cameras.cloud_worker is not None:
             self.depth_ops.stop_cloud()
+        # 닥터의 우측은 **중앙 탭**을 따라간다 (기록/진행이 하는 일이 다르다).
+        idx = getattr(self, "doctor_right_pages", {}).get(key)
+        if idx is not None:
+            self.doctor_right_stack.setCurrentIndex(idx)
         if key == "scene":
             # Scene 탭은 [새 Scene 구성...] 을 거치지 않고 탭을 눌러서도
             # 열린다. 그 경로에서는 구성기가 데이터셋 경로를 못 받아
