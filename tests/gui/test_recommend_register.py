@@ -167,9 +167,12 @@ assert cb.toolTip(), "왜 못 하는지 설명이 없다"
 print("계획 미선택 시 등록 불가 이유를 보여준다 OK")
 
 # ---- 7. 워크플로 ②: 물체는 사람이 고르고 배치만 추천 (2026-09-06) ----
+# 버튼 자체는 우측 패널에 있고(2026-09-07), 누를 수 있는지를 아는 것은
+# composer 다 -- 여기서는 그 계약만 본다.
 nd4 = SceneComposer(None, "S103")
-assert not nd4.layout_btn.isEnabled(), "아무것도 안 골랐는데 눌린다"
-assert "이상 체크" in nd4.layout_btn.toolTip(), nd4.layout_btn.toolTip()
+ok, why = nd4.layout_button_state()
+assert not ok, "아무것도 안 골랐는데 눌린다"
+assert "이상 체크" in why, why
 picked_ids = ["OBJ-CUP-WHT-01", "OBJ-CUP-BLU-01",
               "OBJ-BOWLS-WHT-01", "OBJ-DRAWER-01"]
 nd4.prop_list.blockSignals(True)
@@ -179,7 +182,8 @@ for i in range(nd4.prop_list.count()):
         it.setCheckState(cw.Qt.CheckState.Checked)
 nd4.prop_list.blockSignals(False)
 nd4._refresh()
-assert nd4.layout_btn.isEnabled(), "4개를 골랐는데 못 누른다"
+ok, _why = nd4.layout_button_state()
+assert ok, "4개를 골랐는데 못 누른다"
 
 ldlg = RecommendDialog(None, [base], props, "S997", plan_path=plan_copy,
                        objects=picked_ids)

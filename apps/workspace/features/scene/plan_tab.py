@@ -15,16 +15,15 @@ scene 마다 Connect/Disconnect 하는 운용이라 수집 **중**에 다른 sce
 단계가, 보고 있던 그 줄을 누르는 한 번이 됐다.
 
 계획 파일(instructions.json)의 이름은 화면에 적지 않는다. 지시문이 그 파일
-하나로 통일된 뒤로는 고를 것이 아니고, 편집만 필요하다 -- 그 버튼이 여기 있다.
+하나로 통일된 뒤로는 고를 것이 아니고, 편집만 필요하다 -- [계획 편집...] 과
+[현황 새로고침] 은 우측 패널에 있다 (2026-09-07: 동작은 오른쪽에 모은다).
 
 숫자의 정본은 scene 파일이다 (계획 파일에는 카운트가 없다 -- 두 개의 진실
 금지). 채우는 것은 ScenePlanningOps.refresh_plan_progress 하나다.
 """
 from PyQt6.QtWidgets import (
-    QHBoxLayout,
     QHeaderView,
     QLabel,
-    QPushButton,
     QTreeWidget,
     QVBoxLayout,
     QWidget,
@@ -55,24 +54,4 @@ def build_plan_tab(win) -> QWidget:
         lambda item, _c: win.scene_planning.on_plan_row_picked(item))
     col.addWidget(win.plan_progress_tree, 1)
 
-    row = QHBoxLayout()
-    # 계획 편집은 여기다 (2026-09-06: Configure 왼쪽에서 이동). 표를 보다가
-    # "이 지시문의 목표를 올려야겠다" 고 생각하는 자리가 바로 여기다.
-    edit = QPushButton(tr("계획 편집..."))
-    edit.setToolTip(tr("이 데이터셋의 지시문과 목표 개수를 고칩니다 "
-                       "(저장할 때 규칙을 검사합니다).\n"
-                       "계획이 없으면 만들고 엽니다."))
-    edit.clicked.connect(win.scene_planning.on_edit_plan)
-    row.addWidget(edit)
-    # [새 계획]·[계획 삭제] 는 뺐다 (2026-09-06 사용자). 편집이 없으면
-    # 만들어 주므로 "새 계획" 은 같은 버튼이 됐고, 삭제는 계획이 필수가 된
-    # 뒤로 데이터셋을 수집 불가로 만드는 버튼이라 자주 쓰는 자리에 둘 것이
-    # 아니다 -- 메뉴 색인(Scene)에는 그대로 있다.
-    row.addStretch(1)
-    refresh = QPushButton(tr("새로고침"))
-    refresh.setToolTip(tr(
-        "계획의 모든 scene 파일을 다시 읽습니다 (파일 수에 비례해 몇백 ms)."))
-    refresh.clicked.connect(win.scene_planning.refresh_plan_progress)
-    row.addWidget(refresh)
-    col.addLayout(row)
     return w

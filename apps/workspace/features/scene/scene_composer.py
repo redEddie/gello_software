@@ -8,14 +8,15 @@
 싶은 것이 옆의 Instruction 탭(이 scene 에 무슨 지시문이 몇 개 남았나)과
 카메라다. 탭이면 오가며 짤 수 있다.
 
-구성이 끝나면 [이 구성으로 시작] 이 그것을 Configure 의 대기 scene 으로
-얹는다 -- 실제 파일은 Connect 할 때 SceneWriter 가 만든다 (전과 같다).
+**동작 버튼은 여기 없다 -- 우측 패널에 있다** (2026-09-07 사용자 결정,
+규칙의 정본은 layout.build_right). 이 위젯은 "무엇을 짜고 있나" 를 그리고
+그 상태를 ``changed`` 로 알린다. 만들기·추천을 누르는 자리는 오른쪽이다.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QFormLayout,
@@ -41,12 +42,19 @@ from gello.scene.scene_format import (
     describe_scene,
     iter_scene_files,
     read_scene_metadata,
+    scene_filename,
 )
 from gello.scene.scene_rules import check, object_count_range
 
 
 class SceneComposer(QWidget):
-    """소품 선택 + 3×3 배치 + 규칙 lint. 탭이 이것을 담는다."""
+    """소품 선택 + 3×3 배치 + 규칙 lint. 탭이 이것을 담는다.
+
+    동작 버튼은 우측 패널이 갖는다. 이 위젯은 구성이 바뀔 때마다
+    ``changed`` 를 쏘고, 패널은 그때 버튼의 상태를 다시 묻는다."""
+
+    #: 체크·배치·설명·scene 번호 중 하나라도 바뀌었다.
+    changed = pyqtSignal()
 
     def __init__(self, parent=None, scene_id: str = "S000",
                  data_root: "Path | None" = None,
@@ -72,17 +80,9 @@ class SceneComposer(QWidget):
             "③ 오른쪽 격자 칸을 눌러 그 존에 배치  ([0,0]=왼쪽 위)"))
         hint.setWordWrap(True)
         hrow.addWidget(hint, 1)
-        # Action 계층은 영어 (i18n.py 정책) -- 두 버튼이 나란히 있어 한쪽만
-        # 영어면 오히려 섞여 보인다.
-        rec_btn = QPushButton(tr("Recommend scene..."))
-        rec_btn.setToolTip(tr(
-            "기존 scene 들과 가장 다른 소품 조합·배치 3안을 추천받아\n"
-            "체크·배치를 자동으로 채웁니다 (#33, 다양성 최대화)."))
-        rec_btn.clicked.connect(self._on_recommend)
-        hrow.addWidget(rec_btn)
-        self.layout_btn = QPushButton(tr("Recommend layout..."))
-        self.layout_btn.clicked.connect(self._on_recommend_layout)
-        hrow.addWidget(self.layout_btn)
+        # [Recommend scene...]·[Recommend layout...]·[만들기] 는 우측 패널로
+        # 갔다 (2026-09-07). 이 탭에는 격자 칸 버튼만 9개가 남는데, 그것들은
+        # "일" 이 아니라 직접 조작이다 -- 누르면 그 칸에 물체가 놓인다.
         layout.addLayout(hrow)
 
         mid = QHBoxLayout()
@@ -181,10 +181,11 @@ class SceneComposer(QWidget):
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.picked is not None:
             self._apply_recommendation(dlg.picked)
 
-    def _on_recommend(self) -> None:
+    def open_recommend_scene(self) -> None:
+        """소품 조합부터 통째로 추천받는다 (우측 패널이 부른다)."""
         self._open_recommend(None)
 
-    def _on_recommend_layout(self) -> None:
+    def open_recommend_layout(self) -> None:
         """체크한 물체는 그대로 두고 배치만 추천받는다."""
         self._open_recommend(self._checked_ids())
 
@@ -224,8 +225,15 @@ class SceneComposer(QWidget):
         )
 
     def _refresh(self, *_args) -> None:
+        try:
+            self._redraw()
+        finally:
+            # 우측 패널의 버튼은 이 신호로만 산다 -- 미리보기가 실패해도
+            # 반드시 쏜다. 안 그러면 버튼이 옛 상태로 굳는다.
+            self.changed.emit()
+
+    def _redraw(self) -> None:
         checked = set(self._checked_ids())
-        self._update_layout_btn(len(checked))
         self._placements = {k: v for k, v in self._placements.items()
                             if k in checked}
         for (r, c), b in self.zone_buttons.items():
@@ -250,21 +258,53 @@ class SceneComposer(QWidget):
         except Exception as e:  # noqa: BLE001
             self.lint_label.setText(tr("규칙 검사 오류: {e}").format(e=e))
 
-    def _update_layout_btn(self, n: int) -> None:
-        """왜 못 누르는지를 그 자리에서 말한다 (숨기지 않는다)."""
+    # ---- 우측 패널이 묻는 것 -------------------------------------------
+    #
+    # 버튼은 오른쪽에 있지만 **누를 수 있는지를 아는 것은 여기**다. 패널은
+    # ``changed`` 를 받을 때마다 아래 둘을 물어 상태를 갈아 끼운다. 규칙은
+    # 하나다: 못 누르면 왜 못 누르는지를 툴팁이 말한다 (숨기지 않는다).
+
+    @property
+    def scene_id(self) -> str:
+        """지금 짜고 있는 scene 번호 -- 버튼 라벨에 들어간다."""
+        return self._scene_id
+
+    def create_button_state(self) -> tuple:
+        """[만들기] 의 (누를 수 있나, 툴팁).
+
+        여기서 ``validate`` 를 미리 돌리는 이유: 전에는 누른 **뒤에**
+        대화상자로 야단쳤다. 못 누르는 버튼이 왜 못 누르는지 말하는 편이
+        누르게 해 놓고 거절하는 것보다 낫다.
+        """
+        try:
+            md = self._build()
+        except Exception as e:  # noqa: BLE001
+            return False, tr("구성을 읽지 못했습니다: {e}").format(e=e)
+        try:
+            from gello.scene.props import active_prop_ids
+
+            md.validate(known_prop_ids=active_prop_ids())
+        except ValueError as e:
+            return False, str(e)
+        return True, tr(
+            "{f} 를 지금 만듭니다 (에피소드 0개).\n"
+            "여러 개를 미리 만들어 두고 나중에 골라 찍을 수 있습니다.\n"
+            "잘못 만들었으면 Dataset 의 [파일 삭제] 로 지웁니다."
+        ).format(f=scene_filename(self._scene_id))
+
+    def layout_button_state(self) -> tuple:
+        """[Recommend layout...] 의 (누를 수 있나, 툴팁)."""
+        n = len(self._checked_ids())
         lo, _hi = object_count_range()
         cap = 3 * 3
-        ok = lo <= n <= cap
-        self.layout_btn.setEnabled(ok)
-        if ok:
-            self.layout_btn.setToolTip(tr(
-                "체크한 물체 {n}개는 그대로 두고, 규칙을 만족하는 배치 전부에서\n"
-                "기존 scene 들과 가장 다른 배치 3안을 추천받습니다.").format(n=n))
-        elif n < lo:
-            self.layout_btn.setToolTip(tr(
+        if n < lo:
+            return False, tr(
                 "물체를 {lo}개 이상 체크해야 배치를 추천할 수 있습니다 "
-                "(지금 {n}개).").format(lo=lo, n=n))
-        else:
-            self.layout_btn.setToolTip(tr(
-                "물체 {n}개는 3×3 격자 {cap}칸보다 많습니다.")
-                .format(n=n, cap=cap))
+                "(지금 {n}개).").format(lo=lo, n=n)
+        if n > cap:
+            return False, tr(
+                "물체 {n}개는 3×3 격자 {cap}칸보다 많습니다."
+            ).format(n=n, cap=cap)
+        return True, tr(
+            "체크한 물체 {n}개는 그대로 두고, 규칙을 만족하는 배치 전부에서\n"
+            "기존 scene 들과 가장 다른 배치 3안을 추천받습니다.").format(n=n)

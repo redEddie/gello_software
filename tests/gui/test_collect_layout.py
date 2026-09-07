@@ -290,10 +290,22 @@ finally:
     plan_file.write_text(saved, encoding="utf-8")
 # 손으로 시작 지시문을 칠 수 없다
 assert win.lang_edit.isReadOnly() and win.scene_iid_edit.isReadOnly()
-# 계획 버튼은 [계획 편집] 하나뿐이다 (새 계획·삭제는 메뉴 색인에만)
+# 동작은 우측 패널에 모은다 (2026-09-07) -- 가운데 탭에는 남지 않는다.
+# 정본은 layout.build_right 의 주석.
 plan_btns = [b.text() for b in win.center_tab_widgets["instruction"].findChildren(QPushButton)]
-assert plan_btns == ["계획 편집...", "새로고침"], plan_btns
-print("12b. 계획 필수 + 안전 토글 툴바 이동 + 계획 버튼 하나 OK")
+assert plan_btns == [], f"Instruction 탭에 아직 동작 버튼이 있다: {plan_btns}"
+scene_btns = [b.text() for b in win.center_tab_widgets["scene"].findChildren(QPushButton)]
+assert all(t == "" for t in scene_btns), \
+    f"Scene 탭에 격자 칸(라벨 없음) 말고 다른 버튼이 있다: {scene_btns}"
+right_conf = win.right_stack.widget(win.right_pages["configure"])
+assert right_conf is not win.right_stack.widget(win.right_pages["collect"]), \
+    "Configure 가 아직 세션 정보 페이지를 함께 쓴다"
+right_btns = [b.text() for b in right_conf.findChildren(QPushButton)]
+for want in ("Recommend scene...", "Recommend layout...", "계획 편집...",
+             "현황 새로고침"):
+    assert want in right_btns, f"[{want}] 가 우측 패널에 없다: {right_btns}"
+assert any("만들기" in t for t in right_btns), right_btns
+print("12b. 계획 필수 + 안전 토글 툴바 이동 + 동작은 우측 패널 OK")
 
 # ------------------------------- 13. Instruction 탭 줄 = scene + 지시문 설정
 win._set_activity("configure")
@@ -339,8 +351,20 @@ def _compose(objs, zones):
                          else Qt.CheckState.Unchecked)
     comp._placements = dict(zones)
     comp._refresh()
+    assert win.scene_create_btn.isEnabled(), \
+        f"유효한 구성인데 만들기가 죽어 있다: {win.scene_create_btn.toolTip()}"
     win.scene_ops.on_compose_done()
 
+
+# 아무것도 안 골랐으면 [만들기] 는 못 누르고, **왜 못 누르는지**를 말한다
+# (누르게 해 놓고 대화상자로 거절하지 않는다 -- 2026-09-07).
+for i in range(win.scene_composer.prop_list.count()):
+    win.scene_composer.prop_list.item(i).setCheckState(Qt.CheckState.Unchecked)
+win.scene_composer._placements = {}
+win.scene_composer._refresh()
+assert not win.scene_create_btn.isEnabled(), "빈 구성인데 만들기가 눌린다"
+assert win.scene_create_btn.toolTip().strip(), "왜 못 누르는지 말하지 않는다"
+assert "S001" in win.scene_create_btn.text(), win.scene_create_btn.text()
 
 RED = "OBJ-CUP-RED-01"
 _compose([CUP, BOWL], {CUP: [0, 1], BOWL: [2, 0]})
