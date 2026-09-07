@@ -85,6 +85,7 @@
       "Scene",
       "기록 닥터",
       "진행 닥터",
+      "스키마 닥터",
       "Playback",
       "Analysis",
       "Trim",
@@ -179,6 +180,7 @@
     "scene",
     "doc_record",
     "doc_progress",
+    "doc_schema",
     "playback",
     "analysis",
     "trim",
@@ -210,6 +212,7 @@
     "doctor": [
       "doc_record",
       "doc_progress",
+      "doc_schema",
       "live"
     ],
     "stats": [

@@ -11,7 +11,12 @@ from pathlib import Path
 
 import h5py
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QMessageBox, QTreeWidgetItem
+from PyQt6.QtWidgets import (
+    QDialog,
+    QInputDialog,
+    QMessageBox,
+    QTreeWidgetItem,
+)
 
 from apps.workspace.features.doctor.page import fill_scene_rows
 from apps.workspace.features.doctor.object_dialog import ObjectDialog
@@ -29,6 +34,13 @@ from gello.scene.instruction_grammar import (
 )
 from gello.scene.props import props_by_id
 from gello.scene.collection_progress import scan
+from gello.data.dataset_schema import schema_version_key
+from gello.scene.schema_doctor import (
+    diagnose,
+    fill_payload,
+    known_payload,
+    restamp,
+)
 from gello.scene.scene_format import (
     iter_scene_files,
     read_reference_image,
@@ -55,6 +67,7 @@ class DoctorOps:
         self._suggestion = None
         self._task = None          # (instruction_id, 문장)
         self._shortfall = None     # 진행 닥터에서 고른 줄
+        self._diag = None          # 스키마 닥터에서 고른 줄
 
     # ------------------------------------------------------------- 검사
     def _root(self) -> Path:
@@ -721,3 +734,192 @@ class DoctorOps:
             self.refresh_progress()
             return True
         return False
+
+    # ====================================================== 스키마 닥터
+    def refresh_schema(self) -> None:
+        """모든 scene 의 데이터세트 버전과 내용을 대조한다."""
+        win = self.win
+        tree = getattr(win, "schema_tree", None)
+        if tree is None:
+            return
+        tree.clear()
+        self._diag = None
+        root = self._root()
+        try:
+            files = iter_scene_files(root)
+        except Exception as e:  # noqa: BLE001
+            win.schema_title.setText(tr("경로 오류"))
+            win.schema_hint.setText(str(e))
+            return
+        spread: dict = {}
+        bad = 0
+        for path in files:
+            d = diagnose(path)
+            if d.error:
+                state = tr("못 읽음")
+            elif d.ok:
+                state = "—"
+            else:
+                state = tr("어긋남")
+                bad += 1
+            it = QTreeWidgetItem([d.scene_id, str(d.episodes), d.stamped,
+                                  d.satisfied or "?", state])
+            it.setData(0, Qt.ItemDataRole.UserRole, d)
+            tree.addTopLevelItem(it)
+            if not d.error:
+                spread.setdefault(d.stamped, []).append(d.scene_id)
+        win.schema_title.setText(tr(
+            "scene {n}개 · 어긋남 {b}개 · {s}").format(
+                n=len(files), b=bad,
+                s=" · ".join(f"{v} {len(ids)}개"
+                             for v, ids in sorted(spread.items()))))
+        # 버전이 섞여 있는 것 자체는 문제가 아니다 -- 그렇게 말해 둔다.
+        win.schema_hint.setText(tr(
+            "버전이 섞여 있는 것은 문제가 아닙니다 (변환기가 여분 필드를 "
+            "허용합니다). 고칠 것은 '찍힘' 과 '내용' 이 다른 줄입니다.")
+            if not bad else tr(
+            "'찍힘' 과 '내용' 이 다른 줄은 검증이 실패합니다. 줄을 눌러 "
+            "무엇이 빠졌는지 보세요."))
+        self._show_schema_detail()
+
+    def on_schema_picked(self, item) -> None:
+        self._diag = item.data(0, Qt.ItemDataRole.UserRole) if item else None
+        self._show_schema_detail()
+
+    def _show_schema_detail(self) -> None:
+        win = self.win
+        card = getattr(win, "schema_card", None)
+        if card is None:
+            return
+        d = self._diag
+        miss, plan, buttons = (win.schema_missing, win.schema_plan,
+                               win.schema_buttons)
+        if d is None:
+            card.set_fields([(tr("Scene"), tr("미선택"))])
+            miss.setText("—")
+            plan.setText("—")
+            for b in buttons.values():
+                b.setEnabled(False)
+            return
+        card.set_fields([
+            (tr("Scene"), d.scene_id),
+            (tr("에피소드"), str(d.episodes)),
+            (tr("찍힘"), d.stamped or "?"),
+            (tr("내용"), d.satisfied or "?"),
+        ])
+        if d.error:
+            miss.setText(d.error)
+            plan.setText(tr("읽지 못해 판단할 수 없습니다."))
+            for b in buttons.values():
+                b.setEnabled(False)
+            return
+        if not d.missing:
+            miss.setText(tr("없음"))
+        else:
+            lines = []
+            for k, n in sorted(d.missing.items()):
+                lines.append(k if n < 0 else
+                             tr("{k} — 에피소드 {n}개").format(k=k, n=n))
+            miss.setText("<br>".join(lines))
+        # **양방향이다.** 올리는 것과 내리는 것은 뜻이 정반대라 안내도 갈라야
+        # 한다 -- 내리기는 "사실에 맞춘다", 올리기는 "이미 갖춘 것을 제대로
+        # 알린다" 이고, 뒤섞으면 조작자가 무엇을 누르는지 모른다.
+        if d.can_restamp:
+            up = schema_version_key(d.satisfied) > schema_version_key(
+                d.stamped or "knu-0.0.0")
+            win.schema_buttons["align_version"].setText(
+                tr("데이터세트 버전 올리기") if up
+                else tr("데이터세트 버전 내리기"))
+            plan.setText(tr(
+                "내용이 이미 {b} 를 만족합니다 — {a} 에서 {b} 로 올리면 그 "
+                "필드들이 제대로 알려집니다. 잃는 것은 없습니다.")
+                .format(a=d.stamped or "?", b=d.satisfied) if up else tr(
+                "내용은 {b} 까지만 만족합니다 — {a} 에서 {b} 로 내려 사실에 "
+                "맞춥니다. 에피소드도, 파일에 있는 필드도 그대로입니다.")
+                .format(a=d.stamped or "?", b=d.satisfied))
+        elif d.missing:
+            plan.setText(tr(
+                "내용이 만족하는 버전이 없습니다. 버전을 바꿔서는 못 "
+                "고칩니다 — 빠진 것을 채우거나 그 에피소드를 지워야 합니다."))
+        else:
+            plan.setText(tr("데이터세트 버전이 내용과 맞습니다."))
+            win.schema_buttons["align_version"].setText(
+                tr("데이터세트 버전 맞추기"))
+        buttons["align_version"].setEnabled(d.can_restamp)
+        # 채우기는 **빠진 것이 부하 모델뿐일 때만**. 에피소드에 관측이 빠진
+        # 것은 값을 넣어 메울 수 없다 -- 그건 지우는 수밖에 없다.
+        only_payload = bool(d.missing) and all(
+            k.startswith("metadata/payload") for k in d.missing)
+        buttons["fill_payload"].setEnabled(only_payload)
+
+    def align_version(self) -> None:
+        win = self.win
+        d = self._diag
+        if d is None or not d.can_restamp:
+            return
+        if win.worker is not None:
+            QMessageBox.information(win, tr("수집 중"),
+                                    tr("세션을 끝낸 뒤 고치세요."))
+            return
+        up = schema_version_key(d.satisfied) > schema_version_key(
+            d.stamped or "knu-0.0.0")
+        ok = QMessageBox.question(
+            win, tr("데이터세트 버전 올리기") if up
+            else tr("데이터세트 버전 내리기"),
+            tr("{sid} 의 데이터세트 버전을 {a} → {b} 로 바꿉니다.\n\n{why}")
+            .format(sid=d.scene_id, a=d.stamped or "?", b=d.satisfied,
+                    why=tr("내용이 이미 그 버전을 만족합니다 — 갖춘 것을 "
+                           "제대로 알리게 됩니다. 잃는 것은 없습니다.") if up
+                    else tr("에피소드는 건드리지 않고, 파일에 있는 필드도 "
+                            "그대로입니다. 버전만 내용에 맞춥니다.")))
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            restamp(self._path(d.scene_id), d.satisfied)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(win, tr("버전 변경 실패"), str(e))
+            return
+        win.log(f"[닥터] {d.scene_id} 데이터세트 버전 {d.stamped} → {d.satisfied}")
+        self.refresh_schema()
+
+    def fill_payload(self) -> None:
+        """빠진 부하 모델을 채우고 그 자리에서 다시 찍는다.
+
+        기본값은 **같은 데이터셋의 다른 scene 에 적힌 값**이다. 추측이 아니라
+        같은 리그에서 같은 시기에 찍은 파일에 남아 있는 사실이고, 그 출처를
+        화면에 적어 사람이 확인하게 한다 (#47: "조작자가 값과 그 출처를
+        대야 한다"). 여러 값이 섞여 있으면 기본값을 주지 않는다.
+        """
+        win = self.win
+        d = self._diag
+        if d is None:
+            return
+        if win.worker is not None:
+            QMessageBox.information(win, tr("수집 중"),
+                                    tr("세션을 끝낸 뒤 고치세요."))
+            return
+        known = known_payload(self._root())
+        if known is None:
+            QMessageBox.information(win, tr("기본값 없음"), tr(
+                "이 데이터셋에 적힌 부하 모델이 없거나 여러 값이 섞여 "
+                "있습니다. 수집 당시 값을 직접 확인해 넣어야 합니다."))
+            return
+        mass, com = known
+        text, ok = QInputDialog.getText(
+            win, tr("부하 모델 채우기"),
+            tr("{sid} 에 부하 모델을 적습니다.\n\n"
+               "아래는 이 데이터셋의 다른 scene 에 적힌 값입니다 — 수집 당시와 "
+               "같은지 확인하세요.\n형식: 질량, x, y, z").format(sid=d.scene_id),
+            text=f"{mass}, {com[0]}, {com[1]}, {com[2]}")
+        if not ok:
+            return
+        try:
+            parts = [float(x) for x in text.replace(" ", "").split(",")]
+            if len(parts) != 4:
+                raise ValueError("질량과 무게중심 셋, 모두 넷이 필요합니다")
+            got = fill_payload(self._path(d.scene_id), parts[0], parts[1:])
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(win, tr("채우지 못했습니다"), str(e))
+            return
+        win.log(f"[닥터] {d.scene_id} 부하 모델 채움 → 버전 {got}")
+        self.refresh_schema()

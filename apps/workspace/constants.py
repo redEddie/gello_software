@@ -73,6 +73,7 @@ CENTER_TABS = (
     ("scene", "Scene"),
     ("doc_record", "기록 닥터"),
     ("doc_progress", "진행 닥터"),
+    ("doc_schema", "스키마 닥터"),
     ("playback", "Playback"),
     ("analysis", "Analysis"),
     ("trim", "Trim"),
@@ -104,10 +105,9 @@ CENTER_TABS_BY_ACTIVITY = {
     "configure": ("instruction", "scene", "live"),
     "collect": ("live",),
     "dataset": ("live", "playback", "analysis", "trim", "gallery"),
-    # 닥터가 늘면 여기에 doc_schema(#47) 가 붙는다.
     # 활동탭은 하나로 둔다 -- 운용자에게는 "어디가 잘못됐나" 라는 하나의
     # 질문이라 세 군데를 뒤지게 하면 안 된다 (2026-09-07 사용자 결정).
-    "doctor": ("doc_record", "doc_progress", "live"),
+    "doctor": ("doc_record", "doc_progress", "doc_schema", "live"),
     "stats": ("live", "playback", "analysis", "trim", "gallery"),
     "upload": ("live",),
     "settings": ("live",),

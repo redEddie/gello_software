@@ -32,9 +32,16 @@ TMP = Path(tempfile.mkdtemp(prefix="resume_ver_"))
 LAYOUT = {"grid": [3, 3], "placements": {"OBJ-CUP-BLU-01": {"zone": [0, 0]}}}
 
 
-def _meta(version):
-    return SceneMetadata(scene_id="S000", objects=["OBJ-CUP-BLU-01"],
-                         layout=LAYOUT, station="t", dataset_version=version)
+def _meta(version, payload: bool = True):
+    """payload 는 기본으로 넣는다 -- knu-1.2.0 이 그것을 요구하고, 없이 그
+    버전을 찍는 것은 2026-09-07 부터 막혀 있다 (파일이 갖지 않은 필드를
+    가졌다고 주장하는 상태였고, 실물에서 57 에피소드가 그렇게 됐다).
+    없는 경우를 보고 싶으면 payload=False 로 부른다."""
+    return SceneMetadata(
+        scene_id="S000", objects=["OBJ-CUP-BLU-01"],
+        layout=LAYOUT, station="t", dataset_version=version,
+        payload_mass=0.85 if payload else None,
+        payload_com=[-0.01, 0.0, 0.03] if payload else None)
 
 
 def _episode(w, rng):
@@ -118,7 +125,9 @@ print("4 통과: 기존 에피소드가 새 버전을 못 갖추면 도장을 �
 # 관측만 보고 올리면, 도장은 knu-1.2.0 인데 그 버전이 요구하는 부하 모델이
 # 없는 파일이 된다 -- 고치려던 것과 똑같은 모양의 결함이다.
 root4 = TMP / "nometa"
-w = SceneWriter(root=root4, metadata=_meta("knu-1.1.1"))
+# 부하가 **없는** 1.1.1 파일이어야 한다 -- 있으면 1.2.0 이 이미 만족되어
+# 올리는 것이 옳고, 이 검사가 보려는 상황이 아니다.
+w = SceneWriter(root=root4, metadata=_meta("knu-1.1.1", payload=False))
 w.close()
 w2 = SceneWriter(root=root4, scene_id="S000", resume=True,
                  session_version="knu-1.2.0")            # 부하를 안 준다

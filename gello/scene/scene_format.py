@@ -287,6 +287,28 @@ def _episode_summary(name: str, grp: h5py.Group) -> dict:
 
 
 # ------------------------------------------------------------------- writer
+def _stampable_version(want: str, has_payload: bool) -> str:
+    """찍어도 되는 가장 높은 버전. 못 채우는 요구가 있으면 한 단계 내린다.
+
+    지금 파일 생성 시점에 모르는 것은 부하 모델(payload)뿐이라 그것만 본다 --
+    나머지 요구(관측·attrs)는 이 세션이 쓰는 값이라 항상 채워진다. 새 요구가
+    생기면 여기에 조건을 더한다.
+    """
+    from gello.data.dataset_schema import SCHEMA_FIELDS
+
+    want = normalize_schema_version(want)
+    if has_payload or want not in SCHEMA_FIELDS:
+        return want
+    need = SCHEMA_FIELDS[want].get("metadata_attrs", ())
+    if META_PAYLOAD_MASS not in need:
+        return want
+    # payload 를 요구하지 않는 가장 높은 버전으로.
+    ok = [v for v, f in SCHEMA_FIELDS.items()
+          if META_PAYLOAD_MASS not in f.get("metadata_attrs", ())
+          and schema_version_key(v) <= schema_version_key(want)]
+    return max(ok, key=schema_version_key) if ok else want
+
+
 class SceneWriter:
     """Owns one ``scene_XXX.hdf5``: one file per scene, one ``episode_NNN``
     per demonstration, instruction 은 에피소드마다 다를 수 있다.
@@ -369,6 +391,28 @@ class SceneWriter:
             self.metadata = metadata
             if not metadata.created:
                 metadata.created = _now_iso()
+            # **찍는 버전은 채울 수 있는 것까지다.** 세션 버전이 요구하는
+            # metadata attr 을 못 채우면서 그 도장을 찍으면, 파일이 갖지 않은
+            # 필드를 가졌다고 주장하는 상태가 된다 -- 검증이 통째로 실패하고,
+            # 그것을 만든 조작이 knu-1.1.0 사고였다 (#47).
+            #
+            # 2026-09-07 에 실제로 그렇게 됐다: 로봇이 부하를 못 알려준 세션에서
+            # S017~S019 가 payload 없이 knu-1.2.0 으로 찍혀 57 에피소드가
+            # 검증 불가가 됐다. _resume_version 은 이 검사를 하고 있었는데,
+            # **새 파일 경로에는 없었다.**
+            asked = normalize_schema_version(metadata.dataset_version)
+            metadata.dataset_version = _stampable_version(
+                asked, metadata.payload_mass is not None)
+            if metadata.dataset_version != asked:
+                # **말없이 내리지 않는다.** _resume_version 이 못 올릴 때
+                # 이유를 남기는 것과 같은 이유다 -- 마법사에서 고른 버전과
+                # 파일에 찍힌 버전이 다른데 아무도 말해 주지 않으면, 그것을
+                # 아는 방법이 나중에 검증기를 돌리는 것뿐이 된다.
+                self.version_note = (
+                    f"{asked} 로 만들려 했는데 부하 모델을 몰라 "
+                    f"{metadata.dataset_version} 로 찍었습니다 -- 로봇이 부하를 "
+                    f"알려주지 않았습니다. 나중에 Doctor 에서 채워 올릴 수 "
+                    f"있습니다.")
             self._meta.attrs["scene_id"] = metadata.scene_id
             self._meta.attrs["objects"] = json.dumps(metadata.objects, ensure_ascii=False)
             self._meta.attrs["layout"] = json.dumps(metadata.layout, ensure_ascii=False)

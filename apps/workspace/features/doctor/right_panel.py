@@ -41,6 +41,25 @@ SHORTFALL_ACTIONS = (
      "책상을 위 배치대로 만든 뒤 누르세요."),
 )
 
+#: 스키마 닥터의 조치.
+#:
+#: "스탬프" 라고 부르지 않는다 (2026-09-07 사용자) -- 파일에 적힌 것은
+#: **데이터세트 버전**이고, 그것이 검증·변환·업로드가 읽는 이름이다. 도장은
+#: 구현의 비유일 뿐 조작자가 다루는 대상의 이름이 아니다.
+#:
+#: [버전 맞추기] 는 **양방향**이다. 라벨과 안내는 방향에 따라 화면에서 다시
+#: 쓴다 (_show_schema_detail) -- 올리는 것과 내리는 것은 뜻이 정반대라 같은
+#: 문구로 덮을 수 없다. 내용이 못 따라가는 버전을 찍는 길은 여전히 없다:
+#: 그것이 knu-1.1.0 을 만든 조작이다.
+SCHEMA_ACTIONS = (
+    ("fill_payload", "부하 모델 채우기...",
+     "빠진 부하 모델을 채우고, 그러고 나면 만족하는 버전으로 올립니다. "
+     "같은 데이터셋의 다른 scene 에 적힌 값을 기본으로 보여줍니다."),
+    ("align_version", "데이터세트 버전 맞추기",
+     "파일의 데이터세트 버전을 그 내용이 실제로 만족하는 버전으로 바꿉니다. "
+     "에피소드는 건드리지 않습니다."),
+)
+
 TASK_ACTIONS = (
     ("edit_task_text", "문장 고치기...",
      "동작을 고르고 문장을 고릅니다 (문법이 만든 것만). 이 지시문의 "
@@ -109,7 +128,8 @@ def build_doctor_right(win) -> QWidget:
     stack = QStackedWidget()
     win.doctor_right_pages = {}
     for key, build in (("doc_record", _record_page),
-                       ("doc_progress", _progress_page)):
+                       ("doc_progress", _progress_page),
+                       ("doc_schema", _schema_page)):
         win.doctor_right_pages[key] = stack.count()
         stack.addWidget(build(win))
     win.doctor_right_stack = stack
@@ -141,6 +161,25 @@ def _record_page(win) -> QWidget:
     box.body.addWidget(_rule())
     win.doctor_task_buttons = {}
     _buttons(win, box.body, TASK_ACTIONS, win.doctor_task_buttons)
+    col.addWidget(box)
+
+    col.addStretch(1)
+    return w
+
+
+def _schema_page(win) -> QWidget:
+    w = QWidget()
+    col = QVBoxLayout(w)
+    col.setContentsMargins(0, 0, 0, 0)
+
+    box = CollapsibleBox(tr("Schema"))
+    win.schema_card = InfoCard()
+    box.body.addWidget(win.schema_card)
+    win.schema_missing = _slot(box.body, tr("빠진 것"))
+    win.schema_plan = _slot(box.body, tr("고치면"))
+    box.body.addWidget(_rule())
+    win.schema_buttons = {}
+    _buttons(win, box.body, SCHEMA_ACTIONS, win.schema_buttons)
     col.addWidget(box)
 
     col.addStretch(1)

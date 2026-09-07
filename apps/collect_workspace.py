@@ -567,6 +567,7 @@ class WorkspaceWindow(QMainWindow):
             # 진행 닥터는 읽기만 하므로 수집 중에도 센다 -- "다음에 무엇을
             # 찍지" 는 오히려 그때 묻는 질문이다.
             self.doctor.refresh_progress()
+            self.doctor.refresh_schema()
         elif key == "stats":
             self.stats_ops.refresh_stats()
             self.stats_ops.refresh_history()
