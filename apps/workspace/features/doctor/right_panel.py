@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from apps.workspace.shared.info import InfoCard
 from gello.gui.i18n import tr
 
 #: (ops 메서드 이름, 라벨, 툴팁)
@@ -37,10 +38,10 @@ TASK_ACTIONS = (
      "동작을 고르고 문장을 고릅니다 (문법이 만든 것만). 이 지시문의 "
      "에피소드가 모두 바뀌고, Hub 에 올렸다면 전체 재빌드·재푸시가 "
      "필요해집니다."),
-    ("swap_task_text", "다른 지시문과 교환...",
+    ("swap_task_text", "다른 지시문과 문장 교환...",
      "두 지시문의 문장을 맞바꿉니다. 라벨이 서로 바뀌어 기록된 것을 되돌릴 "
      "때, 그리고 안 찍은 빈 칸의 옳은 문장을 가져올 때 씁니다."),
-    ("remove_task", "계획에서 빼기",
+    ("remove_task", "지시문 빼기",
      "더는 이 문장으로 찍지 않습니다. 에피소드는 지우지 않습니다 "
      "(있으면 뺄 수 없습니다)."),
 )
@@ -64,32 +65,62 @@ def _buttons(win, box: QVBoxLayout, actions, store: dict) -> None:
         box.addWidget(b)
 
 
+def _slot(parent: QVBoxLayout, title: str) -> QLabel:
+    """제목이 붙은 고정 칸. **숨기지 않는다** -- 값이 없으면 "없음" 이라고
+    적는다. 상자가 늘었다 줄었다 하면 어디에 무엇이 오는지 익힐 수가 없다
+    (2026-09-07 사용자)."""
+    cap = QLabel(title)
+    cap.setStyleSheet("color:#777; font-size:11px;")
+    parent.addWidget(cap)
+    body = QLabel("—")
+    body.setWordWrap(True)
+    body.setStyleSheet("color:#333;")
+    parent.addWidget(body)
+    return body
+
+
 def build_doctor_right(win) -> QWidget:
+    """상자 셋. 각 상자의 칸은 늘 같은 순서로 늘 있다.
+
+        Scene        이 파일의 값 · 소품 고치기
+        Diagnosis    맞지 않는 것 · 수정 영향
+        Instruction  고른 지시문의 값 · 문장 고치기 / 교환 / 빼기
+
+    **진단이 따로인 이유**: 맞지 않는 것은 scene 의 기록과 지시문의 문장을
+    맞대어 나온 결과라 어느 한쪽에 속하지 않는다 (2026-09-07 사용자).
+    Scene 상자에 넣으면 "이 파일의 값" 과 "두 쪽을 맞댄 판단" 이 한 상자에
+    섞인다.
+    """
     w = QWidget()
     col = QVBoxLayout(w)
     col.setContentsMargins(0, 0, 0, 0)
 
-    # --- 이 scene ------------------------------------------------------
-    sbox = QGroupBox(tr("이 scene"))
+    # --- Scene ---------------------------------------------------------
+    sbox = QGroupBox(tr("Scene"))
     sv = QVBoxLayout(sbox)
     sv.setContentsMargins(6, 6, 6, 6)
-    win.doctor_scene_detail = QLabel(tr("왼쪽에서 scene 을 고르세요"))
-    win.doctor_scene_detail.setWordWrap(True)
-    win.doctor_scene_detail.setStyleSheet("color:#333;")
-    sv.addWidget(win.doctor_scene_detail)
+    win.doctor_scene_card = InfoCard()
+    sv.addWidget(win.doctor_scene_card)
     sv.addWidget(_rule())
     win.doctor_scene_buttons = {}
     _buttons(win, sv, SCENE_ACTIONS, win.doctor_scene_buttons)
     col.addWidget(sbox)
 
-    # --- 이 지시문 -----------------------------------------------------
-    tbox = QGroupBox(tr("이 지시문"))
+    # --- Diagnosis -----------------------------------------------------
+    dbox = QGroupBox(tr("Diagnosis"))
+    dv = QVBoxLayout(dbox)
+    dv.setContentsMargins(6, 6, 6, 6)
+    win.doctor_scene_diag = _slot(dv, tr("맞지 않는 것"))
+    win.doctor_scene_cost = _slot(dv, tr("수정 영향"))
+    col.addWidget(dbox)
+
+    # --- Instruction ---------------------------------------------------
+    tbox = QGroupBox(tr("Instruction"))
     tv = QVBoxLayout(tbox)
     tv.setContentsMargins(6, 6, 6, 6)
-    win.doctor_task_detail = QLabel(tr("가운데 표에서 지시문을 고르세요"))
-    win.doctor_task_detail.setWordWrap(True)
-    win.doctor_task_detail.setStyleSheet("color:#333;")
-    tv.addWidget(win.doctor_task_detail)
+    win.doctor_task_card = InfoCard()
+    tv.addWidget(win.doctor_task_card)
+    win.doctor_task_diag = _slot(tv, tr("맞지 않는 것"))
     tv.addWidget(_rule())
     win.doctor_task_buttons = {}
     _buttons(win, tv, TASK_ACTIONS, win.doctor_task_buttons)

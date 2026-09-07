@@ -29,8 +29,9 @@ _MONO = "border:none; color:#333; font-family:monospace; font-size:11px;"
 _TEXT = "border:none; color:#333;"
 
 
-def pane(head: str, after: bool, mono: bool = False) -> "tuple[QFrame, QLabel]":
-    """(상자, 내용 라벨). 내용은 호출자가 setText 로 채우고 다시 채운다."""
+def pane(head: str, after: bool, mono: bool = False) -> "tuple[QFrame, QVBoxLayout]":
+    """(상자, 내용 레이아웃). 호출자가 원하는 위젯을 그 안에 넣는다 -- 글일
+    수도, InfoCard 같은 위젯일 수도 있다."""
     f = QFrame()
     f.setStyleSheet(_AFTER if after else _NOW)
     col = QVBoxLayout(f)
@@ -39,12 +40,8 @@ def pane(head: str, after: bool, mono: bool = False) -> "tuple[QFrame, QLabel]":
     cap = QLabel(head)
     cap.setStyleSheet("border:none; color:#555; font-size:11px;")
     col.addWidget(cap)
-    body = QLabel("")
-    body.setWordWrap(not mono)
-    body.setStyleSheet(_MONO if mono else _TEXT)
-    col.addWidget(body)
     col.addStretch(1)
-    return f, body
+    return f, col
 
 
 def side_by_side(mono: bool = False) -> "tuple[QWidget, QLabel, QLabel]":
@@ -53,8 +50,13 @@ def side_by_side(mono: bool = False) -> "tuple[QWidget, QLabel, QLabel]":
     row = QHBoxLayout(w)
     row.setContentsMargins(0, 0, 0, 0)
     row.setSpacing(8)
-    left, now = pane(tr("지금"), False, mono)
-    right, after = pane(tr("고친 뒤"), True, mono)
+    left, lcol = pane(tr("지금"), False, mono)
+    right, rcol = pane(tr("고친 뒤"), True, mono)
+    now, after = QLabel(""), QLabel("")
+    for lab, col in ((now, lcol), (after, rcol)):
+        lab.setWordWrap(not mono)
+        lab.setStyleSheet(_MONO if mono else _TEXT)
+        col.insertWidget(col.count() - 1, lab)
     row.addWidget(left, 1)
     row.addWidget(right, 1)
     return w, now, after

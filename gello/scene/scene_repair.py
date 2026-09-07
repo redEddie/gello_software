@@ -218,7 +218,7 @@ def _rewrite_plan_text(plan_path: Path, scene_id: str, instruction_id: str,
                     json.dumps(raw, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8")
                 return
-    raise ValueError(f"계획에 {scene_id} {instruction_id} 가 없다")
+    raise ValueError(f"지시문에 {scene_id} {instruction_id} 가 없다")
 
 
 def _plan_slots(plan_path: Path, scene_id: str) -> "tuple[dict, list]":
@@ -226,7 +226,7 @@ def _plan_slots(plan_path: Path, scene_id: str) -> "tuple[dict, list]":
     for sc in raw.get("scenes", []):
         if sc.get("scene_id") == scene_id:
             return raw, sc.get("slots", [])
-    raise ValueError(f"계획에 {scene_id} 가 없다")
+    raise ValueError(f"지시문에 {scene_id} 가 없다")
 
 
 def _save_plan(plan_path: Path, raw: dict) -> None:
@@ -267,7 +267,7 @@ def swap_task_texts(scene_path: Path, iid_a: str, iid_b: str, *,
     by_id = {s.get("instruction_id"): s for s in slots}
     for iid in (iid_a, iid_b):
         if iid not in by_id:
-            raise ValueError(f"계획에 {md.scene_id} {iid} 가 없다")
+            raise ValueError(f"지시문에 {md.scene_id} {iid} 가 없다")
     text_a = str(by_id[iid_a].get("instruction", ""))
     text_b = str(by_id[iid_b].get("instruction", ""))
 
@@ -306,12 +306,12 @@ def remove_task_from_plan(plan_path: Path, scene_id: str, instruction_id: str,
         if n:
             raise ValueError(
                 f"{scene_id} {instruction_id} 에는 에피소드가 {n}개 있다 -- "
-                "계획에서만 뺄 수 없다 (찍은 것을 버리려면 Dataset 에서 "
+                "지시문에서만 뺄 수 없다 (찍은 것을 버리려면 Dataset 에서 "
                 "에피소드를 지운다)")
     raw, slots = _plan_slots(Path(plan_path), scene_id)
     keep = [s for s in slots if s.get("instruction_id") != instruction_id]
     if len(keep) == len(slots):
-        raise ValueError(f"계획에 {scene_id} {instruction_id} 가 없다")
+        raise ValueError(f"지시문에 {scene_id} {instruction_id} 가 없다")
     for sc in raw.get("scenes", []):
         if sc.get("scene_id") == scene_id:
             sc["slots"] = keep
@@ -330,3 +330,99 @@ def plan_task_texts(plan_path: Path, scene_id: str) -> "dict[str, str]":
     _raw, slots = _plan_slots(Path(plan_path), scene_id)
     return {str(s.get("instruction_id")): str(s.get("instruction", ""))
             for s in slots if s.get("instruction_id")}
+
+
+@dataclass(frozen=True)
+class Reason:
+    """왜 걸렸는가 -- 사유 하나와 그것이 걸린 양."""
+
+    text: str          #: 사유 (린터가 준 사람 말)
+    detail: str        #: 기록 쪽 사실. 없으면 빈 문자열
+    tasks: int
+    episodes: int
+
+
+def explain_scene(path: Path, props: "dict[str, Prop] | None" = None,
+                  ) -> list[Reason]:
+    """이 scene 이 걸린 사유를 묶어서 돌려준다.
+
+    "지시문 5건이 기록과 맞지 않습니다" 만으로는 배치를 **왜** 고쳐야 하는지
+    알 수 없다 (2026-09-07 사용자). 사유별로 묶고, 기록이 어긋난 경우에는
+    기록 쪽 사실을 함께 붙인다 -- "문장은 gray 를 말하는데 기록에는 green 이
+    있습니다" 까지 읽어야 배치를 고칠 결심이 선다.
+
+    양은 두 가지로 센다. 지시문 수는 **결정의 수**이고, 에피소드 수는 그
+    결정이 걸려 있는 **데이터의 양**이다.
+    """
+    props = props_by_id() if props is None else props
+    vs = audit_scene(path, props)
+    # 여기서 일찍 돌아가면 안 된다 -- 어순은 lint 위반이 아니라서, 린트가
+    # 깨끗한 scene 에도 뒤집힌 어순이 있다 (실제로 609 에피소드 중 599개가
+    # 그런 scene 에 있었다).
+    # **원인으로 묶는다.** 린터의 메시지는 문장 어느 자리에서 걸렸는지까지
+    # 말해 주는데(place-on / pick / next-to ...), 고치는 사람에게 그것은
+    # 같은 하나의 사실이다 -- "이 물체가 기록에 없다". 자리별로 나누면 원인
+    # 하나가 네 줄이 되어 무엇을 고쳐야 할지가 오히려 흐려진다.
+    per: dict = {}
+    for v in vs:
+        key = _cause(v.message)
+        t, e = per.get(key, (0, 0))
+        per[key] = (t + 1, e + v.episodes)
+
+    # 어순은 lint 가 아니라 여기서 센다 (reversed_adjectives 참고).
+    with h5py.File(path, "r") as f:
+        for iid, (text, n) in _episode_tasks(f).items():
+            bad = reversed_adjectives(text)
+            if not bad:
+                continue
+            key = ("영어 어순이 뒤집혔습니다 -- 크기가 색보다 앞이어야 "
+                   "합니다 (small blue bowl)")
+            t, e = per.get(key, (0, 0))
+            per[key] = (t + 1, e + n)
+    if not per:
+        return []
+
+    # 기록 쪽 사실은 scene 단위로 한 번만 구한다 (색 대조는 scene 전체의
+    # 문장을 봐야 성립한다 -- suggest_object_fix 와 같은 계산이다).
+    md = read_scene_metadata(path)
+    with h5py.File(path, "r") as f:
+        said = set()
+        for text, _n in _episode_tasks(f).values():
+            said |= _words(text)
+    inventory = {p.color for p in props.values() if " " not in p.color}
+    mine = {props[o].color for o in md.objects if o in props}
+    missing = sorted((said & inventory) - mine)
+    unused = sorted(mine - (said & inventory))
+    record = ""
+    if missing and unused:
+        # 조사를 피해 쓴다 -- 색 이름이 영어라 "이/가" 를 고를 수 없다.
+        record = (f"문장은 {', '.join(missing)} 를 말하는데 "
+                  f"기록은 {', '.join(unused)} 입니다")
+
+    out = []
+    for msg, (t, e) in sorted(per.items(), key=lambda kv: -kv[1][1]):
+        out.append(Reason(msg, record if "기록에 없습니다" in msg else "", t, e))
+    return out
+
+
+#: 크기 형용사가 색 **뒤에** 온 지칭 -- 영어 어순이 뒤집힌 것.
+#: (opinion → size → quality → shape → age → color → ... 이므로 크기가 앞이다.)
+_REVERSED_RE = re.compile(r"\bthe\s+(\w+)\s+(small|large)\s+bowl\b")
+
+
+def reversed_adjectives(text: str) -> list:
+    """뒤집힌 어순의 지칭들. 없으면 빈 목록.
+
+    문법의 파서는 두 어순을 다 받는다 -- 2026-09-07 이전 수집분이 뒤집힌
+    쪽이라 좁히면 그것들을 못 읽는다. 그래서 lint 는 이것을 오류로 보지
+    않고, 여기서 따로 센다. **읽기는 넓게, 만들기는 좁게, 진단은 따로.**
+    """
+    return [f"the {c} {size} bowl" for c, size in _REVERSED_RE.findall(text)]
+
+
+def _cause(message: str) -> str:
+    """린터 메시지를 원인 한 줄로 줄인다."""
+    head, sep, phrase = message.partition("에 없음: ")
+    if sep:
+        return f"{phrase} 이(가) 이 scene 의 기록에 없습니다"
+    return message

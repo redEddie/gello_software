@@ -17,16 +17,18 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (
     QComboBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QVBoxLayout,
     QWidget,
 )
 
-from apps.workspace.features.doctor.confirm import ConfirmDialog, side_by_side
+from apps.workspace.features.doctor.confirm import ConfirmDialog, pane
+from apps.workspace.shared.info import InfoCard, scene_fields
 from apps.workspace.shared.sizing import roomy
 from gello.gui.i18n import tr
 from gello.scene.instruction_grammar import lint
-from gello.scene.scene_format import SceneMetadata, describe_scene
+from gello.scene.scene_format import SceneMetadata
 
 
 def _label(prop) -> str:
@@ -79,8 +81,22 @@ class ObjectDialog(ConfirmDialog):
             form.addRow(cap, combo)
         col.addLayout(form)
 
-        self._diff, self._now, self._after = side_by_side(mono=True)
-        col.addWidget(self._diff, 1)
+        # 배치도는 ASCII 가 아니라 위젯이다 (shared/info.ZoneMap). 선문자로
+        # 그린 격자는 패널이 좁으면 잘리고 글꼴에 휘둘렸다 -- 2026-09-07
+        # 사용자: "격자 3x3 칸이 깨져 보인다".
+        diff = QWidget()
+        drow = QHBoxLayout(diff)
+        drow.setContentsMargins(0, 0, 0, 0)
+        drow.setSpacing(8)
+        lbox, lcol = pane(tr("지금"), False)
+        rbox, rcol = pane(tr("고친 뒤"), True)
+        self._now = InfoCard()
+        self._after = InfoCard()
+        lcol.addWidget(self._now)
+        rcol.addWidget(self._after)
+        drow.addWidget(lbox, 1)
+        drow.addWidget(rbox, 1)
+        col.addWidget(diff, 1)
 
         super().__init__(parent, tr("소품 고치기 — {sid}").format(
             sid=md.scene_id), body, ok_text=tr("이대로 고치기"))
@@ -127,8 +143,9 @@ class ObjectDialog(ConfirmDialog):
     def _redraw(self, *_a) -> None:
         changes = self._picked()
         after = self._after_md(changes)
-        self._now.setText(describe_scene(self._md))
-        self._after.setText(describe_scene(after))
+        for card, md in ((self._now, self._md), (self._after, after)):
+            card.set_fields(scene_fields(md))
+            card.set_zones(md.layout)
         if not changes:
             self.set_note(tr("고를 것을 바꾸면 오른쪽이 다시 그려집니다."))
             self.set_ok_enabled(False)

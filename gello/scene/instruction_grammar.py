@@ -147,10 +147,13 @@ _QUAL_RE = "|".join(re.escape(q) for q in _QUALIFIERS)
 
 # lint 용 object phrase 파싱 패턴. 앞쪽에 색/부가 수식이 올 수 있다.
 _PARSE_PATTERNS = [
-    # small bowl 의 두 가지 어순 + 색
-    (re.compile(r"^the\s+(.+?)\s+small\s+bowl$"), "small_bowl"),
+    # small bowl 의 두 어순. "the small {색} bowl" 이 정본이다 (영어의
+    # 형용사 순서에서 크기가 색보다 앞). 뒤집힌 쪽은 옛 수집분용이다.
     (re.compile(r"^the\s+small\s+(.+?)\s+bowl$"), "small_bowl"),
-    # large bowl
+    (re.compile(r"^the\s+(.+?)\s+small\s+bowl$"), "small_bowl"),
+    # large bowl -- 두 어순. "the large {색} bowl" 이 정본이고(크기가 색보다
+    # 앞), "the {색} large bowl" 은 2026-09-07 이전 수집분 때문에 남긴다.
+    (re.compile(r"^the\s+large\s+(.+?)\s+bowl$"), "large_bowl"),
     (re.compile(r"^the\s+(.+?)\s+large\s+bowl$"), "large_bowl"),
     # "the {색} bowl": 색으로 category 를 해소한다 -- 그 색이 bowl(15cm)
     # 소품의 색이면 bowl, 아니면 legacy 약칭대로 large_bowl. selftest 가
@@ -249,7 +252,27 @@ def _reference(color: str, category: str, md: SceneMetadata,
         return f"the {NOUN_MAP[category]}"
     if not _is_unique(color, category, md, props):
         return None
-    return f"the {color} {NOUN_MAP[category]}"
+    return f"the {_with_color(color, category)}"
+
+
+#: 크기 형용사를 앞에 두는 category. 영어의 형용사 순서가
+#: opinion → **size** → quality → shape → age → **color** → origin →
+#: material → purpose 라서, "small blue bowl" 이 맞고 "blue small bowl" 은
+#: 어순이 뒤집힌 것이다 (2026-09-07 사용자 지적).
+#:
+#: 파서는 두 어순을 다 받는다 -- 2026-09-07 이전에 수집된 819개가 뒤집힌
+#: 어순이라, 읽는 쪽을 좁히면 그것들을 못 읽는다. **만드는 쪽만** 맞는
+#: 어순을 낸다. 뒤집힌 것은 scene_repair 의 닥터가 따로 진단한다.
+_SIZE_FIRST = {"small_bowl": ("small", "bowl"),
+               "large_bowl": ("large", "bowl")}
+
+
+def _with_color(color: str, category: str) -> str:
+    """"{크기} {색} {명사}" -- 크기가 색보다 앞이다."""
+    size = _SIZE_FIRST.get(category)
+    if size is None:
+        return f"{color} {NOUN_MAP[category]}"
+    return f"{size[0]} {color} {size[1]}"
 
 
 def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[str]:
@@ -601,19 +624,19 @@ def selftest() -> None:
     s1 = enumerate_instructions(md1, props)
     # 그릇 목적지는 inside 뿐이다 (2026-09-07 -- 그릇은 오목해서 물체가 안으로
     # 들어간다). on 문장은 생성하지 않는다.
-    assert "pick up the blue cup and place it inside the white small bowl" in s1
-    assert not any("place it on the white small bowl" in x for x in s1)
+    assert "pick up the blue cup and place it inside the small white bowl" in s1
+    assert not any("place it on the small white bowl" in x for x in s1)
     assert "pick up the blue cup and place it on top of the drawer" in s1
-    assert "drag the blue cup next to the white small bowl" in s1
+    assert "drag the blue cup next to the small white bowl" in s1
     assert "open the top drawer" in s1
-    assert lint("pick up the blue cup and place it inside the white small bowl", md1, props) is None
-    assert lint("drag the blue cup next to the white small bowl", md1, props) is None
+    assert lint("pick up the blue cup and place it inside the small white bowl", md1, props) is None
+    assert lint("drag the blue cup next to the small white bowl", md1, props) is None
     assert lint("pick up the blue cup and place it on the blue bowl", md1, props) is not None
     # 그릇 목적지 on 은 strict 에서 거부 + inside 안내
-    err = lint("pick up the blue cup and place it on the white small bowl", md1, props)
+    err = lint("pick up the blue cup and place it on the small white bowl", md1, props)
     assert err is not None and "inside" in err, err
     # 하위호환: 옛 수집분/계획 문장 검증용으로 strict_relation=False 면 통과
-    assert lint("pick up the blue cup and place it on the white small bowl",
+    assert lint("pick up the blue cup and place it on the small white bowl",
                 md1, props, strict_relation=False) is None
 
     # 정본 위반 안내 -- put / in / that is / 마침표
@@ -647,16 +670,16 @@ def selftest() -> None:
     # ("the white cups")은 2026-08-31 부터 stack 문장으로 생성된다.
     assert not any(re.search(r"the white cup\b(?!s)", x) for x in s2)
     assert "stack all the white cups" in s2
-    err = lint("pick up the white cup and place it on the blue small bowl", md2, props)
+    err = lint("pick up the white cup and place it on the small blue bowl", md2, props)
     assert err is not None and "QUALIFIER" in err, err
-    assert lint("pick up the white cup farthest from the blue small bowl "
-                "and place it inside the blue small bowl", md2, props) is None
+    assert lint("pick up the white cup farthest from the small blue bowl "
+                "and place it inside the small blue bowl", md2, props) is None
     # drag: 큰 그릇도 끌 수 있다
     assert lint("drag the white bowl next to the blue cup") is None
 
     # legacy "bowl" 약칭 파싱 (관계는 inside -- 그릇 목적지 on 금지)
     assert lint("pick up the blue cup and place it inside the white bowl") is None
-    assert lint("pick up the pink small bowl and place it inside the white bowl") is None
+    assert lint("pick up the small pink bowl and place it inside the white bowl") is None
     assert lint("pick up the small green bowl and place it inside the yellow bowl") is None
     # 옛 겹침 집합 문장("on the {그릇}")은 strict 에서 거부, 하위호환 모드만 통과
     err = lint("pick up the blue cup and place it on the white bowl")
@@ -671,7 +694,7 @@ def selftest() -> None:
     assert _parse_object_phrase("the small green bowl") == ("green", "small_bowl")
 
     # 목적지 drawer 존재 검사 (md 제공 시)
-    err = lint("pick up the blue small bowl and place it on top of the drawer",
+    err = lint("pick up the small blue bowl and place it on top of the drawer",
                md2, props)
     assert err is not None and "drawer" in err, err
 
@@ -778,11 +801,11 @@ def selftest() -> None:
     s6 = enumerate_instructions(md6, props)
     assert "pick up the red cup and place it inside the blue japanese bowl" in s6
     # bowl 은 pickable (림 파지 -- 2026-08-31 실기 확인). 그릇->그릇도 inside 뿐.
-    assert "pick up the blue japanese bowl and place it inside the white large bowl" in s6
-    assert not any("place it on the white large bowl" in x for x in s6)
+    assert "pick up the blue japanese bowl and place it inside the large white bowl" in s6
+    assert not any("place it on the large white bowl" in x for x in s6)
     assert lint("pick up the red cup and place it inside the blue japanese bowl",
                 md6, props) is None
-    assert lint("drag the blue japanese bowl next to the white large bowl",
+    assert lint("drag the blue japanese bowl next to the large white bowl",
                 md6, props) is None
     assert skill_of("pick up the red cup and place it inside the blue japanese bowl") == "pick-inside"
 
@@ -791,11 +814,11 @@ def selftest() -> None:
 
     # 스킬 분류 -- 색·종류가 달라도 같은 스킬, 정본 아니면 None
     assert skill_of("pick up the blue cup and place it on the white bowl") == "pick-on"
-    assert skill_of("pick up the pink small bowl and place it on the white bowl") == "pick-on"
-    assert skill_of("pick up the blue cup and place it inside the white small bowl") == "pick-inside"
+    assert skill_of("pick up the small pink bowl and place it on the white bowl") == "pick-on"
+    assert skill_of("pick up the blue cup and place it inside the small white bowl") == "pick-inside"
     assert skill_of("pick up the blue cup and place it on top of the drawer") == "pick-on_top_of"
     assert skill_of("pick up the blue cup and place it next to the white bowl") == "pick-next_to"
-    assert skill_of("drag the blue cup next to the white small bowl") == "drag-next_to"
+    assert skill_of("drag the blue cup next to the small white bowl") == "drag-next_to"
     assert skill_of("open the top drawer") == "drawer-open"
     assert skill_of('"close the top drawer"') == "drawer-close"   # legacy 따옴표
     assert skill_of("put the cup somewhere") is None

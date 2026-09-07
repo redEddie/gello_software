@@ -87,6 +87,11 @@ def _add_empty_task(root: Path) -> None:
                  encoding="utf-8")
 
 
+def _card_text(card) -> str:
+    """InfoCard 안의 모든 라벨 글을 이어 붙인다 (배치도 셀 포함)."""
+    return " ".join(w.text() for w in card.findChildren(QLabel))
+
+
 def main() -> None:
     from apps.workspace.constants import ACTIVITIES, CENTER_TABS_BY_ACTIVITY
 
@@ -136,8 +141,9 @@ def main() -> None:
         class _AutoObj(real_obj):
             def exec(self):
                 grab["changes"] = self._picked()
-                grab["now"] = self._now.text()
-                grab["after"] = self._after.text()
+                # 배치도는 이제 위젯이다 (ZoneMap) -- 글이 아니라 셀을 읽는다
+                grab["now"] = _card_text(self._now)
+                grab["after"] = _card_text(self._after)
                 grab["note"] = self.note.text()
                 self.accept()
                 return int(QDialog.DialogCode.Accepted)
@@ -150,7 +156,8 @@ def main() -> None:
         # 추천이 콤보에 미리 골라져 있으므로 누르기만 해도 그 정정이 담긴다
         assert grab["changes"] == {"OBJ-BOWLS-GRN-01": "OBJ-BOWLS-GRY-01"}, grab
         # 지금과 고친 뒤가 서로 다르고, 각각 옛/새 물체를 담는다
-        assert "GRN" in grab["now"] or "green" in grab["now"], grab["now"]
+        assert "GRN" in grab["now"], grab["now"]
+        assert "GRY" in grab["after"], grab["after"]
         assert grab["now"] != grab["after"]
         # 위반이 줄어드는 것을 누르기 전에 말한다
         assert "건 → " in grab["note"], grab["note"]
@@ -212,14 +219,17 @@ def main() -> None:
         assert all(b.isEnabled() for b in win.doctor_scene_buttons.values())
         tt = win.doctor_task_tree
         win.doctor.on_task_picked(tt.topLevelItem(0))
-        assert "I000" in win.doctor_task_detail.text()
+        assert "I000" in _card_text(win.doctor_task_card)
         assert win.doctor_task_buttons["edit_task_text"].isEnabled()
         # 에피소드가 있는 줄은 [계획에서 빼기] 가 꺼져 있다
         assert not win.doctor_task_buttons["remove_task"].isEnabled()
         # 파일 상태 칸: 기록 정정만 했으므로 편집 이력이 없다
-        assert "S000" in win.doctor_scene_detail.text()
-        assert "편집" not in win.doctor_scene_detail.text(), \
-            win.doctor_scene_detail.text()
+        assert "S000" in _card_text(win.doctor_scene_card)
+        # 칸은 늘 있다 -- 값이 없으면 "없음" 이라고 적지 숨기지 않는다
+        assert win.doctor_scene_diag.text(), "진단 칸이 비었다"
+        assert win.doctor_scene_cost.text(), "대가 칸이 비었다"
+        assert "편집" not in _card_text(win.doctor_scene_card) or \
+            "없음" in _card_text(win.doctor_scene_card)
         print("7. 우측 패널 = 닥터 자기 페이지 OK")
 
         # 8. S016 의 해법 -- 안 찍은 빈 칸과 교환하고, 그 칸을 계획에서 뺀다
@@ -276,9 +286,11 @@ def main() -> None:
 
         # 9. 문장이 바뀌었으니 파일 상태가 그것을 말한다 (전체 재빌드 경고)
         win.doctor.select_scene("S000")
-        assert "편집" in win.doctor_scene_detail.text(), \
-            win.doctor_scene_detail.text()
-        assert "재빌드" in win.doctor_scene_detail.text()
+        # 편집 횟수는 값 칸, 그 대가는 "고치면" 칸 -- 섞지 않는다
+        facts = _card_text(win.doctor_scene_card)
+        assert "1회" in facts, facts
+        assert "재변환" not in facts, facts
+        assert "재변환" in win.doctor_scene_cost.text()
         print("9. 편집 이력 표시 OK")
 
         # 10. 문장 고치기는 블럭 조립이다 -- 문법이 만든 것만 고를 수 있다
@@ -291,12 +303,19 @@ def main() -> None:
 
         class _Grab(real_dlg):
             def exec(self):
-                grabbed["skills"] = sorted(self._by_skill)
+                grabbed["skills"] = sorted(self._index)
                 grabbed["badges"] = sorted(self._badges)
                 # 뱃지를 눌러 스킬을 바꾸면 문장 목록이 그것만 남는다
                 target = "drag-next_to"
                 self._pick_skill(target)
-                grabbed["sents"] = [b.text() for b in self._group.buttons()]
+                # 블럭이 셋이다: 동작 · 무엇을 · 어디에
+                grabbed["src"] = list(self._src_badges)
+                grabbed["dst"] = list(self._dst_badges)
+                grabbed["chosen"] = self._chosen_sentence
+                # 못 고르는 뱃지는 지우지 않고 취소선 + 사유 툴팁
+                grabbed["off"] = {k: b.toolTip()
+                                  for k, b in self._dst_badges.items()
+                                  if b._off}
                 self._accept()
                 return int(QDialog.DialogCode.Accepted)
 
@@ -309,7 +328,23 @@ def main() -> None:
         assert "pick-inside" in grabbed["skills"], grabbed["skills"]
         # 그릇 목적지 'on' 은 문법이 아예 만들지 않는다
         assert "pick-on" not in grabbed["skills"], grabbed["skills"]
-        assert all(s.startswith("drag ") for s in grabbed["sents"]), grabbed
+        assert grabbed["chosen"].startswith("drag "), grabbed
+        # 축이 나뉘어 있어 뱃지 수가 조합이 아니라 합이다
+        assert all(x.startswith("the ") for x in grabbed["src"]), grabbed
+        assert all(x.startswith("the ") for x in grabbed["dst"]), grabbed
+        # 고른 동작에 맞는 짝만 남는다
+        from apps.workspace.features.doctor.sentence_builder import _split
+        src, dst = _split(grabbed["chosen"])
+        assert src in grabbed["src"] and dst in grabbed["dst"], (src, dst, grabbed)
+        # 이미 쓰이는 조합은 남아 있되 사유가 붙는다 (사라지면 왜 없는지 모른다)
+        for name, why in grabbed["off"].items():
+            assert why, f"취소선인데 사유가 없다: {name}"
+        # 뜻으로 대조한다 -- 어순이 달라도 같은 문장이면 잡힌다
+        from apps.workspace.features.doctor.sentence_builder import sense_key
+        assert sense_key("pick up the blue small bowl and place it inside "
+                         "the small gray bowl") == \
+            sense_key("pick up the small blue bowl and place it inside "
+                      "the gray small bowl")
         assert sb.SKILL_KO["pick-inside"] == "집어서 안에"
         print("10. 블럭 조립 문장 고치기 OK")
 

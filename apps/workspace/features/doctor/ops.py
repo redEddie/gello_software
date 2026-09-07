@@ -37,6 +37,7 @@ from gello.scene.scene_format import (
 from gello.scene.scene_repair import (
     apply_object_fix,
     audit_scene,
+    explain_scene,
     episode_counts,
     plan_task_texts,
     remove_task_from_plan,
@@ -74,7 +75,7 @@ class DoctorOps:
         try:
             files = iter_scene_files(root)
         except Exception as e:  # noqa: BLE001
-            win.doctor_dataset_label.setText(tr("경로를 읽을 수 없습니다"))
+            win.doctor_dataset_label.setText(tr("경로 오류"))
             win.doctor_hint.setText(str(e))
             win.doctor_tree.clear()
             return
@@ -98,10 +99,10 @@ class DoctorOps:
             bad_total += len(vs)
         fill_scene_rows(win, rows)
         win.doctor_hint.setText(
-            tr("문제 없음 — scene {n}개를 검사했습니다.").format(n=len(rows))
+            tr("문제 없음 · scene {n}개 검사").format(n=len(rows))
             if not bad_total else
-            tr("지시문 {n}건이 기록과 맞지 않습니다. 줄을 눌러 "
-               "기준 사진과 대조하세요.").format(n=bad_total))
+            tr("맞지 않는 지시문 {n}건 · 줄을 눌러 기준 사진과 대조")
+            .format(n=bad_total))
 
     # ------------------------------------------------------------- 선택
     def on_row_picked(self, item: QTreeWidgetItem) -> None:
@@ -115,7 +116,7 @@ class DoctorOps:
         try:
             md = read_scene_metadata(path)
         except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(win, tr("scene 을 열 수 없습니다"), str(e))
+            QMessageBox.warning(win, tr("Scene 열기 실패"), str(e))
             return
         self._scene_id = scene_id
         win.doctor_title.setText(tr("{sid} — {f}").format(
@@ -175,7 +176,7 @@ class DoctorOps:
                         seen[iid] = (0, text)
                         empty.add(iid)
             except Exception as e:  # noqa: BLE001
-                win.log(f"[닥터] 계획을 읽지 못했습니다: {e}")
+                win.log(f"[닥터] 지시문 파일을 읽지 못했습니다: {e}")
         for iid, (n, text) in sorted(seen.items()):
             msg = bad.get(iid, "")
             state = "⚠" if msg else ("빈 칸" if iid in empty else "—")
@@ -184,14 +185,13 @@ class DoctorOps:
             if msg:
                 it.setToolTip(3, msg)
             elif iid in empty:
-                it.setToolTip(3, tr("계획에만 있고 아직 안 찍었습니다."))
+                it.setToolTip(3, tr("미수집 · 지시문 파일에만 있음"))
             tree.addTopLevelItem(it)
         parts = [tr("지시문 {n}개").format(n=len(seen))]
         if empty:
             parts.append(tr("그중 {n}개는 안 찍은 빈 칸").format(n=len(empty)))
         if bad:
-            parts = [tr("⚠ 표시된 줄이 기록과 맞지 않습니다 (상태 칸에 "
-                        "마우스를 올리면 사유가 보입니다).")] + parts
+            parts = [tr("⚠ = 기록과 불일치 · 상태 칸에 마우스를 올리면 사유")] + parts
         win.doctor_task_hint.setText(" · ".join(parts))
 
     # ------------------------------------------------------------- 정정
@@ -210,24 +210,28 @@ class DoctorOps:
             options = [(skill_of(x), x)
                        for x in enumerate_instructions(md, props)]
         except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(win, tr("문법을 읽지 못했습니다"), str(e))
+            QMessageBox.warning(win, tr("문법 읽기 실패"), str(e))
             return
-        # 이미 쓰이는 문장은 뺀다 -- 한 scene 안에서 두 지시문이 같은 말을
-        # 하면 그 자체가 결함이다.
-        used = self._used_texts(path, exclude=iid)
-        options = [(sk, x) for sk, x in options if x not in used]
-        if not options:
-            QMessageBox.information(win, tr("고를 문장이 없습니다"), tr(
+        # 이미 쓰이는 문장은 **빼지 않고** 누가 쓰는지 넘긴다 -- 대화상자가
+        # 뱃지를 남기고 취소선을 긋는다 (2026-09-07 사용자: 뱃지가 사라지면
+        # 왜 없는지 알 수 없다). 한 scene 안에서 두 지시문이 같은 말을 하는
+        # 것은 여전히 막는다.
+        used_by = self._used_by(path, exclude=iid)
+        from apps.workspace.features.doctor.sentence_builder import sense_key
+
+        taken = {sense_key(x) for x in used_by}
+        if all(sense_key(x) in taken for _sk, x in options):
+            QMessageBox.information(win, tr("후보 없음"), tr(
                 "이 scene 에서 문법이 만들 수 있는 문장이 이미 전부 "
                 "쓰이고 있습니다."))
             return
         note = (tr("에피소드 {n}개의 문장이 바뀝니다 — 이미 Hub 에 올린 "
                    "데이터셋이라면 이어붙이기가 막히고 전체 재빌드·재푸시가 "
                    "필요합니다.").format(n=n) if n else
-                tr("안 찍은 빈 칸이라 계획 파일만 바뀝니다."))
+                tr("안 찍은 빈 칸이라 지시문 파일만 바뀝니다."))
         dlg = SentenceDialog(
             win, tr("{sid} {iid}").format(sid=self._scene_id, iid=iid),
-            cur, options, note)
+            cur, options, note, used_by)
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.chosen:
             return
         text = dlg.chosen
@@ -240,10 +244,10 @@ class DoctorOps:
                 path, iid, text.strip(),
                 plan_path=plan if plan.is_file() else None)
         except ValueError as e:
-            QMessageBox.warning(win, tr("문장을 바꾸지 못했습니다"), str(e))
+            QMessageBox.warning(win, tr("문장 수정 실패"), str(e))
             return
         except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(win, tr("문장을 바꾸지 못했습니다"), str(e))
+            QMessageBox.warning(win, tr("문장 수정 실패"), str(e))
             return
         win.log(f"[닥터] {self._scene_id} {iid} 문장 정정 "
                 f"({changed}개) — Hub 재푸시가 필요합니다")
@@ -257,19 +261,16 @@ class DoctorOps:
         self._show_task_detail()
 
     def _show_task_detail(self) -> None:
-        """우측 패널 -- 고른 지시문의 값과 그 줄에 하는 일.
-
-        고른 것이 없으면 안내만 두고 버튼을 전부 끈다. 상자를 숨기지는
-        않는다 -- 우측은 닥터의 자기 페이지라, 비어 있어도 "여기가 고치는
-        자리" 라는 사실 자체가 정보다.
-        """
+        """우측 [이 지시문] -- 값 / 맞지 않는 것. scene 상자와 같은 읽는 법."""
         win = self.win
-        buttons = getattr(win, "doctor_task_buttons", None)
-        if not buttons:
+        card = getattr(win, "doctor_task_card", None)
+        if card is None:
             return
+        diag = win.doctor_task_diag
+        buttons = win.doctor_task_buttons
         if not self._task or not self._scene_id:
-            win.doctor_task_detail.setText(
-                tr("가운데 표에서 지시문을 고르세요"))
+            card.set_fields([(tr("지시문"), tr("미선택"))])
+            diag.setText("—")
             for b in buttons.values():
                 b.setEnabled(False)
             return
@@ -281,30 +282,39 @@ class DoctorOps:
             if v.instruction_id == iid:
                 msg = v.message
                 break
-        lines = [f"<b>{iid}</b> — {tr('에피소드')} {n}", text]
-        if msg:
-            lines.append(f"<span style='color:#8a4b00;'>⚠ {msg}</span>")
-        if not n:
-            lines.append(tr("(안 찍은 빈 칸 — 계획에만 있습니다)"))
-        win.doctor_task_detail.setText("<br>".join(lines))
+        card.set_fields([
+            (tr("지시문"), iid),
+            (tr("에피소드"), str(n) if n else
+             tr("0 (미수집)")),
+            (tr("문장"), text),
+        ])
+        diag.setText(msg or tr("없음"))
         for name, b in buttons.items():
-            # 에피소드가 있으면 계획에서만 뺄 수 없다 -- 미리 꺼 둔다.
+            # 에피소드가 있으면 지시문 파일에서만 뺄 수 없다 -- 미리 꺼 둔다.
             b.setEnabled(n == 0 if name == "remove_task" else True)
 
     def _show_scene_detail(self) -> None:
-        """우측 위 -- 이 scene 의 진단과 파일 상태.
+        """우측 [이 scene] -- 값 / 맞지 않는 것 / 고치면.
 
-        무엇이 잘못됐는지를 **여기 한 곳에** 적는다. 전에는 가운데의 정정
-        상자와 오른쪽 지시문 상자에 나뉘어 있어서, 같은 질문("어디가
-        잘못됐나")의 답이 화면 두 군데에 있었다.
+        **칸은 늘 같은 자리에 늘 있다.** 값이 없으면 "없음" 이라고 적지
+        숨기지 않는다 (2026-09-07 사용자: 상자가 늘었다 줄었다 하면 무엇이
+        어디 오는지 익힐 수가 없다). 그리고 칸마다 종류가 하나다 -- 편집
+        횟수는 값이고, 그 대가는 "고치면" 이다.
+
+        진단은 **원인과 이유**를 적는다. "N건이 맞지 않습니다" 만으로는
+        배치를 왜 고쳐야 하는지 알 수 없다.
         """
         win = self.win
-        lab = getattr(win, "doctor_scene_detail", None)
-        if lab is None:
+        card = getattr(win, "doctor_scene_card", None)
+        if card is None:
             return
+        diag, cost = win.doctor_scene_diag, win.doctor_scene_cost
         buttons = win.doctor_scene_buttons
         if not self._scene_id:
-            lab.setText(tr("왼쪽에서 scene 을 고르세요"))
+            card.set_fields([(tr("Scene"), tr("미선택"))])
+            card.set_zones(None)
+            diag.setText("—")
+            cost.setText("—")
             for b in buttons.values():
                 b.setEnabled(False)
             return
@@ -315,34 +325,54 @@ class DoctorOps:
                 eps = sum(1 for k in f if k.startswith("episode"))
                 edits = int(f["metadata"].attrs.get("edit_count", 0))
                 when = str(f["metadata"].attrs.get("edited", ""))
-            vs = audit_scene(path, props_by_id())
+            reasons = explain_scene(path, props_by_id())
         except Exception as e:  # noqa: BLE001
-            lab.setText(str(e))
+            card.set_fields([(tr("Scene"), self._scene_id),
+                             (tr("오류"), str(e))])
+            card.set_zones(None)
+            diag.setText("—")
+            cost.setText("—")
             return
 
-        lines = [f"<b>{md.scene_id}</b> — {path.name}",
-                 tr("에피소드 {n} · 스키마 {v}").format(
-                     n=eps, v=md.dataset_version)]
-        if vs:
-            n = sum(v.episodes for v in vs)
-            lines.append(tr(
-                "<span style='color:#8a4b00;'>⚠ 지시문 {t}건 "
-                "(에피소드 {n}개)이 기록과 맞지 않습니다</span>").format(
-                    t=len(vs), n=n))
+        card.set_fields([
+            (tr("Scene"), md.scene_id),
+            (tr("파일"), path.name),
+            (tr("에피소드"), str(eps)),
+            (tr("스키마"), md.dataset_version),
+            (tr("편집"), tr("{n}회 · {when}").format(n=edits, when=when)
+             if edits else tr("없음")),
+        ])
+        card.set_zones(md.layout)
+
+        if not reasons:
+            diag.setText(tr("없음"))
         else:
-            lines.append(tr("문제 없음"))
-        if self._suggestion is not None:
-            lines.append(tr(
-                "<span style='color:#8a4b00;'>추천: {reason}<br>"
-                "{old} → {new}</span>").format(
-                    reason=self._suggestion.reason,
-                    old=self._suggestion.old_id, new=self._suggestion.new_id))
-        if edits:
-            lines.append(tr(
-                "<span style='color:#8a4b00;'>편집 {n}회{when} — 변환은 "
-                "이어붙이기 없이 전체 재빌드입니다</span>").format(
-                    n=edits, when=f" ({when})" if when else ""))
-        lab.setText("<br>".join(lines))
+            lines = []
+            for r in reasons:
+                lines.append(tr("· {text}<br>&nbsp;&nbsp;지시문 {t}건 · "
+                                "에피소드 {e}개").format(
+                                    text=r.text, t=r.tasks, e=r.episodes))
+                if r.detail:
+                    lines.append("&nbsp;&nbsp;<span style='color:#8a4b00;'>"
+                                 f"{r.detail}</span>")
+            if self._suggestion is not None:
+                s = self._suggestion
+                lines.append(tr(
+                    "<br>기록을 {old} → {new} 로 고치면 첫 줄이 사라집니다"
+                ).format(old=s.old_id, new=s.new_id))
+            diag.setText("<br>".join(lines))
+
+        # 이 칸이 답하는 질문은 "지금 무엇을 누르면 얼마가 드나" 다. 조건문이
+        # 아니라 **두 버튼의 값**을 적는다 (2026-09-07: "기록만 고치면
+        # 이어붙이기 유지" 가 무슨 뜻이냐는 물음 -- 물어봐야 하면 실패다).
+        # "이어붙이기" 는 변환기 resume 을 가리키는 이 저장소의 말이지만,
+        # 여기서는 조작자가 실제로 겪는 일(재변환·재업로드)로 적는다.
+        cost.setText(tr(
+            "소품 수정 — 재변환 불필요<br>"
+            "문장 수정 · 교환 — 전체 재변환·재업로드"
+        ) if not edits else tr(
+            "이미 편집됨 — 무엇을 고치든 다음 변환은 전체 재변환·재업로드"))
+
         for b in buttons.values():
             b.setEnabled(True)
 
@@ -363,7 +393,7 @@ class DoctorOps:
                 sents = sorted({str(f[k].attrs.get("instruction", ""))
                                 for k in f if k.startswith("episode")})
         except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(win, tr("scene 을 열 수 없습니다"), str(e))
+            QMessageBox.warning(win, tr("Scene 열기 실패"), str(e))
             return
         dlg = ObjectDialog(win, md, props, sents, self._suggestion)
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.changes:
@@ -372,7 +402,7 @@ class DoctorOps:
             for old_id, new_id in dlg.changes.items():
                 apply_object_fix(path, old_id, new_id)
         except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(win, tr("고치지 못했습니다"), str(e))
+            QMessageBox.warning(win, tr("수정 실패"), str(e))
             return
         for old_id, new_id in dlg.changes.items():
             win.log(f"[닥터] {self._scene_id} 기록 정정: {old_id} → {new_id}")
@@ -402,9 +432,9 @@ class DoctorOps:
                     if other_id not in shown:
                         others.append((other_id, "0", text))
             except Exception as e:  # noqa: BLE001
-                win.log(f"[닥터] 계획을 읽지 못했습니다: {e}")
+                win.log(f"[닥터] 지시문 파일을 읽지 못했습니다: {e}")
         if not others:
-            QMessageBox.information(win, tr("바꿀 상대가 없습니다"), tr(
+            QMessageBox.information(win, tr("교환 상대 없음"), tr(
                 "이 scene 에는 지시문이 하나뿐입니다."))
             return
         others.sort()
@@ -415,8 +445,8 @@ class DoctorOps:
             return
         other_id = dlg.chosen
         if not plan.is_file():
-            QMessageBox.warning(win, tr("계획이 없습니다"), tr(
-                "교환은 계획 파일의 문장을 함께 바꿉니다. "
+            QMessageBox.warning(win, tr("지시문 파일 없음"), tr(
+                "교환은 지시문 파일의 문장을 함께 바꿉니다. "
                 "instructions.json 이 있어야 합니다."))
             return
         try:
@@ -441,12 +471,12 @@ class DoctorOps:
         iid, text = self._task
         plan = dataset_plan_path(self._root())
         if not plan.is_file():
-            QMessageBox.warning(win, tr("계획이 없습니다"),
+            QMessageBox.warning(win, tr("지시문 파일 없음"),
                                 tr("instructions.json 이 없습니다."))
             return
         ok = QMessageBox.question(
-            win, tr("계획에서 빼기"),
-            tr("{sid} {iid} 를 계획에서 뺍니다.\n\n{text}\n\n"
+            win, tr("지시문 빼기"),
+            tr("{sid} {iid} 를 지시문 파일에서 뺍니다.\n\n{text}\n\n"
                "더는 이 문장으로 찍지 않는다는 뜻입니다. 에피소드는 지우지 "
                "않습니다.").format(sid=self._scene_id, iid=iid, text=text))
         if ok != QMessageBox.StandardButton.Yes:
@@ -455,23 +485,24 @@ class DoctorOps:
             remove_task_from_plan(plan, self._scene_id, iid,
                                   scene_path=self._path(self._scene_id))
         except ValueError as e:
-            QMessageBox.warning(win, tr("빼지 못했습니다"), str(e))
+            QMessageBox.warning(win, tr("제거 실패"), str(e))
             return
-        win.log(f"[닥터] {self._scene_id} {iid} 를 계획에서 뺐습니다")
+        win.log(f"[닥터] {self._scene_id} {iid} 를 지시문 파일에서 뺐습니다")
         self.rescan()
         self.select_scene(self._scene_id)
 
-    def _used_texts(self, path: Path, exclude: str = "") -> set:
-        """이 scene 에서 이미 쓰이는 문장 (에피소드 + 계획)."""
-        used = set()
+    def _used_by(self, path: Path, exclude: str = "") -> dict:
+        """{문장: 그것을 쓰는 지시문 id} -- 에피소드와 지시문 파일 둘 다."""
+        used = {}
         try:
             with h5py.File(path, "r") as f:
                 for k in f:
                     if not k.startswith("episode"):
                         continue
                     a = f[k].attrs
-                    if str(a.get("instruction_id", "")) != exclude:
-                        used.add(str(a.get("instruction", "")))
+                    other = str(a.get("instruction_id", ""))
+                    if other != exclude:
+                        used.setdefault(str(a.get("instruction", "")), other)
         except Exception:  # noqa: BLE001
             pass
         plan = dataset_plan_path(self._root())
@@ -479,7 +510,7 @@ class DoctorOps:
             try:
                 for iid, text in plan_task_texts(plan, self._scene_id).items():
                     if iid != exclude:
-                        used.add(text)
+                        used.setdefault(text, iid)
             except Exception:  # noqa: BLE001
                 pass
         return used
@@ -492,7 +523,7 @@ class DoctorOps:
                                     tr("세션을 끝낸 뒤 고치세요."))
             return False
         if not self._task or not self._scene_id:
-            QMessageBox.information(win, tr("지시문을 고르세요"), tr(
+            QMessageBox.information(win, tr("지시문 미선택"), tr(
                 "표에서 고칠 지시문 줄을 먼저 누르세요."))
             return False
         return True

@@ -56,7 +56,7 @@ class SwapDialog(QDialog):
 
     def __init__(self, parent, mine: tuple, others: list) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("지시문 교환"))
+        self.setWindowTitle(tr("문장 교환"))
         self._mine = mine
         self._others = others
         self.chosen = None
@@ -117,7 +117,7 @@ class SwapDialog(QDialog):
             "에피소드 {n}개의 문장이 바뀝니다 — 이미 Hub 에 올린 "
             "데이터셋이라면 전체 재빌드·재푸시가 필요해집니다.").format(n=moved)
             if moved else tr(
-            "둘 다 안 찍은 빈 칸이라 계획 파일만 바뀝니다."))
+            "둘 다 안 찍은 빈 칸이라 지시문 파일만 바뀝니다."))
 
     def _accept(self) -> None:
         self.chosen = self._current()[0]
