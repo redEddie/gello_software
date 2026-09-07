@@ -4,7 +4,14 @@
 
     Pick-and-place:
         pick up the {OBJECT} [QUALIFIER] and place it {RELATION} the {TARGET}
-        RELATION ∈ { on, inside, next to, on top of(TARGET=drawer) }
+        RELATION 은 목적지 모양으로 정해진다 (2026-09-07 사용자 확정):
+            오목한 그릇 (small_bowl, bowl, large_bowl) -> inside
+            평평한 것 (tray; 나중에 plate 도 여기)          -> on
+            drawer                                        -> on top of
+        그릇은 오목한 안쪽 공간으로 물체가 들어가므로 목적지가
+        그릇이면 언제나 inside 다. on 은 "림에 걸친다" 는 모호함을
+        주므로 평평한 면에만 쓴다 (수집 사진으로 확인: 같은 크기 그릇
+        두 개도 포개져서 위 그릇이 아래 그릇 안으로 완전히 들어간다).
     Drag (들지 않고 끌기):
         drag the {OBJECT} [QUALIFIER] next to the {TARGET}
     Drawer:
@@ -101,10 +108,13 @@ _PICKABLE = {"cup", "small_bowl", "bowl"}
 PICKABLE_CATS = _PICKABLE
 # 끌 수 있는 것 (drag 대상 -- 들지 않으므로 큰 그릇도 가능)
 _DRAGGABLE = {"cup", "small_bowl", "bowl", "large_bowl"}
-# on / inside 목적지 (그릇)
+# inside 목적지 (오목한 그릇)
 _BOWL_CATS = {"small_bowl", "bowl", "large_bowl"}
-# 'on' 목적지 = 그릇 + 트레이
-_ON_CATS = _BOWL_CATS | {"tray"}
+# 'on' 목적지 = 평평한 것 (트레이) 뿐이다. 그릇은 오목해서 물체가 림에
+# 걸치지 않고 안으로 들어가므로 목적지가 그릇이면 언제나 inside 다
+# (2026-09-07 사용자 확정). 나중에 plate(접시) category 가 인벤토리에
+# 들어오면 tray 와 같은 취급으로 여기에 추가하면 된다.
+_ON_CATS = {"tray"}
 # drawer 안('inside the drawer')에 넣을 수 있는 것 -- 커트러리만. tidy 전환
 # 이후 새 문장은 안 만들지만, 기존 수집분의 "pick up the {색} cutlery and
 # place it inside the drawer" 를 lint 가 계속 받기 위한 하위호환 집합.
@@ -267,14 +277,15 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
 
     sentences: set[str] = set()
 
-    # 1) pick up {obj} and place it on/inside {bowl}
+    # 1) pick up {obj} and place it inside {bowl}
+    # 목적지가 그릇이면 언제나 inside 다 (2026-09-07 사용자 확정 -- 그릇은
+    # 오목해서 물체가 안으로 들어간다). on 문장은 만들지 않는다.
     for ocolor, ocat, ooid in refs(_PICKABLE):
         for bcolor, bcat, boid in refs(_BOWL_CATS):
             if ooid == boid:
                 continue
             o = _reference(ocolor, ocat, md, props)
             b = _reference(bcolor, bcat, md, props)
-            sentences.add(f"pick up {o} and place it on {b}")
             sentences.add(f"pick up {o} and place it inside {b}")
 
     # 2) pick up {obj} and place it on top of the drawer
@@ -410,13 +421,21 @@ def _parse_qualifier(qual: str) -> Optional[tuple[str, str]]:
 
 
 def lint(sentence: str, md: Optional[SceneMetadata] = None,
-         props: Optional[dict[str, Prop]] = None) -> Optional[str]:
+         props: Optional[dict[str, Prop]] = None, *,
+         strict_relation: bool = True) -> Optional[str]:
     """문장이 정본 문법을 따르는지 검증.
 
     md 가 주어지면 scene 에서 지칭 유일성·존재까지 검사한다. 주어지지 않으면
     템플릿/어휘만 검사한다(계획 파일 하위호환용). QUALIFIER 가 붙은 지칭은
     유일하지 않아도 되지만 최소 1개는 존재해야 하고, REFERENCE 는 유일해야
     한다.
+
+    strict_relation=False 면 목적지가 그릇인 on 문장("place it on the
+    {그릇}")도 통과시킨다. 2026-09-07 의 "그릇 목적지 on 금지" 규칙 이전에
+    수집된 데이터(240 에피소드)와 계획 파일에 그런 문장이 남아 있어서,
+    그것들을 읽어 검증하는 자리(load_plan 등)가 깨지지 않게 하는
+    하위호환 스위치다. 기존 데이터의 전수 수정이 끝나면 이 인자와 함께
+    제거하면 된다.
     """
     sentence = sentence.strip()
     if not sentence:
@@ -511,7 +530,11 @@ def lint(sentence: str, md: Optional[SceneMetadata] = None,
         obj_phrase, qual, rel, tgt = (m.group("obj"), m.group("qual"),
                                       m.group("rel"), m.group("tgt"))
         obj_allowed = _PICKABLE | {"cutlery"}
-        tgt_allowed = {"on": _ON_CATS, "inside": _BOWL_CATS | {"drawer"},
+        # "on" 은 평평한 것(tray)만 -- 그릇 목적지는 옛 겹침 집합
+        # (_ON_CATS 가 그릇을 포함하던 시절) 문장의 하위호환 검증을 위해
+        # 파싱 단계에서는 받고, 아래에서 strict 여부로 판정한다.
+        tgt_allowed = {"on": _BOWL_CATS | {"tray"},
+                       "inside": _BOWL_CATS | {"drawer"},
                        "next to": _BESIDE_CATS | {"cutlery"},
                        "on top of": {"drawer"}}[rel]
         verb_role = ("pick", f"place-{rel}")
@@ -541,6 +564,12 @@ def lint(sentence: str, md: Optional[SceneMetadata] = None,
         return tgt_parsed
     if tgt_parsed == ("", "cutlery"):
         return "어질러진 커트러리 더미는 위치 기준(next to)으로 못 쓴다"
+    # 그릇 목적지 on 금지 (2026-09-07 사용자 확정) -- 그릇은 오목해서 물체가
+    # 안으로 들어가므로 inside 가 맞다. strict_relation=False 면 옛 수집분/
+    # 계획 문장을 계속 통과시킨다 (하위호환 -- docstring 참고).
+    if rel == "on" and tgt_parsed[1] in _BOWL_CATS and strict_relation:
+        return (f"the {tgt} 은 오목한 그릇이다 -- 'place it inside' 가 맞다 "
+                "(on 은 트레이·접시처럼 평평한 것에만)")
     if rel == "inside" and tgt_parsed[1] == "drawer" \
             and obj[1] not in _DRAWER_INSIDE_OBJS:
         return ("drawer 안에는 커트러리만 넣는다 -- "
@@ -570,15 +599,22 @@ def selftest() -> None:
         },
     )
     s1 = enumerate_instructions(md1, props)
-    assert "pick up the blue cup and place it on the white small bowl" in s1
+    # 그릇 목적지는 inside 뿐이다 (2026-09-07 -- 그릇은 오목해서 물체가 안으로
+    # 들어간다). on 문장은 생성하지 않는다.
     assert "pick up the blue cup and place it inside the white small bowl" in s1
+    assert not any("place it on the white small bowl" in x for x in s1)
     assert "pick up the blue cup and place it on top of the drawer" in s1
     assert "drag the blue cup next to the white small bowl" in s1
     assert "open the top drawer" in s1
-    assert lint("pick up the blue cup and place it on the white small bowl", md1, props) is None
     assert lint("pick up the blue cup and place it inside the white small bowl", md1, props) is None
     assert lint("drag the blue cup next to the white small bowl", md1, props) is None
     assert lint("pick up the blue cup and place it on the blue bowl", md1, props) is not None
+    # 그릇 목적지 on 은 strict 에서 거부 + inside 안내
+    err = lint("pick up the blue cup and place it on the white small bowl", md1, props)
+    assert err is not None and "inside" in err, err
+    # 하위호환: 옛 수집분/계획 문장 검증용으로 strict_relation=False 면 통과
+    assert lint("pick up the blue cup and place it on the white small bowl",
+                md1, props, strict_relation=False) is None
 
     # 정본 위반 안내 -- put / in / that is / 마침표
     assert "inside" in lint("pick up the blue cup and place it in the white bowl")
@@ -589,7 +625,7 @@ def selftest() -> None:
 
     # QUALIFIER: 템플릿만 검사(md 없이)
     assert lint("pick up the blue cup farthest from the yellow bowl "
-                "and place it on the yellow bowl") is None
+                "and place it inside the yellow bowl") is None
     assert lint("drag the blue cup closest to the white bowl next to the white cup") is None
     assert lint("pick up the blue cup nearest the bowl and place it on the bowl") is not None
 
@@ -614,14 +650,19 @@ def selftest() -> None:
     err = lint("pick up the white cup and place it on the blue small bowl", md2, props)
     assert err is not None and "QUALIFIER" in err, err
     assert lint("pick up the white cup farthest from the blue small bowl "
-                "and place it on the blue small bowl", md2, props) is None
+                "and place it inside the blue small bowl", md2, props) is None
     # drag: 큰 그릇도 끌 수 있다
     assert lint("drag the white bowl next to the blue cup") is None
 
-    # legacy "bowl" 약칭 파싱
-    assert lint("pick up the blue cup and place it on the white bowl") is None
-    assert lint("pick up the pink small bowl and place it on the white bowl") is None
-    assert lint("pick up the small green bowl and place it on the yellow bowl") is None
+    # legacy "bowl" 약칭 파싱 (관계는 inside -- 그릇 목적지 on 금지)
+    assert lint("pick up the blue cup and place it inside the white bowl") is None
+    assert lint("pick up the pink small bowl and place it inside the white bowl") is None
+    assert lint("pick up the small green bowl and place it inside the yellow bowl") is None
+    # 옛 겹침 집합 문장("on the {그릇}")은 strict 에서 거부, 하위호환 모드만 통과
+    err = lint("pick up the blue cup and place it on the white bowl")
+    assert err is not None and "inside" in err, err
+    assert lint("pick up the blue cup and place it on the white bowl",
+                strict_relation=False) is None
 
     # 색 토큰 검증 -- 인벤토리에 없는 색/색 아닌 수식어는 파싱 실패
     assert lint("pick up the zzz qqq cup and place it on the wwww bowl") is not None
@@ -736,8 +777,9 @@ def selftest() -> None:
             "OBJ-BOWLL-WHT-01": {"zone": [0, 2]}}})
     s6 = enumerate_instructions(md6, props)
     assert "pick up the red cup and place it inside the blue japanese bowl" in s6
-    # bowl 은 pickable (림 파지 -- 2026-08-31 실기 확인)
-    assert "pick up the blue japanese bowl and place it on the white large bowl" in s6
+    # bowl 은 pickable (림 파지 -- 2026-08-31 실기 확인). 그릇->그릇도 inside 뿐.
+    assert "pick up the blue japanese bowl and place it inside the white large bowl" in s6
+    assert not any("place it on the white large bowl" in x for x in s6)
     assert lint("pick up the red cup and place it inside the blue japanese bowl",
                 md6, props) is None
     assert lint("drag the blue japanese bowl next to the white large bowl",

@@ -130,7 +130,11 @@ def load_plan(path: Path) -> CollectionPlan:
                     f"{path.name}: {sid} 안에서 {iid} 가 서로 다른 문장으로 "
                     f"쓰였다 -- {prev!r} vs {instr!r} (ID 는 scene 안에서 유일)")
             sentence_by_id[iid] = instr
-            gerr = _grammar_lint(instr)
+            # strict_relation=False: 2026-09-07 의 "그릇 목적지 on 금지" 이전에
+            # 쓰인 계획 문장("place it on the {그릇}")이 경고 폭탄이 되지
+            # 않게 한다. 이 자리는 기존 파일을 '읽어 검증'하는 곳이라 완화
+            # 모드 -- 새 문장 작성 자리(편집 폼 등)는 strict 기본값을 쓴다.
+            gerr = _grammar_lint(instr, strict_relation=False)
             if gerr:
                 warnings.append(
                     f"{sid}/{iid}: 통일 문법(§4 동사 집합 포함) 경고 -- {gerr}: {instr!r}")
