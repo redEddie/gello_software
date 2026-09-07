@@ -548,6 +548,10 @@ class WorkspaceWindow(QMainWindow):
             # scene 파일을 열므로 여기 들어올 때만 새로 읽는다.
             show_center_tab(self, "instruction")
             self.scene_planning.refresh_plan_progress()
+            # 구성기의 데이터셋 맥락도 여기서 물린다. 탭 신호에만 기대면,
+            # Scene 탭이 **이미 현재**일 때 다시 눌러도 currentChanged 가
+            # 안 와서 낡은 번호가 남는다 (2026-09-07 실기: S000).
+            self.scene_ops.refresh_composer_context()
         elif key == "doctor":
             # 이 화면에 온 이유는 "어디가 잘못됐나" 다 -- 카메라가 아니라
             # 검사 결과를 띄운다 (Configure 가 계획 현황을 띄우는 것과 같은

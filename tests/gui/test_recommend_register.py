@@ -249,7 +249,8 @@ import os  # noqa: E402
 # 하고, 그러면 빼야 할 것을 놓친다 (2026-09-07 사용자). 동작으로 좁혀 보되
 # 뱃지의 "고른 수/전체" 로 전체를 잃지 않는다.
 from apps.workspace.shared.badges import ClickableBadge  # noqa: E402
-from PyQt6.QtWidgets import QCheckBox, QVBoxLayout, QWidget  # noqa: E402
+from PyQt6.QtWidgets import (  # noqa: E402
+    QCheckBox, QPushButton, QVBoxLayout, QWidget)
 
 _host = QWidget()
 _col = QVBoxLayout(_host)
@@ -277,12 +278,20 @@ _n, _m = (int(x) for x in _sel._note.text().split("/"))
 assert _n == _m == len(_vis), (_n, _m, len(_vis))
 _vis[0].setChecked(False)
 assert _sel._note.text() == f"{_m - 1}/{_m}", _sel._note.text()
-# 안 보이는 동작은 건드리지 않는다
-RecommendDialog._set_visible_checks(
-    {p: p for p in {c.parentWidget() for c in _host.findChildren(QCheckBox)}},
-    False)
-assert any(cb.isChecked() for cb in _checks), "안 보는 것까지 꺼졌다"
-print("9 통과: 지시문 고르기가 동작별 + 고른 수/전체 표시")
+# 일괄 버튼은 지시문 파일 경로가 없어도 눌린다 -- 고르는 것은 언제나 되고,
+# 경로가 없어서 못 하는 것은 등록이다 (2026-09-07 실기).
+_btns = [b for b in _host.findChildren(QPushButton)]
+assert _btns and all(b.isEnabled() for b in _btns), \
+    [(b.text(), b.isEnabled()) for b in _btns]
+# 그리고 **보이는 동작만** 끈다 -- 안 보는 것을 건드리면 무엇이 바뀌었는지
+# 알 수 없다.
+_off = [b for b in _btns if "해제" in b.text()][0]
+_before = sum(1 for cb in _checks if cb.isChecked())
+_off.click()
+_after = sum(1 for cb in _checks if cb.isChecked())
+assert 0 < _after < _before, (_before, _after)
+assert not any(cb.isChecked() for cb in _vis), "보이는 것이 안 꺼졌다"
+print("9 통과: 지시문 고르기가 동작별 + 고른 수/전체 + 일괄 버튼")
 
 
 

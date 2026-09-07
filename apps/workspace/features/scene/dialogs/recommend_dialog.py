@@ -602,7 +602,6 @@ class RecommendDialog(QDialog):
         row.addWidget(summary, 1)
         for label, want in ((tr("이 동작 전부"), True), (tr("전부 해제"), False)):
             btn = QPushButton(label)
-            btn.setEnabled(self._plan_path is not None)
             btn.clicked.connect(
                 lambda _c=False, w=want: self._set_visible_checks(pages, w))
             row.addWidget(btn)

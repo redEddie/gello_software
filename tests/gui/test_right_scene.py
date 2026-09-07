@@ -39,4 +39,46 @@ assert "세션 없음" in win.right_scene_view.text()
 print("통과: 배치도 표시(3x3 격자 포함)/읽기실패/초기화")
 import os  # noqa: E402
 
+
+# ---- 새 scene 번호는 만드는 순간 다시 센다 -----------------------------
+# 구성기가 들고 있던 번호는 맥락을 물린 시점의 것이라 낡을 수 있다. 실기에서
+# S000 인 채로 남아 이미 있는 파일과 부딪혔다 (2026-09-07). 표시가 틀리는
+# 것은 불편이지만 그 번호로 파일을 만드는 것은 사고다.
+import tempfile as _tf2  # noqa: E402
+from pathlib import Path as _P  # noqa: E402
+
+import numpy as _np  # noqa: E402
+
+from gello.scene.scene_format import (  # noqa: E402
+    SceneMetadata as _MD,
+    SceneWriter as _W,
+    next_scene_id as _next,
+)
+from gello.scene.props import active_prop_ids as _apid  # noqa: E402
+
+_root = _P(_tf2.mkdtemp(prefix="sceneid_"))
+_mk = lambda sid: _W(_root, metadata=_MD(  # noqa: E731
+    scene_id=sid, objects=["OBJ-CUP-WHT-02"],
+    layout={"grid": [3, 3], "placements": {"OBJ-CUP-WHT-02": {"zone": [0, 0]}}}),
+    known_prop_ids=_apid(), session_version="knu-1.2.0")
+for _sid in ("S000", "S001"):
+    _w = _mk(_sid)
+    _w.close()
+assert _next(_root) == "S002", _next(_root)
+
+# 낡은 번호(S000)를 든 구성으로 만들어도, 만드는 쪽이 다시 세면 부딪히지 않는다
+_stale = _MD(scene_id="S000", objects=["OBJ-CUP-WHT-02"],
+             layout={"grid": [3, 3],
+                     "placements": {"OBJ-CUP-WHT-02": {"zone": [0, 0]}}})
+_stale.scene_id = _next(_root)          # on_compose_done 이 하는 일
+_w = _W(_root, metadata=_stale, known_prop_ids=_apid(),
+        session_version="knu-1.2.0")
+_w.close()
+assert (_root / "scene_002.hdf5").is_file(), sorted(p.name for p in _root.iterdir())
+print("통과: 새 scene 번호를 만드는 순간 다시 센다")
+
+
+# os._exit 는 버퍼를 비우지 않는다 -- 먼저 비운다. 없으면 이 파일의
+# 출력이 통째로 사라져서, 검사가 실제로 돌았는지 알 수 없다.
+sys.stdout.flush()
 os._exit(0)

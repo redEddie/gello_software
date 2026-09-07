@@ -173,6 +173,15 @@ class SceneOps:
         if md is None:
             return
         root = Path(self.win.root_edit.text().strip() or ".")
+        # **번호는 만드는 순간 다시 센다.** 구성기가 들고 있던 번호는 맥락을
+        # 물린 시점의 것이라, 그 사이에 데이터셋이 바뀌었거나 맥락을 못 받은
+        # 채였으면 낡았다 -- 실제로 S000 인 채로 남아 이미 있는 파일과 부딪혔다
+        # (2026-09-07 실기). 화면 표시가 틀리는 것은 불편이지만, 그 번호로
+        # 파일을 만드는 것은 사고다.
+        try:
+            md.scene_id = next_scene_id(root)
+        except Exception:  # noqa: BLE001 -- 경로가 이상하면 아래에서 잡힌다
+            pass
         try:
             # metadata 만 있는 파일. SceneWriter 는 생성 시점에 파일을 쓰므로
             # 여기서 닫으면 그대로 빈 scene 이 된다 -- Connect 는 resume 으로
