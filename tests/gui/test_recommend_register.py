@@ -244,6 +244,48 @@ print("8 통과: compose 위반 조합도 배치는 추천하되 경고를 보�
 
 import os  # noqa: E402
 
+# ------------------------------------------------- 9. 지시문 고르기가 동작별로
+# 문장 서른 몇 개가 한 줄로 늘어서 있으면 "무엇을 뺄까" 를 한 번에 판단해야
+# 하고, 그러면 빼야 할 것을 놓친다 (2026-09-07 사용자). 동작으로 좁혀 보되
+# 뱃지의 "고른 수/전체" 로 전체를 잃지 않는다.
+from apps.workspace.shared.badges import ClickableBadge  # noqa: E402
+from PyQt6.QtWidgets import QCheckBox, QVBoxLayout, QWidget  # noqa: E402
+
+_host = QWidget()
+_col = QVBoxLayout(_host)
+_dlg = RecommendDialog.__new__(RecommendDialog)
+_dlg._props = props_by_id()
+_dlg._plan_path = Path(tempfile.mkdtemp()) / "instructions.json"
+_md9 = SceneMetadata(
+    scene_id="S009",
+    objects=["OBJ-CUP-WHT-02", "OBJ-BOWLS-BLU-01", "OBJ-BOWLS-PNK-01"],
+    layout={"grid": [3, 3], "placements": {
+        "OBJ-CUP-WHT-02": {"zone": [0, 0]},
+        "OBJ-BOWLS-BLU-01": {"zone": [0, 1]},
+        "OBJ-BOWLS-PNK-01": {"zone": [2, 0]}}})
+_checks = _dlg._build_sentence_checks(_md9, {}, _col)
+_host.show()
+_badges = _host.findChildren(ClickableBadge)
+assert len(_badges) >= 2, "동작이 하나뿐이라 이 검사가 무의미하다"
+assert sum(len(b._note.text().split("/")[1:]) for b in _badges) == len(_badges)
+# 한 번에 보이는 것은 고른 동작의 문장뿐이다
+_vis = [cb for cb in _host.findChildren(QCheckBox) if cb.isVisibleTo(_host)]
+assert 0 < len(_vis) < len(_checks), (len(_vis), len(_checks))
+# 뱃지의 "고른 수/전체" 가 실제와 맞고, 끄면 따라 준다
+_sel = [b for b in _badges if "2px" in b.styleSheet()][0]
+_n, _m = (int(x) for x in _sel._note.text().split("/"))
+assert _n == _m == len(_vis), (_n, _m, len(_vis))
+_vis[0].setChecked(False)
+assert _sel._note.text() == f"{_m - 1}/{_m}", _sel._note.text()
+# 안 보이는 동작은 건드리지 않는다
+RecommendDialog._set_visible_checks(
+    {p: p for p in {c.parentWidget() for c in _host.findChildren(QCheckBox)}},
+    False)
+assert any(cb.isChecked() for cb in _checks), "안 보는 것까지 꺼졌다"
+print("9 통과: 지시문 고르기가 동작별 + 고른 수/전체 표시")
+
+
+
 # os._exit 는 버퍼를 비우지 않는다 -- 먼저 비운다.
 sys.stdout.flush()
 os._exit(0)

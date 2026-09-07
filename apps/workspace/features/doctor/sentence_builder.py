@@ -23,19 +23,17 @@
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
-    QFrame,
     QHBoxLayout,
     QLabel,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from apps.workspace.features.doctor.confirm import side_by_side
+from apps.workspace.shared.badges import ClickableBadge
 from gello.gui.i18n import tr
 
 #: 스킬 -> 사람 말. 뱃지에 "pick-inside" 를 그대로 쓰면 조작자가 문법 이름을
@@ -51,20 +49,6 @@ SKILL_KO = {
     "drawer-open": "서랍 열기",
     "drawer-close": "서랍 닫기",
 }
-
-_SEL = ("_SkillBadge{background:#eef7f0; color:#1d5c32;"
-        " border:2px solid #2e7d46; border-radius:9px;}")
-# 뱃지는 바탕(#f2f2f2)이 흰 패널과 1.05:1 이라 **테두리로 알아본다**.
-# 그래서 테두리를 비텍스트 3:1 로 맞춘다 (#c9c9c9 는 1.66:1 이었다, #49).
-_DEF = ("_SkillBadge{background:#f2f2f2; color:#444444;"
-        " border:1px solid #949494; border-radius:9px;}")
-#: 고를 수 없는 뱃지. **지우지 않고 취소선을 긋는다** (2026-09-07 사용자).
-#: 사라지면 "왜 없지" 가 되고, 남아 있으면 툴팁이 이유를 말할 수 있다.
-# 못 고르는 뱃지도 **읽을 수 있어야** 한다 -- 물체 이름이 거기 적혀 있고,
-# 못 고른다는 신호는 취소선과 점선이 이미 낸다. #8a8a8a 는 3.22:1 이었다.
-_OFF = ("_SkillBadge{background:#f7f7f7; color:#6f6f6f;"
-        " border:1px dashed #949494; border-radius:9px;}")
-
 
 def _badge_row(col, title: str):
     """제목 한 줄 + 뱃지가 놓일 가로줄. (레이아웃, 뱃지 dict)."""
@@ -86,7 +70,7 @@ def _fill(row, store: dict, names: list, on_click) -> None:
             w.setParent(None)
     store.clear()
     for name in names:
-        b = _SkillBadge(name, wrap=True)
+        b = ClickableBadge(name, wrap=True)
         b.clicked.connect(lambda _n, v=name: on_click(v))
         store[name] = b
         row.addWidget(b)
@@ -164,55 +148,6 @@ def _pair_label(sentence: str) -> str:
     return s
 
 
-class _SkillBadge(QFrame):
-    """누를 수 있는 뱃지. QPushButton 이 아닌 이유는 모양이다 -- 버튼은
-    플랫폼 테마를 따라가서 뱃지로 안 보인다."""
-
-    clicked = pyqtSignal(str)
-
-    def __init__(self, skill: str, parent=None, wrap: bool = False) -> None:
-        super().__init__(parent)
-        self.skill = skill
-        row = QHBoxLayout(self)
-        row.setContentsMargins(8, 2, 8, 2)
-        row.setSpacing(6)
-        name = QLabel(skill)
-        name.setWordWrap(wrap)
-        name.setStyleSheet("border:none; font-size:11px; font-weight:bold;")
-        row.addWidget(name)
-        ko = None if wrap else SKILL_KO.get(skill)
-        if ko:
-            lab = QLabel(ko)
-            lab.setStyleSheet("border:none; font-size:11px;")
-            row.addWidget(lab)
-        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._off = False
-        self._on = False
-        self.set_selected(False)
-
-    def set_selected(self, on: bool) -> None:
-        self._on = on
-        self.setStyleSheet(_OFF if self._off else (_SEL if on else _DEF))
-
-    def set_available(self, on: bool, why: str = "") -> None:
-        """못 고르는 뱃지는 취소선 + 사유 툴팁. 스타일시트의
-        text-decoration 은 위젯에 따라 안 먹어서 글꼴로 긋는다."""
-        self._off = not on
-        self.setToolTip(why)
-        for lab in self.findChildren(QLabel):
-            f = lab.font()
-            f.setStrikeOut(not on)
-            lab.setFont(f)
-        self.setCursor(Qt.CursorShape.ArrowCursor if self._off
-                       else Qt.CursorShape.PointingHandCursor)
-        self.set_selected(self._on)
-
-    def mousePressEvent(self, _e) -> None:
-        if not self._off:
-            self.clicked.emit(self.skill)
-
-
 class SentenceDialog(QDialog):
     """options = [(skill, sentence), ...] -- 문법이 만든 것만.
 
@@ -264,7 +199,7 @@ class SentenceDialog(QDialog):
         strip = QHBoxLayout()
         strip.setSpacing(6)
         for skill in sorted(self._index):
-            b = _SkillBadge(skill)
+            b = ClickableBadge(skill, SKILL_KO.get(skill, ''))
             b.clicked.connect(self._pick_skill)
             self._badges[skill] = b
             strip.addWidget(b)

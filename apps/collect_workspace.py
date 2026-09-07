@@ -465,6 +465,11 @@ class WorkspaceWindow(QMainWindow):
                 self.cameras.cloud_worker.mode = self.cameras.depth_consumer
         elif self.cameras.cloud_worker is not None:
             self.depth_ops.stop_cloud()
+        if key == "scene":
+            # Scene 탭은 [새 Scene 구성...] 을 거치지 않고 탭을 눌러서도
+            # 열린다. 그 경로에서는 구성기가 데이터셋 경로를 못 받아
+            # 추천이 "지시문 파일 없음" 상태로 떴다 (2026-09-07).
+            self.scene_ops.refresh_composer_context()
         on = key == "layout"
         self.bottom_tabs.setVisible(not on)
         if on:

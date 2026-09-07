@@ -140,6 +140,22 @@ class SceneOps:
         self.win.scene_compose_hint.setText("")
         show_center_tab(self.win, "scene")
 
+    def refresh_composer_context(self) -> None:
+        """구성기에 지금 데이터셋의 경로·다음 scene 번호를 물린다.
+
+        on_new_scene 이 하던 일 중 **맥락을 채우는 부분만** 떼어 낸 것이다.
+        Scene 탭은 그 명령을 거치지 않고 탭 클릭으로도 열려서, 그때는 구성기가
+        경로 없이 남아 있었다.
+        """
+        root = Path(self.win.root_edit.text().strip() or ".")
+        try:
+            sid = next_scene_id(root)
+        except Exception:  # noqa: BLE001 -- 경로가 아직 없을 수 있다
+            return
+        self.win.scene_composer.set_context(
+            sid, root, dataset_plan_path(root),
+            STATION.name, self.win.schema_version)
+
     def on_compose_done(self) -> None:
         """우측 패널의 [✚ 새 Scene 만들기] -- **그 자리에서 파일을 만든다**.
 
