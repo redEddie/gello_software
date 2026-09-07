@@ -40,10 +40,13 @@ EMPTY = "·"
 
 _CAPTION = "color:#777; font-size:11px;"
 _VALUE = "color:#222;"
-_CELL = ("border:1px solid #c8c8c8; border-radius:3px; "
-         "background:#fbfbfb; color:#222; font-size:10px; padding:2px;")
-_CELL_EMPTY = ("border:1px dashed #d8d8d8; border-radius:3px; "
-               "background:transparent; color:#bbb; font-size:10px;")
+# 채운 칸과 빈 칸이 **같은 테두리**를 갖는다. 빈 칸이 안 보이면 3×3 구조가
+# 사라져서 남은 것이 허공에 뜬 상자 몇 개가 된다 -- ASCII 격자보다 나쁘다
+# (2026-09-07 실측). 다른 것은 바탕과 글자색뿐이다.
+_CELL = ("border:1px solid #b8b8b8; background:#f2f6f2; "
+         "color:#1a3a1a; font-size:10px; font-weight:bold; padding:2px;")
+_CELL_EMPTY = ("border:1px solid #d0d0d0; background:#fafafa; "
+               "color:#c0c0c0; font-size:11px;")
 
 
 class WrapLabel(QLabel):
@@ -103,7 +106,7 @@ class ZoneMap(QWidget):
         super().__init__(parent)
         self._grid = QGridLayout(self)
         self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setSpacing(2)
+        self._grid.setSpacing(0)
         self._cells: dict[tuple[int, int], QLabel] = {}
         self._shape = (0, 0)
         self.setSizePolicy(QSizePolicy.Policy.Preferred,
