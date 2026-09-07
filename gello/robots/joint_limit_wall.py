@@ -301,7 +301,11 @@ class JointLimitWall:
         arm_hysteresis: float = 0.05,
         hz: float = 300.0,
         health_every: float = 0.5,
-        min_voltage: float = 4.5,
+        # XL330 의 동작 하한은 3.7 V -- 4.0 V 는 그 위의 안전 마진이다.
+        min_voltage: float = 4.0,
+        # 순간 sag 한 번에 벽이 죽지 않도록, 연속으로 이만큼 읽혀야 멈춘다
+        # (health_every=0.5 s 기준 3회 = 1.5 s 지속).
+        voltage_sag_reads: int = 3,
         gripper_open_close: Optional[Tuple[float, float]] = None,
         trigger_start: float = 0.6,
         trigger_squeeze_current: float = 30.0,
@@ -390,6 +394,8 @@ class JointLimitWall:
         self._dt = 1.0 / hz
         self._health_every = health_every
         self._min_voltage = min_voltage
+        self._sag_reads = max(1, int(voltage_sag_reads))
+        self._low_v = [0] * self._n_ids  # 서보별 연속 저전압 횟수 (디바운스)
 
         # Per-joint spring gain (2026-08-27): a scalar kp under-serves the
         # pitch joints. The pull current is kp * tracking-error, and the
@@ -1042,10 +1048,15 @@ class JointLimitWall:
                     "(0x20=overload); wall stopping"
                 )
             if v is not None and v < self._min_voltage:
-                raise RuntimeError(
-                    f"servo ID{servo_id} supply sag {v:.1f} V "
-                    f"< {self._min_voltage} V; wall stopping"
-                )
+                self._low_v[k] += 1
+                if self._low_v[k] >= self._sag_reads:
+                    raise RuntimeError(
+                        f"servo ID{servo_id} supply sag {v:.1f} V "
+                        f"< {self._min_voltage} V "
+                        f"({self._low_v[k]}회 연속); wall stopping"
+                    )
+            else:
+                self._low_v[k] = 0
 
 
 def selftest() -> None:
@@ -1122,6 +1133,26 @@ def selftest() -> None:
     # 8. 정렬 전류 상한은 하한(IDLE_MIN_CURRENT) 아래로 내려가지 않는다
     caps = np.maximum(np.array([400.0, 1000.0, 400.0]), IDLE_MIN_CURRENT)
     assert caps.min() >= IDLE_MIN_CURRENT and caps[1] == 1000.0
+
+    # 9. 전압 sag 디바운스: 1~2회의 순간 저전압은 무시하고, sag_reads 회
+    #    연속이어야 죽는다. 정상 읽기가 끼면 카운터가 리셋된다.
+    class _Drv:
+        _ids = [1, 5]
+
+    w = object.__new__(JointLimitWall)
+    w._driver, w._min_voltage, w._sag_reads = _Drv(), 4.0, 3
+    w._low_v = [0, 0]
+    ok, sag = (4.8, 0, 40), (3.9, 0, 40)
+    w._check_health([ok, sag])                    # 1회 -- 무시
+    w._check_health([ok, ok])                     # 정상 -- 리셋
+    w._check_health([ok, sag])                    # 다시 1회
+    w._check_health([ok, sag])                    # 2회 연속 -- 아직 생존
+    assert w._low_v == [0, 2]
+    try:
+        w._check_health([ok, sag])                # 3회 연속 -- 사망
+        raise AssertionError("연속 sag 인데 벽이 살아 있다")
+    except RuntimeError as e:
+        assert "ID5" in str(e) and "3회 연속" in str(e)
     print("joint_limit_wall selftest 통과")
 
 

@@ -46,7 +46,7 @@ Keep this invariant when adding files; a module's folder must announce its role.
   (auto `git pull --ff-only`, then `apps/collect_launcher.py` — the wizard,
   which opens `collect_workspace` when it finishes) — keep the working tree
   clean/committed or the pull is skipped. Two icons exist: `SceneCollector`
-  points at the `gello_software-scene` worktree (main, real collection) and
+  points at the `gello_software-main` worktree (main, real collection) and
   `SceneCollectorDev` at `gello_software-dev`.
 
 ## Conventions
@@ -68,7 +68,7 @@ Keep this invariant when adding files; a module's folder must announce its role.
   (branch `feat/waypoint-client`); prefer cherry-picks over merges across the
   2026-08-31 layout change.
 - Release flow: develop on `dev` here, then
-  `git -C ../gello_software-scene merge --ff-only dev` (that worktree holds
+  `git -C ../gello_software-main merge --ff-only dev` (that worktree holds
   `main`, the branch the collection icon runs), re-run the suite **there**, and
   push both branches. `main` is never developed on directly — but it is what the
   operator is running, so nothing lands there unverified.

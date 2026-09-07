@@ -119,6 +119,11 @@ GRIPPER_READ_HZ = 20.0
 # Conservative default joint impedance (N*m/rad), same order as libfranka docs.
 DEFAULT_JOINT_IMPEDANCE = [3000.0, 3000.0, 3000.0, 2500.0, 2500.0, 2000.0, 2000.0]
 
+# readOnce 간 간격이 이 값을 넘으면 "늦은 틱" 으로 센다. 정상은 1 ms 며,
+# 네트워크/GIL 지연으로 한 틱을 놓치면 2 ms 가 된다 -- 1.5 ms 는 그 사이의
+# 판별선이다.
+LATE_TICK_S = 1.5e-3
+
 # FR3 joint torque limits (N*m), datasheet.  These are the *actuation* limits,
 # and they are NOT a way to disable the collision reflex: the reflex compares
 # the estimated *external* torque (tau_ext_hat_filtered), which a braced
@@ -314,6 +319,11 @@ class FrankaFR3Robot(Robot):
             print(f"[FR3] robot state 에 포스·토크 필드가 없습니다: {missing} "
                   "-- 포스·토크·접촉 관측은 기록되지 않습니다 (knu-1.0.0 로 기록됨)")
         self._success_rate = 1.0
+        # 틱 지연 계측 (2026-09-07): reflex 가 떴을 때 "틱이 늦었나" 를 로그로
+        # 판별하기 위함. readOnce 간 간격을 재고, LATE_TICK_S 초과면 유실로 센다.
+        # 비용은 틱당 monotonic() 두 번뿐이라 1 kHz 루프에 무시할 수준이다.
+        self._max_tick_gap = 0.0
+        self._late_ticks = 0
         self._control_error: Optional[str] = None
         self._stop = threading.Event()
 
@@ -522,8 +532,24 @@ class FrankaFR3Robot(Robot):
             # 아니다.
             dt = self._dt
             acc_prev = np.zeros(7)
+            t_prev = time.monotonic()
+            last_late_log = 0.0
             while not self._stop.is_set():
                 state, _ = ctrl.readOnce()
+                t_now = time.monotonic()
+                gap = t_now - t_prev
+                t_prev = t_now
+                if gap > self._max_tick_gap:
+                    self._max_tick_gap = gap
+                if gap > LATE_TICK_S:
+                    self._late_ticks += 1
+                    # 유실이 있을 때만, 초당 1 번까지 -- 스팸 방지.
+                    if t_now - last_late_log >= 1.0:
+                        last_late_log = t_now
+                        print(f"[FR3] late tick: gap {gap * 1e3:.1f} ms "
+                              f"(누적 {self._late_ticks}회, "
+                              f"success_rate={self._success_rate:.4f})",
+                              flush=True)
                 with self._lock:
                     target = self._desired_q.copy()
                     self._q = np.asarray(state.q, dtype=float)
@@ -579,7 +605,13 @@ class FrankaFR3Robot(Robot):
             # 프로세스는 그 뒤로 아무것도 안 찍을 수도 있어서 그대로 사라진다
             # -- 상류 GUI 에서 "반사 종류가 안 보인다" 였던 이유의 절반이다
             # (나머지 절반은 worker 가 예외를 버린 것, 2026-09-06).
+            # 틱 계측을 꼬리에 단다: success_rate 가 1.0 이고 late tick 이 0
+            # 이면 틱 지연설은 기각이고 다른 원인을 찾아야 한다 (2026-09-07).
             self._control_error = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            self._control_error += (
+                f" [tick: max_gap={self._max_tick_gap * 1e3:.1f} ms, "
+                f"late={self._late_ticks}, success_rate={self._success_rate:.4f}]"
+            )
             print(f"[FR3] CONTROL LOOP ABORTED: {self._control_error}", flush=True)
 
     def _gripper_read_loop(self) -> None:

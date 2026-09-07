@@ -3,7 +3,7 @@
 #
 # 이 스크립트는 자기가 놓인 worktree 에서 돈다 (아래 cd 참고). 그래서 한 벌로
 # main 과 dev 양쪽 아이콘을 모두 감당한다 -- 바탕화면에 아이콘이 둘이면
-# 하나는 gello_software-scene(main, 실제 수집), 다른 하나는
+# 하나는 gello_software-main(main, 실제 수집), 다른 하나는
 # gello_software-dev(dev, 병합 전 확인)를 가리키는 것이다.
 #
 # 실행 전에 자동으로 git pull 을 시도한다 -- "아이콘은 눌렀는데 옛 코드가
