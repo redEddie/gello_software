@@ -148,6 +148,30 @@ def main() -> None:
                     if t.topLevelItem(i).text(0) == "S001")
         win.doctor.on_shortfall_picked(row1)
         assert "만들지 않은" in win.progress_note.text(), win.progress_note.text()
+        # 6. 왼쪽 목록이 기록/진행을 나란히 센다
+        win._set_activity("doctor")
+        lt = win.doctor_tree
+        row0 = next(lt.topLevelItem(i) for i in range(lt.topLevelItemCount())
+                    if lt.topLevelItem(i).text(0) == "S000")
+        assert row0.text(3).startswith("1"), row0.text(3)   # 진행 1건
+        print("6. 목록의 기록/진행 두 칸 OK")
+
+        # 7. scene 을 고르면 진행 닥터가 그 안만, Space 로 풀면 전체
+        win.doctor.select_scene("S000")
+        assert win.progress_tree.topLevelItemCount() == 1, \
+            win.progress_tree.topLevelItemCount()
+        assert "S000" in win.progress_title.text(), win.progress_title.text()
+        # Space 는 깊은 쪽부터 푼다 -- 고른 줄이 있으면 그것부터
+        win.doctor.on_shortfall_picked(win.progress_tree.topLevelItem(0))
+        assert win.doctor.clear_selection(), "고른 줄을 못 풀었다"
+        assert win.progress_tree.topLevelItemCount() == 1, "scene 까지 풀렸다"
+        assert win.doctor.clear_selection(), "scene 을 못 풀었다"
+        assert win.progress_tree.topLevelItemCount() == 2, \
+            win.progress_tree.topLevelItemCount()
+        assert "전체" in win.progress_title.text(), win.progress_title.text()
+        assert not win.doctor.clear_selection(), "풀 것이 없는데 풀었다고 한다"
+        print("7. scene 필터 + Space 로 풀기 OK")
+
         win.close()
     print("test_doctor_progress OK")
 

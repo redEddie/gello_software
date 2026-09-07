@@ -86,6 +86,16 @@ class DoctorOps:
             tr("데이터셋: {name} — scene {n}개").format(
                 name=root.name or str(root), n=len(files)))
         props = props_by_id()
+        # 진행 쪽 수도 한 번에 낸다 -- 목록의 두 칸이 같은 새로고침에서
+        # 나와야 서로 다른 시점을 말하지 않는다.
+        by_scene: dict = {}
+        plan = dataset_plan_path(root)
+        if plan.is_file():
+            try:
+                for sf in scan(root, plan).shortfalls:
+                    by_scene[sf.scene_id] = by_scene.get(sf.scene_id, 0) + 1
+            except Exception as e:  # noqa: BLE001
+                win.log(f"[닥터] 진행을 세지 못했습니다: {e}")
         rows = []
         bad_total = 0
         for path in files:
@@ -100,7 +110,7 @@ class DoctorOps:
             # 지시문 수로 센다 -- 한 지시문이 두 가지로 틀릴 수 있는데
             # (어순 + 관계) 그것은 두 건이 아니라 한 줄의 문제다.
             n_bad = len({v.instruction_id for v in vs})
-            rows.append((md.scene_id, eps, n_bad))
+            rows.append((md.scene_id, eps, n_bad, by_scene.get(md.scene_id, 0)))
             bad_total += n_bad
         fill_scene_rows(win, rows)
         win.doctor_hint.setText(
@@ -136,6 +146,7 @@ class DoctorOps:
         self._fill_tasks(path, props, md.scene_id)
         self._show_task_detail()
         self._show_scene_detail()
+        self.refresh_progress()
         show_center_tab(win, "doc_record")
 
     def _show_photo(self, path: Path) -> None:
@@ -572,11 +583,20 @@ class DoctorOps:
             win.progress_hint.setText(str(e))
             return
 
+        # 왼쪽에서 scene 을 골랐으면 **그 안만** 본다. 데이터셋 전체 미달이
+        # 수십 개일 때 한 scene 을 끝내는 것이 현실적인 다음 수인데, 전체
+        # 목록에서는 그 scene 의 줄들이 흩어져 보인다 (2026-09-07 사용자).
+        # Space 로 선택을 풀면 다시 전체가 된다.
+        shown = [sf for sf in prog.shortfalls
+                 if not self._scene_id or sf.scene_id == self._scene_id]
         win.progress_title.setText(tr(
-            "지시문 {t}개 · {u}/{g} 에피소드 ({p}%) · 목표 미달 {n}개").format(
-                t=prog.tasks, u=prog.usable, g=prog.target,
-                p=prog.percent, n=len(prog.shortfalls)))
-        for sf in prog.shortfalls:
+            "{sid} · 목표 미달 {n}개").format(
+                sid=self._scene_id, n=len(shown))
+            if self._scene_id else tr(
+            "전체 · 지시문 {t}개 · {u}/{g} 에피소드 ({p}%) · 목표 미달 {n}개")
+            .format(t=prog.tasks, u=prog.usable, g=prog.target,
+                    p=prog.percent, n=len(shown)))
+        for sf in shown:
             state = (tr("못 읽음") if sf.unreadable else
                      tr("파일 없음") if sf.missing_file else str(sf.remaining))
             it = QTreeWidgetItem([sf.scene_id, sf.instruction_id,
@@ -585,8 +605,12 @@ class DoctorOps:
             it.setData(0, Qt.ItemDataRole.UserRole, sf)
             tree.addTopLevelItem(it)
         win.progress_hint.setText(
-            tr("모두 채웠습니다.") if not prog.shortfalls else tr(
-                "줄을 눌러 배치를 확인한 뒤 [수집으로] 를 누르세요."))
+            (tr("{sid} 는 다 채웠습니다. Space 로 전체를 봅니다.")
+             .format(sid=self._scene_id) if self._scene_id
+             else tr("모두 채웠습니다."))
+            if not shown else tr(
+                "줄을 눌러 배치를 확인한 뒤 [수집으로] 를 누르세요."
+                + ("  (Space: 전체 보기)" if self._scene_id else "")))
         self._show_shortfall_detail()
 
     def on_shortfall_picked(self, item) -> None:
@@ -662,3 +686,38 @@ class DoctorOps:
         win.log(f"[닥터] {sf.scene_id} {sf.instruction_id} 로 시작 설정 "
                 f"({sf.usable}/{sf.target}, {sf.remaining}개 남음)")
         win._set_activity("collect")
+
+    def clear_selection(self) -> bool:
+        """Space -- 고른 것을 한 겹 푼다. 푼 것이 있으면 True.
+
+        깊은 쪽부터다: 지시문/미달 줄이 골라져 있으면 그것만, 없으면 scene.
+        한 번에 전부 풀지 않는 이유는 되돌리기 때문이다 -- scene 은 그대로
+        두고 줄만 다시 고르는 일이 잦다.
+
+        scene 이 풀리면 진행 닥터가 데이터셋 전체로 돌아온다. 그것이 이 키의
+        쓸모다 (2026-09-07 사용자: "너무 많이 놓쳤을 때 도움이 될 거예요").
+        """
+        win = self.win
+        if self._task or self._shortfall:
+            self._task = None
+            self._shortfall = None
+            win.doctor_task_tree.clearSelection()
+            if getattr(win, "progress_tree", None) is not None:
+                win.progress_tree.clearSelection()
+            self._show_task_detail()
+            self._show_shortfall_detail()
+            return True
+        if self._scene_id:
+            self._scene_id = ""
+            self._suggestion = None
+            win.doctor_tree.clearSelection()
+            win.doctor_task_tree.clear()
+            win.doctor_title.setText(tr("왼쪽에서 scene 을 고르세요"))
+            win.doctor_photo.clear()
+            win.doctor_photo.setText(tr("기준 사진 없음"))
+            win.doctor_info.setText("")
+            self._show_scene_detail()
+            self._show_task_detail()
+            self.refresh_progress()
+            return True
+        return False

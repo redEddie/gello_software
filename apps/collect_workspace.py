@@ -67,6 +67,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QTextEdit,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -835,6 +836,21 @@ class WorkspaceWindow(QMainWindow):
                 self.cameras.depth_cursor = None
                 self.depth_ops.render_depth()
                 return False
+        # 닥터의 Space -- 고른 것을 한 겹 푼다. 아래 수집용 키 처리는
+        # worker 가 살아 있을 때만 도므로 겹치지 않는다 (수집 중에는 Space 가
+        # 녹화 시작/완료다). 텍스트 입력 중에는 가로채지 않는다.
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Space
+            and not event.isAutoRepeat()
+            and self.worker is None
+            and self._activity == "doctor"
+            and QApplication.activeModalWidget() is None
+            and not isinstance(QApplication.focusWidget(),
+                               (QLineEdit, QPlainTextEdit, QTextEdit))
+        ):
+            if self.doctor.clear_selection():
+                return True
         if (
             event.type() == QEvent.Type.KeyPress
             # 키를 누르고 있는 것은 결정을 여러 번 내리는 것이 아니다. 이
