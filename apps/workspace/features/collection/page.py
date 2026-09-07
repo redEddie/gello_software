@@ -93,7 +93,7 @@ def build_collect(win) -> QWidget:
     icol.addWidget(win.instr_tree)
     win.instr_next_btn = QPushButton(tr("Next unfilled"))
     win.instr_next_btn.setToolTip(tr(
-        "계획에서 아직 목표를 못 채운 지시문 중 번호가 가장 낮은 것으로 "
+        "지시문 목록에서 아직 목표를 못 채운 지시문 중 번호가 가장 낮은 것으로 "
         "바꿉니다."))
     win.instr_next_btn.clicked.connect(win.scene_planning.on_next_instruction)
     icol.addWidget(win.instr_next_btn)

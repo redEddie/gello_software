@@ -92,7 +92,7 @@ class SceneOps:
                     f"{iid} {c['usable']}/{c['total']}" for iid, c in sorted(counts.items())))
             plan = self.win.scene_planning.current_plan()
             if plan is not None and plan.slots_for(sid):
-                lines.append(f"계획({plan.path.name}): " + "  ".join(
+                lines.append(f"지시문 파일({plan.path.name}): " + "  ".join(
                     f"{s.instruction_id} {counts.get(s.instruction_id, {}).get('usable', 0)}"
                     f"/{s.target}" for s in plan.slots_for(sid)))
             self.win.scene_info.setText("\n".join(lines))
@@ -182,17 +182,17 @@ class SceneOps:
         try:
             added = ensure_scene(dataset_plan_path(root), md.scene_id)
         except OSError as e:
-            self.win.log(f"[계획] {md.scene_id} 항목을 추가하지 못했습니다: {e}")
+            self.win.log(f"[지시문] {md.scene_id} 항목을 추가하지 못했습니다: {e}")
         self.win.log(f"[Scene] {md.scene_id} 생성 (물체 {len(md.objects)}개, "
                      f"에피소드 0개) — {scene_filename(md.scene_id)}"
-                     + (f" · 계획에 {md.scene_id} 추가" if added else ""))
+                     + (f" · 지시문에 {md.scene_id} 추가" if added else ""))
         self.refresh_scene_combo()
         for i in range(self.win.scene_combo.count()):
             if self.win.scene_combo.itemData(i) == md.scene_id:
                 self.win.scene_combo.setCurrentIndex(i)
                 break
         self.win.scene_compose_hint.setText(tr(
-            "{f} 를 만들고 계획에 {s} 를 넣었습니다. 이제 이 scene 에서 무엇을 "
+            "{f} 를 만들고 지시문에 {s} 를 넣었습니다. 이제 이 scene 에서 무엇을 "
             "시킬지 적으세요.").format(f=scene_filename(md.scene_id), s=md.scene_id))
         # 다음 번호로 갈아 끼워 둔다 -- 연달아 여러 개를 짜는 것이 이 화면의
         # 새 용도다.
@@ -219,9 +219,9 @@ class SceneOps:
         plan = self.win.scene_planning.current_plan()
         if plan is None:
             return None, None, False, tr(
-                "이 데이터셋에는 수집 계획이 없습니다.\n\n"
-                "Instruction 탭의 [계획 편집] 으로 scene 과 지시문을 적으세요. "
-                "지시문은 계획에서만 옵니다.")
+                "이 데이터셋에는 지시문이 없습니다.\n\n"
+                "Instruction 탭의 [지시문 편집] 으로 scene 과 지시문을 적으세요. "
+                "지시문은 지시문 파일에서만 옵니다.")
         if not lang:
             return None, None, False, tr(
                 "시작 지시문이 없습니다 — Instruction 탭에서 줄을 눌러 고르세요.")
@@ -241,18 +241,18 @@ class SceneOps:
         # 늘 나는 정상 상태다. 같은 문구로 말하면 무엇을 하라는 것인지 모른다.
         if not plan.has_scene(psid or ""):
             return None, None, False, tr(
-                "계획에 scene {s} 가 없습니다.\n\n"
-                "Instruction 탭의 [계획 편집] 에서 추가하세요.").format(s=psid)
+                "지시문에 scene {s} 가 없습니다.\n\n"
+                "Instruction 탭의 [지시문 편집] 에서 추가하세요.").format(s=psid)
         slots = plan.slots_for(psid)
         if not slots:
             return None, None, False, tr(
                 "{s} 에 지시문이 없습니다.\n\n"
-                "Instruction 탭의 [계획 편집] 에서 이 scene 에서 무엇을 시킬지 "
+                "Instruction 탭의 [지시문 편집] 에서 이 scene 에서 무엇을 시킬지 "
                 "적으세요.").format(s=psid)
         if not any(s.instruction_id == iid and s.instruction == lang
                    for s in slots):
             return None, None, False, tr(
-                "시작 지시문이 계획에 없습니다 ({i}: {t!r}).\n\n"
+                "시작 지시문이 지시문 목록에 없습니다 ({i}: {t!r}).\n\n"
                 "Instruction 탭에서 줄을 눌러 고르세요.").format(i=iid, t=lang[:40])
         sid = self.win.scene_combo.currentData()
         if sid is None:

@@ -118,12 +118,12 @@ def toolbar_context(win, key: str) -> list:
             # 이유가 없어졌다. ① 의 구획과 메뉴 색인에는 그대로 있다.
             (tr("새 Scene 구성..."), win.scene_ops.on_new_scene,
              tr("소품 조합과 3×3 배치를 정합니다")),
-            (tr("계획 편집..."), win.scene_planning.on_edit_plan,
+            (tr("지시문 편집..."), win.scene_planning.on_edit_plan,
              tr("이 데이터셋의 지시문과 목표 개수를 고칩니다")),
         ],
         "collect": [
             (tr("Next unfilled"), win.scene_planning.on_next_instruction,
-             tr("계획에서 아직 목표를 못 채운 지시문 중 번호가 가장 낮은 것으로")),
+             tr("지시문 목록에서 아직 목표를 못 채운 지시문 중 번호가 가장 낮은 것으로")),
         ],
         "dataset": [
             (tr("새로고침"), win.dataset_ops.refresh_dataset_tree, ""),
@@ -296,16 +296,16 @@ def build_menu(win) -> None:
     m.addAction(tr("Discard"),
                 lambda: win.collection.cmd("cmd_discard_episode"))
     m.addSeparator()
-    m.addAction(tr("계획 진행률 새로고침 (Plan 탭)"),
+    m.addAction(tr("지시문 현황 새로고침 (Plan 탭)"),
                 win.scene_planning.refresh_plan_progress)
 
     m = mb.addMenu(tr("Scene"))
     m.addAction(tr("새 Scene 구성..."), win.scene_ops.on_new_scene)
     m.addAction(tr("Scene 목록 새로고침"), win.scene_ops.refresh_scene_combo)
     m.addSeparator()
-    m.addAction(tr("계획 편집..."), win.scene_planning.on_edit_plan)
-    m.addAction(tr("새 계획..."), win.scene_planning.on_new_plan)
-    m.addAction(tr("계획 삭제"), win.scene_planning.on_delete_plan)
+    m.addAction(tr("지시문 편집..."), win.scene_planning.on_edit_plan)
+    m.addAction(tr("지시문 만들기"), win.scene_planning.on_new_plan)
+    m.addAction(tr("지시문 전체 삭제"), win.scene_planning.on_delete_plan)
     m.addSeparator()
     m.addAction(tr("3×3 워크스페이스 격자 편집..."), win.layout_ref.on_edit_grid)
 

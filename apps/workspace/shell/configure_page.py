@@ -36,7 +36,7 @@ def build_configure(win) -> QWidget:
     quick.setToolTip(tr(
         "가장 번호가 높은 scene 과 아직 목표를 못 채운 가장 낮은 slot 을 골라,\n"
         "로봇 노드가 준비되면 바로 연결합니다.\n"
-        "첫 scene 을 만들거나 계획에 없는 문장을 쓰는 것은 사람이 정합니다."))
+        "첫 scene 을 만들거나 지시문에 없는 문장을 쓰는 것은 사람이 정합니다."))
     quick.clicked.connect(win.collection.on_quick_start)
     col.addWidget(quick)
 

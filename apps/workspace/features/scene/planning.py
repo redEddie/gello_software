@@ -42,7 +42,7 @@ class ScenePlanningOps:
         plan = self.current_plan()
         if plan is None:
             self.win.plan_progress_label.setText(
-                tr("이 데이터셋에는 계획이 없습니다 (instructions.json 없음)."))
+                tr("이 데이터셋에는 지시문이 없습니다 (instructions.json 없음)."))
             return
         root = Path(self.win.root_edit.text().strip() or ".")
         done = total = 0
@@ -71,7 +71,7 @@ class ScenePlanningOps:
                 # 직후의 정상 상태이고, 다음에 할 일이 정해져 있다.
                 top = QTreeWidgetItem([
                     f"{sp.scene_id}{note}", "", "",
-                    tr("지시문이 없습니다 — [계획 편집] 에서 적으세요")])
+                    tr("지시문이 없습니다 — [지시문 편집] 에서 적으세요")])
                 for col_i in range(4):
                     top.setForeground(col_i, Qt.GlobalColor.darkYellow)
                 tree.addTopLevelItem(top)
@@ -153,13 +153,13 @@ class ScenePlanningOps:
         plan = self.current_plan()
         if plan is None:
             warn.setText(tr(
-                "이 데이터셋에는 수집 계획이 없습니다 — Instruction 탭의 "
-                "[새 계획] 으로 먼저 만드세요. 계획 없이는 수집할 수 없습니다."))
+                "이 데이터셋에는 지시문이 없습니다 — Instruction 탭의 "
+                "[지시문 만들기] 로 먼저 만드세요. 지시문 없이는 수집할 수 없습니다."))
             return
         sid = self.win.scene_ops.configure_scene_id()
         if sid is not None and not plan.slots_for(sid):
             warn.setText(tr(
-                "계획에 {s} 가 없습니다 — Instruction 탭의 [계획 편집] 에서 "
+                "지시문에 {s} 가 없습니다 — Instruction 탭의 [지시문 편집] 에서 "
                 "이 scene 의 지시문을 추가하세요.").format(s=sid))
             return
         warn.setText("")
@@ -178,7 +178,7 @@ class ScenePlanningOps:
         try:
             return load_plan(path)
         except Exception as e:  # noqa: BLE001
-            self.win.log(f"[계획] {path.name} 로드 실패: {type(e).__name__}: {e}")
+            self.win.log(f"[지시문] {path.name} 로드 실패: {type(e).__name__}: {e}")
             return None
 
     def refresh_plan_label(self) -> None:
@@ -198,7 +198,7 @@ class ScenePlanningOps:
             label.setText(tr("{f} — 로드 실패 (로그 참조)").format(f=PLAN_FILENAME))
             label.setStyleSheet("color:#e74c3c;")
         else:
-            label.setText(tr("(계획 없음 — 자유 입력)"))
+            label.setText(tr("(지시문 없음 — 자유 입력)"))
             label.setStyleSheet("color:#888;")
 
     def on_new_plan(self) -> None:
@@ -212,11 +212,11 @@ class ScenePlanningOps:
     def on_delete_plan(self) -> None:
         path = self.dataset_plan_path()
         if not path.exists():
-            QMessageBox.information(self.win, tr("계획 없음"),
-                                    tr("이 데이터셋에는 계획 파일이 없습니다."))
+            QMessageBox.information(self.win, tr("지시문 없음"),
+                                    tr("이 데이터셋에는 지시문 파일이 없습니다."))
             return
         ans = QMessageBox.question(
-            self.win, tr("계획 삭제"),
+            self.win, tr("지시문 전체 삭제"),
             tr("{n} 을(를) 삭제할까요?\n수집 파일에는 영향이 없습니다.")
             .format(n=path.name))
         if ans != QMessageBox.StandardButton.Yes:
@@ -226,7 +226,7 @@ class ScenePlanningOps:
         except OSError as e:
             QMessageBox.warning(self.win, tr("삭제 실패"), str(e))
             return
-        self.win.log(f"[계획] 삭제: {path}")
+        self.win.log(f"[지시문] 삭제: {path}")
         self.on_plan_changed()
 
     def on_edit_plan(self) -> None:
@@ -247,13 +247,13 @@ class ScenePlanningOps:
             except OSError as e:
                 QMessageBox.warning(self.win, tr("생성 실패"), str(e))
                 return
-            self.win.log(f"[계획] 새 계획 생성: {path}")
+            self.win.log(f"[지시문] 지시문 파일 생성: {path}")
             self.on_plan_changed()
         dlg = PlanEditDialog(self.win, path)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             for w in getattr(dlg, "warnings", []):
-                self.win.log(f"[계획 경고] {w}")
-            self.win.log(f"[계획] {path.name} 저장됨")
+                self.win.log(f"[지시문 경고] {w}")
+            self.win.log(f"[지시문] {path.name} 저장됨")
             # 갱신된 목표/slot 이 화면에 반영되게
             self.on_plan_changed()
 
@@ -263,7 +263,7 @@ class ScenePlanningOps:
         plan = self.current_plan()
         if plan is not None:
             for w in plan.warnings:
-                self.win.log(f"[계획 경고] {w}")
+                self.win.log(f"[지시문 경고] {w}")
         self.refresh_plan_label()
         self.refresh_instruction_list()
         self.win.scene_ops.on_scene_selected()
@@ -299,7 +299,7 @@ class ScenePlanningOps:
                 c = counts.get(sl.instruction_id, {}).get("usable", 0)
                 rows.append((sl.instruction_id, c, sl.target, sl.instruction))
             if not rows:
-                warn.append(tr("계획에 scene {s} 가 없습니다").format(s=sid))
+                warn.append(tr("지시문에 scene {s} 가 없습니다").format(s=sid))
             warn.extend(check_scene_against_plan(plan, sid, episodes))
         elif sid is not None:
             # 계획이 없는 데이터셋: 파일에 이미 있는 지시문만 보여준다.
@@ -405,10 +405,10 @@ class ScenePlanningOps:
             known = {}
         if not known:
             return None, None, None, tr(
-                "{s} 에 기록된 slot 이 없고 계획도 없습니다 — 문장을 직접 "
+                "{s} 에 기록된 slot 이 없고 지시문도 없습니다 — 문장을 직접 "
                 "입력해야 합니다.").format(s=sid)
         iid = min(known, key=self._iid_order)
-        return sid, iid, known[iid], tr("{i} (계획 없음)").format(i=iid)
+        return sid, iid, known[iid], tr("{i} (지시문 없음)").format(i=iid)
 
     @staticmethod
     def _iid_order(iid: str) -> tuple:
@@ -427,7 +427,7 @@ class ScenePlanningOps:
         sid = (self.win.scene_ops.session_scene_id()
                if self.win.session.scene_session else None)
         if plan is None or sid is None:
-            self.win.log("[지시문] 계획이 없거나 scene 세션이 아닙니다")
+            self.win.log("[지시문] 지시문 파일이 없거나 scene 세션이 아닙니다")
             return
         counts = self.session_instruction_counts()
         for sl in sorted(plan.slots_for(sid),
@@ -464,8 +464,8 @@ class ScenePlanningOps:
             if slots and not any(x.instruction_id == iid
                                  and x.instruction == instr for x in slots):
                 QMessageBox.warning(self.win, tr("지시문 오류"), tr(
-                    "계획에 없는 지시문입니다 ({i}). 계획을 먼저 고치세요 "
-                    "(② Configure > 수집 계획 ✎).").format(i=iid))
+                    "지시문 목록에 없는 지시문입니다 ({i}). 지시문 목록을 먼저 고치세요 "
+                    "(② Configure > 지시문 ✎).").format(i=iid))
                 return
         self.win.worker.cmd_set_slot(instr, iid)
         # cmd_set_slot 은 워커 큐로 가서 다음 드레인에 반영된다 -- 화면은

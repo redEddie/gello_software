@@ -29,7 +29,7 @@ class PlanJsonDialog(QDialog):
     def __init__(self, parent, path: Path) -> None:
         super().__init__(parent)
         self._path = Path(path)
-        self.setWindowTitle(tr("수집 계획 JSON 편집 — {n}").format(n=self._path.name))
+        self.setWindowTitle(tr("지시문 JSON 편집 — {n}").format(n=self._path.name))
         self.setMinimumSize(680, 480)
         col = QVBoxLayout(self)
         hint = QLabel(tr(

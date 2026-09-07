@@ -44,7 +44,7 @@ class PlanEditDialog(QDialog):
         super().__init__(parent)
         self._path = Path(path)
         self.warnings: list = []
-        self.setWindowTitle(tr("수집 계획 편집 — {n}").format(n=self._path.name))
+        self.setWindowTitle(tr("지시문 편집 — {n}").format(n=self._path.name))
         self.setMinimumSize(720, 480)
         self._cur_sid: "str | None" = None
 
@@ -68,8 +68,8 @@ class PlanEditDialog(QDialog):
         srow.addWidget(QLabel(tr("scene 은 Scene 탭에서 배치를 짜면 생깁니다")))
         del_scene_btn = QPushButton(tr("scene 삭제"))
         del_scene_btn.setToolTip(tr(
-            "이 scene 을 계획에서 뺍니다. 이미 수집한 파일은 지워지지 않지만 "
-            "계획 대조가 사라집니다."))
+            "이 scene 을 지시문에서 뺍니다. 이미 수집한 파일은 지워지지 않지만 "
+            "지시문 대조가 사라집니다."))
         del_scene_btn.clicked.connect(self._on_del_scene)
         srow.addWidget(del_scene_btn)
         json_btn = QPushButton(tr("JSON 직접 편집..."))
@@ -270,7 +270,7 @@ class PlanEditDialog(QDialog):
             return
         ans = QMessageBox.question(
             self, tr("scene 삭제"),
-            tr("{s} 를 계획에서 뺄까요? (수집 파일은 그대로 남습니다)")
+            tr("{s} 를 지시문에서 뺄까요? (수집 파일은 그대로 남습니다)")
             .format(s=sid))
         if ans != QMessageBox.StandardButton.Yes:
             return

@@ -87,8 +87,8 @@ eps = [
      "instruction": "open the top drawer"},
 ]
 warns = check_scene_against_plan(plan, "S000", eps)
-assert any("문장이 계획과 다름" in w for w in warns), warns
-assert any("계획에 없는 slot I099" in w for w in warns), warns
+assert any("문장이 지시문과 다름" in w for w in warns), warns
+assert any("지시문에 없는 slot I099" in w for w in warns), warns
 print("2 통과: ID-문장 갈라짐 + 계획 밖 slot 감지 --", len(warns), "건")
 
 # ---- 3. GUI: 드롭다운/카운트/다음 slot ----
@@ -162,7 +162,7 @@ items = [(r.data(0, Qt.ItemDataRole.UserRole)[0], r.text(1), r.text(2))
          for r in rows]
 assert any(iid == "I000" and cnt == "1/10" for iid, cnt, _ in items), \
     f"카운트 표시 실패: {items}"
-assert "문장이 계획과 다름" in win.instr_warn.text(), "패널 불일치 경고 없음"
+assert "문장이 지시문과 다름" in win.instr_warn.text(), "패널 불일치 경고 없음"
 # 한 줄을 누르면 곧바로 워커에 전달된다 (적용 버튼 없음)
 win.scene_planning.on_instruction_picked(rows[0])
 assert calls and calls[-1][1] == "I000", calls

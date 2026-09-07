@@ -205,8 +205,8 @@ def check_scene_against_plan(plan: CollectionPlan, scene_id: str,
             continue
         seen.add(key)
         if iid in slots and instr != slots[iid]:
-            out.append(f"{ep.get('name', '?')}: {iid} 문장이 계획과 다름 -- "
-                       f"파일 {instr!r} vs 계획 {slots[iid]!r}")
+            out.append(f"{ep.get('name', '?')}: {iid} 문장이 지시문과 다름 -- "
+                       f"파일 {instr!r} vs 지시문 {slots[iid]!r}")
         elif iid not in slots:
-            out.append(f"{ep.get('name', '?')}: 계획에 없는 slot {iid} ({instr!r})")
+            out.append(f"{ep.get('name', '?')}: 지시문에 없는 slot {iid} ({instr!r})")
     return out

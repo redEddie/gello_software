@@ -285,7 +285,7 @@ try:
     win.scene_iid_edit.setText("I000")
     win.lang_edit.setText(SENT["I000"])
     _, _, _, err = win.scene_ops.scene_config_from_ui()
-    assert err and "수집 계획이 없습니다" in err, err
+    assert err and "지시문이 없습니다" in err, err
 finally:
     plan_file.write_text(saved, encoding="utf-8")
 # 손으로 시작 지시문을 칠 수 없다
@@ -301,11 +301,31 @@ right_conf = win.right_stack.widget(win.right_pages["configure"])
 assert right_conf is not win.right_stack.widget(win.right_pages["collect"]), \
     "Configure 가 아직 세션 정보 페이지를 함께 쓴다"
 right_btns = [b.text() for b in right_conf.findChildren(QPushButton)]
-for want in ("Recommend scene...", "Recommend layout...", "계획 편집...",
-             "현황 새로고침"):
-    assert want in right_btns, f"[{want}] 가 우측 패널에 없다: {right_btns}"
+for want in ("Recommend scene...", "Recommend layout...", "지시문 편집...",
+             "전체 해제", "현황 새로고침"):
+    assert any(want in t for t in right_btns), \
+        f"[{want}] 가 우측 패널에 없다: {right_btns}"
 assert any("만들기" in t for t in right_btns), right_btns
-print("12b. 계획 필수 + 안전 토글 툴바 이동 + 동작은 우측 패널 OK")
+# 버튼의 **종류**가 무게로 갈린다 (2026-09-07 조작자: "버튼들의 종류가 섞였다").
+# 상자마다 색이 있는 커밋 버튼은 하나뿐이고, 조회는 동작 버튼의 무게를
+# 갖지 않는다. 정본은 features/scene/right_panel.py 머리말.
+# 색은 커밋 버튼만 가진다. (지금은 구성이 비어 있어 그 하나도 색이 빠져
+# 있다 -- "지금은 아니다" 를 색으로도 말한다. 색이 켜지는 것은 14 에서 본다.)
+colored = [b.text() for b in right_conf.findChildren(QPushButton)
+           if "background-color" in b.styleSheet()]
+assert not [t for t in colored if "만들기" not in t], \
+    f"커밋이 아닌 버튼에 색이 있다: {colored}"
+peek = [b for b in right_conf.findChildren(QPushButton)
+        if "현황 새로고침" in b.text()]
+assert peek and "border:none" in peek[0].styleSheet(), \
+    "조회 버튼이 동작 버튼과 같은 무게다"
+# 구분선이 커밋과 도우미를 가른다
+from PyQt6.QtWidgets import QFrame  # noqa: E402
+
+rules = [f for f in right_conf.findChildren(QFrame)
+         if f.frameShape() == QFrame.Shape.HLine]
+assert len(rules) >= 2, f"커밋/도우미를 가르는 구분선이 없다 ({len(rules)})"
+print("12b. 계획 필수 + 안전 토글 툴바 이동 + 우측 패널에 종류별로 OK")
 
 # ------------------------------- 13. Instruction 탭 줄 = scene + 지시문 설정
 win._set_activity("configure")
@@ -356,6 +376,8 @@ def _compose(objs, zones):
     assert "scene_" in win.scene_create_btn.toolTip(), win.scene_create_btn.toolTip()
     assert win.scene_create_btn.isEnabled(), \
         f"유효한 구성인데 만들기가 죽어 있다: {win.scene_create_btn.toolTip()}"
+    assert "background-color" in win.scene_create_btn.styleSheet(), \
+        "만들 수 있는데 커밋 버튼에 색이 없다"
     win.scene_ops.on_compose_done()
 
 

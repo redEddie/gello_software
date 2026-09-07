@@ -172,9 +172,9 @@ class ContinuePage(QWizardPage):
             if prog is not None:
                 d, t = prog
                 pct = (100 * d // t) if t else 0
-                parts.append(tr("계획 {d}/{t} ({p}%)").format(d=d, t=t, p=pct))
+                parts.append(tr("지시문 {d}/{t} ({p}%)").format(d=d, t=t, p=pct))
             else:
-                parts.append(tr("계획 없음"))
+                parts.append(tr("지시문 없음"))
             if e.mtime:
                 parts.append(time.strftime("%Y-%m-%d", time.localtime(e.mtime)))
             title = e.name

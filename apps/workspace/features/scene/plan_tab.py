@@ -37,7 +37,7 @@ def build_plan_tab(win) -> QWidget:
     col = QVBoxLayout(w)
     col.setContentsMargins(6, 6, 6, 6)
 
-    win.plan_progress_label = QLabel(tr("계획을 읽는 중..."))
+    win.plan_progress_label = QLabel(tr("지시문을 읽는 중..."))
     win.plan_progress_label.setWordWrap(True)
     col.addWidget(win.plan_progress_label)
 

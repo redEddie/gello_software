@@ -239,7 +239,7 @@ class RecommendDialog(QDialog):
 
         if self._plan_path is not None:
             self._register_check = QCheckBox(
-                tr("채택 시 선택한 문장을 계획 {n} 에 등록 (target=10)")
+                tr("채택 시 선택한 문장을 지시문 파일 {n} 에 등록 (target=10)")
                 .format(n=self._plan_path.name))
             self._register_check.setChecked(True)
         else:
@@ -248,12 +248,12 @@ class RecommendDialog(QDialog):
             # 한참 뒤에야 안다 (2026-09-04 에 실제로 그렇게 됐다). 왜 못 하는지
             # 와 어떻게 해야 하는지를 그 자리에서 말한다.
             self._register_check = QCheckBox(
-                tr("계획에 등록 — Configure 에서 계획 파일을 먼저 고르세요"))
+                tr("지시문에 등록 — Configure 에서 지시문 파일을 먼저 고르세요"))
             self._register_check.setChecked(False)
             self._register_check.setEnabled(False)
             self._register_check.setStyleSheet("color:#e67e22;")
             self._register_check.setToolTip(tr(
-                "지금은 계획이 선택돼 있지 않아 문장을 등록할 곳이 없습니다. "
+                "지금은 지시문 파일이 선택돼 있지 않아 문장을 등록할 곳이 없습니다. "
                 "채택해도 배치만 반영되고 문장은 남지 않습니다."))
         # 등록 체크박스는 문장과 함께 있어야 뜻이 통한다 -- 2단계에만 둔다.
         p1.addWidget(self._register_check)
@@ -549,7 +549,7 @@ class RecommendDialog(QDialog):
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, tr("계획 읽기 실패"), str(e))
+            QMessageBox.warning(self, tr("지시문 읽기 실패"), str(e))
             return False
         raw.setdefault("plan_version", 1)
         if not isinstance(raw.get("scenes"), list):
@@ -584,7 +584,7 @@ class RecommendDialog(QDialog):
             })
         if not new_slots:
             QMessageBox.information(
-                self, tr("계획 등록"),
+                self, tr("지시문에 등록"),
                 tr("선택한 문장이 모두 이미 등록되어 있습니다 (중복 {n}건 건너뜀).")
                 .format(n=n_dup))
             return False
@@ -600,7 +600,7 @@ class RecommendDialog(QDialog):
             plan = load_plan(tmp)
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(
-                self, tr("계획 등록 실패"),
+                self, tr("지시문 등록 실패"),
                 tr("load_plan 검증을 통과하지 못했습니다:\n{e}").format(e=e))
             return False
         finally:
@@ -609,7 +609,7 @@ class RecommendDialog(QDialog):
         if plan.warnings:
             # 통일 문법 경고(§4)는 등록을 막지 않지만 버리지도 않는다 --
             # PlanEditDialog 저장 경로와 같은 규칙.
-            QMessageBox.warning(self, tr("계획 경고"),
+            QMessageBox.warning(self, tr("지시문 경고"),
                                 "\n".join(str(x) for x in plan.warnings))
 
         path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n",
@@ -634,7 +634,7 @@ class RecommendDialog(QDialog):
             # 20개를 넘을 수 있어, 무심코 OK 한 번에 200 에피소드가 계획에
             # 얹히는 것을 총량 확인으로 막는다.
             if sents and QMessageBox.question(
-                    self, tr("계획 등록"),
+                    self, tr("지시문에 등록"),
                     tr("{n}개 문장 × target 10 = 총 {t} 에피소드를 {sid} 에 "
                        "등록합니다. 진행할까요?")
                     .format(n=len(sents), t=len(sents) * 10, sid=md.scene_id),
@@ -643,7 +643,7 @@ class RecommendDialog(QDialog):
             if sents and self._register_plan(md, sents):
                 dup = getattr(self, "_n_dup_skipped", 0)
                 QMessageBox.information(
-                    self, tr("계획 등록 완료"),
+                    self, tr("지시문 등록 완료"),
                     tr("{n}개 문장을 {sid} 에 등록했습니다.{d}")
                     .format(n=len(sents) - dup, sid=md.scene_id,
                             d=tr(" (중복 {k}건 건너뜀)").format(k=dup) if dup else ""))

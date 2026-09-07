@@ -276,7 +276,7 @@ class CollectionOps:
             return
         if not self._select_slot(iid, instr):
             QMessageBox.warning(self.win, tr("빠른 재개"),
-                                tr("지시문 {i} 을 계획에서 찾지 못했습니다.").format(i=iid))
+                                tr("지시문 {i} 을 지시문 목록에서 찾지 못했습니다.").format(i=iid))
             return
         self.win.log(f"[빠른 재개] {sid} · {note} — {instr}")
         self._quick_deadline = time.monotonic() + self.QUICK_NODE_WAIT_S

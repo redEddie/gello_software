@@ -136,11 +136,11 @@ win.collector_edit.setText("t")
 win.lang_edit.setText("open the top drawer")     # 계획에 없는 문장 (주입)
 win.scene_iid_edit.setText("I009")
 _, _, _, err = win.scene_ops.scene_config_from_ui()
-assert err and "계획" in err, err
+assert err and "지시문" in err, err
 win.scene_iid_edit.setText(sl.instruction_id)     # 계획의 지시문으로 복귀
 win.lang_edit.setText(sl.instruction)
 _, _, _, err2 = win.scene_ops.scene_config_from_ui()
-assert err2 is None or "계획" not in err2, err2   # 남는 오류는 scene 선택뿐
+assert err2 is None or "지시문" not in err2, err2   # 남는 오류는 scene 선택뿐
 print("6 통과: 시작 지시문 읽기 전용 + 계획 밖 문장 거부")
 
 # ---- 6b. 계획이 아예 없으면 연결 자체를 막는다 (2026-09-06) ----
@@ -151,9 +151,9 @@ _saved = _plan_file.read_text(encoding="utf-8")
 _plan_file.unlink()
 try:
     _, _, _, err3 = win.scene_ops.scene_config_from_ui()
-    assert err3 and "수집 계획이 없습니다" in err3, err3
+    assert err3 and "지시문이 없습니다" in err3, err3
     win.scene_planning.refresh_start_instruction()
-    assert "계획이 없습니다" in win.start_warn.text(), win.start_warn.text()
+    assert "지시문이 없습니다" in win.start_warn.text(), win.start_warn.text()
 finally:
     _plan_file.write_text(_saved, encoding="utf-8")
     _os.sync() if hasattr(_os, "sync") else None
