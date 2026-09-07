@@ -56,7 +56,8 @@ class Args:
     arm_hysteresis: float = 0.05
     hz: float = 300.0
     health_every: float = 0.5
-    min_voltage: float = 4.5
+    min_voltage: float = 4.0
+    """Wall stops below this servo supply voltage (V); XL330 works down to 3.7 V."""
     print_every: float = 0.1
     trigger: bool = True
     """Also run the trigger spring (auto-open return + exponential squeeze wall)."""
