@@ -30,6 +30,8 @@ from pathlib import Path
 import h5py
 
 from gello.data.dataset_schema import (
+    META_RESET_POSE,
+    META_RESET_QPOS,
     SCHEMA_FIELDS,
     normalize_schema_version,
     schema_version_key,
@@ -301,3 +303,77 @@ def reset_drift(path: Path, expected: "list | None" = None) -> "dict | None":
             if d > RESET_TOLERANCE:
                 over.append((name, d))
     return {"checked": checked, "worst": worst, "over": over}
+
+
+def reachable_version(path: Path, *, payload=None, reset=None) -> str:
+    """지금 파일에 **줄 수 있는 값까지 채웠을 때** 닿는 가장 높은 버전.
+
+    ``satisfied`` 는 "지금 파일이 만족하는" 이고 이것은 "채우면 만족할 수
+    있는" 이다. 둘이 다른 상황이 실제로 있다: S006 은 에피소드를 다 비워
+    knu-1.1.1 이 되었는데, 부하 모델과 리셋 자세만 채우면 knu-1.2.1 이다
+    (2026-09-07 사용자: "에피소드를 비웠으니 버전 업이 자유로워야 한다").
+
+    쓰지 않는다 -- 무엇에 닿는지만 계산한다.
+    """
+    from gello.data.dataset_schema import META_PAYLOAD_COM, META_PAYLOAD_MASS
+
+    with h5py.File(Path(path), "r") as f:
+        have = set(f["metadata"].attrs)
+        if payload:
+            have |= {META_PAYLOAD_MASS, META_PAYLOAD_COM}
+        if reset:
+            have |= {META_RESET_POSE, META_RESET_QPOS}
+        best = ""
+        for v in _versions():
+            need = SCHEMA_FIELDS[v]
+            if any(a not in have for a in need.get("metadata_attrs", ())):
+                continue
+            if _missing_ep_fields(f, v):
+                continue
+            best = v
+    return best
+
+
+def _missing_ep_fields(f: h5py.File, version: str) -> bool:
+    """에피소드 쪽 요구가 빠졌나 (metadata 는 보지 않는다)."""
+    need = SCHEMA_FIELDS[version]
+    for name in f:
+        if not name.startswith("episode"):
+            continue
+        g = f[name]
+        if any(ds not in g for ds in need.get("episode_datasets", ())):
+            return True
+        obs = g.get("obs")
+        if any(obs is None or ds not in obs
+               for ds in need.get("obs_datasets", ())):
+            return True
+        if any(a not in g.attrs for a in need.get("episode_attrs", ())):
+            return True
+    return False
+
+
+def fill_and_raise(path: Path, *, payload=None, reset=None) -> str:
+    """빠진 metadata 를 채우고 만족하는 가장 높은 버전으로 올린다.
+
+    채우기와 버전 변경을 한 연산으로 묶는 이유는 fill_payload 와 같다 --
+    따로면 "채웠는데 버전은 그대로" 인 파일이 남는다.
+    """
+    from gello.data.dataset_schema import META_PAYLOAD_COM, META_PAYLOAD_MASS
+
+    import json as _json
+
+    with h5py.File(Path(path), "r+") as f:
+        meta = f["metadata"]
+        if payload and META_PAYLOAD_MASS not in meta.attrs:
+            meta.attrs[META_PAYLOAD_MASS] = float(payload[0])
+            meta.attrs[META_PAYLOAD_COM] = _json.dumps(
+                [float(x) for x in payload[1]])
+        if reset and META_RESET_POSE not in meta.attrs:
+            meta.attrs[META_RESET_POSE] = str(reset[0])
+            meta.attrs[META_RESET_QPOS] = _json.dumps(
+                [float(x) for x in reset[1]])
+    after = diagnose(Path(path))
+    if after.satisfied and after.satisfied != after.stamped:
+        restamp(Path(path), after.satisfied)
+        return after.satisfied
+    return after.stamped

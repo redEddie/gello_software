@@ -120,12 +120,15 @@ def main() -> None:
         assert "내리기" in win.schema_buttons["align_version"].text(), \
             win.schema_buttons["align_version"].text()
         assert "내려" in win.schema_plan.text(), win.schema_plan.text()
-        # 맞는 줄을 고르면 버튼이 꺼진다 -- 고칠 것이 없다
+        # 맞는 줄이어도 **더 높이 갈 수 있으면** 버튼이 켜진다 (리셋 자세를
+        # 채우면 knu-1.2.1). 어긋난 것을 고치는 것과 더 올리는 것은 다른
+        # 일이고, 둘 다 이 버튼이 한다.
         ok_row = next(t.topLevelItem(i) for i in range(t.topLevelItemCount())
                       if t.topLevelItem(i).text(5) == "—")
         win.doctor.on_schema_picked(ok_row)
-        assert not win.schema_buttons["align_version"].isEnabled()
-        assert "맞습니다" in win.schema_plan.text(), win.schema_plan.text()
+        assert win.schema_buttons["align_version"].isEnabled()
+        assert "올리기" in win.schema_buttons["align_version"].text()
+        assert "knu-1.2.1" in win.schema_plan.text(), win.schema_plan.text()
         assert not win.schema_buttons["fill_payload"].isEnabled(), \
             "맞는 줄인데 채우기가 켜져 있다"
         win.doctor.on_schema_picked(row)
@@ -235,6 +238,42 @@ def main() -> None:
         _write(root3 / "scene_001.hdf5", "knu-1.0.0", payload=False, n=1)
         assert reset_drift(root3 / "scene_001.hdf5") is None
     print("7. 초기 자세 대조 OK")
+
+    # 8. 에피소드를 비운 파일은 **가장 높은 버전으로** 자유롭게 올린다
+    #    잘못 기술할 데이터가 없기 때문이다 (2026-09-07 사용자: S006 은
+    #    다시 찍으려고 에피소드를 다 비운 scene 이다).
+    from gello.scene.schema_doctor import (
+        fill_and_raise,
+        reachable_version,
+    )
+
+    RESET = ("libero", QPOS)
+    PAY = (0.85, [-0.01, 0.0, 0.03])
+    with tempfile.TemporaryDirectory() as d4:
+        root4 = Path(d4)
+        empty = root4 / "scene_000.hdf5"
+        _write(empty, "knu-1.1.1", payload=False, n=0)
+        d8 = diagnose(empty)
+        assert d8.episodes == 0 and d8.ok, d8
+        # 지금 만족하는 것과 채우면 닿는 것이 다르다 -- 그 차이가 이 버튼이다
+        assert d8.satisfied == "knu-1.1.1", d8.satisfied
+        assert reachable_version(empty, payload=PAY, reset=RESET) == \
+            "knu-1.2.1", reachable_version(empty, payload=PAY, reset=RESET)
+        got = fill_and_raise(empty, payload=PAY, reset=RESET)
+        assert got == "knu-1.2.1", got
+        after8 = diagnose(empty)
+        assert after8.ok and after8.stamped == "knu-1.2.1", after8
+
+        # 에피소드가 있고 관측이 옛 버전이면 채워도 못 넘는다 -- 벽은 그대로
+        old = root4 / "scene_001.hdf5"
+        _write(old, "knu-1.0.0", payload=False, n=1)
+        with h5py.File(old, "r+") as f:
+            for k in list(f["episode_000"]["obs"]):
+                if "torque" in k or "wrench" in k or "contact" in k:
+                    del f["episode_000"]["obs"][k]
+        assert reachable_version(old, payload=PAY, reset=RESET) == \
+            "knu-1.0.0", reachable_version(old, payload=PAY, reset=RESET)
+    print("8. 비운 파일은 가장 높은 버전으로 OK")
     print("test_doctor_schema OK")
 
 

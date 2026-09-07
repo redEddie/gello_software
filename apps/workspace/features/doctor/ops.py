@@ -39,7 +39,10 @@ from gello.scene.schema_doctor import (
     RESET_TOLERANCE_DEG,
     diagnose,
     fill_payload,
+    fill_and_raise,
     known_payload,
+    known_reset_pose,
+    reachable_version,
     reset_drift,
     restamp,
 )
@@ -830,6 +833,9 @@ class DoctorOps:
             (tr("내용"), d.satisfied or "?"),
         ])
         self._show_drift(d)
+        # 채우면 어디까지 갈 수 있는지 먼저 센다 -- 아래 안내와 버튼 라벨이
+        # 둘 다 이 값을 본다.
+        up_to, _p, _r, _ff = self._reachable(d)
         if d.error:
             miss.setText(d.error)
             plan.setText(tr("읽지 못해 판단할 수 없습니다."))
@@ -847,7 +853,21 @@ class DoctorOps:
         # **양방향이다.** 올리는 것과 내리는 것은 뜻이 정반대라 안내도 갈라야
         # 한다 -- 내리기는 "사실에 맞춘다", 올리기는 "이미 갖춘 것을 제대로
         # 알린다" 이고, 뒤섞으면 조작자가 무엇을 누르는지 모른다.
-        if d.can_restamp:
+        if up_to:
+            # 채우면 더 갈 수 있다. 에피소드가 없으면 **잘못 기술할 데이터가
+            # 없으므로** 자유롭게 올려도 된다 -- S006 이 그 경우다 (에피소드를
+            # 다 비우고 다시 찍으려는 scene, 2026-09-07 사용자).
+            win.schema_buttons["align_version"].setText(
+                tr("데이터세트 버전 올리기"))
+            why = (tr("이 파일에는 에피소드가 없어 잘못 기술할 데이터가 "
+                      "없습니다.") if not d.episodes else tr(
+                   "에피소드 {n}개가 이 값으로 찍혔는지 확인하세요.")
+                   .format(n=d.episodes))
+            plan.setText(tr(
+                "빠진 값을 채우고 {a} → {b} 로 올립니다 (닿을 수 있는 가장 "
+                "높은 버전). {why}").format(
+                    a=d.stamped or "?", b=up_to, why=why))
+        elif d.can_restamp:
             up = schema_version_key(d.satisfied) > schema_version_key(
                 d.stamped or "knu-0.0.0")
             win.schema_buttons["align_version"].setText(
@@ -868,12 +888,46 @@ class DoctorOps:
             plan.setText(tr("데이터세트 버전이 내용과 맞습니다."))
             win.schema_buttons["align_version"].setText(
                 tr("데이터세트 버전 맞추기"))
-        buttons["align_version"].setEnabled(d.can_restamp)
+        buttons["align_version"].setEnabled(d.can_restamp or bool(up_to))
         # 채우기는 **빠진 것이 부하 모델뿐일 때만**. 에피소드에 관측이 빠진
         # 것은 값을 넣어 메울 수 없다 -- 그건 지우는 수밖에 없다.
         only_payload = bool(d.missing) and all(
             k.startswith("metadata/payload") for k in d.missing)
         buttons["fill_payload"].setEnabled(only_payload)
+
+    def _fill_sources(self):
+        """채울 수 있는 값들 -- (payload, reset). 없으면 각각 None.
+
+        payload 와 리셋 자세는 **같은 데이터셋의 다른 scene 에 적힌 값**이
+        먼저다 (같은 리그·같은 시기의 사실). 리셋 자세가 어느 파일에도 없으면
+        지금 station 설정에서 가져오되, 그때는 출처가 다르다고 화면이 밝힌다.
+        """
+        root = self._root()
+        payload = known_payload(root)
+        reset = known_reset_pose(root)
+        from_file = reset is not None
+        if reset is None:
+            reset = self._station_reset_pose()
+        return payload, reset, from_file
+
+    def _reachable(self, d):
+        """채우면 닿는 가장 높은 버전. 지금 만족하는 것과 같으면 빈 문자열."""
+        # **어긋난 파일에는 끼어들지 않는다.** 그 파일의 첫 처방은 사실에
+        # 맞추는 것(내리기)이고, 채워서 올리는 것은 [부하 모델 채우기] 가
+        # 하는 별도의 결정이다. 여기서 가로채면 "지금 거짓말을 하고 있다" 는
+        # 사실이 "더 높이 갈 수 있다" 로 덮인다.
+        if d.error or not d.scene_id or d.can_restamp:
+            return "", None, None, False
+        payload, reset, from_file = self._fill_sources()
+        try:
+            v = reachable_version(self._path(d.scene_id),
+                                  payload=payload, reset=reset)
+        except Exception:  # noqa: BLE001
+            return "", None, None, False
+        if not v or schema_version_key(v) <= schema_version_key(
+                d.satisfied or "knu-0.0.0"):
+            return "", None, None, False
+        return v, payload, reset, from_file
 
     def _show_drift(self, d) -> None:
         """적힌 리셋 자세와 실제 첫 프레임의 어긋남.
@@ -913,7 +967,13 @@ class DoctorOps:
     def align_version(self) -> None:
         win = self.win
         d = self._diag
-        if d is None or not d.can_restamp:
+        if d is None:
+            return
+        up_to, payload, reset, from_file = self._reachable(d)
+        if up_to:
+            self._fill_and_raise(d, up_to, payload, reset, from_file)
+            return
+        if not d.can_restamp:
             return
         if win.worker is not None:
             QMessageBox.information(win, tr("수집 중"),
@@ -938,6 +998,43 @@ class DoctorOps:
             QMessageBox.warning(win, tr("버전 변경 실패"), str(e))
             return
         win.log(f"[닥터] {d.scene_id} 데이터세트 버전 {d.stamped} → {d.satisfied}")
+        self.refresh_schema()
+
+    def _fill_and_raise(self, d, up_to, payload, reset, from_file) -> None:
+        """빠진 값을 채우고 닿는 가장 높은 버전으로 올린다."""
+        win = self.win
+        if win.worker is not None:
+            QMessageBox.information(win, tr("수집 중"),
+                                    tr("세션을 끝낸 뒤 고치세요."))
+            return
+        src = []
+        if payload:
+            src.append(tr("부하 모델 {m} kg (데이터셋의 다른 scene)")
+                       .format(m=payload[0]))
+        if reset:
+            src.append(tr("리셋 자세 {n} ({where})").format(
+                n=reset[0], where=tr("데이터셋의 다른 scene") if from_file
+                else tr("지금 station 설정")))
+        ok = QMessageBox.question(
+            win, tr("데이터세트 버전 올리기"),
+            tr("{sid} 를 {a} → {b} 로 올립니다.\n\n채워 넣을 값:\n{src}\n\n"
+               "{why}").format(
+                   sid=d.scene_id, a=d.stamped or "?", b=up_to,
+                   src="\n".join(f"  · {x}" for x in src) or tr("  (없음)"),
+                   why=tr("이 파일에는 에피소드가 없어 잘못 기술할 데이터가 "
+                          "없습니다.") if not d.episodes else tr(
+                       "에피소드 {n}개가 이 값으로 찍혔는지 확인하세요.")
+                       .format(n=d.episodes)))
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            got = fill_and_raise(self._path(d.scene_id),
+                                 payload=payload, reset=reset)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(win, tr("버전 변경 실패"), str(e))
+            return
+        win.log(f"[닥터] {d.scene_id} 값을 채우고 데이터세트 버전 "
+                f"{d.stamped} → {got}")
         self.refresh_schema()
 
     def fill_payload(self) -> None:
