@@ -251,7 +251,37 @@ def qualifier_case() -> None:
     print("qualifier_case OK")
 
 
+def two_reasons_case() -> None:
+    """한 지시문이 두 가지로 틀릴 수 있다 -- 어순이 뒤집혔고 관계도 틀렸다.
+
+    audit 이 사유마다 한 줄씩 내야 화면이 둘 다 보여줄 수 있다. 전에는
+    표의 툴팁이 dict 덮어쓰기로 마지막 하나만, 우측 상세가 break 로 첫
+    하나만 보여줬다 (2026-09-07 재점검에서 발견).
+    """
+    from gello.scene.scene_repair import ORDER_MSG, audit_scene
+
+    # 'on' + 뒤집힌 어순을 한 문장에 담는다.
+    bad = "pick up the white cup and place it on the blue small bowl"
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        path, _plan = _make(root)
+        with h5py.File(path, "r+") as f:
+            for k in list(f):
+                if k.startswith("episode") and \
+                        str(f[k].attrs["instruction_id"]) == "I000":
+                    f[k].attrs["instruction"] = bad
+        vs = [v for v in audit_scene(path) if v.instruction_id == "I000"]
+        msgs = {v.message for v in vs}
+        assert len(vs) == 2, [v.message for v in vs]
+        assert ORDER_MSG in msgs, msgs
+        assert any("inside" in m for m in msgs), msgs
+        # 세는 단위는 지시문이다 -- 두 사유가 걸린 한 줄은 한 줄의 문제다
+        assert len({v.instruction_id for v in vs}) == 1
+    print("two_reasons_case OK")
+
+
 if __name__ == "__main__":
     main()
     swap_case()
     qualifier_case()
+    two_reasons_case()

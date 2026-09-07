@@ -48,9 +48,15 @@ TASK_ACTIONS = (
 
 
 def _rule() -> QFrame:
+    """구분선. HLine 의 color: 대신 1px 상자의 background 로 그린다.
+
+    HLine 은 선 색을 color: 로 받는데, 그러면 "글자 색" 을 재는 검사기가
+    본문으로 착각한다 (실제로 대비 미달로 잡혔다). 배경으로 그리면 뜻이
+    분명하고 렌더도 플랫폼을 덜 탄다.
+    """
     f = QFrame()
-    f.setFrameShape(QFrame.Shape.HLine)
-    f.setStyleSheet("color:#cccccc;")
+    f.setFixedHeight(1)
+    f.setStyleSheet("background:#d0d0d0;")
     return f
 
 
@@ -70,7 +76,9 @@ def _slot(parent: QVBoxLayout, title: str) -> QLabel:
     적는다. 상자가 늘었다 줄었다 하면 어디에 무엇이 오는지 익힐 수가 없다
     (2026-09-07 사용자)."""
     cap = QLabel(title)
-    cap.setStyleSheet("color:#777; font-size:11px;")
+    # #777 은 흰 바탕에서 4.48:1 로 AA(4.5:1)에 못 미친다. 11px 이라
+    # 큰 글씨 예외도 못 쓴다 (#49).
+    cap.setStyleSheet("color:#666; font-size:11px;")
     parent.addWidget(cap)
     body = QLabel("—")
     body.setWordWrap(True)

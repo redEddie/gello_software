@@ -54,12 +54,16 @@ SKILL_KO = {
 
 _SEL = ("_SkillBadge{background:#eef7f0; color:#1d5c32;"
         " border:2px solid #2e7d46; border-radius:9px;}")
+# 뱃지는 바탕(#f2f2f2)이 흰 패널과 1.05:1 이라 **테두리로 알아본다**.
+# 그래서 테두리를 비텍스트 3:1 로 맞춘다 (#c9c9c9 는 1.66:1 이었다, #49).
 _DEF = ("_SkillBadge{background:#f2f2f2; color:#444444;"
-        " border:1px solid #c9c9c9; border-radius:9px;}")
+        " border:1px solid #949494; border-radius:9px;}")
 #: 고를 수 없는 뱃지. **지우지 않고 취소선을 긋는다** (2026-09-07 사용자).
 #: 사라지면 "왜 없지" 가 되고, 남아 있으면 툴팁이 이유를 말할 수 있다.
-_OFF = ("_SkillBadge{background:#f7f7f7; color:#8a8a8a;"
-        " border:1px dashed #d5d5d5; border-radius:9px;}")
+# 못 고르는 뱃지도 **읽을 수 있어야** 한다 -- 물체 이름이 거기 적혀 있고,
+# 못 고른다는 신호는 취소선과 점선이 이미 낸다. #8a8a8a 는 3.22:1 이었다.
+_OFF = ("_SkillBadge{background:#f7f7f7; color:#6f6f6f;"
+        " border:1px dashed #949494; border-radius:9px;}")
 
 
 def _badge_row(col, title: str):

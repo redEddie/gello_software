@@ -155,7 +155,11 @@ class DoctorOps:
         win = self.win
         tree = win.doctor_task_tree
         tree.clear()
-        bad = {v.instruction_id: v.message for v in audit_scene(path, props)}
+        # 한 지시문이 두 가지로 틀릴 수 있다 (어순이 뒤집혔고 관계도 틀린
+        # 문장) -- dict 로 덮어쓰면 마지막 하나만 남는다.
+        bad: dict = {}
+        for v in audit_scene(path, props):
+            bad.setdefault(v.instruction_id, []).append(v.message)
         seen: dict = {}
         with h5py.File(path, "r") as f:
             for k in f:
@@ -181,12 +185,13 @@ class DoctorOps:
             except Exception as e:  # noqa: BLE001
                 win.log(f"[닥터] 지시문 파일을 읽지 못했습니다: {e}")
         for iid, (n, text) in sorted(seen.items()):
-            msg = bad.get(iid, "")
-            state = "⚠" if msg else ("빈 칸" if iid in empty else "—")
+            msgs = bad.get(iid, [])
+            state = (f"⚠{len(msgs)}" if len(msgs) > 1 else
+                     "⚠" if msgs else ("빈 칸" if iid in empty else "—"))
             it = QTreeWidgetItem([iid, str(n), text, state])
             it.setData(0, Qt.ItemDataRole.UserRole, (iid, text))
-            if msg:
-                it.setToolTip(3, msg)
+            if msgs:
+                it.setToolTip(3, "\n".join(f"· {m}" for m in msgs))
             elif iid in empty:
                 it.setToolTip(3, tr("미수집 · 지시문 파일에만 있음"))
             tree.addTopLevelItem(it)
@@ -281,18 +286,16 @@ class DoctorOps:
         iid, text = self._task
         path = self._path(self._scene_id)
         n = episode_counts(path).get(iid, 0) if path.is_file() else 0
-        msg = ""
-        for v in audit_scene(path, props_by_id()):
-            if v.instruction_id == iid:
-                msg = v.message
-                break
+        msgs = [v.message for v in audit_scene(path, props_by_id())
+                if v.instruction_id == iid]
         card.set_fields([
             (tr("지시문"), iid),
             (tr("에피소드"), str(n) if n else
              tr("0 (미수집)")),
             (tr("문장"), text),
         ])
-        diag.setText(msg or tr("없음"))
+        diag.setText("<br>".join(f"· {m}" for m in msgs) if msgs
+                     else tr("없음"))
         for name, b in buttons.items():
             # 에피소드가 있으면 지시문 파일에서만 뺄 수 없다 -- 미리 꺼 둔다.
             b.setEnabled(n == 0 if name == "remove_task" else True)
