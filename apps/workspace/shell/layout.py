@@ -26,7 +26,7 @@ from gello.data.crop import load_crop_params
 from gello.gui.widgets import VideoView
 from gello.gui.i18n import tr
 
-from apps.workspace.shared.widgets import SceneInfoView
+from apps.workspace.shared.info import InfoCard
 from apps.workspace.shared.sizing import relax_min_widths
 from apps.workspace.shared.tabs import tab_title
 from apps.workspace.constants import (
@@ -337,7 +337,7 @@ def build_right(win) -> None:
     scene_box = QGroupBox(tr("Scene 배치 (수집 중)"))
     sv = QVBoxLayout(scene_box)
     sv.setContentsMargins(6, 6, 6, 6)
-    win.right_scene_view = SceneInfoView()
+    win.right_scene_view = InfoCard()
     win.right_scene_view.setText(tr("(scene 세션 없음)"))
     sv.addWidget(win.right_scene_view)
     col.addWidget(scene_box)

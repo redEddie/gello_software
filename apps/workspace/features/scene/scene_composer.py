@@ -32,14 +32,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from apps.workspace.shared.widgets import SceneInfoView
+from apps.workspace.shared.info import InfoCard
 from apps.workspace.features.scene.dialogs.recommend_dialog import RecommendDialog
 from gello.data.dataset_schema import SCHEMA_VERSION
 from gello.gui.i18n import tr
 from gello.scene.props import load_props, props_by_id
 from gello.scene.scene_format import (
     SceneMetadata,
-    describe_scene,
     iter_scene_files,
     read_scene_metadata,
     scene_filename,
@@ -123,7 +122,7 @@ class SceneComposer(QWidget):
         self.lint_label.setStyleSheet("color:#e67e22;")
         layout.addWidget(self.lint_label)
 
-        self.preview = SceneInfoView()
+        self.preview = InfoCard()
         layout.addWidget(self.preview)
 
         self._refresh()
@@ -261,7 +260,7 @@ class SceneComposer(QWidget):
         md = None
         try:
             md = self._build()
-            self.preview.setText(describe_scene(md))
+            self.preview.set_scene(md)
         except Exception:  # noqa: BLE001 - 미완성 구성의 미리보기는 없어도 된다
             self.preview.setText("")
             self.lint_label.setText("")

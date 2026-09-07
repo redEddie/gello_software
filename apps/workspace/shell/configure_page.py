@@ -18,7 +18,7 @@ from gello.gui.i18n import tr
 from gello.robots.franka_fr3 import FR3_RESET_POSES
 
 from apps.workspace.shared.collector_picker import CollectorPicker
-from apps.workspace.shared.widgets import SceneInfoView
+from apps.workspace.shared.info import InfoCard
 from apps.workspace.shared.sizing import keep_height, shrinkable_combo
 
 
@@ -123,7 +123,7 @@ def build_configure(win) -> QWidget:
     # 저장 경로 칸을 뺐다 (2026-09-06). 그 값은 런처 마법사가 정하고,
     # 화면에서 고치는 자리는 Dataset 페이지 하나다 (File 메뉴도 같은 위젯을
     # 고친다). 지금 어디에 쌓이는지는 상태바가 늘 비추고 있다.
-    win.scene_info = SceneInfoView()
+    win.scene_info = InfoCard()
     sc_form.addRow(win.scene_info)
     win.session.scene_session = False
     col.addWidget(scene)

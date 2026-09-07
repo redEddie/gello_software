@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from apps.workspace.shared.widgets import SceneInfoView
+from apps.workspace.shared.info import InfoCard
 from gello.gui.i18n import tr
 
 #: 기준 사진의 가로 상한. 사진이 배치 설명을 밀어내면 나란히 두는 뜻이 없다.
@@ -49,7 +49,7 @@ def build_record_tab(win) -> QWidget:
         "background:#e4e4e4; color:#444; border:1px solid #c9c9c9;")
     top.addWidget(win.doctor_photo)
 
-    win.doctor_info = SceneInfoView()
+    win.doctor_info = InfoCard()
     top.addWidget(win.doctor_info, 1)
     col.addLayout(top)
 

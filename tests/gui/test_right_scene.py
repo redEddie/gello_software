@@ -27,7 +27,11 @@ md = SceneMetadata(
     description="테스트 배치")
 win.scene_ops.set_right_scene(md, "S000")
 t = win.right_scene_view.text()
-assert "S000" in t and any(ch in t for ch in "┌┼│"), t[:120]
+assert "S000" in t, t[:120]
+# 배치도는 진짜 격자 위젯(ZoneMap)이다 -- 물체가 놓인 칸을 셀이 말한다.
+# 선문자(│┌…) 글 검사는 옛 ASCII 격자 대상이라 이 표현에선 성립하지 않는다.
+cells = win.right_scene_view._zones.cell_texts()
+assert "cup-blue-01" in cells and "bowl-blue-01" in cells, cells
 win.scene_ops.set_right_scene(None, "S007")   # metadata 읽기 실패 케이스
 assert "S007" in win.right_scene_view.text()
 win.scene_ops.set_right_scene(None)

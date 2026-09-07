@@ -16,7 +16,6 @@ from gello.scene.scene_format import (
     INSTRUCTION_ID_RE,
     SceneWriter,
     count_by_slot,
-    describe_scene,
     iter_scene_files,
     next_scene_id,
     read_scene_metadata,
@@ -86,16 +85,14 @@ class SceneOps:
                 return
             md = read_scene_metadata(path)
             counts = count_by_slot(path)
-            lines = [describe_scene(md)]
-            if counts:
-                lines.append("slot: " + "  ".join(
-                    f"{iid} {c['usable']}/{c['total']}" for iid, c in sorted(counts.items())))
+            extra = []
             plan = self.win.scene_planning.current_plan()
             if plan is not None and plan.slots_for(sid):
-                lines.append(f"지시문 파일({plan.path.name}): " + "  ".join(
+                extra.append((tr("지시문 파일({n})").format(n=plan.path.name),
+                              "  ".join(
                     f"{s.instruction_id} {counts.get(s.instruction_id, {}).get('usable', 0)}"
-                    f"/{s.target}" for s in plan.slots_for(sid)))
-            self.win.scene_info.setText("\n".join(lines))
+                    f"/{s.target}" for s in plan.slots_for(sid))))
+            self.win.scene_info.set_scene(md, counts=counts or None, extra=extra)
         except BlockingIOError:
             self.win.scene_info.setText(tr(
                 "(다른 프로세스가 파일을 사용 중입니다 — 재압축/변환이 끝난 "
@@ -303,7 +300,7 @@ class SceneOps:
         if not hasattr(self.win, "right_scene_view"):
             return
         if md is not None:
-            self.win.right_scene_view.setText(describe_scene(md))
+            self.win.right_scene_view.set_scene(md)
         elif sid:
             self.win.right_scene_view.setText(
                 tr("{s} — 배치 정보를 읽지 못했습니다").format(s=sid))

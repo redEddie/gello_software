@@ -17,9 +17,10 @@ from gello.gui.i18n import tr
 from gello.data.libero_format import hdf5_repack_status
 from gello.data.schema_description import describe_episode
 from gello.gui.scene_gallery import invalidate_scene_thumbs
-from gello.scene.scene_format import count_by_slot, describe_scene, read_scene_metadata
+from gello.scene.scene_format import count_by_slot, read_scene_metadata
 
 from apps.workspace.constants import REPLAY_SCRIPT
+from apps.workspace.shared.info import InfoCard
 from apps.workspace.shared.tabs import show_center_tab
 
 
@@ -472,18 +473,18 @@ class PlaybackOps:
             return
         if path.name.startswith("scene_"):
             # scene 파일은 legacy 구조 검사 대신 표준 뷰(격자 지도 + slot 현황).
+            card = InfoCard()
+            card.setMinimumWidth(360)
             try:
                 md = read_scene_metadata(path)
                 counts = count_by_slot(path)
-                text = describe_scene(md)
-                if counts:
-                    text += "\n\nslot 현황: " + "  ".join(
-                        f"{iid} {c['usable']}/{c['total']}"
-                        for iid, c in sorted(counts.items()))
-                text += "\n\n" + tr("정밀 검사: python scripts/check/check_scene_file.py {p}").format(p=path)
+                card.set_scene(md, counts=counts or None, extra=[(
+                    tr("정밀 검사"),
+                    tr("python scripts/check/check_scene_file.py {p}").format(p=path))])
             except Exception as e:  # noqa: BLE001
-                text = f"{path.name}\n읽기 실패: {type(e).__name__}: {e}"
-            self.win._alert(tr("Scene 구조"), text, icon=QMessageBox.Icon.Information)
+                card.setText(f"{path.name}\n읽기 실패: {type(e).__name__}: {e}")
+            self.win._alert(tr("Scene 구조"), "", icon=QMessageBox.Icon.Information,
+                            content=card)
             return
         st = hdf5_repack_status(path)
         lines = [f"{path.name}",

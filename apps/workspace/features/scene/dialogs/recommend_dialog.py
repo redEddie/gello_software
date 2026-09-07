@@ -25,11 +25,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from apps.workspace.shared.widgets import SceneInfoView
+from apps.workspace.shared.info import InfoCard
 from gello.gui.i18n import tr
 from gello.scene.collection_plan import load_plan
 from gello.scene.scene_diversity import AXES, recommend_detailed, recommend_placement
-from gello.scene.scene_format import INSTRUCTION_ID_RE, SceneMetadata, describe_scene
+from gello.scene.scene_format import INSTRUCTION_ID_RE, SceneMetadata
 from gello.scene.scene_rules import violations_by_section
 from gello.scene.skill_stats import (
     collected_skill_counts,
@@ -426,8 +426,8 @@ class RecommendDialog(QDialog):
         diff = QLabel(tr("기존과 {d:.2f} 다름").format(d=rec["min_dist"]))
         diff.setStyleSheet("color:#222; font-weight:bold;")
         cc.addWidget(diff)
-        view = SceneInfoView()
-        view.setText(describe_scene(rec["md"]))
+        view = InfoCard()
+        view.set_scene(rec["md"])
         cc.addWidget(view, 1)
         ax = rec.get("axes", {})
         best = None

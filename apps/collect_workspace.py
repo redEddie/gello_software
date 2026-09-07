@@ -634,7 +634,7 @@ class WorkspaceWindow(QMainWindow):
                 + list(getattr(self, "trim_views", {}).values()):
             v.set_square_guide(on)
 
-    def _alert(self, title: str, text: str, icon=None) -> None:
+    def _alert(self, title: str, text: str, icon=None, content=None) -> None:
         """Non-modal notice.
 
         A modal QMessageBox runs its own event loop, so anything the app does
@@ -643,6 +643,10 @@ class WorkspaceWindow(QMainWindow):
         what happened when a fatal camera error and a session teardown landed
         together. Non-modal has neither problem: the dialog is always
         closeable, and the window behind it keeps drawing.
+
+        ``content`` (QWidget) 가 있으면 본문 글 아래에 그 위젯을 붙인다 --
+        scene 구조 처럼 배치도(InfoCard, 진짜 격자 위젯)를 보여줘야 하는
+        알림이 있다.
         """
         box = QMessageBox(self)
         box.setWindowTitle(title)
@@ -651,6 +655,9 @@ class WorkspaceWindow(QMainWindow):
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
         box.setModal(False)
         box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        if content is not None:
+            # 본문 라벨(0행) 아래, 아이콘 열을 걸쳐 넣는다.
+            box.layout().addWidget(content, 1, 0, 1, box.layout().columnCount())
         box.show()
         box.raise_()
 
