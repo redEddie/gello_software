@@ -124,20 +124,37 @@ def main() -> None:
         assert win.doctor_task_tree.topLevelItemCount() == 2
         print("3. 사진과 기록이 나란히 OK")
 
-        assert win.doctor_fix_box.isVisible() or True   # 부모가 숨어 있을 수 있다
-        assert win.doctor.__dict__["_suggestion"] is not None, "제안이 없다"
-        s = win.doctor._suggestion
-        assert (s.old_id, s.new_id) == ("OBJ-BOWLS-GRN-01", "OBJ-BOWLS-GRY-01"), s
+        # 소품 고치기 -- 추천이 미리 골라져 있고, 지금/고친 뒤가 나란히
+        assert win.doctor._suggestion is not None, "제안이 없다"
+        sug = win.doctor._suggestion
+        assert (sug.old_id, sug.new_id) == ("OBJ-BOWLS-GRN-01",
+                                            "OBJ-BOWLS-GRY-01"), sug
+        import apps.workspace.features.doctor.ops as dops
+        grab = {}
+        real_obj = dops.ObjectDialog
 
-        # 확인창을 넘기고 실제로 적용한다.
-        from PyQt6.QtWidgets import QMessageBox
-        orig = QMessageBox.question
-        QMessageBox.question = staticmethod(
-            lambda *a, **k: QMessageBox.StandardButton.Yes)
+        class _AutoObj(real_obj):
+            def exec(self):
+                grab["changes"] = self._picked()
+                grab["now"] = self._now.text()
+                grab["after"] = self._after.text()
+                grab["note"] = self.note.text()
+                self.accept()
+                return int(QDialog.DialogCode.Accepted)
+
+        dops.ObjectDialog = _AutoObj
         try:
-            win.doctor.apply_suggestion()
+            win.doctor.edit_objects()
         finally:
-            QMessageBox.question = orig
+            dops.ObjectDialog = real_obj
+        # 추천이 콤보에 미리 골라져 있으므로 누르기만 해도 그 정정이 담긴다
+        assert grab["changes"] == {"OBJ-BOWLS-GRN-01": "OBJ-BOWLS-GRY-01"}, grab
+        # 지금과 고친 뒤가 서로 다르고, 각각 옛/새 물체를 담는다
+        assert "GRN" in grab["now"] or "green" in grab["now"], grab["now"]
+        assert grab["now"] != grab["after"]
+        # 위반이 줄어드는 것을 누르기 전에 말한다
+        assert "건 → " in grab["note"], grab["note"]
+
         with h5py.File(root / "scene_000.hdf5", "r") as f:
             objs = json.loads(f["metadata"].attrs["objects"])
             lay = json.loads(f["metadata"].attrs["layout"])
@@ -146,7 +163,6 @@ def main() -> None:
         assert "OBJ-BOWLS-GRY-01" in objs and "OBJ-BOWLS-GRN-01" not in objs, objs
         assert lay["placements"]["OBJ-BOWLS-GRY-01"]["zone"] == [2, 0], lay
         assert win.doctor._suggestion is None, "고쳤는데 제안이 남아 있다"
-        assert not win.doctor_fix_box.isVisible()
         assert win.doctor_tree.topLevelItem(0).text(2) == "—", "문제가 안 사라졌다"
         print("4. 정정 적용 OK")
 
@@ -192,6 +208,8 @@ def main() -> None:
 
         # 고른 것이 없으면 조치 버튼이 전부 꺼져 있다
         assert not any(b.isEnabled() for b in win.doctor_task_buttons.values())
+        # scene 범위 조치는 scene 을 고른 것만으로 쓸 수 있다
+        assert all(b.isEnabled() for b in win.doctor_scene_buttons.values())
         tt = win.doctor_task_tree
         win.doctor.on_task_picked(tt.topLevelItem(0))
         assert "I000" in win.doctor_task_detail.text()
@@ -199,9 +217,9 @@ def main() -> None:
         # 에피소드가 있는 줄은 [계획에서 빼기] 가 꺼져 있다
         assert not win.doctor_task_buttons["remove_task"].isEnabled()
         # 파일 상태 칸: 기록 정정만 했으므로 편집 이력이 없다
-        assert "S000" in win.doctor_file_detail.text()
-        assert "편집" not in win.doctor_file_detail.text(), \
-            win.doctor_file_detail.text()
+        assert "S000" in win.doctor_scene_detail.text()
+        assert "편집" not in win.doctor_scene_detail.text(), \
+            win.doctor_scene_detail.text()
         print("7. 우측 패널 = 닥터 자기 페이지 OK")
 
         # 8. S016 의 해법 -- 안 찍은 빈 칸과 교환하고, 그 칸을 계획에서 뺀다
@@ -217,7 +235,6 @@ def main() -> None:
         win.doctor.on_task_picked(tt.topLevelItem(1))       # I001 (2개, gray)
         # 대화상자를 띄우는 대신 실제 위젯을 만들어, 화면이 그리는 '바꾼 뒤'
         # 가 맞는지까지 본다 -- 이 대화상자의 존재 이유가 그 미리보기다.
-        import apps.workspace.features.doctor.ops as dops
         seen = {}
         real = dops.SwapDialog
 
@@ -259,9 +276,9 @@ def main() -> None:
 
         # 9. 문장이 바뀌었으니 파일 상태가 그것을 말한다 (전체 재빌드 경고)
         win.doctor.select_scene("S000")
-        assert "편집" in win.doctor_file_detail.text(), \
-            win.doctor_file_detail.text()
-        assert "재빌드" in win.doctor_file_detail.text()
+        assert "편집" in win.doctor_scene_detail.text(), \
+            win.doctor_scene_detail.text()
+        assert "재빌드" in win.doctor_scene_detail.text()
         print("9. 편집 이력 표시 OK")
 
         # 10. 문장 고치기는 블럭 조립이다 -- 문법이 만든 것만 고를 수 있다

@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from apps.workspace.features.doctor.confirm import side_by_side
 from gello.gui.i18n import tr
 
 #: 스킬 -> 사람 말. 뱃지에 "pick-inside" 를 그대로 쓰면 조작자가 문법 이름을
@@ -104,10 +105,11 @@ class SentenceDialog(QDialog):
         head.setStyleSheet("font-weight:bold;")
         col.addWidget(head)
 
-        cur = QLabel(tr("지금: {s}").format(s=current))
-        cur.setWordWrap(True)
-        cur.setStyleSheet("color:#444;")
-        col.addWidget(cur)
+        # 지금과 고친 뒤를 나란히 -- 모든 수정이 같은 모양을 지난다
+        # (confirm.side_by_side, 2026-09-07 사용자).
+        diff, self._now, self._after = side_by_side()
+        self._now.setText(current)
+        col.addWidget(diff)
 
         col.addWidget(QLabel(tr("동작")))
         self._badges = {}
@@ -170,9 +172,19 @@ class SentenceDialog(QDialog):
             self._group.addButton(r)
             self._holder_col.addWidget(r)
         first = self._group.buttons()
+        for b in first:
+            b.toggled.connect(self._redraw_after)
         if first:
             first[0].setChecked(True)
         self._ok.setEnabled(bool(first))
+        self._redraw_after()
+
+    def _redraw_after(self, *_a) -> None:
+        for b in self._group.buttons():
+            if b.isChecked():
+                self._after.setText(b.text())
+                return
+        self._after.setText("")
 
     def _accept(self) -> None:
         for b in self._group.buttons():

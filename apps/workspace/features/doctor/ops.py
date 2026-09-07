@@ -14,6 +14,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QMessageBox, QTreeWidgetItem
 
 from apps.workspace.features.doctor.page import fill_scene_rows
+from apps.workspace.features.doctor.object_dialog import ObjectDialog
 from apps.workspace.features.doctor.record_tab import PHOTO_W
 from apps.workspace.features.doctor.sentence_builder import SentenceDialog
 from apps.workspace.features.doctor.swap_dialog import SwapDialog
@@ -124,19 +125,11 @@ class DoctorOps:
 
         props = props_by_id()
         self._suggestion = suggest_object_fix(path, props)
-        if self._suggestion is None:
-            win.doctor_fix_box.setVisible(False)
-        else:
-            s = self._suggestion
-            win.doctor_fix_label.setText(tr(
-                "{reason}\n{old} → {new}").format(
-                    reason=s.reason, old=s.old_id, new=s.new_id))
-            win.doctor_fix_box.setVisible(True)
 
         self._task = None
         self._fill_tasks(path, props, md.scene_id)
         self._show_task_detail()
-        self._show_file_detail()
+        self._show_scene_detail()
         show_center_tab(win, "doc_record")
 
     def _show_photo(self, path: Path) -> None:
@@ -202,32 +195,6 @@ class DoctorOps:
         win.doctor_task_hint.setText(" · ".join(parts))
 
     # ------------------------------------------------------------- 정정
-    def apply_suggestion(self) -> None:
-        win = self.win
-        s = self._suggestion
-        if s is None:
-            return
-        if win.worker is not None:
-            QMessageBox.information(win, tr("수집 중"),
-                                    tr("세션을 끝낸 뒤 고치세요."))
-            return
-        ok = QMessageBox.question(
-            win, tr("기록 정정"),
-            tr("{sid} 의 기록을 고칩니다.\n\n{old}\n  → {new}\n\n{reason}\n\n"
-               "기준 사진과 대조하셨습니까? 에피소드와 지시문은 바뀌지 "
-               "않습니다.").format(sid=s.scene_id, old=s.old_id, new=s.new_id,
-                                   reason=s.reason))
-        if ok != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            apply_object_fix(self._path(s.scene_id), s.old_id, s.new_id)
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(win, tr("고치지 못했습니다"), str(e))
-            return
-        win.log(f"[닥터] {s.scene_id} 기록 정정: {s.old_id} → {s.new_id}")
-        self.rescan()
-        self.select_scene(s.scene_id)
-
     def edit_task_text(self) -> None:
         win = self.win
         if not self._guard():
@@ -324,18 +291,22 @@ class DoctorOps:
             # 에피소드가 있으면 계획에서만 뺄 수 없다 -- 미리 꺼 둔다.
             b.setEnabled(n == 0 if name == "remove_task" else True)
 
-    def _show_file_detail(self) -> None:
-        """우측 아래 -- 이 scene 파일의 상태.
+    def _show_scene_detail(self) -> None:
+        """우측 위 -- 이 scene 의 진단과 파일 상태.
 
-        edit_count 가 0 이 아니면 변환기가 이어붙이기를 거부한다(전체
-        재빌드만 허용). 고치기 전에 이미 고쳐진 파일인지 보이는 편이 낫다.
+        무엇이 잘못됐는지를 **여기 한 곳에** 적는다. 전에는 가운데의 정정
+        상자와 오른쪽 지시문 상자에 나뉘어 있어서, 같은 질문("어디가
+        잘못됐나")의 답이 화면 두 군데에 있었다.
         """
         win = self.win
-        lab = getattr(win, "doctor_file_detail", None)
+        lab = getattr(win, "doctor_scene_detail", None)
         if lab is None:
             return
+        buttons = win.doctor_scene_buttons
         if not self._scene_id:
-            lab.setText(tr("scene 을 고르세요"))
+            lab.setText(tr("왼쪽에서 scene 을 고르세요"))
+            for b in buttons.values():
+                b.setEnabled(False)
             return
         path = self._path(self._scene_id)
         try:
@@ -344,18 +315,69 @@ class DoctorOps:
                 eps = sum(1 for k in f if k.startswith("episode"))
                 edits = int(f["metadata"].attrs.get("edit_count", 0))
                 when = str(f["metadata"].attrs.get("edited", ""))
+            vs = audit_scene(path, props_by_id())
         except Exception as e:  # noqa: BLE001
             lab.setText(str(e))
             return
+
         lines = [f"<b>{md.scene_id}</b> — {path.name}",
                  tr("에피소드 {n} · 스키마 {v}").format(
                      n=eps, v=md.dataset_version)]
+        if vs:
+            n = sum(v.episodes for v in vs)
+            lines.append(tr(
+                "<span style='color:#8a4b00;'>⚠ 지시문 {t}건 "
+                "(에피소드 {n}개)이 기록과 맞지 않습니다</span>").format(
+                    t=len(vs), n=n))
+        else:
+            lines.append(tr("문제 없음"))
+        if self._suggestion is not None:
+            lines.append(tr(
+                "<span style='color:#8a4b00;'>추천: {reason}<br>"
+                "{old} → {new}</span>").format(
+                    reason=self._suggestion.reason,
+                    old=self._suggestion.old_id, new=self._suggestion.new_id))
         if edits:
             lines.append(tr(
                 "<span style='color:#8a4b00;'>편집 {n}회{when} — 변환은 "
                 "이어붙이기 없이 전체 재빌드입니다</span>").format(
                     n=edits, when=f" ({when})" if when else ""))
         lab.setText("<br>".join(lines))
+        for b in buttons.values():
+            b.setEnabled(True)
+
+    # ------------------------------------------------------- 소품 고치기
+    def edit_objects(self) -> None:
+        win = self.win
+        if win.worker is not None:
+            QMessageBox.information(win, tr("수집 중"),
+                                    tr("세션을 끝낸 뒤 고치세요."))
+            return
+        if not self._scene_id:
+            return
+        path = self._path(self._scene_id)
+        try:
+            md = read_scene_metadata(path)
+            props = props_by_id()
+            with h5py.File(path, "r") as f:
+                sents = sorted({str(f[k].attrs.get("instruction", ""))
+                                for k in f if k.startswith("episode")})
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(win, tr("scene 을 열 수 없습니다"), str(e))
+            return
+        dlg = ObjectDialog(win, md, props, sents, self._suggestion)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.changes:
+            return
+        try:
+            for old_id, new_id in dlg.changes.items():
+                apply_object_fix(path, old_id, new_id)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(win, tr("고치지 못했습니다"), str(e))
+            return
+        for old_id, new_id in dlg.changes.items():
+            win.log(f"[닥터] {self._scene_id} 기록 정정: {old_id} → {new_id}")
+        self.rescan()
+        self.select_scene(self._scene_id)
 
     # ----------------------------------------------------------- 교환
     def swap_task_text(self) -> None:

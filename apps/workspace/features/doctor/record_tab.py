@@ -8,14 +8,17 @@ metadata 에 초록 그릇이 적혀 있는데 문장 120개가 전부 회색을
 아래쪽 표는 지시문(task)이다. 에피소드 한 줄씩이 아니다: 문장을 고치는 것은
 task 단위이지 에피소드 단위가 아니고, 같은 task 안에서 문장이 갈리는 것은
 기능이 아니라 결함이다.
+
+**여기에 조작은 없다.** 가운데는 보는 자리고, 진단과 조치는 오른쪽에 있다
+(2026-09-07 사용자: 정정 상자가 가운데 있어 "ux 가 일관되지 않다"). 표의
+⚠ 는 어느 줄을 볼지 알려 주는 표시일 뿐이고, 사유와 고칠 수단은 그 줄을
+누르면 오른쪽에 나온다.
 """
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QPushButton,
     QTreeWidget,
     QVBoxLayout,
     QWidget,
@@ -49,29 +52,6 @@ def build_record_tab(win) -> QWidget:
     win.doctor_info = SceneInfoView()
     top.addWidget(win.doctor_info, 1)
     col.addLayout(top)
-
-    # --- 오등록 제안 --------------------------------------------------
-    # 제안이 없으면 통째로 숨긴다. 늘 보이는 빈 칸은 "고칠 것이 없다" 가
-    # 아니라 "아직 안 봤다" 로 읽힌다.
-    win.doctor_fix_box = QFrame()
-    win.doctor_fix_box.setStyleSheet(
-        "QFrame{background:#fff6e5; border:1px solid #d9a441;"
-        " border-radius:4px;}")
-    fix = QHBoxLayout(win.doctor_fix_box)
-    fix.setContentsMargins(8, 6, 8, 6)
-    win.doctor_fix_label = QLabel("")
-    win.doctor_fix_label.setWordWrap(True)
-    win.doctor_fix_label.setStyleSheet("border:none; color:#333;")
-    fix.addWidget(win.doctor_fix_label, 1)
-    win.doctor_fix_btn = QPushButton(tr("이 정정 적용"))
-    win.doctor_fix_btn.setToolTip(tr(
-        "기록만 고칩니다 — 에피소드도 지시문도 바뀌지 않고, "
-        "이어붙이기(resume)도 막히지 않습니다."))
-    win.doctor_fix_btn.setStyleSheet("border:1px solid #b98a2f;")
-    win.doctor_fix_btn.clicked.connect(win.doctor.apply_suggestion)
-    fix.addWidget(win.doctor_fix_btn)
-    win.doctor_fix_box.setVisible(False)
-    col.addWidget(win.doctor_fix_box)
 
     # --- 트랙: 지시문 -------------------------------------------------
     col.addWidget(QLabel(tr("지시문")))
