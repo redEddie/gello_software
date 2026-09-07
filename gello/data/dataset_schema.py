@@ -50,7 +50,7 @@ DEFAULT_CONFIG_PATH = state_dir() / "dataset_schema.json"
 # 정본이다 (문서와 어긋나면 검증기가 잡는다).
 #: 지금 쓰는(기록하는) 버전. 읽기는 같은 MAJOR 안에서 위아래 모두 된다
 #: (schema_is_readable 참조).
-SCHEMA_VERSION = "knu-1.2.0"
+SCHEMA_VERSION = "knu-1.2.1"
 
 # --------------------------------------------------------- observation/dataset keys
 # Robot observation keys (returned by Robot.get_observations / RobotEnv.get_obs).
@@ -205,10 +205,35 @@ META_PAYLOAD_COM = "payload_com"        # m, F_x_Ctotal (플랜지 기준 x,y,z)
 #: obs 는 1.1.1 과 같다 -- 늘어난 것은 metadata attrs 뿐이라 프레임 데이터는
 #: 한 바이트도 커지지 않는다. 그래도 MINOR 인 이유는 "필드 추가"이기
 #: 때문이고, 옛 파일은 이 attrs 가 없으므로 1.1.1 규칙으로 계속 검사된다.
+#: 기록 시점의 리셋 자세. metadata 그룹 attrs 로 한 번만 적는다 (knu-1.2.1).
+#:
+#: 팔이 **어디서 출발했는가**는 궤적을 읽는 데 필요한데, 지금까지 파일에는
+#: station 이름만 있었다 (knu-eng7). 이름에서 자세를 찾으려면 그 시점의
+#: configs/stations/*.yaml 과 FR3_RESET_POSES 를 알아야 하고, 둘 다 나중에
+#: 바뀔 수 있다 -- 그러면 옛 파일에 지금 값을 갖다 붙여 읽게 된다. payload 를
+#: 파일에 적기로 한 것과 같은 이유다 (2026-09-07 사용자 결정).
+#:
+#: **이름과 값을 함께 적는다.** 이름만 적으면 FR3_RESET_POSES["libero"] 가
+#: 바뀔 때 같은 구멍이 다시 생기고, 값만 적으면 사람이 그것이 무엇인지
+#: 알아보지 못한다.
+META_RESET_POSE = "reset_pose"          # 별칭 (libero / fr3_ready / panda)
+META_RESET_QPOS = "reset_qpos"          # rad, 7관절 절대값 (JSON 목록)
+
 SCHEMA_FIELDS["knu-1.2.0"] = {
     **SCHEMA_FIELDS["knu-1.1.1"],
     "metadata_attrs": SCHEMA_FIELDS["knu-1.1.1"]["metadata_attrs"] + (
         META_PAYLOAD_MASS, META_PAYLOAD_COM,
+    ),
+}
+
+
+#: 리셋 자세 추가. MINOR 가 아니라 PATCH 인 이유: 궤적을 읽는 데 도움이 되는
+#: 부가 정보이지 관측 자체가 늘어난 것이 아니다 (knu-1.1.1 이 힘·토크 관측을
+#: PATCH 로 더한 선례와 같은 결). 2026-09-07 사용자 결정.
+SCHEMA_FIELDS["knu-1.2.1"] = {
+    **SCHEMA_FIELDS["knu-1.2.0"],
+    "metadata_attrs": SCHEMA_FIELDS["knu-1.2.0"]["metadata_attrs"] + (
+        META_RESET_POSE, META_RESET_QPOS,
     ),
 }
 
@@ -436,11 +461,18 @@ def selftest() -> None:
     # 검증을 통과해야 하기 때문이다 (새로 찍는 것은 런처가 막는다).
     dead = schema_required_fields("knu-1.1.0")
     assert dead is not None and "desired_joint_torques" in dead["obs_datasets"]
-    # 1.2.0 이 더한 것은 metadata attrs 뿐 -- obs 는 1.1.1 과 같아야 한다.
+    # 1.2.x 가 더한 것은 metadata attrs 뿐 -- obs 는 1.1.1 과 같아야 한다.
     prev = schema_required_fields("knu-1.1.1")
     assert cur["obs_datasets"] == prev["obs_datasets"]
     added = set(cur["metadata_attrs"]) - set(prev["metadata_attrs"])
-    assert added == {META_PAYLOAD_MASS, META_PAYLOAD_COM}, added
+    assert added == {META_PAYLOAD_MASS, META_PAYLOAD_COM,
+                     META_RESET_POSE, META_RESET_QPOS}, added
+    # 1.2.0 은 부하 모델만, 1.2.1 이 리셋 자세를 더한다 (2026-09-07).
+    v120 = schema_required_fields("knu-1.2.0")
+    assert set(v120["metadata_attrs"]) - set(prev["metadata_attrs"]) == {
+        META_PAYLOAD_MASS, META_PAYLOAD_COM}
+    assert set(cur["metadata_attrs"]) - set(v120["metadata_attrs"]) == {
+        META_RESET_POSE, META_RESET_QPOS}
 
     # 모르는 버전은 필드 목록이 없다 -> 검증기가 "모르는 스키마 버전" 으로 잡는다
     assert schema_required_fields("knu-9.9.9") is None

@@ -23,6 +23,7 @@ scene 파일은 자기 스키마 버전을 metadata 에 적어 둔다. 그 버�
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -180,6 +181,52 @@ def known_payload(root: Path) -> "tuple[float, list] | None":
     return mass, list(com)
 
 
+def known_reset_pose(root: Path) -> "tuple[str, list] | None":
+    """이 데이터셋의 다른 scene 에 적힌 리셋 자세. 없거나 섞였으면 None.
+
+    known_payload 와 같은 근거다 -- 같은 리그에서 같은 시기에 찍은 파일에
+    남아 있는 사실이지 추측이 아니다. 파일에 하나도 없으면 station 설정에서
+    가져오는 것은 **호출하는 쪽**이 한다 (그것은 지금 설정이라 출처가 다르고,
+    화면이 그 차이를 말해야 한다).
+    """
+    from gello.scene.scene_format import iter_scene_files
+
+    seen: dict = {}
+    for path in iter_scene_files(Path(root)):
+        try:
+            md = read_scene_metadata(path)
+        except Exception:  # noqa: BLE001
+            continue
+        if not (md.reset_pose and md.reset_qpos):
+            continue
+        key = (str(md.reset_pose),
+               tuple(round(float(x), 9) for x in md.reset_qpos))
+        seen[key] = seen.get(key, 0) + 1
+    if len(seen) != 1:
+        return None
+    (name, qpos), _n = next(iter(seen.items()))
+    return name, list(qpos)
+
+
+def fill_reset_pose(path: Path, name: str, qpos: list) -> str:
+    """리셋 자세를 채우고, 그러고 나서 만족하는 버전으로 다시 적는다."""
+    from gello.data.dataset_schema import META_RESET_POSE, META_RESET_QPOS
+
+    import json as _json
+
+    if not name or not qpos or len(qpos) != 7:
+        raise ValueError("리셋 자세는 이름 하나와 7관절 값이 필요하다")
+    with h5py.File(Path(path), "r+") as f:
+        f["metadata"].attrs[META_RESET_POSE] = str(name)
+        f["metadata"].attrs[META_RESET_QPOS] = _json.dumps(
+            [float(x) for x in qpos])
+    after = diagnose(Path(path))
+    if after.satisfied and after.satisfied != after.stamped:
+        restamp(Path(path), after.satisfied)
+        return after.satisfied
+    return after.stamped
+
+
 def fill_payload(path: Path, mass: float, com: list) -> str:
     """부하 모델을 채우고, 그러고 나서 만족하는 버전으로 다시 찍는다.
 
@@ -203,3 +250,54 @@ def fill_payload(path: Path, mass: float, com: list) -> str:
         restamp(Path(path), after.satisfied)
         return after.satisfied
     return after.stamped
+
+
+#: 리셋 자세에서 이만큼 벗어나면 짚어 본다.
+#:
+#: **±5도** 다 (2026-09-07 사용자). 초기 자세를 조금씩 흔들어 찍는 운용을
+#: 감안한 값이다 -- 그 흔들림까지 잡으면 목록이 잡음으로 덮인다.
+#:
+#: 실측(fr3-tabletop 1199 에피소드)에서 대부분은 0.001 rad 안에 들어오고,
+#: 벗어난 것은 2~4도짜리 넷과 **42.5도·54.1도짜리 둘**이었다. 5도 문턱은
+#: 앞의 넷을 통과시키고 뒤의 둘만 남긴다 -- 그 둘은 리셋이 안 된 채 찍힌
+#: 것이고, 스키마도 지시문도 개수도 맞아서 다른 어떤 검사에도 안 걸린다.
+RESET_TOLERANCE_DEG = 5.0
+RESET_TOLERANCE = math.radians(RESET_TOLERANCE_DEG)
+
+
+def reset_drift(path: Path, expected: "list | None" = None) -> "dict | None":
+    """적힌 리셋 자세와 **실제로 찍힌 첫 프레임**을 맞대어 본다.
+
+    이것이 진짜 대조다. station 설정과 파일 metadata 를 맞대는 것은 장부끼리
+    맞추는 것이라, 설정이 나중에 바뀌면 옛 파일이 원래 달라도 되는데 오탐이
+    난다 (2026-09-07 사용자 지적). 파일이 "여기서 출발했다" 고 적어 두고
+    데이터는 다른 데서 시작하는 것 -- 그것만이 어긋남이다.
+
+    ``expected`` 를 주지 않으면 파일에 적힌 ``reset_qpos`` 를 쓴다. 그것도
+    없으면 None (비교할 기준이 없다 -- 지금 station 값을 갖다 쓰는 것은
+    **부르는 쪽**이 정할 일이고, 그때는 출처가 다르다고 화면이 말해야 한다).
+
+    돌려주는 것: {"checked": n, "worst": rad, "over": [(에피소드, rad), ...]}
+    """
+    import numpy as np
+
+    md = read_scene_metadata(Path(path))
+    ref = expected if expected is not None else md.reset_qpos
+    if not ref:
+        return None
+    ref = np.asarray([float(x) for x in ref], dtype=float)
+
+    checked = 0
+    worst = 0.0
+    over: list = []
+    with h5py.File(Path(path), "r") as f:
+        for name in sorted(k for k in f if k.startswith("episode")):
+            js = f[name].get("obs/joint_states")
+            if js is None or len(js) == 0:
+                continue
+            d = float(np.abs(np.asarray(js[0], dtype=float) - ref).max())
+            checked += 1
+            worst = max(worst, d)
+            if d > RESET_TOLERANCE:
+                over.append((name, d))
+    return {"checked": checked, "worst": worst, "over": over}

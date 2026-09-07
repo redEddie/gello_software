@@ -87,7 +87,7 @@ _ROBOT_NODE_WAIT_S = 15.0
 #:
 #: knu-1.1.0 이 빠져 있다: 필드 셋이 모든 프레임에서 0 인 채로 정의됐고
 #: (dataset_schema.py 의 폐기 주석 참조), 그걸 고친 것이 knu-1.1.1 이다.
-SCHEMA_PICKABLE = ("knu-1.0.0", "knu-1.2.0")
+SCHEMA_PICKABLE = ("knu-1.0.0", "knu-1.2.0", "knu-1.2.1")
 
 #: 버전이 요구하는 **로봇 관측 키**. HDF5 필드명과 같지만 층이 다르다 --
 #: 이쪽은 "로봇이 줘야 하는 값" 이고, 확인 버튼이 이것으로 검사한다.
@@ -95,6 +95,8 @@ SCHEMA_PICKABLE = ("knu-1.0.0", "knu-1.2.0")
 _ROBOT_OBS_FIELDS = {
     "knu-1.0.0": (),
     "knu-1.2.0": FT_OBS_KEYS,
+    # 1.2.1 이 더한 것은 metadata attrs(리셋 자세)라 로봇 관측은 1.2.0 과 같다.
+    "knu-1.2.1": FT_OBS_KEYS,
 }
 
 # 카메라 역할은 더 이상 여기 고정돼 있지 않다 -- 스테이션이 정한다

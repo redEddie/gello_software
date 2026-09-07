@@ -111,7 +111,7 @@ def main() -> None:
         t = win.schema_tree
         assert t.topLevelItemCount() == 2, t.topLevelItemCount()
         row = next(t.topLevelItem(i) for i in range(t.topLevelItemCount())
-                   if t.topLevelItem(i).text(4) != "—")
+                   if t.topLevelItem(i).text(5) != "—")
         assert row.text(2) == "knu-1.2.0" and row.text(3) == "knu-1.1.1", row
         win.doctor.on_schema_picked(row)
         assert "payload" in win.schema_missing.text(), win.schema_missing.text()
@@ -122,7 +122,7 @@ def main() -> None:
         assert "내려" in win.schema_plan.text(), win.schema_plan.text()
         # 맞는 줄을 고르면 버튼이 꺼진다 -- 고칠 것이 없다
         ok_row = next(t.topLevelItem(i) for i in range(t.topLevelItemCount())
-                      if t.topLevelItem(i).text(4) == "—")
+                      if t.topLevelItem(i).text(5) == "—")
         win.doctor.on_schema_picked(ok_row)
         assert not win.schema_buttons["align_version"].isEnabled()
         assert "맞습니다" in win.schema_plan.text(), win.schema_plan.text()
@@ -198,6 +198,43 @@ def main() -> None:
         d7 = diagnose(root2 / "scene_001.hdf5")
         assert d7.stamped == "knu-1.2.0" and d7.ok, d7
     print("6. 새 파일은 채울 수 있는 버전까지만 OK")
+
+    # 7. 초기 자세 -- 적힌 것과 **실제로 찍힌 첫 프레임**을 맞댄다
+    #    station 설정과 metadata 를 맞대는 것은 장부끼리라 설정이 바뀌면
+    #    오탐이 난다. 파일이 "여기서 출발했다" 고 적고 데이터가 다른 데서
+    #    시작하는 것만이 어긋남이다 (2026-09-07 사용자).
+    from gello.scene.schema_doctor import (
+        RESET_TOLERANCE_DEG,
+        reset_drift,
+    )
+
+    QPOS = [0.0, -0.161037389, 0.0, -2.44459747, 0.0, 2.2267522, 0.785398]
+    with tempfile.TemporaryDirectory() as d3:
+        root3 = Path(d3)
+        path3 = root3 / "scene_000.hdf5"
+        _write(path3, "knu-1.2.0", payload=True, n=3)
+        with h5py.File(path3, "r+") as f:
+            f["metadata"].attrs["reset_pose"] = "libero"
+            f["metadata"].attrs["reset_qpos"] = json.dumps(QPOS)
+            for i, off in enumerate((0.0, 0.01, 0.5)):
+                js = np.tile(np.asarray(QPOS, dtype=np.float32), (2, 1))
+                js[0, 3] += off
+                g = f[f"episode_{i:03d}"]["obs"]
+                del g["joint_states"]
+                g.create_dataset("joint_states", data=js)
+        dr = reset_drift(path3)
+        assert dr["checked"] == 3, dr
+        # ±5도(0.0873 rad) 문턱: 0.01 은 통과, 0.5 만 걸린다 -- 초기 자세를
+        # 조금씩 흔들어 찍는 운용을 감안한 값이다.
+        assert [n for n, _ in dr["over"]] == ["episode_002"], dr["over"]
+        assert abs(dr["worst"] - 0.5) < 1e-6, dr["worst"]
+        assert RESET_TOLERANCE_DEG == 5.0
+
+        # 기준이 없으면 None -- 지금 station 값을 갖다 쓰는 것은 부르는 쪽이
+        # 정하고, 화면이 출처를 밝힌다
+        _write(root3 / "scene_001.hdf5", "knu-1.0.0", payload=False, n=1)
+        assert reset_drift(root3 / "scene_001.hdf5") is None
+    print("7. 초기 자세 대조 OK")
     print("test_doctor_schema OK")
 
 

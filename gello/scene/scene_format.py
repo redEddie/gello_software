@@ -82,6 +82,8 @@ import numpy as np
 from gello.data.dataset_schema import (
     META_PAYLOAD_COM,
     META_PAYLOAD_MASS,
+    META_RESET_POSE,
+    META_RESET_QPOS,
     SCHEMA_VERSION,
     DatasetSchemaConfig,
     normalize_schema_version,
@@ -189,6 +191,11 @@ class SceneMetadata:
     #: 쓰지 않아 파일이 1.1.1 규칙으로 검사된다.
     payload_mass: Optional[float] = None
     payload_com: Optional[list] = None
+    #: 기록 시점의 리셋 자세 (knu-1.2.1). 별칭과 7관절 절대값을 함께 적는다 --
+    #: 이름만으로는 FR3_RESET_POSES 가 바뀌면 옛 파일을 잘못 읽고, 값만으로는
+    #: 사람이 그것이 무엇인지 알아보지 못한다.
+    reset_pose: Optional[str] = None
+    reset_qpos: Optional[list] = None
 
     def validate(self, known_prop_ids: Optional[set[str]] = None) -> None:
         """구조가 틀린 metadata 로 파일을 만드는 것을 생성 시점에 막는다.
@@ -262,6 +269,10 @@ def _read_metadata(meta: h5py.Group) -> SceneMetadata:
                       if META_PAYLOAD_MASS in meta.attrs else None),
         payload_com=(json.loads(meta.attrs[META_PAYLOAD_COM])
                      if META_PAYLOAD_COM in meta.attrs else None),
+        reset_pose=(str(meta.attrs[META_RESET_POSE])
+                    if META_RESET_POSE in meta.attrs else None),
+        reset_qpos=(json.loads(meta.attrs[META_RESET_QPOS])
+                    if META_RESET_QPOS in meta.attrs else None),
     )
 
 
@@ -287,26 +298,31 @@ def _episode_summary(name: str, grp: h5py.Group) -> dict:
 
 
 # ------------------------------------------------------------------- writer
-def _stampable_version(want: str, has_payload: bool) -> str:
-    """찍어도 되는 가장 높은 버전. 못 채우는 요구가 있으면 한 단계 내린다.
+def _stampable_version(want: str, has_payload: bool,
+                       has_reset: bool = False) -> str:
+    """찍어도 되는 가장 높은 버전. 못 채우는 요구가 있으면 내린다.
 
-    지금 파일 생성 시점에 모르는 것은 부하 모델(payload)뿐이라 그것만 본다 --
-    나머지 요구(관측·attrs)는 이 세션이 쓰는 값이라 항상 채워진다. 새 요구가
-    생기면 여기에 조건을 더한다.
+    생성 시점에 모를 수 있는 것은 세션이 로봇에서 받아 오는 값들이다 -- 부하
+    모델(knu-1.2.0)과 리셋 자세(knu-1.2.1). 나머지 요구(관측·에피소드 attrs)는
+    이 세션이 직접 쓰는 값이라 늘 채워진다. 새 요구가 생기면 여기에 조건을
+    더한다.
     """
     from gello.data.dataset_schema import SCHEMA_FIELDS
 
     want = normalize_schema_version(want)
-    if has_payload or want not in SCHEMA_FIELDS:
+    if want not in SCHEMA_FIELDS:
         return want
-    need = SCHEMA_FIELDS[want].get("metadata_attrs", ())
-    if META_PAYLOAD_MASS not in need:
+    have = {META_PAYLOAD_MASS: has_payload, META_RESET_POSE: has_reset}
+
+    def _ok(version: str) -> bool:
+        need = SCHEMA_FIELDS[version].get("metadata_attrs", ())
+        return all(have.get(a, True) for a in need)
+
+    if _ok(want):
         return want
-    # payload 를 요구하지 않는 가장 높은 버전으로.
-    ok = [v for v, f in SCHEMA_FIELDS.items()
-          if META_PAYLOAD_MASS not in f.get("metadata_attrs", ())
-          and schema_version_key(v) <= schema_version_key(want)]
-    return max(ok, key=schema_version_key) if ok else want
+    lower = [v for v in SCHEMA_FIELDS
+             if schema_version_key(v) <= schema_version_key(want) and _ok(v)]
+    return max(lower, key=schema_version_key) if lower else want
 
 
 class SceneWriter:
@@ -344,6 +360,7 @@ class SceneWriter:
         known_prop_ids: Optional[set[str]] = None,
         session_version: Optional[str] = None,
         session_payload: Optional[dict] = None,
+        session_reset: Optional[dict] = None,
     ) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -373,7 +390,8 @@ class SceneWriter:
                     f"{self.path.name} 내부 scene_id 는 {self.metadata.scene_id!r} 다 "
                     f"(요청: {scene_id!r}) -- 파일명이 아니라 metadata 를 믿는다"
                 )
-            self._resume_version(session_version, session_payload)
+            self._resume_version(session_version, session_payload,
+                                 session_reset)
         else:
             if metadata is None:
                 raise ValueError("새 scene 에는 metadata 가 필요하다")
@@ -402,17 +420,22 @@ class SceneWriter:
             # **새 파일 경로에는 없었다.**
             asked = normalize_schema_version(metadata.dataset_version)
             metadata.dataset_version = _stampable_version(
-                asked, metadata.payload_mass is not None)
+                asked, metadata.payload_mass is not None,
+                bool(metadata.reset_pose and metadata.reset_qpos))
             if metadata.dataset_version != asked:
                 # **말없이 내리지 않는다.** _resume_version 이 못 올릴 때
                 # 이유를 남기는 것과 같은 이유다 -- 마법사에서 고른 버전과
                 # 파일에 찍힌 버전이 다른데 아무도 말해 주지 않으면, 그것을
                 # 아는 방법이 나중에 검증기를 돌리는 것뿐이 된다.
+                lack = []
+                if metadata.payload_mass is None:
+                    lack.append("부하 모델")
+                if not (metadata.reset_pose and metadata.reset_qpos):
+                    lack.append("리셋 자세")
                 self.version_note = (
-                    f"{asked} 로 만들려 했는데 부하 모델을 몰라 "
-                    f"{metadata.dataset_version} 로 찍었습니다 -- 로봇이 부하를 "
-                    f"알려주지 않았습니다. 나중에 Doctor 에서 채워 올릴 수 "
-                    f"있습니다.")
+                    f"{asked} 로 만들려 했는데 {' · '.join(lack)} 를 몰라 "
+                    f"{metadata.dataset_version} 로 찍었습니다. 나중에 "
+                    f"Doctor 에서 채워 올릴 수 있습니다.")
             self._meta.attrs["scene_id"] = metadata.scene_id
             self._meta.attrs["objects"] = json.dumps(metadata.objects, ensure_ascii=False)
             self._meta.attrs["layout"] = json.dumps(metadata.layout, ensure_ascii=False)
@@ -429,6 +452,12 @@ class SceneWriter:
                 self._meta.attrs[META_PAYLOAD_MASS] = float(metadata.payload_mass)
                 self._meta.attrs[META_PAYLOAD_COM] = json.dumps(
                     list(metadata.payload_com or []))
+            # 리셋 자세도 있을 때만 (같은 이유 -- 모르는 값을 0 으로 적으면
+            # "0 이었다" 로 읽힌다).
+            if metadata.reset_pose and metadata.reset_qpos:
+                self._meta.attrs[META_RESET_POSE] = str(metadata.reset_pose)
+                self._meta.attrs[META_RESET_QPOS] = json.dumps(
+                    [float(x) for x in metadata.reset_qpos])
             self._meta.attrs["next_episode_idx"] = 0
 
         if "next_episode_idx" not in self._meta.attrs:
@@ -443,7 +472,8 @@ class SceneWriter:
         self._file.flush()
 
     def _resume_version(self, session_version: "str | None",
-                        session_payload: "dict | None" = None) -> None:
+                        session_payload: "dict | None" = None,
+                        session_reset: "dict | None" = None) -> None:
         """이어찍기: 파일의 버전 도장을 이번 세션 버전에 맞춘다.
 
         이어 찍으면 **이번 세션이 쓰는 필드**가 그 파일에 들어간다. 그런데
@@ -486,7 +516,8 @@ class SceneWriter:
         # 빼먹으면 도장은 올라갔는데 그 버전이 요구하는 값이 없는 파일이 된다
         # -- 고치려던 것과 똑같은 모양의 결함이다.
         need_meta = [k for k in req["metadata_attrs"] if k not in self._meta.attrs]
-        if need_meta and not self._fill_meta(need_meta, session_payload):
+        if need_meta and not self._fill_meta(need_meta, session_payload,
+                                             session_reset):
             self.version_note = (
                 f"{cur} -> {want} 로 올리지 못했습니다: {want} 가 요구하는 "
                 f"{', '.join(need_meta)} 를 이번 세션이 알지 못합니다. "
@@ -497,7 +528,8 @@ class SceneWriter:
         self._meta.attrs["schema_version"] = want
         self.version_note = f"버전 도장을 {cur} -> {want} 로 올렸습니다."
 
-    def _fill_meta(self, need: list, payload: "dict | None") -> bool:
+    def _fill_meta(self, need: list, payload: "dict | None",
+                   reset: "dict | None" = None) -> bool:
         """올리는 데 필요한 metadata attrs 를 이번 세션 값으로 채운다.
 
         채울 수 있는 것만 채우고, 하나라도 모르면 **아무것도 쓰지 않고** False.
@@ -508,6 +540,10 @@ class SceneWriter:
         if payload and payload.get("mass") is not None:
             known[META_PAYLOAD_MASS] = float(payload["mass"])
             known[META_PAYLOAD_COM] = json.dumps(list(payload.get("com") or []))
+        if reset and reset.get("name") and reset.get("qpos") is not None:
+            known[META_RESET_POSE] = str(reset["name"])
+            known[META_RESET_QPOS] = json.dumps(
+                [float(x) for x in reset["qpos"]])
         if any(k not in known for k in need):
             return False
         for k in need:
@@ -515,6 +551,9 @@ class SceneWriter:
         if META_PAYLOAD_MASS in need:
             self.metadata.payload_mass = known[META_PAYLOAD_MASS]
             self.metadata.payload_com = json.loads(known[META_PAYLOAD_COM])
+        if META_RESET_POSE in need:
+            self.metadata.reset_pose = known[META_RESET_POSE]
+            self.metadata.reset_qpos = json.loads(known[META_RESET_QPOS])
         return True
 
     def _episodes_missing(self, need) -> list:

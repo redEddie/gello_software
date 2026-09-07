@@ -1267,6 +1267,25 @@ class CollectionWorker(QThread):
         finally:
             self._teleop.set_teleop_mode(False)
 
+    def _read_reset_pose(self) -> "dict | None":
+        """이번 세션의 리셋 자세 -- 별칭과 7관절 절대값.
+
+        station 설정에서 이름을 읽고 FR3_RESET_POSES 에서 값을 푼다. 둘을
+        함께 적는 이유는 dataset_schema.META_RESET_POSE 주석에 있다 -- 이름만
+        적으면 그 표가 바뀔 때 옛 파일을 잘못 읽는다.
+        """
+        try:
+            from gello.config.station import load_station
+            from gello.robots.franka_fr3 import FR3_RESET_POSES
+
+            name = str(load_station().robot.reset_pose or "")
+            q = FR3_RESET_POSES.get(name)
+            if not name or q is None:
+                return None
+            return {"name": name, "qpos": [float(x) for x in q]}
+        except Exception:  # noqa: BLE001 -- 못 읽으면 그 버전을 안 찍을 뿐이다
+            return None
+
     def _read_payload(self) -> dict:
         """로봇의 부하 모델. 못 물어보면 빈 dict.
 
@@ -1306,10 +1325,17 @@ class CollectionWorker(QThread):
                 # 한 번만 묻고, 새 파일을 만들 때만 쓴다 -- 이어찍기면 그 파일이
                 # 이미 자기가 찍힐 때의 값을 갖고 있으므로 덮어쓰면 안 된다.
                 payload = self._read_payload()
+                # 리셋 자세도 같이 싣는다 (knu-1.2.1). 팔이 어디서 출발했는지는
+                # 궤적을 읽는 데 필요한데, 파일에 station 이름만 있으면 그
+                # 시점의 설정을 알아야 자세를 복원할 수 있다 -- 설정은 바뀐다.
+                reset = self._read_reset_pose()
                 if self.cfg.scene_metadata is not None and not self.cfg.scene_resume:
                     if payload:
                         self.cfg.scene_metadata.payload_mass = float(payload["mass"])
                         self.cfg.scene_metadata.payload_com = list(payload.get("com") or [])
+                    if reset:
+                        self.cfg.scene_metadata.reset_pose = reset["name"]
+                        self.cfg.scene_metadata.reset_qpos = list(reset["qpos"])
 
                 self._writer = SceneWriter(
                     root=self.cfg.data_root,
@@ -1322,6 +1348,7 @@ class CollectionWorker(QThread):
                     known_prop_ids=active_prop_ids(),
                     session_version=self.cfg.session_version,
                     session_payload=payload,
+                    session_reset=reset,
                 )
                 if getattr(self._writer, "version_note", ""):
                     self.log_message.emit(f"[스키마] {self._writer.version_note}")

@@ -36,14 +36,16 @@ def build_schema_tab(win) -> QWidget:
 
     win.schema_tree = QTreeWidget()
     win.schema_tree.setHeaderLabels(
-        [tr("Scene"), tr("에피소드"), tr("찍힘"), tr("내용"), tr("상태")])
+        [tr("Scene"), tr("에피소드"), tr("찍힘"), tr("내용"), tr("초기 자세"),
+         tr("상태")])
     win.schema_tree.setRootIsDecorated(False)
     win.schema_tree.header().setSectionResizeMode(
-        4, QHeaderView.ResizeMode.Stretch)
+        5, QHeaderView.ResizeMode.Stretch)
     win.schema_tree.setToolTip(tr(
         "'찍힘' 은 파일이 주장하는 버전, '내용' 은 실제로 만족하는 가장 높은 "
-        "버전입니다.\n둘이 다르면 검증이 실패합니다. 줄을 누르면 무엇이 "
-        "빠졌는지 오른쪽에 나옵니다."))
+        "버전입니다. 둘이 다르면 검증이 실패합니다.\n"
+        "'초기 자세' 는 적힌 리셋 자세와 **실제로 찍힌 첫 프레임**을 맞댄 "
+        "것입니다 (±5도).\n줄을 누르면 무엇이 어긋났는지 오른쪽에 나옵니다."))
     win.schema_tree.itemClicked.connect(
         lambda item, _c: win.doctor.on_schema_picked(item))
     col.addWidget(win.schema_tree, 1)

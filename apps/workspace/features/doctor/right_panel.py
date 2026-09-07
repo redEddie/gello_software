@@ -176,6 +176,7 @@ def _schema_page(win) -> QWidget:
     win.schema_card = InfoCard()
     box.body.addWidget(win.schema_card)
     win.schema_missing = _slot(box.body, tr("빠진 것"))
+    win.schema_drift = _slot(box.body, tr("초기 자세"))
     win.schema_plan = _slot(box.body, tr("고치면"))
     box.body.addWidget(_rule())
     win.schema_buttons = {}

@@ -36,9 +36,11 @@ from gello.scene.props import props_by_id
 from gello.scene.collection_progress import scan
 from gello.data.dataset_schema import schema_version_key
 from gello.scene.schema_doctor import (
+    RESET_TOLERANCE_DEG,
     diagnose,
     fill_payload,
     known_payload,
+    reset_drift,
     restamp,
 )
 from gello.scene.scene_format import (
@@ -68,6 +70,7 @@ class DoctorOps:
         self._task = None          # (instruction_id, 문장)
         self._shortfall = None     # 진행 닥터에서 고른 줄
         self._diag = None          # 스키마 닥터에서 고른 줄
+        self._drift = {}           # scene -> (초기 자세 대조, 파일 기준인가)
 
     # ------------------------------------------------------------- 검사
     def _root(self) -> Path:
@@ -753,8 +756,24 @@ class DoctorOps:
             return
         spread: dict = {}
         bad = 0
+        self._drift = {}
+        station = self._station_reset_pose()
         for path in files:
             d = diagnose(path)
+            # 적힌 리셋 자세와 **실제로 찍힌 첫 프레임**을 맞댄다. 파일에
+            # 적힌 것이 정본이고, 없으면 지금 station 값으로 재되 그 사실을
+            # 화면이 밝힌다 (수집 당시와 다를 수 있다).
+            try:
+                md_ref = read_scene_metadata(path).reset_qpos
+            except Exception:  # noqa: BLE001
+                md_ref = None
+            ref = md_ref or (station[1] if station else None)
+            try:
+                self._drift[d.scene_id] = (
+                    reset_drift(path, ref) if ref else None,
+                    bool(md_ref))
+            except Exception:  # noqa: BLE001 -- 잠긴 파일 등
+                self._drift[d.scene_id] = (None, bool(md_ref))
             if d.error:
                 state = tr("못 읽음")
             elif d.ok:
@@ -762,8 +781,11 @@ class DoctorOps:
             else:
                 state = tr("어긋남")
                 bad += 1
+            dr, _from_file = self._drift.get(d.scene_id, (None, False))
+            pose = ("—" if dr is None else
+                    "—" if not dr["over"] else f"{len(dr['over'])} ⚠")
             it = QTreeWidgetItem([d.scene_id, str(d.episodes), d.stamped,
-                                  d.satisfied or "?", state])
+                                  d.satisfied or "?", pose, state])
             it.setData(0, Qt.ItemDataRole.UserRole, d)
             tree.addTopLevelItem(it)
             if not d.error:
@@ -807,6 +829,7 @@ class DoctorOps:
             (tr("찍힘"), d.stamped or "?"),
             (tr("내용"), d.satisfied or "?"),
         ])
+        self._show_drift(d)
         if d.error:
             miss.setText(d.error)
             plan.setText(tr("읽지 못해 판단할 수 없습니다."))
@@ -851,6 +874,41 @@ class DoctorOps:
         only_payload = bool(d.missing) and all(
             k.startswith("metadata/payload") for k in d.missing)
         buttons["fill_payload"].setEnabled(only_payload)
+
+    def _show_drift(self, d) -> None:
+        """적힌 리셋 자세와 실제 첫 프레임의 어긋남.
+
+        station 설정과 파일 metadata 를 맞대는 것은 장부끼리 맞추는 것이라,
+        설정이 나중에 바뀌면 옛 파일이 원래 달라도 오탐이 난다 (2026-09-07
+        사용자). 파일이 "여기서 출발했다" 고 적고 데이터는 다른 데서 시작하는
+        것 -- 그것만이 어긋남이다.
+        """
+        win = self.win
+        lab = getattr(win, "schema_drift", None)
+        if lab is None:
+            return
+        dr, from_file = self._drift.get(d.scene_id, (None, False))
+        if dr is None:
+            lab.setText(tr("기준이 없습니다 (파일에 리셋 자세가 없고 "
+                           "station 값도 못 읽었습니다)"))
+            return
+        src = (tr("파일에 적힌 값 기준") if from_file
+               else tr("지금 station 설정 기준 — 수집 당시와 다를 수 있습니다"))
+        if not dr["over"]:
+            lab.setText(tr("{n}개 모두 ±{deg}도 안 (최대 {w:.1f}도) · {src}")
+                        .format(n=dr["checked"], deg=int(RESET_TOLERANCE_DEG),
+                                w=dr["worst"] * 57.2958, src=src))
+            return
+        lines = [tr("<span style='color:#8a4b00;'>{n}개가 ±{deg}도를 "
+                    "벗어납니다</span> · {src}").format(
+                        n=len(dr["over"]), deg=int(RESET_TOLERANCE_DEG),
+                        src=src)]
+        for name, rad in dr["over"][:5]:
+            lines.append(f"&nbsp;&nbsp;{name} — {rad * 57.2958:.1f}도")
+        if len(dr["over"]) > 5:
+            lines.append(tr("&nbsp;&nbsp;… 외 {n}개").format(
+                n=len(dr["over"]) - 5))
+        lab.setText("<br>".join(lines))
 
     def align_version(self) -> None:
         win = self.win
@@ -923,3 +981,24 @@ class DoctorOps:
             return
         win.log(f"[닥터] {d.scene_id} 부하 모델 채움 → 버전 {got}")
         self.refresh_schema()
+
+    @staticmethod
+    def _station_reset_pose() -> "tuple[str, list] | None":
+        """지금 station 설정의 리셋 자세.
+
+        gello/scene 에 두지 않는다 -- 그 표(FR3_RESET_POSES)는 gello/robots 에
+        있고 scene 층은 구체 하드웨어를 부를 수 없다 (계층 규칙). 그리고 이
+        값은 **지금 설정**이라 파일에 적힌 것과 출처가 다르다: 수집 당시와
+        다를 수 있으므로 화면이 그 차이를 밝혀야 한다.
+        """
+        try:
+            from gello.config.station import load_station
+            from gello.robots.franka_fr3 import FR3_RESET_POSES
+
+            name = str(load_station().robot.reset_pose or "")
+            q = FR3_RESET_POSES.get(name)
+            if not name or q is None:
+                return None
+            return name, [float(x) for x in q]
+        except Exception:  # noqa: BLE001
+            return None
