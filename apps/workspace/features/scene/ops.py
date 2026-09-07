@@ -67,7 +67,7 @@ class SceneOps:
         sid = self.win.scene_combo.currentData()
         if sid is None:
             self.win.scene_info.setText(tr(
-                "Scene 탭에서 배치를 짜고 오른쪽의 [✚ Sxxx 만들기] 를 누르면 "
+                "Scene 탭에서 배치를 짜고 오른쪽의 [✚ 새 Scene 만들기] 를 누르면 "
                 "여기 목록에 생깁니다. 여러 개를 미리 만들어 둘 수 있습니다."))
             return
         root = Path(self.win.root_edit.text().strip() or ".")
@@ -118,8 +118,12 @@ class SceneOps:
 
     def on_new_scene(self) -> None:
         """Scene 탭을 열고 다음 scene 번호로 맞춘다 (2026-09-06: 대화상자 ->
-        탭). 파일은 우측 패널의 [✚ Sxxx 만들기] 를 누를 때 생긴다 --
-        Connect 를 기다리지 않는다 (계약은 on_compose_done)."""
+        탭). 파일은 우측 패널의 [✚ 새 Scene 만들기] 를 누를 때 생긴다 --
+        Connect 를 기다리지 않는다 (계약은 on_compose_done).
+
+        안내문은 비운다 -- "아직 저장 안 됨" 은 그 버튼 밑의 상태 줄이 늘
+        말하고 있고(composer.save_state_text), 지난 결과가 새 구성 옆에
+        남아 있으면 그게 이번 것인 줄 읽힌다."""
         root = Path(self.win.root_edit.text().strip() or ".")
         try:
             sid = next_scene_id(root)
@@ -132,13 +136,11 @@ class SceneOps:
         self.win.scene_composer.set_context(
             sid, root, pp if pp.is_file() else None,
             STATION.name, self.win.schema_version)
-        self.win.scene_compose_hint.setText(tr(
-            "물체를 고르고 격자에 배치하면 위의 [✚ {sid} 만들기] 가 켜집니다 "
-            "-- 누르면 {f} 가 생깁니다.").format(sid=sid, f=scene_filename(sid)))
+        self.win.scene_compose_hint.setText("")
         show_center_tab(self.win, "scene")
 
     def on_compose_done(self) -> None:
-        """우측 패널의 [✚ Sxxx 만들기] -- **그 자리에서 파일을 만든다**.
+        """우측 패널의 [✚ 새 Scene 만들기] -- **그 자리에서 파일을 만든다**.
 
         2026-09-06 사용자 결정. 전에는 구성을 메모리에 하나 얹어 두고
         Connect 때 파일을 만들었는데, 화면이 그 사실을 말하지 않아 "지금
@@ -258,7 +260,7 @@ class SceneOps:
             # 시점에 만드는 경로는 없어졌다 (2026-09-06).
             return None, None, False, tr(
                 "찍을 scene 을 드롭다운에서 고르세요.\n\n"
-                "없으면 Scene 탭에서 배치를 짜고 오른쪽의 [✚ Sxxx 만들기] 를 "
+                "없으면 Scene 탭에서 배치를 짜고 오른쪽의 [✚ 새 Scene 만들기] 를 "
                 "누르면 목록에 생깁니다.")
         return None, sid, True, None
 

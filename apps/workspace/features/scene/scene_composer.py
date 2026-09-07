@@ -154,6 +154,24 @@ class SceneComposer(QWidget):
             return None
         return md
 
+    def clear(self) -> None:
+        """체크와 배치를 한 번에 지운다 (설명 칸은 둔다).
+
+        하나를 만들고 나면 체크가 그대로 남는다 -- 한 소품만 바꿔 변종을
+        짜는 데는 그게 편하지만, 처음부터 다시 짤 때는 15개를 하나씩 꺼야
+        했다 (2026-09-07 조작자 요청).
+        """
+        self.prop_list.blockSignals(True)
+        for i in range(self.prop_list.count()):
+            self.prop_list.item(i).setCheckState(Qt.CheckState.Unchecked)
+        self.prop_list.blockSignals(False)
+        self._placements = {}
+        self._refresh()
+
+    def checked_count(self) -> int:
+        """체크한 물체 수 -- 우측 패널의 [전체 해제] 가 이걸로 산다."""
+        return len(self._checked_ids())
+
     def _checked_ids(self) -> list:
         return [self.prop_list.item(i).data(Qt.ItemDataRole.UserRole)
                 for i in range(self.prop_list.count())
@@ -287,10 +305,27 @@ class SceneComposer(QWidget):
         except ValueError as e:
             return False, str(e)
         return True, tr(
-            "{f} 를 지금 만듭니다 (에피소드 0개).\n"
+            "지금 짠 배치를 {f} 로 저장합니다 (에피소드 0개).\n"
+            "번호는 자동으로 붙습니다 -- 고를 것이 아닙니다.\n"
             "여러 개를 미리 만들어 두고 나중에 골라 찍을 수 있습니다.\n"
             "잘못 만들었으면 Dataset 의 [파일 삭제] 로 지웁니다."
         ).format(f=scene_filename(self._scene_id))
+
+    def save_state_text(self) -> str:
+        """"지금 짠 것이 저장됐나" 에 대한 한 줄.
+
+        이 탭에는 [저장] 이 따로 없다 -- [새 Scene 만들기] 가 곧 저장이다.
+        그 사실이 화면 어디에도 없어서 "만들기랑 저장이 뭐가 다르냐" 가
+        생겼다 (2026-09-07 조작자). 그래서 늘 이 줄이 답한다.
+        """
+        if not self._checked_ids():
+            return tr("아직 아무것도 안 골랐습니다.")
+        ok, _why = self.create_button_state()
+        if not ok:
+            return tr("아직 저장되지 않았습니다 — 규칙을 만족해야 만들 수 "
+                      "있습니다 (아래 규칙 경고를 보세요).")
+        return tr("아직 저장되지 않았습니다 — 누르면 {f} 가 됩니다.").format(
+            f=scene_filename(self._scene_id))
 
     def layout_button_state(self) -> tuple:
         """[Recommend layout...] 의 (누를 수 있나, 툴팁)."""

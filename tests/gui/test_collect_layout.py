@@ -351,6 +351,9 @@ def _compose(objs, zones):
                          else Qt.CheckState.Unchecked)
     comp._placements = dict(zones)
     comp._refresh()
+    assert win.scene_clear_btn.isEnabled(), "체크가 있는데 전체 해제가 죽어 있다"
+    assert "scene_" in win.scene_save_state.text(), win.scene_save_state.text()
+    assert "scene_" in win.scene_create_btn.toolTip(), win.scene_create_btn.toolTip()
     assert win.scene_create_btn.isEnabled(), \
         f"유효한 구성인데 만들기가 죽어 있다: {win.scene_create_btn.toolTip()}"
     win.scene_ops.on_compose_done()
@@ -364,7 +367,12 @@ win.scene_composer._placements = {}
 win.scene_composer._refresh()
 assert not win.scene_create_btn.isEnabled(), "빈 구성인데 만들기가 눌린다"
 assert win.scene_create_btn.toolTip().strip(), "왜 못 누르는지 말하지 않는다"
-assert "S001" in win.scene_create_btn.text(), win.scene_create_btn.text()
+# 라벨에 scene 번호가 없다 -- 번호는 고르는 것이 아니라 자동으로 붙는다
+# (2026-09-07 조작자 지적).
+assert "S001" not in win.scene_create_btn.text(), win.scene_create_btn.text()
+# 저장 여부는 늘 한 줄로 말한다 (이 탭에 [저장] 은 따로 없다)
+assert "아직" in win.scene_save_state.text(), win.scene_save_state.text()
+assert not win.scene_clear_btn.isEnabled(), "체크가 없는데 전체 해제가 눌린다"
 
 RED = "OBJ-CUP-RED-01"
 _compose([CUP, BOWL], {CUP: [0, 1], BOWL: [2, 0]})
@@ -389,7 +397,15 @@ win.scene_combo.setCurrentIndex(
      if win.scene_combo.itemData(i) == "S001"][0])
 _, _, _, err = win.scene_ops.scene_config_from_ui()
 assert err and "지시문이 없습니다" in err, err
-print("14. Scene 탭 = 파일 + 계획 항목, 여러 개 OK:", made)
+# 만든 뒤에도 체크는 남는다 (한 소품만 바꿔 변종을 짜는 길). 처음부터 다시
+# 짤 때 15개를 하나씩 끄지 않도록 [전체 해제] 가 있다 (2026-09-07 조작자).
+assert win.scene_composer.checked_count() == 3, "만든 뒤 체크가 사라졌다"
+win.scene_clear_btn.click()
+assert win.scene_composer.checked_count() == 0, "전체 해제가 안 지운다"
+assert win.scene_composer._placements == {}, "배치가 남았다"
+assert not win.scene_create_btn.isEnabled(), "다 지웠는데 만들기가 켜져 있다"
+assert not win.scene_clear_btn.isEnabled(), "다 지웠는데 전체 해제가 켜져 있다"
+print("14. Scene 탭 = 파일 + 계획 항목, 여러 개 + 전체 해제 OK:", made)
 
 # -------------------------------------------- 15. 데이터 저장 경로는 하나다
 assert not hasattr(win, "dataset_root_edit"), "경로 칸이 아직 둘이다"

@@ -39,11 +39,22 @@ def build_configure_right(win) -> QWidget:
     bv = QVBoxLayout(box)
     bv.setContentsMargins(6, 6, 6, 6)
 
-    win.scene_create_btn = QPushButton("")
+    # 라벨에 scene 번호를 넣지 않는다 (2026-09-07 조작자 지적: "+ S000
+    # 만들기는 동작이 이해가 안 간다"). 번호는 조작자가 고르는 것이 아니라
+    # 자동으로 붙는 것이라, 동작 버튼에 있으면 "어느 것을 만들지 고르는"
+    # 것처럼 읽힌다. 몇 번이 될지는 아래 상태 줄과 툴팁이 말한다.
+    win.scene_create_btn = QPushButton(tr("✚ 새 Scene 만들기"))
     win.scene_create_btn.setStyleSheet(_PRIMARY)
     win.scene_create_btn.setMinimumHeight(36)
     win.scene_create_btn.clicked.connect(win.scene_ops.on_compose_done)
     bv.addWidget(win.scene_create_btn)
+
+    # 이 탭에는 [저장] 이 따로 없다 -- 위 버튼이 곧 저장이다. 그 사실을
+    # 늘 이 줄이 말한다 (composer.save_state_text 가 정본).
+    win.scene_save_state = QLabel("")
+    win.scene_save_state.setWordWrap(True)
+    win.scene_save_state.setStyleSheet("color:#555;")
+    bv.addWidget(win.scene_save_state)
 
     # Action 계층은 영어 (i18n.py 정책).
     rec = QPushButton(tr("Recommend scene..."))
@@ -56,6 +67,12 @@ def build_configure_right(win) -> QWidget:
     win.scene_layout_btn = QPushButton(tr("Recommend layout..."))
     win.scene_layout_btn.clicked.connect(win.scene_composer.open_recommend_layout)
     bv.addWidget(win.scene_layout_btn)
+
+    # 추천이 체크를 통째로 갈아 끼우듯, 이것도 통째로 지운다 -- 그래서
+    # 격자 칸(직접 조작)이 아니라 여기다.
+    win.scene_clear_btn = QPushButton(tr("전체 해제"))
+    win.scene_clear_btn.clicked.connect(win.scene_composer.clear)
+    bv.addWidget(win.scene_clear_btn)
 
     # 만든 결과("scene_002.hdf5 를 만들고 계획에 S002 를 넣었습니다")가 뜨는
     # 자리. 누른 자리에서 결과를 읽는 편이 중앙 탭 아래로 눈을 옮기는 것보다
@@ -100,11 +117,16 @@ def sync_configure_right(win) -> None:
         return
     ok, tip = comp.create_button_state()
     btn = win.scene_create_btn
-    btn.setText(tr("✚ {sid} 만들기").format(sid=comp.scene_id))
     btn.setEnabled(ok)
     btn.setToolTip(tip)
     # 못 누르는 동안에는 색을 빼서 "지금은 아니다" 를 색으로도 말한다.
     btn.setStyleSheet(_PRIMARY if ok else "padding:6px;")
+    win.scene_save_state.setText(comp.save_state_text())
     ok, tip = comp.layout_button_state()
     win.scene_layout_btn.setEnabled(ok)
     win.scene_layout_btn.setToolTip(tip)
+    n = comp.checked_count()
+    win.scene_clear_btn.setEnabled(bool(n))
+    win.scene_clear_btn.setToolTip(
+        tr("체크한 물체 {n}개와 그 배치를 모두 지웁니다 (설명 칸은 둡니다).")
+        .format(n=n) if n else tr("체크한 물체가 없습니다."))
