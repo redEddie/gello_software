@@ -59,7 +59,7 @@ def _assert_inside_only(sents: list[str], scene_desc: str) -> None:
 s_a = enumerate_instructions(
     _md("RS-A", ["OBJ-CUP-WHT-01", "OBJ-BOWLS-WHT-01"]), props)
 _assert_inside_only(s_a, "컵->작은그릇")
-assert "pick up the white cup and place it inside the white small bowl" in s_a
+assert "pick up the white cup and place it inside the small white bowl" in s_a
 # 컵 -> 15cm 그릇
 s_b = enumerate_instructions(
     _md("RS-B", ["OBJ-CUP-RED-01", "OBJ-BOWLM-JPN-01"]), props)
@@ -70,7 +70,7 @@ assert ("pick up the red cup and place it inside the blue japanese bowl"
 s_c = enumerate_instructions(
     _md("RS-C", ["OBJ-BOWLS-BLU-01", "OBJ-BOWLL-BLU-01"]), props)
 _assert_inside_only(s_c, "작은그릇->큰그릇")
-assert ("pick up the blue small bowl and place it inside the blue large bowl"
+assert ("pick up the small blue bowl and place it inside the large blue bowl"
         in s_c)
 # 큰 것 -> 작은 것 방향 (15cm 그릇 -> 작은 그릇; large_bowl 은 pickable 이
 # 아니라서 _PICKABLE 안에서 가장 큰 쪽 방향이다)
@@ -78,7 +78,7 @@ s_e = enumerate_instructions(
     _md("RS-E", ["OBJ-BOWLM-JPN-01", "OBJ-BOWLS-WHT-01"]), props)
 _assert_inside_only(s_e, "15cm그릇->작은그릇")
 assert ("pick up the blue japanese bowl and place it inside "
-        "the white small bowl" in s_e)
+        "the small white bowl" in s_e)
 print("1 통과: 그릇 목적지 pick 문장은 전부 inside, on 은 없다 "
       "(_PICKABLE x _BOWL_CATS 조합)")
 
