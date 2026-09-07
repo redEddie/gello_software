@@ -40,7 +40,9 @@ class SceneInfoView(QWidget):
         col.setSpacing(2)
         self._text = QLabel("")
         self._text.setWordWrap(True)
-        self._text.setStyleSheet("color:#888; font-size: 11px;")
+        # 밝은 바탕(#efefef/#ffffff)에서 #888 은 대비 2.9:1 로 WCAG AA
+        # (4.5:1) 미달이라 objects 줄과 빈 존이 안 읽혔다 (2026-09-06 조작자).
+        self._text.setStyleSheet("color:#444; font-size: 11px;")
         self._grid = QLabel("")
         # 'monospace' 별칭은 한국어 로케일에서 CJK 모노 폰트로 풀리는데, 그
         # 폰트는 격자 선문자(│─┌)를 2칸 폭으로 그려 격자가 어긋난다.
@@ -50,8 +52,10 @@ class SceneInfoView(QWidget):
         # CJK KR 은 같은 자리에서 2칸이라 여전히 어긋난다 -- "CJK 는 다
         # 위험"이 아니라 글꼴마다 다르다는 뜻이다. 격자 칸에 들어가는 것은
         # 소품 ID(ASCII)뿐이라 한글 폭은 여기서는 상관없다.
+        # 격자는 본문(#444)보다 한 단계 진한 #333 -- 격자 선문자와 소품 ID 가
+        # 그 안에서 다시 갈리므로 더 또렷해야 배치가 읽힌다.
         self._grid.setStyleSheet(
-            f"font-family: {MONO_STACK}; color:#888; font-size: 10px;")
+            f"font-family: {MONO_STACK}; color:#333; font-size: 10px;")
         # 세로는 Minimum -- 자리가 모자랄 때 줄어드는 대신 바깥 스크롤이
         # 생겨야 한다. Preferred 로 두면 카드가 여럿인 다이얼로그에서 격자
         # 지도가 위아래로 잘려 "추천된 배치를 볼 수 없는" 화면이 된다
