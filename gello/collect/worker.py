@@ -52,9 +52,9 @@ GATE_RAD = MATCH_GATE_RAD
 #: 게이트/정렬 루프는 50Hz 로 돌지만 게이지 갱신은 이 주기로만 보낸다
 #: (_emit_gate_status 참조).
 _GATE_EMIT_PERIOD_S = 1.0 / 15
-# rad/tick @ 20Hz. The FR3 driver's reference filter saturates at 1.0 rad/s
-# regardless, so this only has to be large enough not to be the binding
-# constraint -- 0.10 lets the filter reach ~0.91 rad/s (0.05 gave ~0.80).
+# rad/tick @ 20Hz. The FR3 driver's reference filter saturates at 1.5 rad/s
+# regardless (franka_fr3.py max_joint_velocity), so this only has to be large
+# enough not to be the binding constraint.
 RAMP_STEP = 0.10
 GRIPPER_OPEN = 0.0  # GELLO/franka_fr3 convention: 0=open, 1=closed
 
@@ -82,8 +82,11 @@ HOME_MAX_DQ = 0.35       # 연속 웨이포인트 관절 점프 상한 -- 초과
 #: 그래서 웨이포인트 사이를 관절 공간에서 다시 잘라(_densify) 이 값을 넘지
 #: 않게 한다. v_max 의 80% 로 두어 명령이 팔을 앞지르지 않게 한다 -- 앞지르지
 #: 않으면 쌓일 격차도 없다. RAMP_STEP(0.10 = 2.0 rad/s)을 쓰지 않는 이유가
-#: 그것이다: 그쪽은 목표로 clip 되어 스스로 멎지만, 홈 경로는 웨이포인트가
-#: 줄줄이 이어져 있어 멎을 자리가 없다.
+#: 그것이다: v_max 보다 큰 요구는 필터를 포화시키고, 포화 상태에서 제어 루프
+#: 틱이 한 번 늦으면(ZMQ/GIL 간섭) 정지->재개 순간 가속도 불연속으로
+#: joint_motion_generator_acceleration_discontinuity 반사가 떠 제어 루프가
+#: 죽는다. 폴백 관절 램프(_ramp_to)는 목표로 clip 되어 결국 멎지만, 홈까지의
+#: 긴 이동 동안 포화 구간이 계속되므로 같은 캡이 필요하다 (2026-09-07 사고).
 HOME_TICK_DQ = 0.06
 
 #: 노드 복구 재시도가 같은 이유로 계속 실패할 때 로그를 다시 찍는 주기(초).
@@ -657,10 +660,15 @@ class CollectionWorker(QThread):
             if np.abs(target_q - q).max() < 0.02:
                 return "ok"
             # Integrate the *commanded* position instead of re-anchoring it to
-            # the measured one each tick (see _advance_cmd).
+            # the measured one each tick (see _advance_cmd). Capped at
+            # HOME_TICK_DQ, not RAMP_STEP: this ramp covers the long homing
+            # fallback/residual move, and 2.0 rad/s would keep the driver's
+            # 1.5 rad/s reference filter saturated -- a late tick in
+            # saturation is what fired the 2026-09-07
+            # acceleration_discontinuity abort.
             if q_cmd is None:
                 q_cmd = q.copy()
-            q_cmd = self._advance_cmd(q_cmd, target_q)
+            q_cmd = self._advance_cmd(q_cmd, target_q, step=HOME_TICK_DQ)
             cmd = dict(zip(JOINT_KEYS, np.append(q_cmd, GRIPPER_OPEN).tolist()))
             self._robot.send_action(cmd)
             self._emit_frames(obs)
@@ -850,24 +858,33 @@ class CollectionWorker(QThread):
                              react_to_go_home=react_to_go_home)
 
     @staticmethod
-    def _advance_cmd(q_cmd: np.ndarray, target_q: np.ndarray) -> np.ndarray:
-        """Move the commanded position one ``RAMP_STEP`` toward ``target_q``.
+    def _advance_cmd(q_cmd: np.ndarray, target_q: np.ndarray,
+                     step: float = RAMP_STEP) -> np.ndarray:
+        """Move the commanded position one ``step`` toward ``target_q``.
 
         Both ramps used to command ``measured + clip(target - measured)``,
         re-anchoring to the encoder every tick. That looks like it asks for
-        RAMP_STEP/dt = 1.0 rad/s, but the follower sits behind a
-        critically-damped reference filter (``franka_fr3.py``): the filter
-        only closes part of a 0.05 rad gap per tick, and re-anchoring throws
-        away the rest instead of letting the target run ahead. Simulating the
-        real filter, the arm actually crept at **0.23 rad/s** -- a 1 rad move
-        took 4.4 s. Integrating the command instead lets the filter saturate
-        at its own limit and the same move takes 1.25 s (0.80 rad/s), a 3.5x
-        speedup with no change to what the driver is allowed to do.
+        step/dt, but the follower sits behind a critically-damped reference
+        filter (``franka_fr3.py``): the filter only closes part of a gap
+        per tick, and re-anchoring throws away the rest instead of letting
+        the target run ahead. Simulating the real filter, the arm actually
+        crept at **0.23 rad/s** -- a 1 rad move took 4.4 s. Integrating the
+        command instead lets the filter saturate at its own limit and the
+        same move takes 1.25 s (0.80 rad/s), a 3.5x speedup with no change
+        to what the driver is allowed to do.
+
+        ``step`` is the per-tick cap (rad @ 20Hz). The default RAMP_STEP
+        (2.0 rad/s) suits the short pre-teleop approach ramp; the long
+        homing fallback/residual ramp (``_ramp_to``) passes HOME_TICK_DQ
+        instead so the reference filter never sits saturated -- a late
+        control tick in saturation is what fires
+        joint_motion_generator_acceleration_discontinuity (see
+        HOME_TICK_DQ).
 
         (Same failure mode as the action-space bug: never feed a low-pass
         filter its own output back as the setpoint.)
         """
-        return q_cmd + np.clip(target_q - q_cmd, -RAMP_STEP, RAMP_STEP)
+        return q_cmd + np.clip(target_q - q_cmd, -step, step)
 
     def _approach_ramp(self, timeout: float = 3600.0) -> str:
         """Blocks (emitting frames) until the follower actually reaches the

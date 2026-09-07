@@ -48,15 +48,16 @@ Safety
   joint torque limits are NOT a valid choice here -- see FR3_COLLISION_TORQUE),
   while abnormal wrist loads and violent impacts still do.  Joint impedance is
   set on connect.  The robot's hard limits stay the safety floor.
-* ``max_joint_velocity``/``max_joint_acceleration`` (1.0 rad/s, 4.0 rad/s^2)
+* ``max_joint_velocity``/``max_joint_acceleration`` (1.5 rad/s, 6.0 rad/s^2)
   keep real margin below libfranka's actual per-joint hard limits (2.62,
-  10.0 -- see ``rate_limiting.h``/``fr3.urdf``). Raising these amplifies how
-  much a control-loop dt that runs long (this loop's dt is a hardcoded
-  constant, not measured actual elapsed time) diverges from what was
-  actually sent -- a live joint_motion_generator_acceleration_discontinuity
-  abort at 1.5/6.0 is why these are back at the original values. Don't
-  raise without also fixing that dt assumption first. ``max_joint_jerk`` is
-  a limit, not a tuning knob --
+  10.0 -- see ``rate_limiting.h``/``fr3.urdf``). These were raised from
+  1.0/4.0 only after adding the v_max approach taper in ``_control_loop``
+  (2026-08-19): without it, hitting the speed cap kinks acceleration
+  a_max -> 0 in one 1 ms tick (this loop's dt is a hardcoded constant, not
+  measured actual elapsed time), a jerk spike that fired a live
+  joint_motion_generator_acceleration_discontinuity abort at 1.5/6.0.
+  Don't raise these without re-checking that jerk budget first.
+  ``max_joint_jerk`` is a limit, not a tuning knob --
   keep it under ``franka::kMaxJointJerk`` (5000) with margin.
 
 Make sure ``ros2_control_node`` is **not** running: the FCI accepts one client.
