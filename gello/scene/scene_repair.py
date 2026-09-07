@@ -110,6 +110,8 @@ def _messages(text: str, md, props: dict, strict_relation: bool) -> list:
         out.append(msg)
     if reversed_adjectives(text):
         out.append(ORDER_MSG)
+    if shorthand_references(text):
+        out.append(SHORTHAND_MSG)
     return out
 
 
@@ -432,6 +434,38 @@ def reversed_adjectives(text: str) -> list:
     않고, 여기서 따로 센다. **읽기는 넓게, 만들기는 좁게, 진단은 따로.**
     """
     return [f"the {c} {size} bowl" for c, size in _REVERSED_RE.findall(text)]
+
+
+#: 크기를 생략한 그릇 지칭 -- "the blue bowl" 처럼 색만 적은 것.
+#: 문법은 이것을 large_bowl 로 해소해 주지만(legacy 약칭), 생성기는 이제
+#: "the large blue bowl" 만 만든다.
+_SHORTHAND_RE = re.compile(r"\bthe\s+(\w+)\s+bowl\b")
+
+SHORTHAND_MSG = ("크기를 생략한 약칭입니다 -- 정본은 크기를 적습니다 "
+                 "(large blue bowl)")
+
+
+def shorthand_references(text: str, props: "dict | None" = None) -> list:
+    """크기를 생략한 그릇 지칭들. 없으면 빈 목록.
+
+    "the blue bowl" 은 틀린 문장이 아니다 -- 문법이 large_bowl 로 해소하고,
+    두 category 의 색 겹침을 selftest 가 금지하므로 그 해소는 언제나 유일하다.
+    그래서 lint 는 통과시킨다.
+
+    그런데 **생성기는 이제 "the large blue bowl" 만 만든다.** 어순 뒤집힘과
+    같은 모양이다 -- 읽기는 둘 다 받고 만들기는 하나만 하므로, 진단이 따로
+    있어야 옛 표기가 눈에 띈다 (2026-09-07 사용자: "왜 이게 기록닥터에 걸리지
+    않은 거지?").
+
+    15cm ``bowl`` category 의 색("blue japanese", "pink striped")은 그 자체가
+    정본이라 세지 않는다 -- 그 category 에는 크기 형용사가 붙지 않는다.
+    """
+    from gello.scene.instruction_grammar import _bowl_category_colors
+
+    del props            # 인벤토리는 문법 쪽 캐시에서 온다
+    known = _bowl_category_colors()
+    return [f"the {c} bowl" for c in _SHORTHAND_RE.findall(text)
+            if c not in known and c not in ("small", "large")]
 
 
 def _cause(message: str) -> str:

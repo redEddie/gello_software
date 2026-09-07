@@ -251,6 +251,49 @@ def qualifier_case() -> None:
     print("qualifier_case OK")
 
 
+def shorthand_case() -> None:
+    """크기를 생략한 그릇 약칭 -- lint 는 통과시키지만 정본이 아니다.
+
+    "the blue bowl" 은 문법이 large_bowl 로 해소해 주는 legacy 약칭이라
+    틀린 문장이 아니다. 그런데 생성기는 이제 "the large blue bowl" 만
+    만들므로, 진단이 따로 없으면 옛 표기가 영영 안 보인다 (2026-09-07
+    사용자: "왜 이게 기록닥터에 걸리지 않은 거지?").
+    """
+    from gello.scene.instruction_grammar import lint
+    from gello.scene.props import props_by_id
+    from gello.scene.scene_repair import (
+        SHORTHAND_MSG,
+        audit_scene,
+        shorthand_references,
+    )
+
+    P = props_by_id()
+    short = "pick up the small gray bowl and place it inside the blue bowl"
+    full = "pick up the small gray bowl and place it inside the large blue bowl"
+    # lint 는 둘 다 통과시킨다 -- 같은 물체를 가리킨다
+    assert lint(short) is None and lint(full) is None
+    assert shorthand_references(short) == ["the blue bowl"], short
+    assert shorthand_references(full) == [], full
+    # 15cm bowl category 의 색은 그 자체가 정본이라 세지 않는다
+    assert shorthand_references(
+        "drag the blue japanese bowl next to the white cup") == []
+    # 크기가 붙은 것도 아니다
+    assert shorthand_references("pick up the small blue bowl") == []
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        path, _plan = _make(root)
+        with h5py.File(path, "r+") as f:
+            for k in list(f):
+                if k.startswith("episode") and \
+                        str(f[k].attrs["instruction_id"]) == "I000":
+                    f[k].attrs["instruction"] = short
+        msgs = [v.message for v in audit_scene(path)
+                if v.instruction_id == "I000"]
+        assert SHORTHAND_MSG in msgs, msgs
+    print("shorthand_case OK")
+
+
 def two_reasons_case() -> None:
     """한 지시문이 두 가지로 틀릴 수 있다 -- 어순이 뒤집혔고 관계도 틀렸다.
 
@@ -285,3 +328,4 @@ if __name__ == "__main__":
     swap_case()
     qualifier_case()
     two_reasons_case()
+    shorthand_case()
