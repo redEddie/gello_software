@@ -11,20 +11,20 @@ from pathlib import Path
 
 import h5py
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
-    QDialog,
-    QInputDialog,
-    QMessageBox,
-    QTreeWidgetItem,
-)
+from PyQt6.QtWidgets import QDialog, QMessageBox, QTreeWidgetItem
 
 from apps.workspace.features.doctor.page import fill_scene_rows
 from apps.workspace.features.doctor.record_tab import PHOTO_W
+from apps.workspace.features.doctor.sentence_builder import SentenceDialog
 from apps.workspace.features.doctor.swap_dialog import SwapDialog
 from apps.workspace.shared.tabs import show_center_tab
 from gello.gui.i18n import tr
 from gello.gui.widgets.video_view import np_to_pixmap
 from gello.scene.dataset_meta import plan_path as dataset_plan_path
+from gello.scene.instruction_grammar import (
+    enumerate_instructions,
+    skill_of,
+)
 from gello.scene.props import props_by_id
 from gello.scene.scene_format import (
     describe_scene,
@@ -233,18 +233,40 @@ class DoctorOps:
         if not self._guard():
             return
         iid, cur = self._task
-        n = episode_counts(self._path(self._scene_id)).get(iid, 0)
-        text, ok = QInputDialog.getText(
-            win, tr("문장 고치기"),
-            tr("{sid} {iid} — 이 지시문의 에피소드 {n}개가 모두 바뀝니다.\n"
-               "이미 Hub 에 올린 데이터셋이라면 이어붙이기가 막히고 전체 "
-               "재빌드·재푸시가 필요합니다.").format(
-                   sid=self._scene_id, iid=iid, n=n),
-            text=cur)
-        if not ok or not text.strip() or text.strip() == cur:
+        path = self._path(self._scene_id)
+        n = episode_counts(path).get(iid, 0)
+
+        # 후보는 문법이 만든다 -- 조립한 것이 합법인지 검사할 필요가 없다.
+        try:
+            md = read_scene_metadata(path)
+            props = props_by_id()
+            options = [(skill_of(x), x)
+                       for x in enumerate_instructions(md, props)]
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(win, tr("문법을 읽지 못했습니다"), str(e))
+            return
+        # 이미 쓰이는 문장은 뺀다 -- 한 scene 안에서 두 지시문이 같은 말을
+        # 하면 그 자체가 결함이다.
+        used = self._used_texts(path, exclude=iid)
+        options = [(sk, x) for sk, x in options if x not in used]
+        if not options:
+            QMessageBox.information(win, tr("고를 문장이 없습니다"), tr(
+                "이 scene 에서 문법이 만들 수 있는 문장이 이미 전부 "
+                "쓰이고 있습니다."))
+            return
+        note = (tr("에피소드 {n}개의 문장이 바뀝니다 — 이미 Hub 에 올린 "
+                   "데이터셋이라면 이어붙이기가 막히고 전체 재빌드·재푸시가 "
+                   "필요합니다.").format(n=n) if n else
+                tr("안 찍은 빈 칸이라 계획 파일만 바뀝니다."))
+        dlg = SentenceDialog(
+            win, tr("{sid} {iid}").format(sid=self._scene_id, iid=iid),
+            cur, options, note)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.chosen:
+            return
+        text = dlg.chosen
+        if text == cur:
             return
 
-        path = self._path(self._scene_id)
         plan = dataset_plan_path(self._root())
         try:
             changed = rewrite_task_text(
@@ -416,6 +438,29 @@ class DoctorOps:
         win.log(f"[닥터] {self._scene_id} {iid} 를 계획에서 뺐습니다")
         self.rescan()
         self.select_scene(self._scene_id)
+
+    def _used_texts(self, path: Path, exclude: str = "") -> set:
+        """이 scene 에서 이미 쓰이는 문장 (에피소드 + 계획)."""
+        used = set()
+        try:
+            with h5py.File(path, "r") as f:
+                for k in f:
+                    if not k.startswith("episode"):
+                        continue
+                    a = f[k].attrs
+                    if str(a.get("instruction_id", "")) != exclude:
+                        used.add(str(a.get("instruction", "")))
+        except Exception:  # noqa: BLE001
+            pass
+        plan = dataset_plan_path(self._root())
+        if plan.is_file():
+            try:
+                for iid, text in plan_task_texts(plan, self._scene_id).items():
+                    if iid != exclude:
+                        used.add(text)
+            except Exception:  # noqa: BLE001
+                pass
+        return used
 
     def _guard(self) -> bool:
         """고른 줄이 있고 수집 중이 아닌가."""

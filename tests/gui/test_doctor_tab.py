@@ -264,6 +264,38 @@ def main() -> None:
         assert "재빌드" in win.doctor_file_detail.text()
         print("9. 편집 이력 표시 OK")
 
+        # 10. 문장 고치기는 블럭 조립이다 -- 문법이 만든 것만 고를 수 있다
+        import apps.workspace.features.doctor.sentence_builder as sb
+
+        win.doctor.select_scene("S000")
+        win.doctor.on_task_picked(tt.topLevelItem(0))       # I000
+        grabbed = {}
+        real_dlg = dops.SentenceDialog
+
+        class _Grab(real_dlg):
+            def exec(self):
+                grabbed["skills"] = sorted(self._by_skill)
+                grabbed["badges"] = sorted(self._badges)
+                # 뱃지를 눌러 스킬을 바꾸면 문장 목록이 그것만 남는다
+                target = "drag-next_to"
+                self._pick_skill(target)
+                grabbed["sents"] = [b.text() for b in self._group.buttons()]
+                self._accept()
+                return int(QDialog.DialogCode.Accepted)
+
+        dops.SentenceDialog = _Grab
+        try:
+            win.doctor.edit_task_text()
+        finally:
+            dops.SentenceDialog = real_dlg
+        assert grabbed["badges"] == grabbed["skills"], grabbed
+        assert "pick-inside" in grabbed["skills"], grabbed["skills"]
+        # 그릇 목적지 'on' 은 문법이 아예 만들지 않는다
+        assert "pick-on" not in grabbed["skills"], grabbed["skills"]
+        assert all(s.startswith("drag ") for s in grabbed["sents"]), grabbed
+        assert sb.SKILL_KO["pick-inside"] == "집어서 안에"
+        print("10. 블럭 조립 문장 고치기 OK")
+
         win.close()
     print("test_doctor_tab OK")
 
