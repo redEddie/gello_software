@@ -14,11 +14,15 @@ from gello.data.episode_stats import TASK_DEV_LIMIT
 from gello.data.libero_format import hdf5_repack_status, renumber_episodes
 from gello.gui.text_utils import repo_id_error
 from gello.gui.i18n import tr
+from apps.workspace.features.dataset.right_panel import PHOTO_W
+from apps.workspace.shared.info import scene_fields
 from gello.gui.scene_gallery import invalidate_scene_thumbs
+from gello.gui.widgets.video_view import np_to_pixmap
 from gello.scene.scene_format import (
     delete_scene_episodes,
     iter_scene_files,
     list_scene_episodes,
+    read_reference_image,
     read_scene_metadata,
 )
 
@@ -90,7 +94,7 @@ class DatasetOps:
         # 여기서는 목록·개수·quality 확인 + 삭제/트림 대상 선택용. 삭제는
         # legacy 와 같이 삭제 후 renumber -- delete_episodes.
         for path in iter_scene_files(root):
-            item = QTreeWidgetItem([path.name, "", "scene"])
+            item = QTreeWidgetItem([path.name, "", "scene", ""])
             item.setData(0, Qt.ItemDataRole.UserRole, str(path))
             self.win.dataset_tree.addTopLevelItem(item)
             try:
@@ -108,13 +112,15 @@ class DatasetOps:
                 q = ep.get("quality_status") or (
                     "-" if ep.get("success") is None
                     else ("success" if ep["success"] else "failed"))
-                child = QTreeWidgetItem([label, str(ep.get("num_samples", "")), q])
+                child = QTreeWidgetItem([
+                    label, str(ep.get("num_samples", "")), q,
+                    str(ep.get("collector", ""))])
                 child.setData(0, Qt.ItemDataRole.UserRole, ep["name"])
                 child.setToolTip(0, ep.get("instruction", ""))
                 item.addChild(child)
             item.setText(1, tr("{n}개").format(n=len(episodes)))
         for path in sorted(root.glob("*_demo.hdf5")):
-            item = QTreeWidgetItem([path.name, "", ""])
+            item = QTreeWidgetItem([path.name, "", "", ""])
             item.setData(0, Qt.ItemDataRole.UserRole, str(path))
             self.win.dataset_tree.addTopLevelItem(item)
             if self.win.session.active_file_path is not None and path == self.win.session.active_file_path:
@@ -137,7 +143,9 @@ class DatasetOps:
                     continue
             for ep in episodes:
                 res = "-" if ep["success"] is None else (tr("성공") if ep["success"] else tr("실패"))
-                child = QTreeWidgetItem(["  " + ep["name"], str(ep["num_samples"]), res])
+                child = QTreeWidgetItem([
+                    "  " + ep["name"], str(ep["num_samples"]), res,
+                    str(ep.get("collector", ""))])
                 child.setData(0, Qt.ItemDataRole.UserRole, ep["name"])
                 item.addChild(child)
             item.setText(1, tr("{n}개").format(n=len(episodes)))
@@ -170,6 +178,7 @@ class DatasetOps:
     def on_dataset_selection(self) -> None:
         items = self.win.dataset_tree.selectedItems()
         item = items[0] if items else None
+        self._fill_right(item)
         # 파일 행을 골라도 오른쪽 Dataset 칸은 갱신된다 -- 재생은 에피소드 행에서만.
         self.update_dataset_panel(self.selected_file())
         if self.win.session.stats:
@@ -714,3 +723,82 @@ class DatasetOps:
         f["ds_gripper"].setText(gripper)
         f["ds_image"].setText(image)
         f["ds_fps"].setText("-")
+
+    # ------------------------------------------------------- 우측 패널
+    def _fill_right(self, item) -> None:
+        """고른 줄의 값과 그 scene 의 배치를 우측에 편다.
+
+        목록의 열은 패널이 좁으면 잘린다. 열을 없애지 않고 -- 여럿을 훑을
+        때는 목록이 맞다 -- 고른 한 줄만 여기서 온전히 읽히게 한다
+        (2026-09-07 조작자).
+        """
+        win = self.win
+        card = getattr(win, "ds_episode_card", None)
+        if card is None:
+            return
+        if item is None:
+            card.set_fields([(tr("에피소드"), tr("미선택"))])
+            self._fill_scene_box(None)
+            return
+        parent = item.parent()
+        if parent is None:
+            # 파일 줄 -- 에피소드 값은 없고 scene 만 보여준다.
+            card.set_fields([(tr("에피소드"), tr("파일을 골랐습니다"))])
+            self._fill_scene_box(item.data(0, Qt.ItemDataRole.UserRole))
+            return
+        path = parent.data(0, Qt.ItemDataRole.UserRole)
+        name = item.data(0, Qt.ItemDataRole.UserRole)
+        fields = [
+            (tr("파일"), Path(path).name if path else ""),
+            (tr("에피소드"), str(name or "")),
+            (tr("프레임"), item.text(1)),
+            (tr("결과"), item.text(2)),
+            (tr("수집자"), item.text(3) if item.columnCount() > 3 else ""),
+        ]
+        # 지시문·시각은 목록에 열이 없다 -- 여기서만 보인다.
+        try:
+            with h5py.File(path, "r") as f:
+                a = f[str(name)].attrs
+                fields += [
+                    (tr("지시문"), str(a.get("instruction_id", ""))),
+                    (tr("문장"), str(a.get("instruction", ""))),
+                    (tr("시각"), str(a.get("timestamp", ""))),
+                ]
+        except Exception:  # noqa: BLE001 -- 잠겼거나 legacy 파일이다
+            pass
+        card.set_fields(fields)
+        self._fill_scene_box(path)
+
+    def _fill_scene_box(self, path) -> None:
+        """고른 scene 의 배치도와 기준 사진. 세션과 무관하다."""
+        win = self.win
+        card = getattr(win, "ds_scene_card", None)
+        if card is None:
+            return
+        if not path:
+            card.set_fields([(tr("Scene"), tr("미선택"))])
+            win.ds_scene_zones.set_layout_spec(None)
+            win.ds_scene_photo.clear()
+            win.ds_scene_photo.setText(tr("기준 사진 없음"))
+            return
+        try:
+            md = read_scene_metadata(Path(path))
+        except Exception:  # noqa: BLE001 -- legacy 파일에는 scene metadata 가 없다
+            card.set_fields([(tr("Scene"), tr("scene 파일이 아닙니다"))])
+            win.ds_scene_zones.set_layout_spec(None)
+            win.ds_scene_photo.clear()
+            win.ds_scene_photo.setText(tr("기준 사진 없음"))
+            return
+        card.set_fields(scene_fields(md))
+        win.ds_scene_zones.set_layout_spec(md.layout)
+        try:
+            img = read_reference_image(Path(path))
+        except Exception:  # noqa: BLE001
+            img = None
+        if img is None:
+            win.ds_scene_photo.clear()
+            win.ds_scene_photo.setText(tr("기준 사진 없음"))
+        else:
+            win.ds_scene_photo.setText("")
+            win.ds_scene_photo.setPixmap(np_to_pixmap(img).scaledToWidth(
+                PHOTO_W, Qt.TransformationMode.SmoothTransformation))

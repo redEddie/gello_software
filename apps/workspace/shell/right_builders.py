@@ -8,11 +8,13 @@
 패널은 상호작용할 것이 없어 아무도 안 본다 (2026-09-07 사용자 지적).
 격자 칸·재생 버튼 같은 직접 조작은 만지는 자리에 남는다.
 """
+from apps.workspace.features.dataset.right_panel import build_dataset_right
 from apps.workspace.features.doctor.right_panel import build_doctor_right
 from apps.workspace.features.scene.right_panel import build_configure_right
 
 RIGHT_BUILDERS = {
     "configure": build_configure_right,
+    "dataset": build_dataset_right,
     "doctor": build_doctor_right,
 }
 

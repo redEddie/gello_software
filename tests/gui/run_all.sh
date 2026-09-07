@@ -40,7 +40,7 @@ for t in test_phase4a test_grid_replay test_plan_form test_right_scene \
          test_state_isolation test_resume_version test_workflow_gui test_quick_resume test_node_diag \
          test_collect_layout test_script_bootstrap test_relation_shape \
          test_scene_repair test_doctor_tab test_info_card \
-         test_doctor_contrast test_doctor_progress test_doctor_schema; do
+         test_doctor_contrast test_doctor_progress test_doctor_schema test_dataset_right; do
   if QT_QPA_PLATFORM=offscreen timeout 240 "$PY" -u "$t.py" >"/tmp/$t.out" 2>&1; then
     echo "$t OK"
   else

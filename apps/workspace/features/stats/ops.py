@@ -284,7 +284,16 @@ class StatsOps:
             return
         if self.win._activity not in ("stats", "dataset"):
             return
-        self.refresh_analysis()
+        try:
+            self.refresh_analysis()
+        except Exception as e:  # noqa: BLE001
+            # **활동 전환을 끌고 죽지 않는다.** 자동 분석은 편의 기능이라
+            # 실패해도 상관없지만(2026-09-07 사용자), 예외가 여기서 새면
+            # Dataset 활동에 들어가는 것 자체가 막힌다 -- 필드가 적은 파일에서
+            # 실제로 그랬다 (KeyError: 'frames'). [다시 분석] 은 그대로 두어,
+            # 사람이 눌렀을 때는 이유가 그대로 보이게 한다.
+            self.win.log(f"[통계] 자동 분석을 건너뜁니다: "
+                         f"{type(e).__name__}: {e}")
 
     def refresh_analysis(self, force: bool = False) -> None:
         """Rescans every .hdf5's actions. Only a few KB per episode, so this is

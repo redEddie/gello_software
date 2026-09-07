@@ -39,7 +39,11 @@ def build_dataset(win) -> QWidget:
     # 없고, 누를 수 없는 입력칸은 트리 위에서 자리만 차지했다.
     win.dataset_tree = QTreeWidget()
     win.dataset_tree.setColumnCount(3)
-    win.dataset_tree.setHeaderLabels([tr("파일 / 에피소드"), tr("프레임"), tr("결과")])
+    # 수집자 열이 있다 (2026-09-07 조작자 요청). 에피소드 attrs 에 늘 있던
+    # 값인데 화면에 열이 없어서, "이건 누가 찍었지" 를 물으려면 파일을 열어야
+    # 했다 -- 여럿이 돌아가며 찍는 데이터셋에서 그것은 자주 나오는 질문이다.
+    win.dataset_tree.setHeaderLabels(
+        [tr("파일 / 에피소드"), tr("프레임"), tr("결과"), tr("수집자")])
     win.dataset_tree.setColumnWidth(0, 300)
     # 큐레이션은 실패 여러 개를 한 번에 지우는 작업이다.
     win.dataset_tree.setSelectionMode(
