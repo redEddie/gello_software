@@ -27,8 +27,6 @@
     ],
     "Collect": [
       "Quick resume",
-      "⌐ Joint wall",
-      "⇱ 자세 정렬",
       "Next unfilled",
       "Start Teleop",
       "Auto-align (Enter)",
@@ -107,13 +105,11 @@
     "disconnect",
     "home",
     "match",
-    "match_pose",
     "quick",
     "record",
     "save",
     "savefail",
-    "skip",
-    "wall"
+    "skip"
   ],
   "toolbar_context": {
     "layout": [

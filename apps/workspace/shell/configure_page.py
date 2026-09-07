@@ -132,6 +132,30 @@ def build_configure(win) -> QWidget:
     # 단계에서 끝나는 일이라 Scene 을 정하는 화면에 있을 이유가 없었고,
     # 두 곳에 같은 콤보를 두느라 서로 복사하는 코드까지 있었다.
 
+    # ---- 리더암: 리더에 관한 설정만 모은 상자 (2026-09-07 사용자).
+    # Grip 콤보와 안전 토글 두 개(Joint wall·자세 정렬)를 여기로 옮겼다 --
+    # "수집 설정" 에 리더암 설정과 데이터셋 설정이 섞여 있었다. 상자는
+    # "무엇에 대한 설정인가" 로 갈라야 한다. 둘 다 Connect 시점에 읽히는
+    # 값이라 "수집 설정" 바로 위 -- 위에서 아래로 "많이 누르는 순서" 규칙에서
+    # 둘 다 드물게 만지는 것이다.
+    leader = QGroupBox(tr("리더암"))
+    win.leader_box = leader         # 세션 중에는 감춘다 (set_running)
+    lform = QFormLayout(leader)
+    win.grip_combo = QComboBox()
+    win.grip_combo.addItems(["right", "left"])
+    lform.addRow(tr("Grip"), win.grip_combo)
+    win.wall_check = QCheckBox(tr("Joint wall"), checked=True)
+    win.wall_check.setToolTip(tr(
+        "관절 한계 벽: 리더가 로봇의 관절 한계 밖으로 나가지 못하게 막습니다.\n"
+        "끄면 한계를 넘는 명령이 그대로 나가 속도 반사가 납니다."))
+    lform.addRow(win.wall_check)
+    win.match_check = QCheckBox(tr("자세 정렬"), checked=True)
+    win.match_check.setToolTip(tr(
+        "에피소드마다 리더를 리셋 포즈로 자동 정렬합니다.\n"
+        "끄면 매번 손으로 맞춰야 합니다."))
+    lform.addRow(win.match_check)
+    col.addWidget(leader)
+
     # "세션"이 아니라 "수집 설정": 여기 있는 것은 전부 Connect 시점에
     # 적용되는 수집 방식이다. 연습 모드도 그중 하나라 별도 "모드" 그룹을
     # 두지 않고 여기에 둔다.
@@ -143,9 +167,6 @@ def build_configure(win) -> QWidget:
     if "libero" in FR3_RESET_POSES:
         win.reset_pose_combo.setCurrentText("libero")
     sform.addRow(tr("Reset pose"), win.reset_pose_combo)
-    win.grip_combo = QComboBox()
-    win.grip_combo.addItems(["right", "left"])
-    sform.addRow(tr("Grip"), win.grip_combo)
     win.eplen_edit = QLineEdit("20")
     sform.addRow(tr("에피소드 길이(s)"), win.eplen_edit)
     win.resetwait_edit = QLineEdit("10")
@@ -154,13 +175,10 @@ def build_configure(win) -> QWidget:
         "더 이상 사용하지 않습니다 — 리셋 대기는 시간으로 끝나지 않고 "
         "'리셋 완료' 버튼(Enter)으로만 끝납니다."))
     sform.addRow(tr("리셋 대기(s) (미사용)"), win.resetwait_edit)
-    # "관절 한계 벽"·"자세 정렬" 은 툴바로 갔다 (2026-09-06 사용자 요청).
-    # 평소에는 켜 두고 쓰는 것이라 매번 읽을 줄이 아니고, 끌 때는 툴바에서
-    # 한 번에 끈다 (Collect 메뉴에도 같은 토글이 있다).
     col.addWidget(sess)
     # 줄 수가 정해진 상자는 세로로 안 늘어나게 (sizing.keep_height 참고).
     # Scene 수집은 예외 -- 계획 설명 라벨이 접히면서 높이가 는다.
-    keep_height(who, node, sess)
+    keep_height(who, node, leader, sess)
     col.addStretch()
     win.scene_ops.refresh_scene_combo()
     return w

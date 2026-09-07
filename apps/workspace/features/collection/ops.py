@@ -97,6 +97,7 @@ class CollectionOps:
         # 세션 중에도 손댈 수 있는 것(로봇 노드·카메라)은 그대로 둔다.
         self.win.task_box.setVisible(not running)
         self.win.session_box.setVisible(not running)
+        self.win.leader_box.setVisible(not running)
         if not running:
             self.win.gate_box.setVisible(False)
         for w in (self.win.lang_edit, self.win.root_edit, self.win.agent_combo,

@@ -84,22 +84,9 @@ def build_toolbar(win) -> None:
     add("home", tr("⌂ Home"), lambda: win.collection.cmd("cmd_go_home"))
     tb.addSeparator()
 
-    # ---- 고정: 안전 토글 두 개 (2026-09-06: Configure 패널에서 이동) ----
-    # 평소에는 켜 두고 쓰는 것이라 설정 화면에서 매번 읽을 줄이 아니었다.
-    # 끄는 일은 드물지만 그때는 빨라야 해서 툴바에 둔다. QAction 이라
-    # 메뉴 색인에도 **같은 객체**가 들어간다 -- 거울이 아니라 하나다.
-    win.wall_check = QAction(tr("⌐ Joint wall"), win, checkable=True, checked=True)
-    win.wall_check.setToolTip(tr(
-        "관절 한계 벽: 리더가 로봇의 관절 한계 밖으로 나가지 못하게 막습니다.\n"
-        "끄면 한계를 넘는 명령이 그대로 나가 속도 반사가 납니다."))
-    tb.addAction(win.wall_check)
-    win.tb_actions["wall"] = win.wall_check
-    win.match_check = QAction(tr("⇱ 자세 정렬"), win, checkable=True, checked=True)
-    win.match_check.setToolTip(tr(
-        "에피소드마다 리더를 리셋 포즈로 자동 정렬합니다.\n"
-        "끄면 매번 손으로 맞춰야 합니다."))
-    tb.addAction(win.match_check)
-    win.tb_actions["match_pose"] = win.match_check
+    # 안전 토글(Joint wall·자세 정렬)은 Configure ② 의 리더암 상자로 갔다
+    # (2026-09-07). 설정 칸은 원래 메뉴 색인에도 없다 (Grip·에피소드 길이
+    # 등이 그렇다) -- 일관된다.
     # 여기서부터 화면별 구획이 붙는다.
     win._tb_context_anchor = tb.addSeparator()
 
@@ -273,11 +260,9 @@ def build_menu(win) -> None:
     m = mb.addMenu(tr("Collect"))
     m.addAction(tr("Quick resume"), win.collection.on_quick_start)
     m.addSeparator()
-    # 툴바의 그 토글 **자체**를 넣는다 (복사가 아니라 같은 QAction) --
-    # 체크 상태가 갈라질 수 없다.
-    m.addAction(win.wall_check)
-    m.addAction(win.match_check)
-    m.addSeparator()
+    # 안전 토글(Joint wall·자세 정렬)은 QCheckBox 가 되어 Collect 메뉴에서
+    # 뺐다 (2026-09-07) -- QCheckBox 는 메뉴에 못 넣고, 거울 QAction 을
+    # 만들면 체크 상태가 갈라진다. 설정 칸은 원래 메뉴 색인에 없다.
     m.addAction(tr("Next unfilled"), win.scene_planning.on_next_instruction)
     # "지시문 적용" 은 색인에 없다 -- 화면에도 그런 동작이 없어졌다. 목록의
     # 줄을 누르는 것이 곧 적용이고, 줄 누르기는 메뉴로 옮길 수 있는 동작이

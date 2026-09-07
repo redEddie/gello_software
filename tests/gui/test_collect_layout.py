@@ -34,6 +34,7 @@ from PyQt6.QtCore import Qt  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication,
     QCheckBox,
+    QComboBox,
     QGroupBox,
     QLabel,
     QPushButton,
@@ -267,13 +268,31 @@ assert len({c[0] for c in colors.values()}) == len(roster), \
 assert _tag_colors(roster) == colors, "같은 명단인데 색이 달라졌다 (결정론적이어야)"
 print(f"12. 수집자 태그 OK (부분 일치 · 클릭 확정 · max {COLLECTOR_MAX} · 색 {len(roster)}종)")
 
-# ------------------- 12b. 계획은 필수다 + 안전 토글은 툴바에 (2026-09-06)
-assert win.wall_check in win.tool_bar.actions(), "관절 한계 벽 토글이 툴바에 없다"
-assert win.match_check in win.tool_bar.actions(), "자세 정렬 토글이 툴바에 없다"
-assert win.match_check.text() == "⇱ 자세 정렬", win.match_check.text()
-assert not [c for c in conf.findChildren(QCheckBox)
-            if "한계 벽" in c.text() or "정렬" in c.text()], \
-    "안전 토글이 아직 ② 패널에 있다"
+# ------------- 12b. 지시문은 필수다 + 안전 토글은 [리더암] 상자에 (2026-09-07)
+#
+# 9/6 에는 이 둘이 툴바에 있어야 했다 ("평소엔 켜 두고 쓰니 설정 화면에서
+# 매번 읽을 줄이 아니다"). 9/7 에 뒤집혔다: 리더암에 관한 설정(Grip·Joint
+# wall·자세 정렬)이 "수집 설정" 과 툴바에 흩어져 있어서, 상자를 "무엇에
+# 대한 설정인가" 로 가르기로 했다. 그래서 셋 다 [리더암] 상자에 있다.
+assert win.wall_check not in win.tool_bar.actions(), "Joint wall 이 아직 툴바에 있다"
+assert win.match_check not in win.tool_bar.actions(), "자세 정렬이 아직 툴바에 있다"
+for key in ("wall", "match_pose"):
+    assert key not in win.tb_actions, f"툴바 색인에 {key} 가 남았다"
+# "match" 는 남는다 -- 툴바의 ⇔ Auto-align **동작**이고 토글이 아니다.
+assert "match" in win.tb_actions, "Auto-align 동작까지 지웠다"
+leader = win.leader_box
+assert win.wall_check in leader.findChildren(QCheckBox), "Joint wall 이 리더암에 없다"
+assert win.match_check in leader.findChildren(QCheckBox), "자세 정렬이 리더암에 없다"
+assert win.grip_combo in leader.findChildren(QComboBox), "Grip 이 리더암에 없다"
+assert win.grip_combo not in win.session_box.findChildren(QComboBox), \
+    "Grip 이 아직 [수집 설정] 에도 있다"
+# 둘 다 기본은 켜짐이고, 값을 읽는 곳 넷이 그대로 돌아야 한다 (QCheckBox 도
+# QAction 과 같은 메서드를 갖는다 -- 그래서 속성 이름을 안 바꿨다).
+assert win.wall_check.isChecked() and win.match_check.isChecked()
+# 세션 중에는 수집 설정과 똑같이 감춘다
+win.collection.set_running(True)
+assert not leader.isVisibleTo(conf), "세션 중에 리더암 상자가 남아 있다"
+win.collection.set_running(False)
 # 계획을 치우면 연결이 막힌다
 plan_file = root / "instructions.json"
 saved = plan_file.read_text(encoding="utf-8")
