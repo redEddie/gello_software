@@ -96,20 +96,20 @@ assert not on, f"S016 에 pick-on 이 나왔다 -- {on}"
 print("2 통과: S016 재현 -- pick-on 0개, pick-inside 양방향 2개")
 
 # ---- 3. lint(strict) 가 그릇 목적지 on 을 거부 + inside 안내 ----
-err = lint("pick up the white cup and place it on the white bowl")
+err = lint("pick up the white cup and place it on the large white bowl")
 assert err is not None, "strict lint 가 그릇 목적지 on 을 통과시켰다"
 assert "inside" in err, err
 assert "오목한" in err, err
 # scene 을 주면 마찬가지 (목적지 지칭 유일성 통과 뒤 관계 검증이 걸린다)
-err = lint("pick up the white cup and place it on the white bowl",
+err = lint("pick up the white cup and place it on the large white bowl",
            _md("RS-F", ["OBJ-CUP-WHT-01", "OBJ-BOWLL-WHT-01"]), props)
 assert err is not None and "inside" in err, err
 print(f"3 통과: strict lint 거부 + inside 안내 -- {err!r}")
 
 # ---- 4. 하위호환: strict_relation=False 는 옛 겹침 집합 문장을 통과 ----
-assert lint("pick up the white cup and place it on the white bowl",
+assert lint("pick up the white cup and place it on the large white bowl",
             strict_relation=False) is None
-assert lint("pick up the white cup and place it on the white bowl",
+assert lint("pick up the white cup and place it on the large white bowl",
             _md("RS-F", ["OBJ-CUP-WHT-01", "OBJ-BOWLL-WHT-01"]), props,
             strict_relation=False) is None
 print("4 통과: strict_relation=False 하위호환 통과")
@@ -118,7 +118,7 @@ print("4 통과: strict_relation=False 하위호환 통과")
 assert lint("pick up the blue cup and place it on the wooden tray") is None
 assert lint("pick up the blue cup and place it on the tray") is None
 assert lint("pick up the blue cup and place it on top of the drawer") is None
-assert lint("pick up the blue cup and place it inside the white bowl") is None
+assert lint("pick up the blue cup and place it inside the large white bowl") is None
 # 커트러리 drawer inside 하위호환도 그대로
 assert lint("pick up the pink cutlery and place it inside the drawer") is None
 print("5 통과: tray on / drawer on top of / inside 그릇 / 커트러리 하위호환 합법")

@@ -92,7 +92,7 @@ CHUNK_LEAD = 2
 RESET_POSE = "libero"                      # FR3_RESET_POSES key (수집 세션과 동일해야 함)
 # 학습된 4개 태스크 (다른 문장을 주면 분포 밖 — 2026-08-03 수집분 117 에피소드):
 #   pick up the {blue|white} cup and place it on the {blue|yellow} bowl
-DEFAULT_INSTRUCTION = "pick up the white cup and place it on the yellow bowl"
+DEFAULT_INSTRUCTION = "pick up the white cup and place it inside the large yellow bowl"
 RAMP_STEP = 0.05                           # rad/tick @20Hz — 홈 복귀 램프 (수집기와 동일)
 # 안전 클램프: 스텝당 "명령 목표 - 측정 위치" 최대 괴리.
 # 이건 속도 제한이 아니다 — 실제 속도/가속/저크 제한은 로봇 노드의 레퍼런스 필터

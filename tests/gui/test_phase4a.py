@@ -33,10 +33,10 @@ pilot = TMP / "pilot.json"
 pilot.write_text(json.dumps({"plan_version": 1, "scenes": [
     {"scene_id": "S000", "slots": [
         {"instruction_id": "I000",
-         "instruction": "pick up the blue cup and place it on the blue bowl",
+         "instruction": "pick up the blue cup and place it on the large blue bowl",
          "target": 10},
         {"instruction_id": "I001",
-         "instruction": "pick up the white cup and place it on the blue bowl",
+         "instruction": "pick up the white cup and place it on the large blue bowl",
          "target": 10}]},
     {"scene_id": "S001", "slots": [
         {"instruction_id": "I000", "instruction": "open the top drawer",
@@ -80,9 +80,9 @@ print("1 통과: 계획 로드, 동사 경고, scene 간 ID 재사용 허용, sc
 # ---- 2. 계획-파일 불일치 감지 (합성 에피소드 -- 실파일은 수집 중 변함) ----
 eps = [
     {"name": "episode_000", "instruction_id": "I000",
-     "instruction": "pick up the blue cup and place it on the blue bowl"},
+     "instruction": "pick up the blue cup and place it on the large blue bowl"},
     {"name": "episode_001", "instruction_id": "I000",
-     "instruction": "pick up the blue cup and place it on the white bowl"},
+     "instruction": "pick up the blue cup and place it on the large white bowl"},
     {"name": "episode_002", "instruction_id": "I099",
      "instruction": "open the top drawer"},
 ]
@@ -128,12 +128,12 @@ win.session.active_file_path = scene_copy
 # 세션 캐시를 합성으로 주입 (파일 잠금 상황과 동일한 경로)
 win.session.active_episode_cache = [
     {"name": "episode_000", "instruction_id": "I000",
-     "instruction": "pick up the blue cup and place it on the blue bowl",
+     "instruction": "pick up the blue cup and place it on the large blue bowl",
      "quality_status": "success", "num_samples": 100, "success": True,
      "episode_id": 0, "episode_uid": "EP-S000-I000-E000", "collector": "t",
      "timestamp": ""},
     {"name": "episode_001", "instruction_id": "I000",
-     "instruction": "pick up the blue cup and place it on the white bowl",
+     "instruction": "pick up the blue cup and place it on the large white bowl",
      "quality_status": "failed", "num_samples": 100, "success": False,
      "episode_id": 1, "episode_uid": "EP-S000-I000-E001", "collector": "t",
      "timestamp": ""},
@@ -147,7 +147,7 @@ class FW:
     cfg = type("C", (), {"task_name": "S000", "scene_metadata": None,
                          "scene_id": "S000", "instruction_id": "I000",
                          "language_instruction":
-                             "pick up the blue cup and place it on the blue bowl"})()
+                             "pick up the blue cup and place it on the large blue bowl"})()
 
     def cmd_set_slot(self, i, d):
         calls.append((i, d))

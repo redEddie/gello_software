@@ -71,6 +71,34 @@ def _known_colors() -> frozenset:
     from gello.scene.props import props_by_id
     return frozenset(p.color for p in props_by_id().values())
 
+
+#: 색인지 사물인지 애매한 색 이름은 "-colored" 를 붙여 쓴다 (2026-09-07
+#: 사용자 확정): pistachio 는 견과·모양으로도 읽히므로 정본 지칭은
+#: "the large pistachio-colored bowl" 이다. blue 같은 기본 색에는 붙이지
+#: 않는다.
+_COLORED_SUFFIX = {"pistachio"}
+
+
+def _color_word(color: str) -> str:
+    """문장에 넣는 색 단어 -- 모호한 이름에는 -colored 를 붙인다."""
+    return f"{color}-colored" if color in _COLORED_SUFFIX else color
+
+
+def _color_token(raw: str) -> Optional[str]:
+    """지칭 구의 색 문자열을 인벤토리 색으로 정규화한다.
+
+    _COLORED_SUFFIX 의 색은 "-colored" 형태만 인정한다 -- "pistachio" 단독은
+    모양인지 색인지 애매해서 새 문장을 lint 가 받지 않게 한다.
+    """
+    if raw in _known_colors() and raw not in _COLORED_SUFFIX:
+        return raw
+    suffix = "-colored"
+    if raw.endswith(suffix):
+        base = raw[: -len(suffix)]
+        if base in _COLORED_SUFFIX and base in _known_colors():
+            return base
+    return None
+
 # category -> 사람 문법의 명사구. 새 category 는 여기 추가 후 사용.
 NOUN_MAP = {
     "cup": "cup",
@@ -156,10 +184,11 @@ _PARSE_PATTERNS = [
     # 앞), "the {색} large bowl" 은 2026-09-07 이전 수집분 때문에 남긴다.
     (re.compile(r"^the\s+large\s+(.+?)\s+bowl$"), "large_bowl"),
     (re.compile(r"^the\s+(.+?)\s+large\s+bowl$"), "large_bowl"),
-    # "the {색} bowl": 색으로 category 를 해소한다 -- 그 색이 bowl(15cm)
-    # 소품의 색이면 bowl, 아니면 legacy 약칭대로 large_bowl. selftest 가
-    # 두 category 의 색 겹침을 금지하므로 이 해소는 항상 유일하다.
-    (re.compile(r"^the\s+(.+?)\s+bowl$"), "_bowl_alias"),
+    # "the {색} bowl": bowl(15cm) 소품의 색으로만 해소한다. large_bowl 약칭은
+    # 폐지 (2026-09-07 사용자 확정) -- large 그릇은 지칭에 반드시 크기
+    # ("large")를 넣는다. 에피소드에 약칭으로 기록된 것이 0건이라 읽기
+    # 하위호환도 필요 없다.
+    (re.compile(r"^the\s+(.+?)\s+bowl$"), "bowl"),
     # cup
     (re.compile(r"^the\s+(.+?)\s+cup$"), "cup"),
     # legacy: 색 지칭 커트러리 ("the pink cutlery") -- 옛 계획/데이터
@@ -179,7 +208,8 @@ def _bowl_category_colors() -> frozenset:
 def _parse_object_phrase(phrase: str) -> Optional[tuple[str, str]]:
     """"the blue cup" -> ("blue", "cup"), "the small green bowl" 등도 파싱.
 
-    drawer 는 색 생략. bowl 의 legacy 약칭은 large_bowl 로 간주한다.
+    drawer 는 색 생략. "the {색} bowl" 은 bowl(15cm) 만 가리킨다 --
+    large_bowl 은 크기 지칭이 필수다 (2026-09-07).
     """
     phrase = phrase.strip().lower()
     if not phrase.startswith("the "):
@@ -194,14 +224,14 @@ def _parse_object_phrase(phrase: str) -> Optional[tuple[str, str]]:
     for pat, cat in _PARSE_PATTERNS:
         m = pat.match(phrase)
         if m:
-            color = m.group(1).strip()
             # 색 토큰은 인벤토리의 실제 색만 인정한다. 아니면 다음 패턴으로 --
             # "the small green bowl" 은 2번 패턴(색 green)으로, "the small bowl"
             # 은 어느 패턴에서도 유효한 색이 없어 파싱 실패가 된다.
-            if not color or color not in _known_colors():
+            color = _color_token(m.group(1).strip())
+            if color is None:
                 continue
-            if cat == "_bowl_alias":
-                cat = "bowl" if color in _bowl_category_colors() else "large_bowl"
+            if cat == "bowl" and color not in _bowl_category_colors():
+                continue
             return (color, cat)
     return None
 
@@ -209,8 +239,9 @@ def _parse_object_phrase(phrase: str) -> Optional[tuple[str, str]]:
 def _parse_group_phrase(phrase: str) -> Optional[tuple[str, str]]:
     """집합 지칭 "the pink striped bowls" -> ("pink striped", "bowl").
 
-    개별 지칭(_parse_object_phrase)과 달리 복수 명사구를 받는다. "bowls"
-    약칭은 개별 지칭과 같은 규칙으로 인벤토리에서 해소한다.
+    개별 지칭(_parse_object_phrase)과 달리 복수 명사구를 받는다. "bowls" 는
+    개별 지칭과 같은 규칙으로 bowl(15cm) 색만 해소한다 -- large_bowl 은
+    "the {색} large bowls" 처럼 크기 지칭이 필수다 (2026-09-07).
     """
     phrase = phrase.strip().lower()
     if not phrase.startswith("the "):
@@ -218,11 +249,11 @@ def _parse_group_phrase(phrase: str) -> Optional[tuple[str, str]]:
     rest = phrase[4:].strip()
     for cat, plural in _PLURAL_ORDER:
         if rest.endswith(" " + plural):
-            color = rest[: -(len(plural) + 1)].strip()
-            if not color or color not in _known_colors():
+            color = _color_token(rest[: -(len(plural) + 1)].strip())
+            if color is None:
                 continue
             if cat == "bowl" and color not in _bowl_category_colors():
-                cat = "large_bowl"   # legacy 약칭: "the white bowls"
+                continue
             return (color, cat)
     return None
 
@@ -270,10 +301,11 @@ _SIZE_FIRST = {"small_bowl": ("small", "bowl"),
 
 def _with_color(color: str, category: str) -> str:
     """"{크기} {색} {명사}" -- 크기가 색보다 앞이다."""
+    word = _color_word(color)
     size = _SIZE_FIRST.get(category)
     if size is None:
-        return f"{color} {NOUN_MAP[category]}"
-    return f"{size[0]} {color} {size[1]}"
+        return f"{word} {NOUN_MAP[category]}"
+    return f"{size[0]} {word} {size[1]}"
 
 
 def _zone(md: SceneMetadata, oid: str) -> Optional[tuple]:
@@ -491,7 +523,7 @@ def enumerate_instructions(md: SceneMetadata, props: dict[str, Prop]) -> list[st
     for cat in sorted(_STACKABLE):
         for color in sorted({c for c, _ in by_cat.get(cat, [])}):
             if _count(color, cat, md, props) >= 2:
-                sentences.add(f"stack all the {color} {PLURAL_MAP[cat]}")
+                sentences.add(f"stack all the {_color_word(color)} {PLURAL_MAP[cat]}")
 
     return sorted(sentences)
 
@@ -763,9 +795,9 @@ def selftest() -> None:
     assert "마침표" in lint("open the top drawer.")
 
     # QUALIFIER: 템플릿만 검사(md 없이)
-    assert lint("pick up the blue cup farthest from the yellow bowl "
-                "and place it inside the yellow bowl") is None
-    assert lint("drag the blue cup closest to the white bowl next to the white cup") is None
+    assert lint("pick up the blue cup farthest from the large yellow bowl "
+                "and place it inside the large yellow bowl") is None
+    assert lint("drag the blue cup closest to the large white bowl next to the white cup") is None
     assert lint("pick up the blue cup nearest the bowl and place it on the bowl") is not None
 
     # 두 개의 흰 컵 -> qualifier 없으면 모호, 있으면 허용
@@ -794,17 +826,19 @@ def selftest() -> None:
     assert err is not None and "QUALIFIER" in err, err
     assert lint("pick up the white cup farthest from the small blue bowl "
                 "and place it inside the small blue bowl", md2, props) is None
-    # drag: 큰 그릇도 끌 수 있다
-    assert lint("drag the white bowl next to the blue cup") is None
+    # drag: 큰 그릇도 끌 수 있다 (크기 지칭 필수 -- 2026-09-07)
+    assert lint("drag the large white bowl next to the blue cup") is None
 
-    # legacy "bowl" 약칭 파싱 (관계는 inside -- 그릇 목적지 on 금지)
-    assert lint("pick up the blue cup and place it inside the white bowl") is None
-    assert lint("pick up the small pink bowl and place it inside the white bowl") is None
-    assert lint("pick up the small green bowl and place it inside the yellow bowl") is None
+    # large_bowl 약칭 폐지 (2026-09-07): "the {색} bowl" 은 large 그릇을
+    # 가리키지 못한다 -- 크기 지칭이 빠진 지칭은 lint 가 거부한다.
+    assert lint("pick up the blue cup and place it inside the white bowl") is not None
+    assert lint("pick up the small pink bowl and place it inside the white bowl") is not None
+    assert lint("pick up the blue cup and place it inside the large white bowl") is None
+    assert lint("pick up the small green bowl and place it inside the large yellow bowl") is None
     # 옛 겹침 집합 문장("on the {그릇}")은 strict 에서 거부, 하위호환 모드만 통과
-    err = lint("pick up the blue cup and place it on the white bowl")
+    err = lint("pick up the blue cup and place it on the large white bowl")
     assert err is not None and "inside" in err, err
-    assert lint("pick up the blue cup and place it on the white bowl",
+    assert lint("pick up the blue cup and place it on the large white bowl",
                 strict_relation=False) is None
 
     # 색 토큰 검증 -- 인벤토리에 없는 색/색 아닌 수식어는 파싱 실패
@@ -900,21 +934,28 @@ def selftest() -> None:
     assert lint("stack all the pink striped bowls", md1, props) is not None
     assert lint("stack all the cutlery", md4, props) is not None
     assert lint("stack all the pink striped bowl", md7, props) is not None
-    # 파싱: 복수 어순과 legacy 약칭
+    # 파싱: 복수 어순 -- large_bowl 도 크기 지칭 필수 (2026-09-07)
     assert _parse_group_phrase("the pink striped bowls") == ("pink striped", "bowl")
-    assert _parse_group_phrase("the white bowls") == ("white", "large_bowl")
+    assert _parse_group_phrase("the white large bowls") == ("white", "large_bowl")
+    assert _parse_group_phrase("the white bowls") is None      # 약칭 폐지
     assert _parse_group_phrase("the blue cups") == ("blue", "cup")
     assert _parse_group_phrase("the blue cup") is None      # 단수는 집합 지칭이 아니다
 
-    # bowl(15cm) category (2026-08-31): 색 토큰이 여러 단어여도 동작하고,
-    # "the {색} bowl" 은 인벤토리로 bowl/large_bowl 을 해소한다.
-    assert not (_bowl_category_colors()
-                & {p.color for p in props.values()
-                   if p.category == "large_bowl" and not p.retired}), \
-        "bowl 과 large_bowl 의 색이 겹치면 'the {색} bowl' 해소가 모호해진다"
+    # bowl(15cm) category (2026-08-31): 색 토큰이 여러 단어여도 동작한다.
     assert _parse_object_phrase("the blue japanese bowl") == ("blue japanese", "bowl")
     assert _parse_object_phrase("the pink striped bowl") == ("pink striped", "bowl")
-    assert _parse_object_phrase("the white bowl") == ("white", "large_bowl")  # legacy
+    assert _parse_object_phrase("the white bowl") is None   # large 약칭 폐지
+
+    # 모호한 색 이름은 "-colored" 가 필수 (2026-09-07 사용자 확정):
+    # pistachio 단독은 모양인지 색인지 애매하다.
+    assert _with_color("pistachio", "large_bowl") == "large pistachio-colored bowl"
+    assert _with_color("blue", "large_bowl") == "large blue bowl"
+    assert _parse_object_phrase(
+        "the large pistachio-colored bowl") == ("pistachio", "large_bowl")
+    assert _parse_object_phrase("the large pistachio bowl") is None
+    assert _parse_object_phrase("the pistachio-colored bowl") is None  # 크기 필수
+    assert lint("drag the large pistachio-colored bowl next to the blue cup") is None
+    assert lint("drag the large pistachio bowl next to the blue cup") is not None
     md6 = SceneMetadata(
         scene_id="S006",
         objects=["OBJ-BOWLM-JPN-01", "OBJ-CUP-RED-01", "OBJ-BOWLL-WHT-01"],
