@@ -129,6 +129,11 @@ class ZoneMap(QWidget):
             lab.setText("\n".join(names) if names else EMPTY)
             lab.setStyleSheet(_CELL if names else _CELL_EMPTY)
 
+    def cell_texts(self) -> list:
+        """읽기 순서(왼쪽 위 -> 오른쪽 아래)로 칸의 글."""
+        return [self._cells[(r, c)].text()
+                for (r, c) in sorted(self._cells)]
+
     def _reshape(self, rows: int, cols: int) -> None:
         if self._shape == (rows, cols):
             return
@@ -177,6 +182,12 @@ class InfoCard(QWidget):
         self._rows_col = QVBoxLayout(self._rows)
         self._rows_col.setContentsMargins(0, 0, 0, 0)
         self._rows_col.setSpacing(2)
+        # 글 한 줄만 보여야 하는 때가 있다 ("(scene 세션 없음)", "고르세요",
+        # 읽기 실패). 그때는 필드도 배치도도 없다 -- setText 가 그 모드다.
+        self._msg = WrapLabel("")
+        self._msg.setStyleSheet(_VALUE)
+        self._msg.setVisible(False)
+        self._col.addWidget(self._msg)
         self._col.addWidget(self._rows)
         self._zones = ZoneMap()
         self._zones.setVisible(False)
@@ -186,9 +197,15 @@ class InfoCard(QWidget):
         self._note.setStyleSheet(_CAPTION)
         self._note.setVisible(False)
         self._col.addWidget(self._note)
+        self._fields: list = []
+        self._msg_text = ""
+        self._has_zones = False
 
     def set_fields(self, fields) -> None:
         """``[(라벨, 값), ...]`` -- 값이 빈 줄은 넣지 않는다."""
+        self._msg_text = ""
+        self._msg.setVisible(False)
+        self._fields = [(str(k), "" if v is None else str(v)) for k, v in fields]
         while self._rows_col.count():
             self._rows_col.takeAt(0).widget().deleteLater()
         for label, value in fields:
@@ -197,9 +214,47 @@ class InfoCard(QWidget):
                 continue
             self._rows_col.addWidget(_field_row(label, text, self.WIDE_AT))
 
+    def set_scene(self, md, counts: dict | None = None, extra=None) -> None:
+        """SceneMetadata 하나를 통째로 -- 여섯 화면이 부르는 것이 이 하나다.
+
+        어느 화면에서 scene 을 보든 같은 순서로 같은 것이 나온다. 화면마다
+        무엇을 보여줄지 고르기 시작하면 다시 여섯 가지가 된다.
+        """
+        self.set_fields(scene_fields(md, counts) + list(extra or []))
+        self.set_zones(md.layout, note=tr("[0,0] = 왼쪽 위 (agentview)"))
+
+    def setText(self, text: str) -> None:  # noqa: N802 -- SceneInfoView 호환
+        """글 한 줄 모드 -- 필드도 배치도도 지우고 문장만 보여준다.
+
+        이름이 ``setText`` 인 것은 옛 ``SceneInfoView`` 를 그대로 대신하기
+        위해서다. 부르는 자리 여섯 곳이 "scene 이 있으면 배치도, 없으면
+        안내 문장" 을 같은 위젯에 넣고 있다.
+        """
+        self.set_fields([])
+        self.set_zones(None)
+        self._msg_text = text
+        self._msg.setText(text)
+        self._msg.setVisible(bool(text))
+
+    def text(self) -> str:
+        """지금 보이는 것 전부를 글로 -- 테스트와 로그가 이걸로 확인한다."""
+        # isVisible() 을 쓰지 않는다 -- 창이 아직 안 떠 있으면 언제나
+        # False 라, 화면 없이 도는 테스트에서 늘 빈 글이 나온다 (실측).
+        # 무엇을 보여주기로 했는지는 우리가 안다.
+        parts = []
+        if self._msg_text:
+            parts.append(self._msg_text)
+        parts += [f"{k}: {v}" for k, v in self._fields if v.strip()]
+        if self._has_zones:
+            parts += [t for t in self._zones.cell_texts() if t != EMPTY]
+        if self._note.text():
+            parts.append(self._note.text())
+        return "\n".join(parts)
+
     def set_zones(self, layout: dict | None, note: str = "") -> None:
         """배치도를 켠다. ``layout`` 이 None 이면 끈다."""
         on = bool(layout and (layout.get("placements") or layout.get("grid")))
+        self._has_zones = on
         self._zones.setVisible(on)
         if on:
             self._zones.set_layout_spec(layout)

@@ -107,4 +107,22 @@ md2 = SceneMetadata(scene_id="S002", objects=[CUP], layout=LAYOUT)
 assert "설명" not in [k for k, _ in scene_fields(md2)]
 print("5. scene_fields = 줄 목록 (글 덩어리 아님) OK")
 
+# ------------------------- 6. 옛 SceneInfoView 를 그대로 대신할 수 있는가
+# 부르는 자리 여섯 곳이 "scene 이 있으면 배치도, 없으면 안내 문장" 을 같은
+# 위젯에 넣는다. setText/text() 계약을 지켜야 그 자리를 갈아 끼울 수 있고,
+# 화면 없이 도는 테스트들(test_right_scene, test_doctor_tab, test_diversity_
+# cloud)이 .text() 로 내용을 확인한다.
+card4 = InfoCard()
+card4.set_scene(md, counts={"I000": {"usable": 2, "total": 5}})
+t = card4.text()
+assert "S001" in t and "CUP-BLU-01" in t and "I000 2/5" in t, t
+# isVisible() 에 기대면 창이 안 뜬 채로는 늘 빈 글이 나온다 -- 실제로 그랬다.
+assert not card4.isVisible(), "이 검사는 창을 띄우지 않은 상태여야 뜻이 있다"
+card4.setText("(scene 세션 없음)")
+assert card4.text() == "(scene 세션 없음)", card4.text()
+assert "S001" not in card4.text(), "글 모드인데 필드가 남았다"
+card4.set_scene(md)
+assert "S001" in card4.text() and "세션 없음" not in card4.text(), card4.text()
+print("6. setText/text() 로 SceneInfoView 를 대신할 수 있다 OK")
+
 print("\n정보 표시 모듈 계약 통과")
