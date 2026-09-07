@@ -48,6 +48,7 @@ from apps.workspace.features.camera import build_cloud_tab, build_depth_tab
 from apps.workspace.features.gallery import build_gallery_tab
 from apps.workspace.features.playback import build_trim_tab
 from apps.workspace.features.scene.layout_tab import build_layout_tab
+from apps.workspace.features.doctor.progress_tab import build_progress_tab
 from apps.workspace.features.doctor.record_tab import build_record_tab
 from apps.workspace.features.scene.plan_tab import build_plan_tab
 from apps.workspace.features.scene.scene_tab import build_scene_tab
@@ -184,6 +185,7 @@ def build_center(win) -> None:
         "instruction": build_plan_tab(win),
         "scene": build_scene_tab(win),
         "doc_record": build_record_tab(win),
+        "doc_progress": build_progress_tab(win),
         "playback": play,
         "analysis": build_analysis_tab(win),
         "trim": build_trim_tab(win),

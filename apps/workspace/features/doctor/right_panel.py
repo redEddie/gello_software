@@ -33,6 +33,13 @@ SCENE_ACTIONS = (
      "나란히 봅니다. 에피소드는 바뀌지 않습니다."),
 )
 
+#: 진행 닥터의 조치. 여기 처방은 "고쳐라" 가 아니라 "찍으러 가라" 하나다.
+SHORTFALL_ACTIONS = (
+    ("go_collect", "수집으로",
+     "이 scene 과 지시문을 시작 설정으로 걸고 Collect 화면으로 갑니다. "
+     "책상을 위 배치대로 만든 뒤 누르세요."),
+)
+
 TASK_ACTIONS = (
     ("edit_task_text", "문장 고치기...",
      "동작을 고르고 문장을 고릅니다 (문법이 만든 것만). 이 지시문의 "
@@ -121,6 +128,19 @@ def build_doctor_right(win) -> QWidget:
     win.doctor_scene_diag = _slot(dv, tr("맞지 않는 것"))
     win.doctor_scene_cost = _slot(dv, tr("수정 영향"))
     col.addWidget(dbox)
+
+    # --- Shortfall (진행 닥터) -----------------------------------------
+    pbox = QGroupBox(tr("Shortfall"))
+    pv = QVBoxLayout(pbox)
+    pv.setContentsMargins(6, 6, 6, 6)
+    win.progress_card = InfoCard()
+    pv.addWidget(win.progress_card)
+    win.progress_note = _slot(pv, tr("이어 찍으면"))
+    pv.addWidget(_rule())
+    win.progress_buttons = {}
+    _buttons(win, pv, SHORTFALL_ACTIONS, win.progress_buttons)
+    win.progress_box = pbox
+    col.addWidget(pbox)
 
     # --- Instruction ---------------------------------------------------
     tbox = QGroupBox(tr("Instruction"))

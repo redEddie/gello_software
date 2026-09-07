@@ -559,6 +559,9 @@ class WorkspaceWindow(QMainWindow):
             # 그 뒤에는 [다시 검사] 로만 다시 한다.
             show_center_tab(self, "doc_record")
             self.doctor.rescan()
+            # 진행 닥터는 읽기만 하므로 수집 중에도 센다 -- "다음에 무엇을
+            # 찍지" 는 오히려 그때 묻는 질문이다.
+            self.doctor.refresh_progress()
         elif key == "stats":
             self.stats_ops.refresh_stats()
             self.stats_ops.refresh_history()

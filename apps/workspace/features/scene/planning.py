@@ -118,11 +118,19 @@ class ScenePlanningOps:
         data = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
         if not data:
             return                      # scene 머리줄 -- 고를 것이 없다
-        sid, iid, instr = data
+        self.pick_start(*data)
+
+    def pick_start(self, sid: str, iid: str, instr: str) -> bool:
+        """scene·지시문을 시작 설정으로 건다. 성공하면 True.
+
+        Instruction 탭의 줄 클릭이 쓰던 것을 함수로 뺐다 -- 진행 닥터가 미달
+        목록에서 같은 일을 한다 (2026-09-07). 고르는 자리가 둘이어도 거는
+        방법은 하나여야 한다.
+        """
         if self.win.worker is not None:
             self.win.log("[지시문] 수집 중에는 시작 설정을 바꿀 수 없습니다 "
                          "(세션을 끝낸 뒤 고르세요)")
-            return
+            return False
         combo = self.win.scene_combo
         for i in range(combo.count()):
             if combo.itemData(i) == sid:
@@ -130,12 +138,13 @@ class ScenePlanningOps:
                 break
         else:
             self.win.log(f"[지시문] {sid} 파일이 아직 없습니다 -- scene 을 먼저 만드세요")
-            return
+            return False
         self.win.scene_iid_edit.setText(iid)
         self.win.lang_edit.setText(instr)
         self.refresh_start_instruction()
         self.win.collection.refresh_instruction()
         self.win.log(f"[지시문] 시작 설정: {sid} · {iid} — {instr}")
+        return True
 
     def refresh_start_instruction(self) -> None:
         """Configure 의 "시작 지시문" 한 줄과 계획 없음 경고를 갱신한다.

@@ -7,7 +7,8 @@
     "나는 이 계획을 채운다"        <-> 계획의 목표 수   진행 닥터 (#48)
     "초록 그릇이 이렇게 놓여 있다" <-> 문장과 기준 사진 기록 닥터 (#50)
 
-지금 있는 것은 기록 닥터뿐이다. 나머지 둘이 붙을 자리는 중앙 탭이고,
+기록 닥터와 진행 닥터가 있다. 처방이 다르다 -- 기록은 파일을 고치고, 진행은
+고칠 것이 없어서 "더 찍어라" 뿐이다 (그래서 조작자를 그 scene 으로 데려간다). 나머지 둘이 붙을 자리는 중앙 탭이고,
 활동탭은 하나다 -- 운용자에게는 "내 데이터셋 어디가 잘못됐나" 라는 하나의
 질문이라 세 군데를 뒤지게 하면 안 된다.
 
@@ -15,6 +16,8 @@
 """
 from apps.workspace.features.doctor.ops import DoctorOps
 from apps.workspace.features.doctor.page import build_doctor
+from apps.workspace.features.doctor.progress_tab import build_progress_tab
 from apps.workspace.features.doctor.record_tab import build_record_tab
 
-__all__ = ["DoctorOps", "build_doctor", "build_record_tab"]
+__all__ = ["DoctorOps", "build_doctor", "build_progress_tab",
+           "build_record_tab"]

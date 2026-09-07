@@ -28,6 +28,7 @@ from gello.scene.instruction_grammar import (
     skill_of,
 )
 from gello.scene.props import props_by_id
+from gello.scene.collection_progress import scan
 from gello.scene.scene_format import (
     iter_scene_files,
     read_reference_image,
@@ -53,6 +54,7 @@ class DoctorOps:
         self._scene_id = ""
         self._suggestion = None
         self._task = None          # (instruction_id, 문장)
+        self._shortfall = None     # 진행 닥터에서 고른 줄
 
     # ------------------------------------------------------------- 검사
     def _root(self) -> Path:
@@ -137,18 +139,22 @@ class DoctorOps:
         show_center_tab(win, "doc_record")
 
     def _show_photo(self, path: Path) -> None:
+        self._photo(self.win.doctor_photo, path)
+
+    def _photo(self, label, path: Path) -> None:
+        """기준 사진을 라벨에 넣는다. 기록 닥터와 진행 닥터가 함께 쓴다."""
         win = self.win
         try:
             img = read_reference_image(path)
         except Exception:  # noqa: BLE001
             img = None
         if img is None:
-            win.doctor_photo.clear()
-            win.doctor_photo.setText(tr("기준 사진 없음"))
+            label.clear()
+            label.setText(tr("기준 사진 없음"))
             return
         pm = np_to_pixmap(img)
-        win.doctor_photo.setText("")
-        win.doctor_photo.setPixmap(pm.scaledToWidth(
+        label.setText("")
+        label.setPixmap(pm.scaledToWidth(
             PHOTO_W, Qt.TransformationMode.SmoothTransformation))
 
     def _fill_tasks(self, path: Path, props, md_scene_id: str) -> None:
@@ -534,3 +540,125 @@ class DoctorOps:
                 "표에서 고칠 지시문 줄을 먼저 누르세요."))
             return False
         return True
+
+    # ======================================================== 진행 닥터
+    def refresh_progress(self) -> None:
+        """계획과 파일을 대조해 미달 목록을 채운다.
+
+        수집 중에도 **막지 않는다** -- 기록 닥터와 다른 점이다. 저쪽은 고치는
+        화면이라 세션 중에 파일을 건드리면 안 되지만, 이쪽은 읽기만 하고
+        "다음에 무엇을 찍지" 는 오히려 수집 중에 묻는 질문이다. 지금 쓰고 있는
+        파일 하나는 잠겨서 못 읽는데, 그건 잠겼다고 적는다 (scan 이 처리한다).
+        """
+        win = self.win
+        tree = getattr(win, "progress_tree", None)
+        if tree is None:
+            return
+        root = self._root()
+        plan = dataset_plan_path(root)
+        tree.clear()
+        self._shortfall = None
+        if not plan.is_file():
+            win.progress_title.setText(tr("지시문 파일 없음"))
+            win.progress_hint.setText(tr(
+                "{p} 가 없습니다. Configure 에서 지시문을 먼저 적으세요.")
+                .format(p=plan.name))
+            self._show_shortfall_detail()
+            return
+        try:
+            prog = scan(root, plan)
+        except Exception as e:  # noqa: BLE001
+            win.progress_title.setText(tr("계획을 읽지 못했습니다"))
+            win.progress_hint.setText(str(e))
+            return
+
+        win.progress_title.setText(tr(
+            "지시문 {t}개 · {u}/{g} 에피소드 ({p}%) · 목표 미달 {n}개").format(
+                t=prog.tasks, u=prog.usable, g=prog.target,
+                p=prog.percent, n=len(prog.shortfalls)))
+        for sf in prog.shortfalls:
+            state = (tr("못 읽음") if sf.unreadable else
+                     tr("파일 없음") if sf.missing_file else str(sf.remaining))
+            it = QTreeWidgetItem([sf.scene_id, sf.instruction_id,
+                                  f"{sf.usable}/{sf.target}", state,
+                                  sf.instruction])
+            it.setData(0, Qt.ItemDataRole.UserRole, sf)
+            tree.addTopLevelItem(it)
+        win.progress_hint.setText(
+            tr("모두 채웠습니다.") if not prog.shortfalls else tr(
+                "줄을 눌러 배치를 확인한 뒤 [수집으로] 를 누르세요."))
+        self._show_shortfall_detail()
+
+    def on_shortfall_picked(self, item) -> None:
+        sf = item.data(0, Qt.ItemDataRole.UserRole) if item else None
+        self._shortfall = sf
+        win = self.win
+        if sf is None:
+            return
+        path = self._path(sf.scene_id)
+        if path.is_file():
+            self._photo(win.progress_photo, path)
+            try:
+                win.progress_zones.set_layout_spec(
+                    read_scene_metadata(path).layout)
+            except Exception:  # noqa: BLE001 -- 잠긴 파일일 수 있다
+                win.progress_zones.set_layout_spec(None)
+        else:
+            win.progress_photo.clear()
+            win.progress_photo.setText(tr("아직 만들지 않은 scene 입니다"))
+            win.progress_zones.set_layout_spec(None)
+        self._show_shortfall_detail()
+
+    def _show_shortfall_detail(self) -> None:
+        win = self.win
+        card = getattr(win, "progress_card", None)
+        if card is None:
+            return
+        sf = self._shortfall
+        note, buttons = win.progress_note, win.progress_buttons
+        if sf is None:
+            card.set_fields([(tr("지시문"), tr("미선택"))])
+            note.setText("—")
+            for b in buttons.values():
+                b.setEnabled(False)
+            return
+        card.set_fields([
+            (tr("Scene"), sf.scene_id),
+            (tr("지시문"), sf.instruction_id),
+            (tr("수집"), f"{sf.usable}/{sf.target}"),
+            (tr("남음"), str(sf.remaining)),
+            (tr("문장"), sf.instruction),
+        ])
+        # 이어 찍으면 그 파일의 버전이 유지된다. 지금은 연결한 뒤 로그
+        # 한 줄로 알게 되는데, 누르기 전에 말하는 편이 낫다.
+        note.setText(
+            tr("아직 만들지 않은 scene 입니다 — 새로 만들면서 찍습니다.")
+            if sf.missing_file else
+            tr("읽지 못했습니다 — {why}. 수집한 수를 모릅니다 "
+               "(0개가 아닙니다).").format(why=sf.reason)
+            if sf.unreadable else
+            tr("{sid} 는 {v} 입니다 — 여기서 찍은 것도 그 버전을 유지합니다.")
+            .format(sid=sf.scene_id, v=sf.version))
+        for b in buttons.values():
+            b.setEnabled(not sf.unreadable)
+
+    def go_collect(self) -> None:
+        """이 scene·지시문을 시작 설정으로 걸고 Collect 로 데려간다."""
+        win = self.win
+        sf = self._shortfall
+        if sf is None:
+            return
+        if win.worker is not None:
+            QMessageBox.information(win, tr("수집 중"), tr(
+                "세션을 끝낸 뒤 다른 지시문으로 옮기세요."))
+            return
+        try:
+            if not win.scene_planning.pick_start(
+                    sf.scene_id, sf.instruction_id, sf.instruction):
+                return
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(win, tr("시작 설정 실패"), str(e))
+            return
+        win.log(f"[닥터] {sf.scene_id} {sf.instruction_id} 로 시작 설정 "
+                f"({sf.usable}/{sf.target}, {sf.remaining}개 남음)")
+        win._set_activity("collect")

@@ -84,6 +84,7 @@
       "Instruction",
       "Scene",
       "기록 닥터",
+      "진행 닥터",
       "Playback",
       "Analysis",
       "Trim",
@@ -177,6 +178,7 @@
     "instruction",
     "scene",
     "doc_record",
+    "doc_progress",
     "playback",
     "analysis",
     "trim",
@@ -207,6 +209,7 @@
     ],
     "doctor": [
       "doc_record",
+      "doc_progress",
       "live"
     ],
     "stats": [
