@@ -83,9 +83,33 @@ def audit_scene(path: Path, props: "dict[str, Prop] | None" = None, *,
     out: list[Violation] = []
     with h5py.File(path, "r") as f:
         for iid, (text, n) in sorted(_episode_tasks(f).items()):
-            msg = lint(text, md, props, strict_relation=strict_relation)
-            if msg:
+            # 한 지시문이 두 가지로 틀릴 수 있다 (어순이 뒤집혔고 관계도
+            # 틀린 문장). 사유마다 한 줄씩 낸다.
+            for msg in _messages(text, md, props, strict_relation):
                 out.append(Violation(md.scene_id, iid, text, msg, n))
+    return out
+
+
+#: 어순은 lint 오류가 아니다 -- 파서는 옛 수집분을 계속 읽어야 한다. 그래서
+#: 문법이 아니라 여기서 사유로 얹는다 (reversed_adjectives 참고).
+ORDER_MSG = ("영어 어순이 뒤집혔습니다 -- 크기가 색보다 앞이어야 합니다 "
+             "(small blue bowl)")
+
+
+def _messages(text: str, md, props: dict, strict_relation: bool) -> list:
+    """이 문장이 걸리는 사유 전부.
+
+    **어순을 여기 넣는 것이 중요하다.** 전에는 explain_scene 에만 있어서
+    scene 목록의 "문제" 열과 표의 ⚠ 는 어순을 모르고, 진단 칸만 알았다 --
+    화면이 "문제 없음" 이라고 말하는데 609 에피소드의 어순이 뒤집혀 있었다
+    (2026-09-07 사용자: "doctor 에서 틀린거 없다는데요?").
+    """
+    out = []
+    msg = lint(text, md, props, strict_relation=strict_relation)
+    if msg:
+        out.append(msg)
+    if reversed_adjectives(text):
+        out.append(ORDER_MSG)
     return out
 
 
@@ -369,16 +393,6 @@ def explain_scene(path: Path, props: "dict[str, Prop] | None" = None,
         t, e = per.get(key, (0, 0))
         per[key] = (t + 1, e + v.episodes)
 
-    # 어순은 lint 가 아니라 여기서 센다 (reversed_adjectives 참고).
-    with h5py.File(path, "r") as f:
-        for iid, (text, n) in _episode_tasks(f).items():
-            bad = reversed_adjectives(text)
-            if not bad:
-                continue
-            key = ("영어 어순이 뒤집혔습니다 -- 크기가 색보다 앞이어야 "
-                   "합니다 (small blue bowl)")
-            t, e = per.get(key, (0, 0))
-            per[key] = (t + 1, e + n)
     if not per:
         return []
 

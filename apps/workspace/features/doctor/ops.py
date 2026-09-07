@@ -95,8 +95,11 @@ class DoctorOps:
             except Exception as e:  # noqa: BLE001
                 win.log(f"[닥터] {path.name} 을 읽지 못했습니다: {e}")
                 continue
-            rows.append((md.scene_id, eps, len(vs)))
-            bad_total += len(vs)
+            # 지시문 수로 센다 -- 한 지시문이 두 가지로 틀릴 수 있는데
+            # (어순 + 관계) 그것은 두 건이 아니라 한 줄의 문제다.
+            n_bad = len({v.instruction_id for v in vs})
+            rows.append((md.scene_id, eps, n_bad))
+            bad_total += n_bad
         fill_scene_rows(win, rows)
         win.doctor_hint.setText(
             tr("문제 없음 · scene {n}개 검사").format(n=len(rows))
