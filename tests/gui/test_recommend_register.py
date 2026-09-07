@@ -154,17 +154,42 @@ print("\nRecommendDialog 문장/등록 + SceneComposer lint 검증 통과")
 import os  # noqa: E402
 
 
-# ---- 계획이 없을 때: 조용히 건너뛰지 말고 왜 못 하는지 보여준다 (2026-09-04) ----
+# ---- 경로를 모를 때: 조용히 건너뛰지 말고 왜 못 하는지 보여준다 (2026-09-04) ----
 #    숨기면 조작자는 추천을 채택하고도 문장이 어디에도 안 남은 것을 한참 뒤에야
 #    안다. 실제로 그렇게 겪었다.
 rd_noplan = RecommendDialog(None, [base], props, "S998")      # plan_path 없음
 cb = rd_noplan._register_check
-assert cb is not None, "계획이 없을 때 등록 체크박스를 아예 숨기고 있다"
+assert cb is not None, "경로가 없을 때 등록 체크박스를 아예 숨기고 있다"
 assert not cb.isEnabled(), "등록할 곳이 없는데 체크박스가 켜져 있다"
 assert not cb.isChecked(), "꺼져 있어야 한다 -- accept 경로가 이것을 본다"
-assert "Configure" in cb.text(), f"어떻게 해야 하는지 안 적혀 있다: {cb.text()!r}"
 assert cb.toolTip(), "왜 못 하는지 설명이 없다"
-print("계획 미선택 시 등록 불가 이유를 보여준다 OK")
+# **없는 조작을 시키지 않는다.** 지시문 파일을 고르는 자리는 2026-09-06 에
+# 없어졌다 (고정 파일명 instructions.json 하나다). 그런데 이 문구만
+# "Configure 에서 지시문 파일을 먼저 고르세요" 로 남아 있었고, 이 테스트가
+# 그것을 지키고 있었다 (2026-09-07 조작자 지적).
+assert "고르세요" not in cb.text(), f"없는 조작을 시킨다: {cb.text()!r}"
+print("경로를 모를 때 등록 불가 이유를 보여준다 OK")
+
+# ---- 지시문 파일이 **아직 없어도** 등록되면 만들어진다 (2026-09-07) ----
+#    새 데이터셋에서 첫 scene 을 짤 때, 배치와 문장을 한 번에 등록할 수 있어야
+#    한다. 전에는 [지시문 편집...] 으로 빈 파일을 먼저 만들고 와야 했다.
+import tempfile as _tf  # noqa: E402
+
+fresh = Path(_tf.mkdtemp(prefix="noplan_")) / "instructions.json"
+assert not fresh.exists()
+rd_fresh = RecommendDialog(None, [base], props, "S500", plan_path=fresh)
+assert rd_fresh._register_check.isEnabled(), \
+    "파일이 없다고 등록을 막는다 -- 없으면 만들면 된다"
+assert rd_fresh._register_check.isChecked(), "기본으로 켜져 있어야 한다"
+_wait_recs(rd_fresh)
+_md = rd_fresh._recs[0]["md"]
+assert rd_fresh._register_plan(_md, ["pick up the blue cup and place it inside the white bowl"]), \
+    "파일이 없을 때 등록이 실패했다"
+assert fresh.is_file(), "등록했는데 지시문 파일이 안 만들어졌다"
+_raw = json.loads(fresh.read_text(encoding="utf-8"))
+assert _raw["plan_version"] == 1, _raw
+assert [sc for sc in _raw["scenes"] if sc["scene_id"] == _md.scene_id], _raw
+print("지시문 파일이 없어도 등록하면 만들어진다 OK")
 
 # ---- 7. 워크플로 ②: 물체는 사람이 고르고 배치만 추천 (2026-09-06) ----
 # 버튼 자체는 우측 패널에 있고(2026-09-07), 누를 수 있는지를 아는 것은

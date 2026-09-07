@@ -243,18 +243,26 @@ class RecommendDialog(QDialog):
                 .format(n=self._plan_path.name))
             self._register_check.setChecked(True)
         else:
-            # 계획이 없으면 등록할 곳이 없다. 그래도 체크박스를 **보여준다** --
-            # 숨기면 조작자는 추천을 채택하고도 문장이 어디에도 안 남은 것을
-            # 한참 뒤에야 안다 (2026-09-04 에 실제로 그렇게 됐다). 왜 못 하는지
-            # 와 어떻게 해야 하는지를 그 자리에서 말한다.
+            # 여기는 **경로 자체를 모를 때**다 -- GUI 에서는 나오지 않는다
+            # (Configure 가 늘 데이터셋 폴더의 instructions.json 경로를
+            # 넘긴다. 파일이 없으면 등록할 때 만든다). 대화상자를 경로 없이
+            # 만드는 경우(테스트·스크립트)를 위한 방어다.
+            #
+            # 전에는 문구가 "Configure 에서 지시문 파일을 먼저 고르세요" 였다.
+            # 고르는 자리는 9/6 에 없어졌는데(지시문은 고정 파일명 하나다)
+            # 문구만 남아, 있지도 않은 조작을 시키고 있었다 (2026-09-07).
+            #
+            # 그래도 숨기지는 않는다 -- 숨기면 조작자는 추천을 채택하고도
+            # 문장이 어디에도 안 남은 것을 한참 뒤에야 안다 (2026-09-04 에
+            # 실제로 그렇게 됐다).
             self._register_check = QCheckBox(
-                tr("지시문에 등록 — Configure 에서 지시문 파일을 먼저 고르세요"))
+                tr("지시문에 등록 — 데이터셋 저장 경로가 없어 할 수 없습니다"))
             self._register_check.setChecked(False)
             self._register_check.setEnabled(False)
             self._register_check.setStyleSheet("color:#e67e22;")
             self._register_check.setToolTip(tr(
-                "지금은 지시문 파일이 선택돼 있지 않아 문장을 등록할 곳이 없습니다. "
-                "채택해도 배치만 반영되고 문장은 남지 않습니다."))
+                "이 대화상자가 데이터셋 경로 없이 열렸습니다. 채택해도 배치만 "
+                "반영되고 문장은 남지 않습니다."))
         # 등록 체크박스는 문장과 함께 있어야 뜻이 통한다 -- 2단계에만 둔다.
         p1.addWidget(self._register_check)
         self._stack.addWidget(page1)
@@ -548,6 +556,15 @@ class RecommendDialog(QDialog):
         path = self._plan_path
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("최상위가 매핑이 아니다")
+        except FileNotFoundError:
+            # 파일이 아직 없는 것은 막을 사유가 아니다 -- 없으면 만든다.
+            # collection_plan.ensure_scene 과 같은 규칙이다 (새 scene 을
+            # 만들 때도 지시문 파일이 없으면 그 자리에서 만든다). 전에는
+            # 여기서 "읽기 실패" 를 띄웠고, 그래서 새 데이터셋에서는 추천
+            # 문장을 한 번에 등록할 수 없었다 (2026-09-07 조작자 지적).
+            raw = {"plan_version": 1, "scenes": []}
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, tr("지시문 읽기 실패"), str(e))
             return False

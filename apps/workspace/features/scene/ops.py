@@ -128,10 +128,14 @@ class SceneOps:
             QMessageBox.warning(self.win, tr("경로 오류"),
                                 tr("저장 경로를 확인하세요: {e}").format(e=e))
             return
-        # 계획은 데이터셋 폴더 안 instructions.json 하나뿐이다 (고정 파일명).
-        pp = dataset_plan_path(root)
+        # 지시문은 데이터셋 폴더 안 instructions.json 하나뿐이다 (고정 파일명).
+        # **파일이 아직 없어도 경로는 넘긴다** -- 없으면 만들면 되는 것이지
+        # 등록을 막을 사유가 아니다 (2026-09-07 조작자 지적). 전에는
+        # ``pp if pp.is_file() else None`` 이라, 새 데이터셋에서 추천을 받으면
+        # "Configure 에서 지시문 파일을 먼저 고르세요" 라는 회색 체크박스를
+        # 만났다 -- 그런 자리는 9/6 에 없어졌는데 문구만 남아 있었다.
         self.win.scene_composer.set_context(
-            sid, root, pp if pp.is_file() else None,
+            sid, root, dataset_plan_path(root),
             STATION.name, self.win.schema_version)
         self.win.scene_compose_hint.setText("")
         show_center_tab(self.win, "scene")
@@ -194,16 +198,12 @@ class SceneOps:
         # 다음 번호로 갈아 끼워 둔다 -- 연달아 여러 개를 짜는 것이 이 화면의
         # 새 용도다.
         self.win.scene_composer.set_context(
-            next_scene_id(root), root, self.dataset_plan_path_or_none(root),
+            next_scene_id(root), root, dataset_plan_path(root),
             STATION.name, self.win.schema_version)
         # 지시문을 적으러 보낸다. scene 을 만든 사람의 다음 질문이 늘
         # "여기서 무엇을 시키지?" 라서, 그 화면으로 데려다 주는 편이 낫다.
         self.win.scene_planning.refresh_plan_progress()
         show_center_tab(self.win, "instruction")
-
-    def dataset_plan_path_or_none(self, root: Path):
-        pp = dataset_plan_path(root)
-        return pp if pp.is_file() else None
 
     def scene_config_from_ui(self):
         """Connect 시점의 scene 설정 검증. (meta, scene_id, resume, error) --
