@@ -37,6 +37,7 @@ from apps.workspace.constants import (
     workflow_step,
 )
 from .page_builders import PAGE_BUILDERS
+from .right_builders import RIGHT_BUILDERS
 
 # Tab builders are imported here rather than through the package __init__ to
 # avoid a circular import (this module is re-exported by __init__, and the tabs
@@ -47,6 +48,7 @@ from apps.workspace.features.camera import build_cloud_tab, build_depth_tab
 from apps.workspace.features.gallery import build_gallery_tab
 from apps.workspace.features.playback import build_trim_tab
 from apps.workspace.features.scene.layout_tab import build_layout_tab
+from apps.workspace.features.doctor.record_tab import build_record_tab
 from apps.workspace.features.scene.plan_tab import build_plan_tab
 from apps.workspace.features.scene.scene_tab import build_scene_tab
 
@@ -181,6 +183,7 @@ def build_center(win) -> None:
         "live": live,
         "instruction": build_plan_tab(win),
         "scene": build_scene_tab(win),
+        "doc_record": build_record_tab(win),
         "playback": play,
         "analysis": build_analysis_tab(win),
         "trim": build_trim_tab(win),
@@ -242,14 +245,25 @@ def build_right(win) -> None:
     col = QVBoxLayout(win.right_panel)
     col.setContentsMargins(6, 6, 6, 6)
 
-    # 여기 두는 것은 "지금 쌓이는 데이터의 값"이다 (2026-09-06 결정).
-    # 장치가 살아 있는가는 상태바가(별도 프로세스의 생사), 지금 어느 단계인가는
-    # 헤더가 맡는다. 그래서 Robot 그룹(연결·노드·상태)과 Recording 의 '기록'
-    # 줄이 빠졌다 -- 셋 다 다른 자리에서 이미 말하고 있었다.
+    # **우측 패널은 활동탭마다 자기 구현을 갖는다** (2026-09-07 사용자 결정).
+    #
+    # 공용 정보 상자를 활동에 따라 골라 보여주는 자리가 아니다. 그 방식은
+    # 한 번 만들어 봤다가 버렸다 -- 화면은 똑같아 보이는데 패널이 무엇을
+    # 하는 곳인지가 활동마다 달라지고, "이 활동에 필요한 정보" 라는 기준은
+    # 무엇이든 통과시켜서 결국 다시 전부 쌓인다.
+    #
+    # 그래서 왼쪽 패널과 같은 구조다: 활동마다 페이지 하나, RIGHT_BUILDERS
+    # 에 등록된 활동은 자기 위젯을 짓고, 없는 활동은 아래의 세션 페이지를
+    # 함께 쓴다. Doctor 가 첫 구현이고(고른 지시문에 하는 일), 나머지는
+    # 차례로 자기 것을 갖게 된다.
+    #
+    # 세션 페이지 -- 지금 쌓이는 데이터의 값. 장치가 살아 있는가는 상태바가
+    # (별도 프로세스의 생사), 지금 어느 단계인가는 헤더가 맡는다. 그래서
+    # Robot 그룹(연결·노드·상태)과 Recording 의 '기록' 줄이 빠졌다.
     win.right_fields = {}
-    for title, keys in (
-        ("Camera", (("cam_agent", "Agent"), ("cam_wrist", "Wrist"), ("fps", "FPS"))),
-        ("Recording", (("episode", "마지막 에피소드"), ("frames", "프레임"))),
+    for box_key, title, keys in (
+        ("camera", "Camera", (("cam_agent", "Agent"), ("cam_wrist", "Wrist"), ("fps", "FPS"))),
+        ("recording", "Recording", (("episode", "마지막 에피소드"), ("frames", "프레임"))),
         # 파일과 스키마가 한 칸에 같이 있어야 "지금 어디에, 어떤 형식으로
         # 쌓이는가"가 한눈에 잡힌다. 세션 중에는 그 세션의 값이, 아닐 때는
         # 트리에서 고른 파일의 값이 뜬다.
@@ -258,7 +272,7 @@ def build_right(win) -> None:
         # 이름이다. 데이터셋 하나가 여러 버전을 담을 수 있게 된 뒤로는
         # (knu-1.1.0 부터, 이슈 #12) 파일마다 다를 수 있어서, 미리 볼 때
         # 이 줄이 없으면 어느 규약으로 읽어야 하는지 알 수 없다.
-        ("Dataset", (("ds_file", "파일"), ("ds_task", "태스크"),
+        ("dataset", "Dataset", (("ds_file", "파일"), ("ds_task", "태스크"),
                      ("ds_episodes", "에피소드"), ("ds_schema", "스키마"),
                      ("ds_action", "액션 공간"),
                      ("ds_gripper", "그리퍼 규약"), ("ds_image", "이미지"),
@@ -313,9 +327,37 @@ def build_right(win) -> None:
     sv.addWidget(win.right_scene_view)
     col.addWidget(scene_box)
 
+    # 닥터에서 고른 지시문(task) 한 줄의 상세와, 그 줄에 하는 일.
     # System(CPU/GPU/Memory) 자리표시 상자를 뺐다 (2026-09-06). 값이 늘 "-"
     # 였고 우측 패널 높이의 1/8 을 썼다. 디스크 사용량은 Statistics 에 있다.
     col.addStretch()
+
+    # 활동마다 페이지 하나. RIGHT_BUILDERS 에 없는 활동은 세션 페이지를
+    # 함께 쓴다 (인덱스를 나눠 갖는다 -- 위젯은 부모가 하나뿐이라 복제할
+    # 수 없고, 복제할 이유도 없다).
+    win.right_stack = QStackedWidget()
+    win.right_pages = {}
+    session_idx = win.right_stack.count()
+    win.right_stack.addWidget(_wrap_right(win.right_panel))
+    for key, _icon, _title, _tip in ACTIVITIES:
+        build = RIGHT_BUILDERS.get(key)
+        if build is None:
+            win.right_pages[key] = session_idx
+            continue
+        win.right_pages[key] = win.right_stack.count()
+        win.right_stack.addWidget(_wrap_right(build(win)))
+
+
+def _wrap_right(page: QWidget) -> QWidget:
+    """우측 페이지의 공통 껍데기 -- 세로 스크롤, 가로 스크롤 없음."""
+    page.setMinimumWidth(200)
+    relax_min_widths(page)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setWidget(page)
+    return scroll
 
 
 
@@ -398,23 +440,16 @@ def build_layout(win) -> None:
 
     win.upper_split = QSplitter(Qt.Orientation.Horizontal)
     win.left_stack.setMinimumWidth(200)
-    win.right_panel.setMinimumWidth(200)
-    # 배치도가 붙으면서 패널이 창보다 길어질 수 있다 -- 세로 스크롤로
-    # 감싼다 (가로는 원칙대로 없음, 내용이 접힌다).
-    relax_min_widths(win.right_panel)
-    right_scroll = QScrollArea()
-    right_scroll.setWidgetResizable(True)
-    right_scroll.setFrameShape(QFrame.Shape.NoFrame)
-    right_scroll.setHorizontalScrollBarPolicy(
-        Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    right_scroll.setWidget(win.right_panel)
-    right_scroll.setMinimumWidth(200)
-    win.right_scroll = right_scroll
+    # 스크롤은 페이지마다 _wrap_right 가 씌웠다 (패널이 창보다 길어질 수
+    # 있다 -- 가로는 원칙대로 없고 내용이 접힌다).
+    win.right_stack.setMinimumWidth(200)
+    # 옛 이름 -- 우측 패널을 통째로 가리키던 코드가 아직 있다.
+    win.right_scroll = win.right_stack
     win.center_tabs.setMinimumWidth(420)
     win.bottom_tabs.setMinimumHeight(90)
     win.upper_split.addWidget(win.left_stack)
     win.upper_split.addWidget(win.center_split)
-    win.upper_split.addWidget(win.right_scroll)
+    win.upper_split.addWidget(win.right_stack)
     # Only the center grows when the window does: the two side panels hold
     # text at a readable width, the camera is the thing worth more pixels.
     win.upper_split.setStretchFactor(0, 0)

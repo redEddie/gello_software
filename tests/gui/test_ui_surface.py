@@ -63,6 +63,7 @@ class _Stub(QMainWindow):
         self.scene_ops = _NoOp()
         self.layout_ref = _NoOp()
         self.stats_ops = _NoOp()
+        self.doctor = _NoOp()
 
     def __getattr__(self, name):
         if name.startswith("_"):

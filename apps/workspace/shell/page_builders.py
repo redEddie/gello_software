@@ -1,6 +1,7 @@
 """Activity key -> left-panel page builder mapping."""
 from apps.workspace.features.collection import build_collect
 from apps.workspace.features.dataset.page import build_dataset
+from apps.workspace.features.doctor import build_doctor
 from apps.workspace.features.scene.layout_page import build_layout_page
 from apps.workspace.features.stats import build_stats
 from apps.workspace.features.upload import build_upload
@@ -12,6 +13,7 @@ PAGE_BUILDERS = {
     "configure": build_configure,
     "collect": build_collect,
     "dataset": build_dataset,
+    "doctor": build_doctor,
     "layout": build_layout_page,
     "settings": build_settings,
     "stats": build_stats,

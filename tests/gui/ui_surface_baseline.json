@@ -78,12 +78,14 @@
       "② Configure",
       "③ Collect",
       "④ Dataset",
+      "Doctor",
       "Statistics",
       "Upload",
       "Settings",
       "Live",
       "Instruction",
       "Scene",
+      "기록 닥터",
       "Playback",
       "Analysis",
       "Trim",
@@ -129,6 +131,9 @@
       "새로고침",
       "실패만 선택"
     ],
+    "doctor": [
+      "다시 검사"
+    ],
     "stats": [
       "다시 분석"
     ],
@@ -166,6 +171,7 @@
     "configure",
     "collect",
     "dataset",
+    "doctor",
     "stats",
     "upload",
     "settings"
@@ -174,6 +180,7 @@
     "live",
     "instruction",
     "scene",
+    "doc_record",
     "playback",
     "analysis",
     "trim",
@@ -202,6 +209,10 @@
       "trim",
       "gallery"
     ],
+    "doctor": [
+      "doc_record",
+      "live"
+    ],
     "stats": [
       "live",
       "playback",
@@ -220,6 +231,7 @@
     "collect",
     "configure",
     "dataset",
+    "doctor",
     "layout",
     "settings",
     "stats",

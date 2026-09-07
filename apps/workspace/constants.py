@@ -33,6 +33,10 @@ ACTIVITIES = (
     ("configure", "⚙", "Configure", "로봇 노드·Scene·수집 설정"),
     ("collect", "🎮", "Collect", "수집 제어와 현재 상태"),
     ("dataset", "📂", "Dataset", "에피소드 목록·재생·삭제"),
+    # 닥터는 매 바퀴 도는 단계가 아니라 필요할 때 여는 도구다 -- WORKFLOW
+    # 에 번호를 붙이지 않는 이유가 Statistics·Upload 와 같다. 자리가
+    # 큐레이션 다음인 것은 "찍은 것을 고른 뒤 바로잡는다" 는 순서다.
+    ("doctor", "🩺", "Doctor", "기록·지시문의 어긋남을 찾아 고친다"),
     ("stats", "📊", "Statistics", "세션 통계·수집 이력"),
     ("upload", "☁", "Upload", "재압축·LeRobot 변환·업로드"),
     ("settings", "🛠", "Settings", "스키마·레이아웃"),
@@ -67,6 +71,7 @@ CENTER_TABS = (
     ("live", "Live"),
     ("instruction", "Instruction"),
     ("scene", "Scene"),
+    ("doc_record", "기록 닥터"),
     ("playback", "Playback"),
     ("analysis", "Analysis"),
     ("trim", "Trim"),
@@ -98,6 +103,10 @@ CENTER_TABS_BY_ACTIVITY = {
     "configure": ("instruction", "scene", "live"),
     "collect": ("live",),
     "dataset": ("live", "playback", "analysis", "trim", "gallery"),
+    # 닥터가 늘면 여기에 doc_schema(#47) / doc_progress(#48) 가 붙는다.
+    # 활동탭은 하나로 둔다 -- 운용자에게는 "어디가 잘못됐나" 라는 하나의
+    # 질문이라 세 군데를 뒤지게 하면 안 된다 (2026-09-07 사용자 결정).
+    "doctor": ("doc_record", "live"),
     "stats": ("live", "playback", "analysis", "trim", "gallery"),
     "upload": ("live",),
     "settings": ("live",),

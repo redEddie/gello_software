@@ -88,6 +88,7 @@ from apps.workspace.constants import LOG_DIR  # noqa: E402
 from apps.workspace.features.camera import CameraOps, DepthOps  # noqa: E402
 from apps.workspace.features.collection import CollectionOps  # noqa: E402
 from apps.workspace.features.dataset import DatasetOps  # noqa: E402
+from apps.workspace.features.doctor import DoctorOps  # noqa: E402
 from apps.workspace.features.gallery import GalleryOps  # noqa: E402
 from apps.workspace.features.playback import PlaybackOps  # noqa: E402
 from apps.workspace.features.scene import LayoutRefOps, SceneOps, ScenePlanningOps  # noqa: E402
@@ -259,6 +260,7 @@ class WorkspaceWindow(QMainWindow):
 
         self.upload = UploadOps(self)
         self.playback_ops = PlaybackOps(self)
+        self.doctor = DoctorOps(self)
         self.scene_ops = SceneOps(self)
         self.scene_planning = ScenePlanningOps(self)
         self.layout_ref = LayoutRefOps(self)
@@ -523,6 +525,9 @@ class WorkspaceWindow(QMainWindow):
         # 중앙 탭도 활동을 따라간다 -- 활동 바와 중앙 탭은 같은 축이다
         # (수집 / 큐레이션 / 셋업·점검). "live" 는 어디서든 남는다.
         set_center_tabs(self, key)
+        # 우측 패널도 활동을 따라간다 -- 활동마다 자기 페이지가 있다
+        # (아직 자기 것이 없는 활동은 세션 페이지를 함께 쓴다).
+        self.right_stack.setCurrentIndex(self.right_pages[key])
         act = self._activity_actions.get(key)
         if act is not None and not act.isChecked():
             act.setChecked(True)
@@ -538,6 +543,13 @@ class WorkspaceWindow(QMainWindow):
             # scene 파일을 열므로 여기 들어올 때만 새로 읽는다.
             show_center_tab(self, "instruction")
             self.scene_planning.refresh_plan_progress()
+        elif key == "doctor":
+            # 이 화면에 온 이유는 "어디가 잘못됐나" 다 -- 카메라가 아니라
+            # 검사 결과를 띄운다 (Configure 가 계획 현황을 띄우는 것과 같은
+            # 이유). 검사는 scene 파일을 전부 열므로 들어올 때 한 번만 하고,
+            # 그 뒤에는 [다시 검사] 로만 다시 한다.
+            show_center_tab(self, "doc_record")
+            self.doctor.rescan()
         elif key == "stats":
             self.stats_ops.refresh_stats()
             self.stats_ops.refresh_history()

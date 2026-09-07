@@ -129,6 +129,10 @@ def toolbar_context(win, key: str) -> list:
             (tr("새로고침"), win.dataset_ops.refresh_dataset_tree, ""),
             (tr("실패만 선택"), win.dataset_ops.on_select_failed, ""),
         ],
+        "doctor": [
+            (tr("다시 검사"), win.doctor.rescan,
+             tr("데이터셋의 scene 파일을 전부 다시 읽습니다")),
+        ],
         "upload": [
             (tr("전체 처리"), win.upload.on_pipeline,
              tr("재압축 → 변환 → 업로드를 한 번에")),
